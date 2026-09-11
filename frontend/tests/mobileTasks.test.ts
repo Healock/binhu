@@ -182,17 +182,13 @@ test('行内待登记直接搜索任务社区房屋并原子保存', () => {
     'utf8',
   )
   assert.match(source, /searchRegistrationProperties\(normalized, task\.community\)/)
-  assert.match(source, /\[resultField\]: '待登记'[\s\S]*?现住址: address/)
+  assert.match(source, /setDraft\(task.task_key, resultField, '待登记'\)/)
   assert.match(source, /registration_property_id: registrationProperty\.id/)
   assert.match(source, /registration_property_version: registrationProperty\.version/)
   assert.match(source, /function registrationPropertyLabel\([\s\S]*?return registrationPropertyAddress\(property\)/)
   assert.doesNotMatch(source, /return `\$\{property\.community_name \|\| ''\} \$\{registrationPropertyAddress\(property\)\}`\.trim\(\)/)
-  assert.match(source, /选定房屋后，待登记结果和现住址会一次保存/)
+  assert.match(source, /地址会与待登记结果一起保存/)
   assert.doesNotMatch(source, /待登记需进入详情/)
-  assert.match(source, /function registrationAddressValue\(value: string\)/)
-  assert.match(source, /registration_pending_address: registrationAddressValue/)
-  assert.match(source, /setPendingAddressMode\(current => \(\{ \.\.\.current, \[task\.task_key\]: true \}\)\)/)
-  assert.match(source, /const addressHint = String\(snapshot\['现住址'\] \|\| ''\)/)
   assert.doesNotMatch(source, /disabled=\{selectionMode \|\| savingRowKey === task\.task_key\}/)
 
   const detailSource = readFileSync(
@@ -839,15 +835,13 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(tableSource, /该任务暂未分配核查人，是否领取任务？/)
   assert.match(tableSource, /okText: '领取并保存'/)
   assert.match(tableSource, /const claim = await confirmClaim\(task, source\.values\)/)
-  assert.match(tableSource, /enqueueTaskSave\(task\.task_key, \(\) => saveEditor\(task, item, changes, claim\)\)/)
-  assert.match(tableSource, /\[field\]: source\.values\[field\] \|\| ''/)
   assert.match(pageSource, /canClaimUnassigned=\{!analysisOnly && user\?\.member\?\.position === '组员'\}/)
   assert.match(clientSource, /source-rows\/\$\{sourceId\}\/claim/)
   assert.match(tableSource, /const visiblePhones = phones\.slice\(0, 3\)/)
   assert.match(tableSource, /phones\.length - visiblePhones\.length/)
   assert.match(tableSource, /const saveField = async/)
   assert.match(tableSource, /cancelScheduledFieldSave\(task\.task_key, field\)/)
-  assert.match(tableSource, /draftValuesRef\.current\[task\.task_key\]\?\.\[field\]/)
+  assert.match(tableSource, /editorValuesRef\.current\[task\.task_key\]\?\.\[field\]/)
   assert.match(tableSource, /saveStates\[task\.task_key\]\?\.\[field\]/)
   assert.match(tableSource, /composingRef\.current\[task\.task_key\]\?\.\[field\]/)
   assert.doesNotMatch(tableSource, /savingRowKey/)
@@ -1031,7 +1025,7 @@ test('流口任务保存使用本地版本并且不再暴露腾讯冲突处理',
   assert.doesNotMatch(tableSource, /已自动保存并写回腾讯表格/)
 })
 
-test('指令核查编辑器仅在失焦后保存并提供失败重试', () => {
+test('指令核查编辑器防抖与失焦共用队列并提供失败重试', () => {
   const tableSource = readFileSync(
     new URL('../src/components/MobileTaskTable.tsx', import.meta.url),
     'utf8',
@@ -1040,13 +1034,11 @@ test('指令核查编辑器仅在失焦后保存并提供失败重试', () => {
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
-  assert.match(tableSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 1500\)/)
+  assert.match(tableSource, /window\.setTimeout\(\(\) => \{[\s\S]*?\}, 700\)/)
   assert.match(tableSource, /onCompositionStart/)
   assert.match(detailSource, /onCompositionEnd/)
-  assert.match(tableSource, /保存失败[\s\S]*?重试/)
-  assert.match(tableSource, /autosaveSequenceRef/)
+  assert.match(tableSource, /未保存，草稿已保留/)
   assert.match(tableSource, /activeAutosavesRef/)
-  assert.match(tableSource, /queuedAutosavesRef/)
   assert.match(tableSource, /task_revision_conflict/)
   assert.match(tableSource, /current_values/)
   assert.doesNotMatch(detailSource, /scheduleAutoSave\(1500\)/)

@@ -57,11 +57,6 @@ function registrationPropertyLabel(property: MobileTaskRegistrationProperty) {
   return registrationPropertyAddress(property)
 }
 
-function registrationAddressValue(value: string) {
-  const text = String(value || '')
-  return text.startsWith('pending:') ? text.slice('pending:'.length) : text
-}
-
 interface MobileTaskTableProps {
   active?: boolean
   rows: MobileTaskItem[]
@@ -77,7 +72,6 @@ interface MobileTaskTableProps {
   onCopy: (value: string, label: '身份证号' | '手机号') => void
   sort: MobileTaskSort
   onSortChange: (sort: MobileTaskSort) => void
-  onSaved: (context?: { taskKey: string }) => Promise<void> | void
   filterOptions?: { community: { text: string; value: string }[]; smallCommunity: { text: string; value: string }[]; inspector: { text: string; value: string }[] }
   tableFilters?: { community: string[]; small_community: string[]; inspector: string[] }
   onTableFiltersChange?: (filters: Record<string, Key[] | null>) => void
@@ -110,7 +104,6 @@ export default function MobileTaskTable({
   onCopy,
   sort,
   onSortChange,
-  onSaved,
   filterOptions,
   tableFilters,
   onTableFiltersChange,
@@ -128,7 +121,6 @@ export default function MobileTaskTable({
   const editorValuesRef = useRef(editorValues)
   editorValuesRef.current = editorValues
   const [registrationProperties, setRegistrationProperties] = useState<Record<string, InlineRegistrationPropertyState>>({})
-  const [pendingAddressMode, setPendingAddressMode] = useState<Record<string, boolean>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
   const [editorErrorKeys, setEditorErrorKeys] = useState<Set<string>>(new Set())
   const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
@@ -139,27 +131,38 @@ export default function MobileTaskTable({
   const editorFlushTimerRef = useRef<number | null>(null)
   const claimPromptKeysRef = useRef<Set<string>>(new Set())
   const registrationSearchSequenceRef = useRef<Record<string, number>>({})
-  const registrationResultDraftRef = useRef<Record<string, string>>({})
   const composingRef = useRef<Record<string, Record<string, boolean>>>({})
-  const draftValuesRef = useRef<Record<string, Record<string, string>>>({})
   const autosaveTimersRef = useRef<Record<string, number>>({})
-  const autosaveSequenceRef = useRef<Record<string, number>>({})
-  const autosaveRetryRef = useRef<Record<string, {
-    task: MobileTaskItem
-    item: MobileTaskInlineEditorItem
-    field: string
-    value: string
-  }>>({})
-  const activeAutosavesRef = useRef<Set<string>>(new Set())
-  const taskSaveChainsRef = useRef<Record<string, Promise<void>>>({})
-  const queuedAutosavesRef = useRef<Record<string, {
-    task: MobileTaskItem
-    item: MobileTaskInlineEditorItem
-    field: string
-    value: string
-  }>>({})
-  type FieldSaveState = 'saving' | 'saved' | 'error' | 'conflict'
+  type FieldSaveState = 'idle' | 'composing' | 'saving' | 'saved' | 'error' | 'conflict'
   const [saveStates, setSaveStates] = useState<Record<string, Record<string, FieldSaveState>>>({})
+  const stateRef = useRef<Record<string, Record<string, FieldSaveState>>>({})
+  const draftVersionsRef = useRef<Record<string, Record<string, number>>>({})
+  const lifecycleRef = useRef(0)
+  const activeAutosavesRef = useRef<Set<symbol>>(new Set())
+  const taskSaveChainsRef = useRef<Record<string, Promise<void>>>({})
+  const retryRef = useRef<Record<string, () => void>>({})
+  const conflictsRef = useRef<Record<string, { revision: number; values: Record<string, string> }>>({})
+  const failedFieldsRef = useRef(new Set<string>())
+  const cancelledClaimRef = useRef(new Set<string>())
+  const chosenPropertyRef = useRef<Record<string, MobileTaskRegistrationProperty | undefined>>({})
+
+  const fieldKey = (taskKey: string, field: string) => JSON.stringify([taskKey, field])
+  const fieldState = (taskKey: string, field: string, state: FieldSaveState) => {
+    const next = { ...stateRef.current, [taskKey]: { ...stateRef.current[taskKey], [field]: state } }
+    stateRef.current = next
+    setSaveStates(next)
+  }
+  const setDraft = (taskKey: string, field: string, value: string) => {
+    const current = editorValuesRef.current[taskKey] || editorItemsRef.current[taskKey]?.detail?.sources[0]?.values || {}
+    if (current[field] !== value) {
+      draftVersionsRef.current[taskKey] = { ...draftVersionsRef.current[taskKey], [field]: (draftVersionsRef.current[taskKey]?.[field] || 0) + 1 }
+    }
+    const next = { ...current, [field]: value }
+    editorValuesRef.current = { ...editorValuesRef.current, [taskKey]: next }
+    setEditorValues(editorValuesRef.current)
+    const state = stateRef.current[taskKey]?.[field]
+    if (state !== 'conflict' && state !== 'error') fieldState(taskKey, field, composingRef.current[taskKey]?.[field] ? 'composing' : 'idle')
+  }
   const taskByKey = useMemo(
     () => new Map(rows.map(task => [task.task_key, task])),
     [rows],
@@ -213,28 +216,30 @@ export default function MobileTaskTable({
           return
         }
         const draft = editorValuesRef.current[taskKey]
-        const dirty = oldSource && draft && Object.entries(draft).some(([field, value]) => String(oldSource.values[field] || '') !== String(value || ''))
+        const dirty = oldSource && draft && (Object.values(composingRef.current[taskKey] || {}).some(Boolean)
+          || Object.entries(draft).some(([field, value]) => String(oldSource.values[field] || '') !== String(value || '')))
         if (dirty) {
           // Do not silently rebase a pending write onto a newer server revision.
-          // Keep the local draft; the field-level save path surfaces conflicts.
+          // Keep the original base so background refresh cannot silently approve overwrites.
+          if (source && source.revision > oldSource.revision) {
+            for (const [field, value] of Object.entries(draft)) {
+              if (value === oldSource.values[field] || source.values[field] === oldSource.values[field]) continue
+              const key = fieldKey(taskKey, field)
+              failedFieldsRef.current.add(key)
+              conflictsRef.current[key] = { revision: source.revision, values: { [field]: source.values[field] || '' } }
+              if (!composingRef.current[taskKey]?.[field]) fieldState(taskKey, field, 'conflict')
+            }
+          }
           if (item.available && item.detail && oldSource && source && source.id === oldSource.id) {
             items[taskKey] = { ...item, detail: { ...item.detail, sources: [{ ...oldSource, editable_fields: source.editable_fields }] } }
           }
         } else if (source) values[taskKey] = { ...source.values }
+        if (oldItem?.detail && !item.available) items[taskKey] = { ...oldItem, reason: item.reason || '该任务已不可编辑，请返回列表核对', detail: { ...oldItem.detail, writeback_enabled: false } }
       })
-      setEditorItems(current => {
-        const next = { ...current, ...items }
-        editorItemsRef.current = next
-        return next
-      })
-      setEditorValues(current => {
-        const next = { ...current, ...values }
-        editorValuesRef.current = next
-        Object.entries(values).forEach(([taskKey, taskValues]) => {
-          draftValuesRef.current[taskKey] = { ...(draftValuesRef.current[taskKey] || {}), ...taskValues }
-        })
-        return next
-      })
+      editorItemsRef.current = { ...editorItemsRef.current, ...items }
+      setEditorItems(editorItemsRef.current)
+      editorValuesRef.current = { ...editorValuesRef.current, ...values }
+      setEditorValues(editorValuesRef.current)
       setEditorErrorKeys(current => new Set([...current].filter(key => !keys.includes(key))))
     } catch (reason: any) {
       if (activeRef.current && epoch === requestEpochRef.current && requestContext === editorContextRef.current) {
@@ -292,10 +297,17 @@ export default function MobileTaskTable({
     }
     setEditorItems({})
     setEditorValues({})
+    editorValuesRef.current = {}
+    composingRef.current = {}
+    stateRef.current = {}
+    setSaveStates({})
+    draftVersionsRef.current = {}
+    failedFieldsRef.current.clear()
+    conflictsRef.current = {}
+    retryRef.current = {}
     setEditorErrorKeys(new Set())
     setRegistrationProperties({})
     registrationSearchSequenceRef.current = {}
-    registrationResultDraftRef.current = {}
     setLoadingEditorKeys(new Set())
     return () => {
       pendingEditorKeysRef.current.clear()
@@ -352,182 +364,95 @@ export default function MobileTaskTable({
     changes: Record<string, string>,
     claim = false,
     registrationProperty?: { id: number; version: number },
-    options?: { autosaveKey?: string; silent?: boolean },
+    options?: { fields: string[]; registrationAddress?: string },
   ): Promise<boolean> => {
-    if (!activeRef.current) return false
     const detail = item.detail
     const source = detail?.sources[0]
-    if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return false
-    const autosaveKey = options?.autosaveKey
-    const autosaveField = autosaveKey?.split(':').slice(1).join(':') || ''
-    const requestSequence = autosaveKey
-      ? (autosaveSequenceRef.current[autosaveKey] || 0) + 1
-      : 0
-    if (autosaveKey) {
-      autosaveSequenceRef.current[autosaveKey] = requestSequence
-      if (autosaveField) setSaveStates(current => ({
-        ...current,
-        [task.task_key]: { ...(current[task.task_key] || {}), [autosaveField]: 'saving' },
-      }))
-    }
+    if (!activeRef.current || !item.available || !source || !detail?.writeback_enabled) return false
+    const fields = options?.fields || Object.keys(changes)
+    const epoch = lifecycleRef.current
+    const sentDraft = { ...editorValuesRef.current[task.task_key] }
+    const versions = { ...draftVersionsRef.current[task.task_key] }
+    fields.forEach(field => fieldState(task.task_key, field, 'saving'))
     try {
-      const updater = claim
-        ? claimMobileTask
-        : analysisMode ? updateMobileTaskAnalysis : updateMobileTask
+      const updater = claim ? claimMobileTask : analysisMode ? updateMobileTaskAnalysis : updateMobileTask
       const result = await updater(task.parser_type, source.id, {
         changes,
-        base_values: Object.fromEntries(
-          Object.keys(changes).map(field => [field, source.values[field] || '']),
-        ),
+        base_values: Object.fromEntries(Object.keys(changes).map(field => [field, source.values[field] || ''])),
         expected_revision: source.revision,
-        ...(!registrationProperty && (
-          (pendingAddressMode[task.task_key] && changes['现住址'])
-          || changes[detail.workflow.result_field] === '待登记'
-        ) ? {
-          registration_pending_address: registrationAddressValue(
-            changes['现住址'] || editorValuesRef.current[task.task_key]?.['现住址'] || source.values['现住址'] || '',
-          ),
-        } : {}),
-        ...(registrationProperty ? {
-          registration_property_id: registrationProperty.id,
-          registration_property_version: registrationProperty.version,
-        } : {}),
+        ...(options?.registrationAddress !== undefined ? { registration_pending_address: options.registrationAddress } : {}),
+        ...(registrationProperty ? { registration_property_id: registrationProperty.id, registration_property_version: registrationProperty.version } : {}),
       })
-      const savedValues = mergeMobileTaskSaveValues(
-        source.values,
-        changes,
-        result.values,
-        source.cell_meta,
-      )
-      const isLatest = !autosaveKey || autosaveSequenceRef.current[autosaveKey] === requestSequence
-      if (!isLatest) return true
-      if (autosaveKey) delete autosaveRetryRef.current[autosaveKey]
-      setEditorItems(current => {
-        const next = {
-          ...current,
-          [task.task_key]: {
-          ...item,
-          detail: detail ? {
-            ...detail,
-            sources: [{ ...source, values: savedValues, revision: result.revision }],
-          } : detail,
-          },
+      if (epoch !== lifecycleRef.current) return false
+      const latestItem = editorItemsRef.current[task.task_key] || item
+      const latestSource = latestItem.detail?.sources[0]
+      const savedValues = mergeMobileTaskSaveValues(source.values, changes, result.values, source.cell_meta)
+      // A later editor refresh must never be replaced by an older save response.
+      const newerServer = latestSource && latestSource.revision > result.revision
+      const baseline = newerServer ? latestSource.values : savedValues
+      if (!newerServer && latestItem.detail) {
+        editorItemsRef.current = { ...editorItemsRef.current, [task.task_key]: {
+          ...latestItem, detail: { ...latestItem.detail, sources: [{ ...(latestSource || source), values: savedValues, revision: result.revision }] },
+        } }
+        setEditorItems(editorItemsRef.current)
+      }
+      const draft = editorValuesRef.current[task.task_key] || sentDraft
+      const next = { ...baseline }
+      for (const [field, value] of Object.entries(draft)) {
+        const editedSinceSend = (draftVersionsRef.current[task.task_key]?.[field] || 0) !== (versions[field] || 0)
+        const unsent = !(field in changes) && sentDraft[field] !== source.values[field]
+        if (editedSinceSend || unsent || composingRef.current[task.task_key]?.[field]) next[field] = value
+        const expectedServerValue = field in changes ? savedValues[field] : source.values[field]
+        if ((editedSinceSend || unsent) && baseline[field] !== expectedServerValue && value !== baseline[field]) {
+          // A full-row response may contain another user's edits to an unsent
+          // dirty field. Updating the row revision cannot authorize overwriting it.
+          const key = fieldKey(task.task_key, field)
+          failedFieldsRef.current.add(key)
+          conflictsRef.current[key] = { revision: newerServer ? latestSource.revision : result.revision, values: { [field]: baseline[field] || '' } }
+          if (!composingRef.current[task.task_key]?.[field]) fieldState(task.task_key, field, 'conflict')
         }
-        editorItemsRef.current = next
-        return next
+      }
+      editorValuesRef.current = { ...editorValuesRef.current, [task.task_key]: next }
+      setEditorValues(editorValuesRef.current)
+      fields.forEach(field => {
+        const key = fieldKey(task.task_key, field)
+        const conflict = conflictsRef.current[key]
+        // A refresh can observe this very save before its response reaches us.
+        // That acknowledgement is not an external conflict with our next draft.
+        if (!conflict || conflict.values[field] === savedValues[field]) {
+          delete conflictsRef.current[key]
+          failedFieldsRef.current.delete(key)
+        }
+        if ((draftVersionsRef.current[task.task_key]?.[field] || 0) !== (versions[field] || 0) || composingRef.current[task.task_key]?.[field]) return
+        if (conflictsRef.current[key]) { fieldState(task.task_key, field, 'conflict'); return }
+        fieldState(task.task_key, field, next[field] === baseline[field] ? 'saved' : 'idle')
       })
-      const hasNewerDraft = autosaveKey && draftValuesRef.current[task.task_key]?.[autosaveField] !== undefined
-        && draftValuesRef.current[task.task_key]?.[autosaveField] !== changes[autosaveField]
-      if (!hasNewerDraft) {
-        setEditorValues(current => ({ ...current, [task.task_key]: savedValues }))
-        editorValuesRef.current = { ...editorValuesRef.current, [task.task_key]: savedValues }
-        draftValuesRef.current[task.task_key] = { ...savedValues }
-      }
-      if (registrationProperty) {
-        setRegistrationProperties(current => ({
-          ...current,
-          [task.task_key]: {
-            ...(current[task.task_key] || { loading: false, options: [] }),
-            selectedId: registrationProperty.id,
-          },
-        }))
-      }
-      if (autosaveKey && autosaveField) setSaveStates(current => ({
-        ...current,
-        [task.task_key]: { ...(current[task.task_key] || {}), [autosaveField]: 'saved' },
-      }))
-      if (!options?.silent) message.success(result.message)
-      // 自动保存已经把当前行的编辑器状态合并到本地，不要再次刷新所有已加载页面。
-      // 非静默保存（例如显式领取、房屋关联）仍由父列表执行一次必要的同步。
-      if (!options?.silent) await onSaved({ taskKey: task.task_key })
       return true
     } catch (reason: any) {
-      if (autosaveKey && autosaveSequenceRef.current[autosaveKey] === requestSequence) {
-        const [, ...fieldParts] = autosaveKey.split(':')
-        const retryField = fieldParts.join(':')
-        if (retryField) {
-          autosaveRetryRef.current[autosaveKey] = {
-            task,
-            item,
-            field: retryField,
-            value: changes[retryField] || '',
-          }
+      if (epoch !== lifecycleRef.current) return false
+      const info = reason?.response?.data?.detail
+      const conflict = Number(reason?.response?.status) === 409 && info?.code === 'task_revision_conflict'
+      const columns: string[] = conflict && Array.isArray(info.columns) ? info.columns : fields
+      fields.forEach(field => {
+        // Store retry barriers even when the user has typed ahead; do not repaint
+        // their active composition with the state of an older request.
+        if (conflict && columns.includes(field)) {
+          conflictsRef.current[fieldKey(task.task_key, field)] = { revision: Number(info.current_revision), values: info.current_values || {} }
         }
-        setSaveStates(current => ({
-          ...current,
-          [task.task_key]: {
-            ...(current[task.task_key] || {}),
-            [retryField]: Number(reason?.response?.status) === 409 ? 'conflict' : 'error',
-          },
-        }))
-      }
-      const status = Number(reason?.response?.status)
-      const code = reason?.response?.data?.detail?.code
-      const conflictDetail = reason?.response?.data?.detail
-      if (status === 409 && code === 'task_revision_conflict') {
-        const conflictValues = conflictDetail?.current_values || {}
-        const conflictRevision = Number(conflictDetail?.current_revision || 0)
-        setEditorItems(current => {
-          const currentItem = current[task.task_key] || item
-          const currentDetail = currentItem.detail
-          const currentSource = currentDetail?.sources[0]
-          if (!currentDetail || !currentSource || !conflictRevision) return current
-          const next = {
-            ...current,
-            [task.task_key]: {
-              ...currentItem,
-              detail: {
-                ...currentDetail,
-                sources: [{
-                  ...currentSource,
-                  values: { ...currentSource.values, ...conflictValues },
-                  revision: conflictRevision,
-                }],
-              },
-            },
-          }
-          editorItemsRef.current = next
-          return next
-        })
-      }
-      if (!autosaveKey) message.error(
-        code === 'task_save_timeout'
-          ? '保存等待数据库锁超时，草稿已保留，请稍后重试保存'
-          : code === 'task_save_busy'
-            ? '当前任务正在被其他操作保存，草稿已保留，请稍后重试保存'
-            : code === 'database_pool_busy'
-              ? '当前服务连接繁忙，草稿已保留，请稍后重试保存'
-              : status === 503
-                ? '当前服务暂时不可用，草稿已保留，请稍后重试保存'
-                : status === 409
-            ? '数据冲突，当前草稿已保留，请核对后重试'
-            : errorMessage(reason, '保存失败，当前草稿已保留'),
-      )
-      if (registrationProperty) {
-        const existingProperty = detail?.registration_link?.property
-        setEditorValues(current => ({
-          ...current,
-          [task.task_key]: { ...source.values },
-        }))
-        setRegistrationProperties(current => ({
-          ...current,
-          [task.task_key]: {
-            ...(current[task.task_key] || { loading: false, options: [] }),
-            selectedId: existingProperty?.id,
-          },
-        }))
-      }
-      if (registrationProperty) {
-        await requestEditors([task.task_key], true)
-      }
+        if ((draftVersionsRef.current[task.task_key]?.[field] || 0) !== (versions[field] || 0) || composingRef.current[task.task_key]?.[field]) return
+        fieldState(task.task_key, field, conflict && columns.includes(field) ? 'conflict' : 'error')
+      })
+      // Pause automatic replay after every failure, including an obsolete response.
+      fields.forEach(field => { failedFieldsRef.current.add(fieldKey(task.task_key, field)) })
       return false
     }
   }
 
   const confirmClaim = async (task: MobileTaskItem, sourceValues: Record<string, string>) => {
+    if (cancelledClaimRef.current.has(task.task_key)) return null
     const shouldClaim = canClaimUnassigned
       && !analysisMode
-      && !String(task.inspector || sourceValues['核查人'] || '').trim()
+      && !String(sourceValues['核查人'] || task.inspector || '').trim()
     if (!shouldClaim) return false
     if (claimPromptKeysRef.current.has(task.task_key)) return null
     claimPromptKeysRef.current.add(task.task_key)
@@ -548,6 +473,7 @@ export default function MobileTaskTable({
       })
     })
     claimPromptKeysRef.current.delete(task.task_key)
+    if (!confirmed) cancelledClaimRef.current.add(task.task_key)
     return confirmed ? true : null
   }
 
@@ -558,103 +484,133 @@ export default function MobileTaskTable({
     return run
   }
 
-  const saveField = async (
-    task: MobileTaskItem,
-    item: MobileTaskInlineEditorItem,
-    field: string,
-    value: string,
-    autosave = false,
-  ) => {
-    const autosaveKey = `${task.task_key}:${field}`
-    if (autosave && activeAutosavesRef.current.has(autosaveKey)) {
-      queuedAutosavesRef.current[autosaveKey] = { task, item, field, value }
-      return
-    }
-    const currentItem = editorItemsRef.current[task.task_key] || item
-    const source = currentItem.detail?.sources[0]
-    if (!source) return
-    const pendingRegistration = field === '现住址' && pendingAddressMode[task.task_key]
-      && registrationResultDraftRef.current[task.task_key] === '待登记'
-    const changes = buildMobileTaskChanges(
-      source.values,
-      { ...source.values, [field]: value, ...(pendingRegistration ? { [currentItem.detail!.workflow.result_field]: '待登记' } : {}) },
-      pendingRegistration ? [field, currentItem.detail!.workflow.result_field] : [field],
-    )
-    if (!Object.keys(changes).length) return
-    const claim = await confirmClaim(task, source.values)
-    if (claim === null) {
-      setEditorValues(current => ({
-        ...current,
-        [task.task_key]: {
-          ...(current[task.task_key] || source.values),
-          [field]: source.values[field] || '',
-        },
-      }))
-      return
-    }
-    if (autosave) {
-      activeAutosavesRef.current.add(autosaveKey)
-      const saved = await enqueueTaskSave(task.task_key, () => saveEditor(task, currentItem, changes, claim, undefined, {
-        autosaveKey,
-        silent: true,
-      }))
-      activeAutosavesRef.current.delete(autosaveKey)
-      const queued = queuedAutosavesRef.current[autosaveKey]
-      delete queuedAutosavesRef.current[autosaveKey]
-      if (queued) {
-        if (saved) {
-          void saveField(queued.task, queued.item, queued.field, queued.value, true)
-        } else {
-          autosaveRetryRef.current[autosaveKey] = queued
-        }
-      }
-    } else {
-      await enqueueTaskSave(task.task_key, () => saveEditor(task, item, changes, claim))
-    }
-  }
-
-  const scheduleFieldSave = (
-    task: MobileTaskItem,
-    item: MobileTaskInlineEditorItem,
-    field: string,
-    value: string,
-  ) => {
-    const key = `${task.task_key}:${field}`
-    if (composingRef.current[task.task_key]?.[field]) return
-    const previous = autosaveTimersRef.current[key]
-    if (previous) window.clearTimeout(previous)
-    autosaveTimersRef.current[key] = window.setTimeout(() => {
-      delete autosaveTimersRef.current[key]
-      const currentItem = editorItemsRef.current[task.task_key] || item
-      void saveField(task, currentItem, field, draftValuesRef.current[task.task_key]?.[field] ?? value, true)
-    }, 1500)
-  }
-
   const cancelScheduledFieldSave = (taskKey: string, field: string) => {
-    const key = `${taskKey}:${field}`
-    const timer = autosaveTimersRef.current[key]
-    if (timer) {
-      window.clearTimeout(timer)
-      delete autosaveTimersRef.current[key]
-    }
+    const key = fieldKey(taskKey, field)
+    window.clearTimeout(autosaveTimersRef.current[key])
+    delete autosaveTimersRef.current[key]
+  }
+
+  const saveField = async (
+    task: MobileTaskItem, item: MobileTaskInlineEditorItem, field: string, value: string, _autosave = true,
+  ) => {
+    const key = fieldKey(task.task_key, field)
+    const epoch = lifecycleRef.current
+    retryRef.current[key] = () => { void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? value) }
+    const operationId = Symbol(key)
+    activeAutosavesRef.current.add(operationId)
+    try {
+      await enqueueTaskSave(task.task_key, async () => {
+        if (!activeRef.current || epoch !== lifecycleRef.current || composingRef.current[task.task_key]?.[field]) return false
+        if (failedFieldsRef.current.has(key)) {
+          fieldState(task.task_key, field, conflictsRef.current[key] ? 'conflict' : 'error')
+          return false
+        }
+        let currentItem = editorItemsRef.current[task.task_key] || item
+        let source = currentItem.detail?.sources[0]
+        if (!source || !currentItem.available || !currentItem.detail?.writeback_enabled || !source.editable_fields.includes(field)) return false
+        if (editorValuesRef.current[task.task_key]?.[field] === source.values[field] && !chosenPropertyRef.current[task.task_key]) return true
+        const claim = await confirmClaim(task, source.values)
+        if (epoch !== lifecycleRef.current || !activeRef.current || composingRef.current[task.task_key]?.[field]) return false
+        if (claim === null) { fieldState(task.task_key, field, 'error'); failedFieldsRef.current.add(key); return false }
+        // Read version, permissions and every value at dispatch time, after the queue and confirmation.
+        currentItem = editorItemsRef.current[task.task_key] || item
+        source = currentItem.detail?.sources[0]
+        if (!source || !currentItem.available || !currentItem.detail?.writeback_enabled || !source.editable_fields.includes(field)) return false
+        const draft = editorValuesRef.current[task.task_key] || source.values
+        const resultField = currentItem.detail.workflow.result_field
+        const registration = mobileTaskUsesRegistrationClosure(task.parser_type)
+          && [resultField, '现住址'].includes(field) && draft[resultField] === '待登记'
+        const fields = registration ? [resultField, '现住址'] : [field]
+        if (fields.some(f => composingRef.current[task.task_key]?.[f])) return false
+        if (fields.some(f => failedFieldsRef.current.has(fieldKey(task.task_key, f)))) return false
+        const changes = buildMobileTaskChanges(source.values, draft, fields)
+        const property = registration ? chosenPropertyRef.current[task.task_key] : undefined
+        if (!Object.keys(changes).length && !property) { fieldState(task.task_key, field, 'saved'); return true }
+        if (registration) {
+          // Even an unchanged address needs registration context in this atomic request.
+          changes[resultField] = '待登记'
+          changes['现住址'] = draft['现住址'] || ''
+          // An incomplete address is a local draft, not a failed request. Filling
+          // it later must be able to complete the same atomic save automatically.
+          if (!changes['现住址'].trim()) { fieldState(task.task_key, field, 'idle'); return false }
+        } else if (!Object.keys(changes).length) { fieldState(task.task_key, field, 'saved'); return true }
+        fields.forEach(f => { retryRef.current[fieldKey(task.task_key, f)] = () => { void saveField(task, item, f, editorValuesRef.current[task.task_key]?.[f] || '') } })
+        const saved = await saveEditor(task, currentItem, changes, claim, property ? { id: property.id, version: property.version } : undefined, {
+          fields, ...(registration && !property ? { registrationAddress: draft['现住址'] || '' } : {}),
+        })
+        if (saved && property === chosenPropertyRef.current[task.task_key]) delete chosenPropertyRef.current[task.task_key]
+        return saved
+      })
+    } finally { activeAutosavesRef.current.delete(operationId) }
+  }
+
+  const scheduleFieldSave = (task: MobileTaskItem, item: MobileTaskInlineEditorItem, field: string, value: string) => {
+    cancelScheduledFieldSave(task.task_key, field)
+    if (composingRef.current[task.task_key]?.[field]) return
+    autosaveTimersRef.current[fieldKey(task.task_key, field)] = window.setTimeout(() => {
+      cancelScheduledFieldSave(task.task_key, field)
+      void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? value)
+    }, 700)
   }
 
   const retryAutosave = (taskKey: string, field: string) => {
-    const pending = autosaveRetryRef.current[`${taskKey}:${field}`]
-    if (!pending) return
-    void saveField(pending.task, pending.item, pending.field, pending.value, true)
+    const key = fieldKey(taskKey, field)
+    const conflict = conflictsRef.current[key]
+    const retry = () => {
+      cancelledClaimRef.current.delete(taskKey)
+      // Companion fields of an atomic registration are retried together, but an
+      // independently conflicting field still requires its own explicit review.
+      const resultField = editorItemsRef.current[taskKey]?.detail?.workflow.result_field
+      if (field === resultField || field === '现住址') {
+        for (const f of [resultField, '现住址']) if (f && !conflictsRef.current[fieldKey(taskKey, f)]) failedFieldsRef.current.delete(fieldKey(taskKey, f))
+      }
+      failedFieldsRef.current.delete(key)
+      if (conflict) {
+        const item = editorItemsRef.current[taskKey]
+        const source = item?.detail?.sources[0]
+        if (item?.detail && source) {
+          editorItemsRef.current = { ...editorItemsRef.current, [taskKey]: { ...item, detail: { ...item.detail,
+            sources: [{ ...source, revision: Math.max(source.revision, conflict.revision), values: { ...source.values, [field]: conflict.values[field] ?? source.values[field] } }],
+          } } }
+          setEditorItems(editorItemsRef.current)
+        }
+        delete conflictsRef.current[key]
+      }
+      fieldState(taskKey, field, 'idle')
+      retryRef.current[key]?.()
+    }
+    if (!conflict) { retry(); return }
+    Modal.confirm({
+      title: `核对${field}`,
+      content: <div className="grid gap-3"><div>服务器当前值：{conflict.values[field] || '（空白）'}</div><div>本地草稿：{editorValuesRef.current[taskKey]?.[field] || '（空白）'}</div><div>确认后仅重试此字段；若服务器再次变化，仍会拒绝覆盖。</div></div>,
+      okText: '保留草稿并重试', cancelText: '继续编辑', onOk: retry,
+    })
   }
 
   useEffect(() => () => {
+    ++lifecycleRef.current
     Object.values(autosaveTimersRef.current).forEach(timer => window.clearTimeout(timer))
+    Object.entries(registrationSearchSequenceRef.current).filter(([key]) => key.endsWith(':timer')).forEach(([, timer]) => window.clearTimeout(timer))
     autosaveTimersRef.current = {}
-    autosaveSequenceRef.current = {}
-    activeAutosavesRef.current.clear()
-    queuedAutosavesRef.current = {}
-    taskSaveChainsRef.current = {}
-  }, [])
+  }, [editorContext])
 
+  const compositionStart = (taskKey: string, field: string) => {
+    composingRef.current[taskKey] = { ...composingRef.current[taskKey], [field]: true }
+    cancelScheduledFieldSave(taskKey, field)
+    window.clearTimeout(registrationSearchSequenceRef.current[`${taskKey}:timer`])
+    fieldState(taskKey, field, 'composing')
+  }
+  const compositionEnd = (task: MobileTaskItem, item: MobileTaskInlineEditorItem, field: string, value: string) => {
+    composingRef.current[task.task_key] = { ...composingRef.current[task.task_key], [field]: false }
+    setDraft(task.task_key, field, value)
+    scheduleFieldSave(task, item, field, value)
+    if (field === '现住址') {
+      window.clearTimeout(registrationSearchSequenceRef.current[`${task.task_key}:timer`])
+      registrationSearchSequenceRef.current[`${task.task_key}:timer`] = window.setTimeout(() => void searchRegistrationProperty(task, editorValuesRef.current[task.task_key]?.[field] || ''), 700)
+    }
+  }
   const searchRegistrationProperty = async (task: MobileTaskItem, keyword: string) => {
+    const epoch = lifecycleRef.current
     const normalized = keyword.trim()
     const sequence = (registrationSearchSequenceRef.current[task.task_key] || 0) + 1
     registrationSearchSequenceRef.current[task.task_key] = sequence
@@ -671,7 +627,7 @@ export default function MobileTaskTable({
     }))
     try {
       const result = await searchRegistrationProperties(normalized, task.community)
-      if (registrationSearchSequenceRef.current[task.task_key] !== sequence) return
+      if (epoch !== lifecycleRef.current || registrationSearchSequenceRef.current[task.task_key] !== sequence) return
       setRegistrationProperties(current => ({
         ...current,
         [task.task_key]: {
@@ -679,79 +635,37 @@ export default function MobileTaskTable({
           loading: false,
           options: result.data || [],
           matchStatus: (result.data || []).length === 1 ? 'unique' : (result.data || []).length > 1 ? 'multiple' : 'none',
-          selectedId: (result.data || []).length === 1 ? result.data[0].id : current[task.task_key]?.selectedId,
+          selectedId: current[task.task_key]?.selectedId,
         },
       }))
     } catch {
-      if (registrationSearchSequenceRef.current[task.task_key] !== sequence) return
+      if (epoch !== lifecycleRef.current || registrationSearchSequenceRef.current[task.task_key] !== sequence) return
       setRegistrationProperties(current => ({
         ...current,
           [task.task_key]: { ...(current[task.task_key] || {}), loading: false, options: [], matchStatus: 'error' },
       }))
-      message.error({
-        key: `mobile-task-registration-property-${task.task_key}`,
-        content: '房屋档案搜索失败，请稍后重试',
-      })
+
     }
   }
 
-  const saveRegistrationProperty = async (
-    task: MobileTaskItem,
-    item: MobileTaskInlineEditorItem,
-    property: MobileTaskRegistrationProperty,
-  ) => {
-    const detail = item.detail
-    const source = detail?.sources[0]
-    if (!detail || !source) return
-    const resultField = detail.workflow.result_field
+  const saveRegistrationProperty = async (task: MobileTaskItem, item: MobileTaskInlineEditorItem, property: MobileTaskRegistrationProperty) => {
+    const resultField = item.detail?.workflow.result_field
     const address = registrationPropertyAddress(property)
-    const nextValues = {
-      ...source.values,
-      ...(editorValues[task.task_key] || {}),
-      [resultField]: '待登记',
-      现住址: address,
-    }
-    const changes = buildMobileTaskChanges(
-      source.values,
-      nextValues,
-      [resultField, '现住址'],
-    )
-    if (!address) {
-      message.warning('所选房屋缺少规范地址，请先维护房屋档案')
-      return
-    }
-    setEditorValues(current => ({
-      ...current,
-      [task.task_key]: nextValues,
-    }))
-    setRegistrationProperties(current => ({
-      ...current,
-      [task.task_key]: {
-        ...(current[task.task_key] || { loading: false, options: [property] }),
-        selectedId: property.id,
-      },
-    }))
-    const claim = await confirmClaim(task, source.values)
-    if (claim === null) {
-      setEditorValues(current => ({ ...current, [task.task_key]: { ...source.values } }))
-      setRegistrationProperties(current => ({
-        ...current,
-        [task.task_key]: {
-          ...(current[task.task_key] || { loading: false, options: [] }),
-          selectedId: undefined,
-        },
-      }))
-      return
-    }
-    await saveEditor(task, item, changes, claim, { id: property.id, version: property.version })
+    if (!resultField || !address) return
+    cancelScheduledFieldSave(task.task_key, '现住址')
+    cancelScheduledFieldSave(task.task_key, resultField)
+    chosenPropertyRef.current[task.task_key] = property
+    setDraft(task.task_key, resultField, '待登记')
+    setDraft(task.task_key, '现住址', address)
+    await saveField(task, item, '现住址', address)
   }
 
   const flushAddressNavigation = async () => {
     const deadline = Date.now() + 15000
-    while ((Object.keys(autosaveTimersRef.current).length || activeAutosavesRef.current.size || Object.keys(queuedAutosavesRef.current).length) && Date.now() < deadline) {
+    while ((Object.keys(autosaveTimersRef.current).length || activeAutosavesRef.current.size) && Date.now() < deadline) {
       await new Promise(resolve => window.setTimeout(resolve, 100))
     }
-    if (activeAutosavesRef.current.size || Object.keys(autosaveTimersRef.current).length || Object.keys(queuedAutosavesRef.current).length) {
+    if (activeAutosavesRef.current.size || Object.keys(autosaveTimersRef.current).length) {
       message.warning('仍在保存，请稍后再打开确认地址'); return false
     }
     const hasDraft = Object.entries(editorValuesRef.current).some(([key, values]) => {
@@ -762,7 +676,7 @@ export default function MobileTaskTable({
   }
 
   const onOpen = (task: MobileTaskItem) => {
-    if (activeAutosavesRef.current.size || Object.keys(autosaveTimersRef.current).length || Object.keys(queuedAutosavesRef.current).length) {
+    if (activeAutosavesRef.current.size || Object.keys(autosaveTimersRef.current).length) {
       message.info('正在保存填写内容，请保存结束后再打开详情。')
       return
     }
@@ -787,7 +701,7 @@ export default function MobileTaskTable({
     const changes = source ? buildMobileTaskChanges(source.values, values, fields) : {}
     const dirtyCount = Object.keys(changes).length
     const editorLoading = loadingEditorKeys.has(task.task_key)
-    const editorDisabled = selectionMode || editorLoading || editorErrorKeys.has(task.task_key) || !active || !detail?.writeback_enabled
+    const editorDisabled = selectionMode || !active || !detail?.writeback_enabled
     const resultNeedsSecondaryFollowup = String(values['核查结果'] || task.summary.result || '').includes('无法核实')
     const hasSecondaryFeedback = Boolean(String(values['二次反馈'] || '').trim())
     const registrationResult = String(values[detail?.workflow.result_field || ''] || '').trim()
@@ -914,157 +828,104 @@ export default function MobileTaskTable({
                 && resultNeedsSecondaryFollowup
                 && hasSecondaryFeedback
               return (
-                <label
+                <div
+                  data-editor-field={field}
                   key={field}
                   className={`mobile-task-table-inline-field${/地址|备注|研判/.test(field) ? ' mobile-task-table-inline-field--wide' : ''}${needsResultUpdate ? ' mobile-task-table-inline-field--attention' : ''}`}
                 >
-                  <span>
+                  <span id={`editor-label-${fieldKey(task.task_key, field)}`}>
                     {field === '核查人'
                       ? '任务分配'
                       : mobileTaskUsesRegistrationClosure(task.parser_type) && field === '现住址'
                         ? mobileTaskCurrentAddressLabel(task.parser_type, registrationResult)
                         : field}
                   </span>
-                  {saveStates[task.task_key]?.[field] && (
-                    <small className="ml-2 inline-flex items-center gap-1 text-xs text-[var(--app-text-secondary)]" aria-live="polite">
+                  {(
+                    <small className="mobile-task-field-save-state" aria-live="polite">
                       {saveStates[task.task_key]?.[field] === 'saving' && '保存中'}
                       {saveStates[task.task_key]?.[field] === 'saved' && '已保存'}
                       {saveStates[task.task_key]?.[field] === 'error' && <>
-                        <span>系统繁忙，草稿未丢失</span>
-                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key, field)}>重试保存</Button>
+                        <span>未保存，草稿已保留</span>
+                        <Button aria-label="重试保存" type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key, field)}>重试保存</Button>
                       </>}
                       {saveStates[task.task_key]?.[field] === 'conflict' && <>
-                        <span>数据冲突，草稿已保留</span>
-                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key, field)}>核对后重试</Button>
+                        <span>服务器内容已变化</span>
+                        <Button aria-label="核对后重试" type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key, field)}>核对后重试</Button>
                       </>}
                     </small>
                   )}
                   {registrationAddressField ? (
                     <div className="grid gap-1">
                       <AutoComplete
-                        className="w-full"
-                        size="small"
-                        value={registrationAddressValue(values[field] || '')}
-                        placeholder="输入地址，搜索房屋档案或直接作为待建档地址"
-disabled={selectionMode || editorDisabled}
-                        options={[
-                          ...availableRegistrationProperties.map(property => ({
-                            value: `property:${property.id}`,
-                            label: <span><Tag color="blue">房屋档案</Tag>{registrationPropertyLabel(property)}</span>,
-                          })),
-                          ...((values[field] || '').trim() ? [{
-                            value: `pending:${values[field]}`,
-                            label: <span><Tag>待建档</Tag>使用当前输入作为待建档地址</span>,
-                          }] : []),
-                        ]}
-                        onSearch={keyword => void searchRegistrationProperty(task, keyword)}
-                        onChange={nextValue => {
-                          setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
-                          const address = registrationAddressValue(nextValue)
-                          setEditorValues(current => ({ ...current, [task.task_key]: { ...values, [field]: address } }))
+                        className="w-full" size="small"
+                        value={values[field] || ''}
+                        placeholder="输入地址，可直接保存或主动选择房屋"
+                        disabled={editorDisabled}
+                        options={availableRegistrationProperties.map((property, index) => ({
+                          value: `candidate-${index}`, label: registrationPropertyLabel(property), property,
+                        }))}
+                        onChange={(value, option) => {
+                          if (option && !Array.isArray(option) && option.property) return
+                          delete chosenPropertyRef.current[task.task_key]
+                          setDraft(task.task_key, field, value)
+                          scheduleFieldSave(task, item, field, value)
+                          window.clearTimeout(registrationSearchSequenceRef.current[`${task.task_key}:timer`])
+                          registrationSearchSequenceRef.current[task.task_key] = (registrationSearchSequenceRef.current[task.task_key] || 0) + 1
+                          registrationSearchSequenceRef.current[`${task.task_key}:timer`] = window.setTimeout(() => {
+                            if (!composingRef.current[task.task_key]?.[field]) void searchRegistrationProperty(task, editorValuesRef.current[task.task_key]?.[field] || '')
+                          }, 700)
                         }}
-                        onSelect={selected => {
-                          if (selected.startsWith('property:')) {
-                            const property = availableRegistrationProperties.find(item => item.id === Number(selected.slice(9)))
-                            if (property) void saveRegistrationProperty(task, item, property)
-                          } else {
-                            setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
-                          }
-                        }}
-                        onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, draftValuesRef.current[task.task_key]?.[field] || values[field] || '') }}
-                      />
+                        onSelect={(_, option) => { if (option.property) void saveRegistrationProperty(task, item, option.property) }}
+                      >
+                        <Input aria-labelledby={`editor-label-${fieldKey(task.task_key, field)}`} onCompositionStart={() => compositionStart(task.task_key, field)}
+                          onCompositionEnd={event => compositionEnd(task, item, field, event.currentTarget.value)}
+                          onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? '') }} />
+                      </AutoComplete>
                       <span className="mobile-task-table-inline-hint" aria-live="polite">
-                        {pendingAddressMode[task.task_key] ? '待建立房屋档案，建档后补挂正式房屋。' : registrationPropertyState?.matchStatus === 'matching' ? '正在识别地址…' : registrationPropertyState?.matchStatus === 'unique' ? '根据核查补充信息找到唯一候选，请确认' : registrationPropertyState?.matchStatus === 'multiple' ? '找到多个候选，请选择' : registrationPropertyState?.matchStatus === 'none' ? '未找到正式房屋，可填写待建档地址' : registrationPropertyState?.matchStatus === 'error' ? '地址匹配暂时失败，请重试或填写待建档地址' : '选定房屋后，待登记结果和现住址会一次保存。'}
+                        {registrationPropertyState?.matchStatus === 'matching' ? '正在识别地址…' : registrationPropertyState?.matchStatus === 'unique' ? '根据核查补充信息找到唯一候选，请确认' : registrationPropertyState?.matchStatus === 'multiple' ? '找到多个候选，请选择' : registrationPropertyState?.matchStatus === 'none' ? '未找到正式房屋，可填写待建档地址' : registrationPropertyState?.matchStatus === 'error' ? '地址匹配暂时失败，请重试或填写待建档地址' : '地址会与待登记结果一起保存；房屋候选可按需选择。'}
                       </span>
                     </div>
                   ) : metadata.type === 'select' || field === '核查人' ? (
                     <div className="grid gap-1">
                       <Select
+                        aria-labelledby={`editor-label-${fieldKey(task.task_key, field)}`}
                         allowClear
                         showSearch
                         size="small"
                         placeholder="请选择"
-disabled={selectionMode || editorDisabled}
+                        disabled={editorDisabled}
                         value={values[field] || undefined}
                         options={options}
                         onChange={value => {
                           const nextValue = String(value || '')
-                          setEditorValues(current => ({
-                            ...current,
-                            [task.task_key]: { ...values, [field]: nextValue },
-                          }))
+                          setDraft(task.task_key, field, nextValue)
                           if (registrationResultField) {
-                            registrationResultDraftRef.current[task.task_key] = nextValue
+                            delete chosenPropertyRef.current[task.task_key]
                           }
-                          if (registrationResultField && value !== '待登记') {
-                            setRegistrationProperties(current => ({
-                              ...current,
-                              [task.task_key]: {
-                                ...(current[task.task_key] || { loading: false, options: [] }),
-                                selectedId: undefined,
-                              },
-                            }))
-                          }
-                          if (!(registrationResultField && nextValue === '待登记')) {
-                            void saveField(task, item, field, nextValue)
-                          } else {
-                            setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
-                            const snapshot = editorValues[task.task_key] || source.values
-                            const addressHint = String(snapshot['现住址'] || '').trim()
-                            if (addressHint) {
-                              setRegistrationProperties(current => ({ ...current, [task.task_key]: { ...(current[task.task_key] || { options: [] }), loading: true, matchStatus: 'matching', selectedId: undefined } }))
-                              void searchRegistrationProperty(task, addressHint)
-                            }
-                          }
+                          void saveField(task, item, field, nextValue)
                         }}
                       />
                       {registrationResultField && registrationResult === '待登记' && (
-                        <span className="mobile-task-table-inline-hint">请在左侧“现住址”中搜索并选择房屋。</span>
+                        <span className="mobile-task-table-inline-hint">请填写地址；也可主动选择已有房屋。</span>
                       )}
                     </div>
                   ) : (
                     <Input.TextArea
+                      aria-labelledby={`editor-label-${fieldKey(task.task_key, field)}`}
                       size="small"
                       placeholder={field === '入住方式' ? '自购、房东出租、中介出租等' : '请输入'}
-disabled={selectionMode || editorDisabled}
+                      disabled={editorDisabled}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
-                      onCompositionStart={() => {
-                        composingRef.current[task.task_key] = { ...(composingRef.current[task.task_key] || {}), [field]: true }
-                        cancelScheduledFieldSave(task.task_key, field)
-                      }}
-                      onCompositionEnd={() => {
-                        composingRef.current[task.task_key] = { ...(composingRef.current[task.task_key] || {}), [field]: false }
-                        scheduleFieldSave(task, item, field, draftValuesRef.current[task.task_key]?.[field] || values[field] || '')
-                      }}
+                      onCompositionStart={() => compositionStart(task.task_key, field)}
+                      onCompositionEnd={event => compositionEnd(task, item, field, event.currentTarget.value)}
                       onChange={event => {
-                        const nextValue = event.target.value
-                        draftValuesRef.current[task.task_key] = { ...(draftValuesRef.current[task.task_key] || {}), [field]: nextValue }
-                        setEditorValues(current => {
-                          const next = { ...current, [task.task_key]: { ...(current[task.task_key] || values), [field]: nextValue } }
-                          editorValuesRef.current = next
-                          return next
-                        })
-                        if (mobileTaskUsesRegistrationClosure(task.parser_type)
-                          && registrationResult === '待登记'
-                          && (field === '核查补充信息' || field === '核查反馈')) {
-                          const previousTimer = registrationSearchSequenceRef.current[`${task.task_key}:timer`]
-                          if (previousTimer) window.clearTimeout(previousTimer)
-                          const timer = window.setTimeout(() => {
-                            const hint = nextValue.trim()
-                            if (hint) {
-                              setRegistrationProperties(current => ({ ...current, [task.task_key]: { ...(current[task.task_key] || { options: [] }), loading: true, matchStatus: 'matching', selectedId: undefined } }))
-                              void searchRegistrationProperty(task, hint)
-                            }
-                          }, 700)
-                          registrationSearchSequenceRef.current[`${task.task_key}:timer`] = timer
-                        }
-                        scheduleFieldSave(task, item, field, nextValue)
+                        setDraft(task.task_key, field, event.target.value)
+                        scheduleFieldSave(task, item, field, event.target.value)
                       }}
                       onBlur={() => {
-                        // 离焦是立即保存，但必须取消尚未到期的防抖定时器，避免同一次编辑发送两次请求。
                         cancelScheduledFieldSave(task.task_key, field)
-                        void saveField(task, item, field, registrationAddressValue(draftValuesRef.current[task.task_key]?.[field] || values[field] || ''))
+                        void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? '')
                       }}
                     />
                   )}
@@ -1081,7 +942,7 @@ disabled={selectionMode || editorDisabled}
                       </span>
                     </div>
                   )}
-                </label>
+                </div>
               )
             })}
             {!analysisMode && !fields.includes('研判') && task.summary.analysis && (

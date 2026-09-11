@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test tests/apiEnvironment.test.ts tests/environmentBuild.test.ts tests/tableTotals.test.ts tests/mobileNavigation.test.ts tests/helpCenter.test.ts tests/themeMode.test.ts tests/workLog.test.ts tests/userDisplayName.test.ts tests/authFetch.test.ts tests/desktopBridge.test.ts tests/androidShell.test.ts tests/rememberedUsername.test.ts tests/queryGrid.test.ts tests/queryRealtime.test.ts tests/querySpreadsheet.test.ts tests/mobileTasks.test.ts tests/taskFlowLab.test.ts tests/reteTaskFlowLab.test.ts tests/workflowTickets.test.ts tests/policeDispatchNavigation.test.ts tests/fullchainArchive.test.ts tests/summaryXlsx.test.ts tests/fileDownload.test.ts tests/summaryTableLayout.test.ts tests/selectAlignment.test.ts tests/workProfiles.test.ts tests/roleDashboard.test.ts tests/dashboardCache.test.ts tests/workflowPhotoSheetPreview.test.ts tests/layoutSpacing.test.ts tests/systemTime.test.ts tests/registryImport.test.ts tests/qmfRegistration.test.ts tests/qmfStatusScan.test.ts tests/residenceRegistrationStatus.test.ts tests/releaseNotes.test.ts tests/responsiveLayout.test.ts tests/adminTaskQueue.test.ts tests/opsPerformance.test.ts tests/fullscreenNotice.test.ts tests/venueCode.test.ts tests/auditStream.test.ts tests/addressAnnotation.test.ts",
-    "test:totals": "node --experimental-strip-types --test tests/tableTotals.test.ts"
+    "test:totals": "node --experimental-strip-types --test tests/tableTotals.test.ts",
+    "test:autosave:browser": "node tests/taskAutosave.browser.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.2",
@@ -52,6 +53,7 @@
     "@vitejs/plugin-legacy": "^6.1.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.5.4",
+    "playwright": "^1.63.0",
     "postcss": "^8.5.25",
     "tailwindcss": "^4.3.3",
     "terser": "^5.39.0",
