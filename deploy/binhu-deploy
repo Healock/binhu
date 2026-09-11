@@ -52,7 +52,14 @@ PY
   exit 0
 fi
 
-if [[ $# -eq 4 ]]; then
+release_kind="release"
+hotfix_id=""
+if [[ "${1:-}" == "hotfix" ]]; then
+  release_kind="hotfix"
+  [[ $# -eq 7 ]] || fail "expected hotfix arguments"
+  shift
+  hotfix_id="$6"
+elif [[ $# -eq 4 ]]; then
   readonly release_scope="full"
   readonly expected_bundle_size="$4"
 elif [[ $# -eq 5 ]]; then
@@ -74,6 +81,10 @@ case "$release_scope" in
   backend|frontend|full) ;;
   *) fail "invalid release scope" ;;
 esac
+if [[ "$release_kind" == "hotfix" ]]; then
+  [[ "$release_scope" == "backend" && "$backup_scope" == "online" ]] || fail "invalid hotfix scope"
+  [[ "$hotfix_id" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]] || fail "invalid hotfix id"
+fi
 [[ "$expected_bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] \
   || fail "invalid bundle size"
 (( expected_bundle_size <= BINHU_DEPLOY_MAX_BUNDLE_BYTES )) \

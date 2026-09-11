@@ -1,0 +1,119 @@
+name: Deploy hotfix
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Merged main ref containing the hotfix
+        required: true
+        default: main
+        type: string
+      hotfix_id:
+        description: Unique ID, for example HF-20260911-589
+        required: true
+        type: string
+      artifact_run_id:
+        description: Successful workflow run that produced the prebuilt bundle
+        required: true
+        type: string
+      expected_version:
+        description: Current production VERSION (unchanged by a hotfix)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-hotfix
+  cancel-in-progress: false
+
+jobs:
+  validate-and-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      HOTFIX_ID: ${{ inputs.hotfix_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Verify merged ref and hotfix identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags origin main
+          commit="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$commit" origin/main
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$HOTFIX_ID" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]]
+          [[ "$(tr -d '\r\n' < VERSION)" == "$EXPECTED_VERSION" ]]
+          printf 'RELEASE_COMMIT=%s\n' "$commit" >> "$GITHUB_ENV"
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements-test.txt
+      - name: Run hotfix checks
+        run: |
+          python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
+          python -m unittest discover -s backend/tests
+          python -m unittest discover -s deploy/tests
+          python -m compileall -q backend deploy
+      - name: Build hotfix bundle
+        run: |
+          mkdir -p release-output
+          python deploy/build_release_bundle.py \
+            --repository . --commit "$RELEASE_COMMIT" \
+            --backup-scope online --release-scope backend \
+            --release-kind hotfix --hotfix-id "$HOTFIX_ID" \
+            --output release-output/binhu-hotfix.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: binhu-hotfix-${{ inputs.hotfix_id }}-${{ github.run_id }}
+          path: release-output/binhu-hotfix.tar.gz
+          retention-days: 30
+
+  deploy:
+    needs: validate-and-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    env:
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      HOTFIX_ID: ${{ inputs.hotfix_id }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: binhu-hotfix-${{ inputs.hotfix_id }}-${{ github.run_id }}
+          path: release-output
+      - name: Deploy through fixed hotfix gateway
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.BINHU_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.BINHU_DEPLOY_PORT }}
+          DEPLOY_KEY: ${{ secrets.BINHU_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-ssh/key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          commit="${{ github.sha }}"
+          size="$(wc -c < release-output/binhu-hotfix.tar.gz)"
+          started="$(date +%s)"
+          ssh -F /dev/null -i "$RUNNER_TEMP/binhu-ssh/key" -o BatchMode=yes \
+            -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-ssh/known_hosts" \
+            -p "$DEPLOY_PORT" "binhu-deploy@$DEPLOY_HOST" \
+            "hotfix $EXPECTED_VERSION $commit online backend $size $HOTFIX_ID" \
+            < release-output/binhu-hotfix.tar.gz
+          elapsed=$(( $(date +%s) - started ))
+          printf 'HOTFIX_ID=%s\nELAPSED_SECONDS=%s\n' "$HOTFIX_ID" "$elapsed"
+          (( elapsed <= 180 ))

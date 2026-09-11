@@ -26,6 +26,8 @@ class ReleaseBundleTests(unittest.TestCase):
         )
         (self.repository / "VERSION").write_text("1.2.3\n", encoding="utf-8")
         (self.repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+        (self.repository / "backend").mkdir(exist_ok=True)
+        (self.repository / "backend" / "app.py").write_text("print('ok')\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(self.repository), "add", "."], check=True)
         subprocess.run(
             ["git", "-C", str(self.repository), "commit", "-qm", "test"],
@@ -79,6 +81,23 @@ class ReleaseBundleTests(unittest.TestCase):
         with tarfile.open(extracted / "frontend-dist.tar.gz", "r:gz") as frontend:
             self.assertIn("dist/index.html", frontend.getnames())
 
+    def test_hotfix_bundle_keeps_version_and_records_unique_identity(self):
+        output = self.root / "hotfix.tar.gz"
+        manifest = build_bundle(
+            self.repository, None, self.commit, "online", "backend", output,
+            release_kind="hotfix", hotfix_id="HF-20260911-589",
+        )
+        self.assertEqual(manifest["version"], "1.2.3")
+        self.assertEqual(manifest["release_kind"], "hotfix")
+        self.assertEqual(manifest["hotfix_id"], "HF-20260911-589")
+        self.assertTrue(manifest["ready_for_hotfix"])
+
+    def test_hotfix_rejects_non_backend_or_wrong_backup_scope(self):
+        with self.assertRaises(ValueError):
+            build_bundle(self.repository, None, self.commit, "none", "backend", self.root / "x.tar.gz", release_kind="hotfix", hotfix_id="HF-20260911-589")
+        with self.assertRaises(ValueError):
+            build_bundle(self.repository, None, self.commit, "online", "full", self.root / "x.tar.gz", release_kind="hotfix", hotfix_id="HF-20260911-589")
+
     def test_rejects_unknown_backup_scope(self):
         with self.assertRaisesRegex(ValueError, "unsupported backup scope"):
             build_bundle(
@@ -91,7 +110,7 @@ class ReleaseBundleTests(unittest.TestCase):
             )
 
     def test_backend_bundle_omits_frontend_and_unrelated_source(self):
-        (self.repository / "backend").mkdir()
+        (self.repository / "backend").mkdir(exist_ok=True)
         (self.repository / "backend" / "main.py").write_text("print('ok')\n", encoding="utf-8")
         (self.repository / "frontend").mkdir()
         (self.repository / "frontend" / "source.ts").write_text("export {}\n", encoding="utf-8")
@@ -179,3 +198,4 @@ class ReleaseBundleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

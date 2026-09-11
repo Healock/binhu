@@ -19,7 +19,8 @@ VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BACKUP_SCOPES = {"none", "online", "daily", "all"}
 RELEASE_SCOPES = {"backend", "frontend", "full"}
-BUNDLE_SCHEMA = 2
+BUNDLE_SCHEMA = 3
+HOTFIX_ID_PATTERN = re.compile(r"^HF-[0-9]{8}-[0-9]{1,6}$")
 
 
 def _run_git(repository: Path, *args: str) -> bytes:
@@ -60,6 +61,8 @@ def build_bundle(
     backup_scope: str,
     release_scope: str,
     output: Path,
+    release_kind: str = "release",
+    hotfix_id: str = "",
 ) -> dict:
     repository = repository.resolve()
     commit = _run_git(repository, "rev-parse", f"{commit}^{{commit}}").decode().strip()
@@ -69,6 +72,15 @@ def build_bundle(
         raise ValueError(f"unsupported backup scope: {backup_scope}")
     if release_scope not in RELEASE_SCOPES:
         raise ValueError(f"unsupported release scope: {release_scope}")
+    if release_kind not in {"release", "hotfix"}:
+        raise ValueError("unsupported release kind")
+    if release_kind == "hotfix":
+        if release_scope != "backend" or backup_scope != "online":
+            raise ValueError("hotfix requires backend release and online backup")
+        if not HOTFIX_ID_PATTERN.fullmatch(hotfix_id):
+            raise ValueError("invalid hotfix id")
+    elif hotfix_id:
+        raise ValueError("hotfix id only valid for hotfix release")
 
     version = _run_git(repository, "show", f"{commit}:VERSION").decode().strip()
     if not VERSION_PATTERN.fullmatch(version):
@@ -119,6 +131,9 @@ def build_bundle(
             "commit": commit,
             "backup_scope": backup_scope,
             "release_scope": release_scope,
+            "release_kind": release_kind,
+            "hotfix_id": hotfix_id,
+            "ready_for_hotfix": release_kind == "hotfix",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "files": files,
         }
@@ -150,6 +165,8 @@ def main() -> None:
     parser.add_argument("--backup-scope", choices=sorted(BACKUP_SCOPES), required=True)
     parser.add_argument("--release-scope", choices=sorted(RELEASE_SCOPES), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--release-kind", choices=("release", "hotfix"), default="release")
+    parser.add_argument("--hotfix-id", default="")
     args = parser.parse_args()
     manifest = build_bundle(
         args.repository,
@@ -158,6 +175,8 @@ def main() -> None:
         args.backup_scope,
         args.release_scope,
         args.output,
+        args.release_kind,
+        args.hotfix_id,
     )
     print(json.dumps({
         "version": manifest["version"],
