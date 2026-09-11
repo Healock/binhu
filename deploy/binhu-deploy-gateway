@@ -8,6 +8,17 @@ if [[ "${command_parts[0]:-}" == "status" && "${#command_parts[@]}" -eq 1 ]]; th
   exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy status
 fi
 
+if [[ "${command_parts[0]:-}" == "hotfix" && "${#command_parts[@]}" -eq 7 ]]; then
+  readonly version="${command_parts[1]}"; readonly commit="${command_parts[2]}"
+  readonly backup_scope="${command_parts[3]}"; readonly release_scope="${command_parts[4]}"
+  readonly bundle_size="${command_parts[5]}"; readonly hotfix_id="${command_parts[6]}"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version." >&2; exit 64; }
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid commit." >&2; exit 64; }
+  [[ "$backup_scope" == online && "$release_scope" == backend ]] || { echo "Invalid hotfix scope." >&2; exit 64; }
+  [[ "$hotfix_id" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]] || { echo "Invalid hotfix id." >&2; exit 64; }
+  [[ "$bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] && (( bundle_size <= 134217728 )) || { echo "Invalid bundle size." >&2; exit 64; }
+  exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy hotfix "$version" "$commit" "$backup_scope" "$release_scope" "$bundle_size" "$hotfix_id"
+fi
 if [[ "${command_parts[0]:-}" != "deploy" || "${#command_parts[@]}" -ne 6 ]]; then
   echo "Only the fixed Binhu deploy command is allowed." >&2
   exit 64

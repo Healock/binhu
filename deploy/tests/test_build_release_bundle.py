@@ -79,6 +79,23 @@ class ReleaseBundleTests(unittest.TestCase):
         with tarfile.open(extracted / "frontend-dist.tar.gz", "r:gz") as frontend:
             self.assertIn("dist/index.html", frontend.getnames())
 
+    def test_hotfix_bundle_keeps_version_and_records_unique_identity(self):
+        output = self.root / "hotfix.tar.gz"
+        manifest = build_bundle(
+            self.repository, None, self.commit, "online", "backend", output,
+            release_kind="hotfix", hotfix_id="HF-20260911-589",
+        )
+        self.assertEqual(manifest["version"], "1.2.3")
+        self.assertEqual(manifest["release_kind"], "hotfix")
+        self.assertEqual(manifest["hotfix_id"], "HF-20260911-589")
+        self.assertTrue(manifest["ready_for_hotfix"])
+
+    def test_hotfix_rejects_non_backend_or_wrong_backup_scope(self):
+        with self.assertRaises(ValueError):
+            build_bundle(self.repository, None, self.commit, "none", "backend", self.root / "x.tar.gz", release_kind="hotfix", hotfix_id="HF-20260911-589")
+        with self.assertRaises(ValueError):
+            build_bundle(self.repository, None, self.commit, "online", "full", self.root / "x.tar.gz", release_kind="hotfix", hotfix_id="HF-20260911-589")
+
     def test_rejects_unknown_backup_scope(self):
         with self.assertRaisesRegex(ValueError, "unsupported backup scope"):
             build_bundle(
