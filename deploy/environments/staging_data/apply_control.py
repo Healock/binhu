@@ -64,8 +64,19 @@ async def main():
         else:
             result=await import_rows(conn,settings,snapshot)
             async with conn.cursor() as cur:
-                fields='id,username,display_name,password_hash,role,password_is_temporary'
-                await cur.execute('INSERT INTO `'+candidate['PlatformData']+'`._users ('+fields+') SELECT '+fields+' FROM `'+current['PlatformData']+'`._users WHERE username=%s',('observer@staging',))
+                # The sanitized snapshot deliberately does not contain the
+                # environment observer (and must never copy a production
+                # password hash).  Create the staging bootstrap account in
+                # the candidate database from the environment-only secret.
+                import bcrypt
+                username='observer@staging'
+                password=os.environ.get('BOOTSTRAP_ADMIN_PASSWORD','')
+                if not password:
+                    raise SnapshotError('observer_initialization_failed')
+                password_hash=bcrypt.hashpw(password.encode('utf-8'),bcrypt.gensalt()).decode('ascii')
+                fields='username,display_name,password_hash,role,password_is_temporary,permission_group_id,group_assignment_mode'
+                await cur.execute('INSERT INTO `'+candidate['PlatformData']+'`._users ('+fields+') VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                    (username,'Staging 观察员',password_hash,'admin',1,None,'inherited'))
                 if cur.rowcount!=1:raise SnapshotError('observer_initialization_failed')
                 await conn.commit()
             result['observer_initialized']=True
