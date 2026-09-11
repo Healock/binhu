@@ -47,6 +47,10 @@ def local_row_hash(values: dict[str, Any]) -> str:
 async def ensure_local_source_schema(cur) -> None:
     """幂等增加本地来源元数据和迁移问题表。"""
     for column, definition in (
+        # Older production installs created the source cache before the local
+        # locator was introduced.  Keep the compatibility locator explicit so
+        # local-mode queries do not fail on ``source.spreadsheet_id``.
+        ("spreadsheet_id", "INT NOT NULL DEFAULT 0"),
         ("source_kind", "VARCHAR(40) NOT NULL DEFAULT 'local_table'"),
         ("source_ref", "VARCHAR(190) NOT NULL DEFAULT ''"),
         ("archived_at", "DATETIME DEFAULT NULL"),
