@@ -58,6 +58,8 @@ if [[ "${1:-}" == "hotfix" ]]; then
   release_kind="hotfix"
   [[ $# -eq 7 ]] || fail "expected hotfix arguments"
   shift
+  readonly release_scope="backend"
+  readonly expected_bundle_size="$5"
   hotfix_id="$6"
 elif [[ $# -eq 4 ]]; then
   readonly release_scope="full"
