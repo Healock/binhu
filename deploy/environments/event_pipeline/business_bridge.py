@@ -73,7 +73,11 @@ async def run(config: Mapping[str, str], pool) -> None:
     url = config.get("BACKEND_REDIS_URL", "")
     if not url or "production" in url.lower() or "staging" in url.lower():
         raise ValueError("development backend Redis is required")
-    client = Redis.from_url(url, decode_responses=True, socket_timeout=5,
+    # XREAD is deliberately held open for up to five seconds.  A read timeout
+    # equal to the block interval turns an idle stream into a worker crash,
+    # which can lose the next event while the container is restarting.  Keep
+    # connection establishment bounded, but let the blocking read complete.
+    client = Redis.from_url(url, decode_responses=True, socket_timeout=None,
                             socket_connect_timeout=5)
     stream = config.get("BACKEND_REDIS_STREAM_KEY", "binhu:events")
     cursor = config.get("BACKEND_REDIS_START_ID", "$")
