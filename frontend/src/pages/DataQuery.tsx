@@ -844,6 +844,12 @@ export default function DataQuery() {
               onBlocked={messageApi.warning}
               onSavingChange={setSheetSaving}
               onEditingChange={setSheetEditing}
+              onPresence={presence => {
+                queryRealtimeRef.current?.sendPresence({
+                  ...presence,
+                  source: 'online',
+                })
+              }}
             />
           ) : (
             <div className="p-10"><Empty description={error || '没有找到符合条件的数据'} /></div>

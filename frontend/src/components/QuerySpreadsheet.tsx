@@ -90,6 +90,14 @@ export interface QuerySpreadsheetProps {
   onBlocked: (message: string) => void
   onSavingChange?: (saving: boolean) => void
   onEditingChange?: (editing: boolean) => void
+  onPresence?: (presence: {
+    rowKey: string
+    startRow: number
+    startColumn: number
+    endRow: number
+    endColumn: number
+    mode: 'viewing' | 'editing'
+  }) => void
 }
 
 function rangeSize(range: IRange): { rows: number; columns: number } {
@@ -154,6 +162,7 @@ export function QuerySpreadsheet({
   onBlocked,
   onSavingChange,
   onEditingChange,
+  onPresence,
 }: QuerySpreadsheetProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const themeMode = useAppThemeMode()
@@ -170,6 +179,7 @@ export function QuerySpreadsheet({
     onBlocked,
     onSavingChange,
     onEditingChange,
+    onPresence,
   })
 
   callbacksRef.current = {
@@ -182,6 +192,7 @@ export function QuerySpreadsheet({
     onBlocked,
     onSavingChange,
     onEditingChange,
+    onPresence,
   }
   themeModeRef.current = themeMode
   filterCriteriaRef.current = filterCriteria
@@ -766,6 +777,17 @@ export function QuerySpreadsheet({
         const selection = params.selections[0]
         selectedWorksheetRow = selection?.startRow ?? -1
         reportSelection()
+        const selected = selectedQuerySheetRow(sheetRows, selectedWorksheetRow)
+        if (selected && selection) {
+          callbacksRef.current.onPresence?.({
+            rowKey: String(selected.__row_key || ''),
+            startRow: selection.startRow,
+            startColumn: selection.startColumn,
+            endRow: selection.endRow,
+            endColumn: selection.endColumn,
+            mode: 'viewing',
+          })
+        }
       }),
       univerAPI.addEvent(univerAPI.Event.SheetBeforeRangeFilter, params => {
         const colors = params.criteria?.colorFilters
