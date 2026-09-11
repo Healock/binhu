@@ -127,7 +127,8 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/binhu-ssh/key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
-          commit="${{ github.sha }}"
+          commit="$(tar -xOf release-output/binhu-hotfix.tar.gz manifest.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           size="$(wc -c < release-output/binhu-hotfix.tar.gz)"
           started="$(date +%s)"
           ssh -F /dev/null -i "$RUNNER_TEMP/binhu-ssh/key" -o BatchMode=yes \
