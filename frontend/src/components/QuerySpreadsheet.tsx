@@ -26,11 +26,14 @@ import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter'
 import filterZhCN from '@univerjs/preset-sheets-filter/locales/zh-CN'
 import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort'
 import sortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
+import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace'
+import findReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
 
 import '@univerjs/preset-sheets-core/lib/index.css'
 import '@univerjs/preset-sheets-data-validation/lib/index.css'
 import '@univerjs/preset-sheets-filter/lib/index.css'
 import '@univerjs/preset-sheets-sort/lib/index.css'
+import '@univerjs/preset-sheets-find-replace/lib/index.css'
 
 import type { QueryColumnMeta, QueryDataRow, QueryDependentOptions } from '../api/client'
 import { useAppThemeMode } from './AppThemeProvider'
@@ -109,17 +112,18 @@ function createQueryUniver(
   validationPreset: ReturnType<typeof UniverSheetsDataValidationPreset>,
   filterPreset: ReturnType<typeof UniverSheetsFilterPreset>,
   sortPreset: ReturnType<typeof UniverSheetsSortPreset>,
+  findReplacePreset: ReturnType<typeof UniverSheetsFindReplacePreset>,
 ) {
   const univer = new Univer({
     locale: LocaleType.ZH_CN,
     locales: {
-      [LocaleType.ZH_CN]: merge({}, sheetsZhCN, validationZhCN, filterZhCN, sortZhCN),
+      [LocaleType.ZH_CN]: merge({}, sheetsZhCN, validationZhCN, filterZhCN, sortZhCN, findReplaceZhCN),
     },
     theme: defaultTheme,
     logLevel: LogLevel.WARN,
   })
   const plugins = new Map<string, { plugin: any; options?: any }>()
-  for (const preset of [corePreset, validationPreset, filterPreset, sortPreset]) {
+  for (const preset of [corePreset, validationPreset, filterPreset, sortPreset, findReplacePreset]) {
     for (const entry of preset.plugins) {
       const [plugin, options] = Array.isArray(entry) ? entry : [entry, undefined]
       plugins.set(plugin.pluginName, { plugin, options })
@@ -295,11 +299,14 @@ export function QuerySpreadsheet({
         sheets: QUERY_SHEET_FEATURE_CONFIG,
       }),
       UniverSheetsDataValidationPreset({
-        showEditOnDropdown: false,
+        // Let a click anywhere in a validated cell open Univer's native list.
+        // Users should not have to target the tiny arrow hit area.
+        showEditOnDropdown: true,
         showSearchOnDropdown: true,
       }),
       UniverSheetsFilterPreset(),
       UniverSheetsSortPreset(),
+      UniverSheetsFindReplacePreset(),
     )
 
     const workbook = univerAPI.createWorkbook({

@@ -6437,6 +6437,13 @@ html.native-mobile-shell .app-sidebar__item-label {
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+/* Keep the native Univer selection visible against the dense query grid. */
+.query-spreadsheet .univer-selection-highlight,
+.query-spreadsheet .univer-selection-border,
+.query-spreadsheet [class*="selection-border"] {
+  border-width: 2px !important;
+}
+
 .query-spreadsheet-card:fullscreen,
 .query-spreadsheet-card--fullscreen {
   display: flex !important;
@@ -6454,6 +6461,11 @@ html.native-mobile-shell .app-sidebar__item-label {
   position: fixed;
   z-index: 100;
   inset: 0;
+}
+
+.query-spreadsheet-card--fullscreen .query-spreadsheet-toolbar {
+  flex: 0 0 auto;
+  min-height: 52px;
 }
 
 html.query-sheet-fullscreen-active,
