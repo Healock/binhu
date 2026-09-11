@@ -64,7 +64,7 @@ def column_sql(columns):
     return ','.join('`'+name+'`' for name in columns)
 
 
-async def import_rows(conn, settings, snapshot):
+async def import_rows(conn, settings, snapshot, *, before_commit=None):
     snapshot_id=snapshot['report']['snapshot_id']
     _,candidate=target_settings(settings,snapshot_id)
     tables=materialize(snapshot,settings.registry_hmac_key)
@@ -97,6 +97,8 @@ async def import_rows(conn, settings, snapshot):
                 await cur.execute('SELECT COUNT(*) FROM '+qualified(candidate,logical))
                 if (await cur.fetchone())[0]!=len(rows):
                     raise SnapshotError('candidate_import_count_mismatch')
+            if before_commit is not None:
+                await before_commit(cur, candidate)
             await conn.commit()
         return {'snapshot_id':snapshot_id,'import_counts':{name:len(rows) for name,rows in tables.items()},
                 'ready_for_application_switch':False,'pending_gates':['target_verification','projection_rebuild','observer_initialization']}

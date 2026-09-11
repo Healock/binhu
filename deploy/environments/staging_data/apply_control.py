@@ -68,12 +68,11 @@ async def main():
         if action=='measure': result=await measure(conn,settings,snapshot_id)
         elif action=='create': result=await create(conn,settings,snapshot_id)
         else:
-            result=await import_rows(conn,settings,snapshot)
-            async with conn.cursor() as cur:
+            async def initialize_observer(cur, candidate):
                 fields='id,username,display_name,password_hash,role,password_is_temporary'
                 await cur.execute('INSERT INTO `'+candidate['PlatformData']+'`._users ('+fields+') SELECT '+fields+' FROM `'+current['PlatformData']+'`._users WHERE username=%s',('observer@staging',))
                 if cur.rowcount!=1:raise SnapshotError('observer_initialization_failed')
-                await conn.commit()
+            result=await import_rows(conn,settings,snapshot,before_commit=initialize_observer)
             result['observer_initialized']=True
             result['pending_gates']=['target_verification','projection_rebuild']
         print(json.dumps({'ok':True,'result':result}))
