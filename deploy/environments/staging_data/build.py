@@ -166,7 +166,10 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 for row in selected:
                     values=json.loads(row["values_json"]) if isinstance(row["values_json"],str) else row["values_json"]
                     raw_values[(parser_type,row['row_key'])]=values
-                    source_communities[(parser_type,row['row_key'])]=communities[normalized(values[parser.COMMUNITY_COLUMN])]
+                    try:
+                        source_communities[(parser_type,row['row_key'])]=communities[normalized(values[parser.COMMUNITY_COLUMN])]
+                    except KeyError:
+                        raise SnapshotError('task_community_unresolved') from None
                     safe=transform_values(parser,TASK_WORKFLOWS[parser_type],values,communities,codec)
                     entry=source_record(parser,{key:row[key] for key in ("id","physical_row","revision","row_key")},safe,codec)
                     new_key=entry["source"]["row_key"]

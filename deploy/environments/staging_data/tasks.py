@@ -106,12 +106,15 @@ def source_record(parser, source, safe_values, codec: Codec):
     task_id = codec.reference(parser.table_name, source["physical_row"], nullable=False)
     source_id = codec.reference("source", source["id"], nullable=False)
     reference = f"{parser.table_name}:{task_id}"
+    source_kind = source.get("source_kind", "local_table")
+    if source_kind not in {"local_table", "local_dispatch", "one_time_continuation_import"}:
+        raise SnapshotError("unsupported_source_kind")
     return {"task": {"id": task_id, "_row_key": row_key, **safe_values},
             "source": {"id": source_id, "spreadsheet_id": 0, "parser_type": parser.parser_type,
                 "sheet_id": "local:" + parser.parser_type, "physical_row": task_id,
                 "row_key": row_key, "row_hash": row_hash, "values_json": values_json,
                 "cell_meta_json": "{}", "revision": source["revision"],
-                "source_kind": "local_table", "source_ref": reference, "archived_at": None},
+                "source_kind": source_kind, "source_ref": reference, "archived_at": None},
             "local_record": {"parser_type": parser.parser_type, "local_task_id": task_id,
-                "business_key": row_key, "source_kind": "local_table", "source_ref": reference,
+                "business_key": row_key, "source_kind": source_kind, "source_ref": reference,
                 "values_json": values_json, "content_hash": row_hash, "revision": source["revision"], "status": "active"}}

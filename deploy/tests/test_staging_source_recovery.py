@@ -23,6 +23,12 @@ class RecoveryTests(unittest.TestCase):
         # A second measurement of an already-present source adds nothing.
         self.assertEqual(reconstruct(args[0], args[1], output, args[3], args[4]), [])
 
+    def test_allowed_source_kind_is_retained_in_recovered_row(self):
+        args = list(self.fixture())
+        args[3][0]['source_kind'] = 'local_dispatch'
+        output = reconstruct(*args)
+        self.assertEqual(output[0]['source_kind'], 'local_dispatch')
+
     def test_reject_other_parser_duplicate_business_and_scope_expansion(self):
         args = list(self.fixture())
         args[0] = get_parser('全链条')
