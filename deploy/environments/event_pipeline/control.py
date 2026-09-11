@@ -37,7 +37,10 @@ def measure():
             if mount.get("Name", "").startswith(PROJECT + "_") and project != PROJECT:
                 raise ValueError("Dev volume referenced by another project")
         if project == PROJECT:
-            if set(item["NetworkSettings"]["Networks"]) != {NETWORK}:
+            expected_networks = {NETWORK}
+            if item["Config"].get("Labels", {}).get("com.docker.compose.service") == "business-bridge":
+                expected_networks.add("binhu-development_internal")
+            if set(item["NetworkSettings"]["Networks"]) != expected_networks:
                 raise ValueError("pipeline container has unexpected network")
     memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     available = int(memory["MemAvailable"].split()[0])

@@ -16,6 +16,7 @@ from .flink_sql import render
 PROJECT = "binhu-development-pipeline"
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
+BACKEND_NETWORK = "binhu-development_internal"
 
 
 def compose(images):
@@ -47,8 +48,17 @@ def compose(images):
             "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
             "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"},
                            "dev-derived-redis": {"condition": "service_started"}}}
+    services["business-bridge"] = {**common, "image": images["worker"],
+        "networks": ["internal", "backend"], "env_file": ["runtime.env"],
+        "mem_limit": "160m", "cpus": .25, "read_only": True,
+        "tmpfs": ["/tmp:size=16m"],
+        "command": ["python", "-m", "event_pipeline.runtime", "business-bridge"],
+        "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"},
+                       "dev-derived-redis": {"condition": "service_started"}}}
     return {"name": PROJECT, "services": services,
-            "networks": {"internal": {"external": True, "name": NETWORK}},
+            "networks": {"internal": {"external": True, "name": NETWORK},
+                         "backend": {"external": True, "name": BACKEND_NETWORK}},
             "volumes": {name: {"labels": {"binhu.environment": "development"}} for name in ("mysql", "redis")}}
 
 
@@ -89,7 +99,10 @@ def prepare(run_id, images):
            "MYSQL_HOST": "dev-derived-mysql", "MYSQL_DATABASE": "Dev_EventPipeline",
            "MYSQL_USER": "dev_pipeline", "MYSQL_PASSWORD": db_password,
            "REDIS_HOST": "dev-derived-redis", "REDIS_PASSWORD": redis_password,
-           "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092"}
+           "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
+           "BACKEND_REDIS_URL": os.environ.get("DEV_BACKEND_REDIS_URL", ""),
+           "BACKEND_REDIS_STREAM_KEY": "binhu:events",
+           "BACKEND_REDIS_START_ID": "$"}
     configuration(env)
     preflight()
     for image in images.values():
