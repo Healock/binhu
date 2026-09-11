@@ -52,7 +52,9 @@ def materialize(snapshot, key):
         raise SnapshotError('extra_annotation_digest_state')
     # These are history/role fixtures. No production password is copied and
     # no generated plaintext credential is retained or exposed.
-    inaccessible_hash=bcrypt.hashpw(secrets.token_bytes(32),bcrypt.gensalt()).decode()
+    # bcrypt rejects NUL bytes; use URL-safe entropy for the intentionally
+    # inaccessible placeholder password instead of raw random bytes.
+    inaccessible_hash=bcrypt.hashpw(secrets.token_urlsafe(32).encode(),bcrypt.gensalt()).decode()
     for row in tables['PlatformData._users']:
         row['password_hash']=inaccessible_hash
     return tables
