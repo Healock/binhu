@@ -131,7 +131,6 @@ export default function MobileTaskTable({
   const [pendingAddressMode, setPendingAddressMode] = useState<Record<string, boolean>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
   const [editorErrorKeys, setEditorErrorKeys] = useState<Set<string>>(new Set())
-  const [savingRowKey, setSavingRowKey] = useState('')
   const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
   const loadingEditorKeysRef = useRef<Set<string>>(new Set())
   const editorElementsRef = useRef<Map<string, HTMLElement>>(new Map())
@@ -141,7 +140,8 @@ export default function MobileTaskTable({
   const claimPromptKeysRef = useRef<Set<string>>(new Set())
   const registrationSearchSequenceRef = useRef<Record<string, number>>({})
   const registrationResultDraftRef = useRef<Record<string, string>>({})
-  const composingRef = useRef<Record<string, boolean>>({})
+  const composingRef = useRef<Record<string, Record<string, boolean>>>({})
+  const draftValuesRef = useRef<Record<string, Record<string, string>>>({})
   const autosaveTimersRef = useRef<Record<string, number>>({})
   const autosaveSequenceRef = useRef<Record<string, number>>({})
   const autosaveRetryRef = useRef<Record<string, {
@@ -158,7 +158,8 @@ export default function MobileTaskTable({
     field: string
     value: string
   }>>({})
-  const [saveStates, setSaveStates] = useState<Record<string, 'saving' | 'saved' | 'error' | 'conflict'>>({})
+  type FieldSaveState = 'saving' | 'saved' | 'error' | 'conflict'
+  const [saveStates, setSaveStates] = useState<Record<string, Record<string, FieldSaveState>>>({})
   const taskByKey = useMemo(
     () => new Map(rows.map(task => [task.task_key, task])),
     [rows],
@@ -215,9 +216,7 @@ export default function MobileTaskTable({
         const dirty = oldSource && draft && Object.entries(draft).some(([field, value]) => String(oldSource.values[field] || '') !== String(value || ''))
         if (dirty) {
           // Do not silently rebase a pending write onto a newer server revision.
-          if (source?.revision !== oldSource.revision || !item.available) {
-            setSaveStates(current => ({ ...current, [taskKey]: 'conflict' }))
-          }
+          // Keep the local draft; the field-level save path surfaces conflicts.
           if (item.available && item.detail && oldSource && source && source.id === oldSource.id) {
             items[taskKey] = { ...item, detail: { ...item.detail, sources: [{ ...oldSource, editable_fields: source.editable_fields }] } }
           }
@@ -228,7 +227,14 @@ export default function MobileTaskTable({
         editorItemsRef.current = next
         return next
       })
-      setEditorValues(current => ({ ...current, ...values }))
+      setEditorValues(current => {
+        const next = { ...current, ...values }
+        editorValuesRef.current = next
+        Object.entries(values).forEach(([taskKey, taskValues]) => {
+          draftValuesRef.current[taskKey] = { ...(draftValuesRef.current[taskKey] || {}), ...taskValues }
+        })
+        return next
+      })
       setEditorErrorKeys(current => new Set([...current].filter(key => !keys.includes(key))))
     } catch (reason: any) {
       if (activeRef.current && epoch === requestEpochRef.current && requestContext === editorContextRef.current) {
@@ -352,14 +358,17 @@ export default function MobileTaskTable({
     const detail = item.detail
     const source = detail?.sources[0]
     if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return false
-    setSavingRowKey(task.task_key)
     const autosaveKey = options?.autosaveKey
+    const autosaveField = autosaveKey?.split(':').slice(1).join(':') || ''
     const requestSequence = autosaveKey
       ? (autosaveSequenceRef.current[autosaveKey] || 0) + 1
       : 0
     if (autosaveKey) {
       autosaveSequenceRef.current[autosaveKey] = requestSequence
-      setSaveStates(current => ({ ...current, [task.task_key]: 'saving' }))
+      if (autosaveField) setSaveStates(current => ({
+        ...current,
+        [task.task_key]: { ...(current[task.task_key] || {}), [autosaveField]: 'saving' },
+      }))
     }
     try {
       const updater = claim
@@ -407,7 +416,13 @@ export default function MobileTaskTable({
         editorItemsRef.current = next
         return next
       })
-      setEditorValues(current => ({ ...current, [task.task_key]: savedValues }))
+      const hasNewerDraft = autosaveKey && draftValuesRef.current[task.task_key]?.[autosaveField] !== undefined
+        && draftValuesRef.current[task.task_key]?.[autosaveField] !== changes[autosaveField]
+      if (!hasNewerDraft) {
+        setEditorValues(current => ({ ...current, [task.task_key]: savedValues }))
+        editorValuesRef.current = { ...editorValuesRef.current, [task.task_key]: savedValues }
+        draftValuesRef.current[task.task_key] = { ...savedValues }
+      }
       if (registrationProperty) {
         setRegistrationProperties(current => ({
           ...current,
@@ -417,7 +432,10 @@ export default function MobileTaskTable({
           },
         }))
       }
-      if (autosaveKey) setSaveStates(current => ({ ...current, [task.task_key]: 'saved' }))
+      if (autosaveKey && autosaveField) setSaveStates(current => ({
+        ...current,
+        [task.task_key]: { ...(current[task.task_key] || {}), [autosaveField]: 'saved' },
+      }))
       if (!options?.silent) message.success(result.message)
       // 自动保存已经把当前行的编辑器状态合并到本地，不要再次刷新所有已加载页面。
       // 非静默保存（例如显式领取、房屋关联）仍由父列表执行一次必要的同步。
@@ -437,7 +455,10 @@ export default function MobileTaskTable({
         }
         setSaveStates(current => ({
           ...current,
-          [task.task_key]: Number(reason?.response?.status) === 409 ? 'conflict' : 'error',
+          [task.task_key]: {
+            ...(current[task.task_key] || {}),
+            [retryField]: Number(reason?.response?.status) === 409 ? 'conflict' : 'error',
+          },
         }))
       }
       const status = Number(reason?.response?.status)
@@ -469,7 +490,7 @@ export default function MobileTaskTable({
           return next
         })
       }
-      message.error(
+      if (!autosaveKey) message.error(
         code === 'task_save_timeout'
           ? '保存等待数据库锁超时，草稿已保留，请稍后重试保存'
           : code === 'task_save_busy'
@@ -500,8 +521,6 @@ export default function MobileTaskTable({
         await requestEditors([task.task_key], true)
       }
       return false
-    } finally {
-      setSavingRowKey('')
     }
   }
 
@@ -601,13 +620,13 @@ export default function MobileTaskTable({
     value: string,
   ) => {
     const key = `${task.task_key}:${field}`
-    if (composingRef.current[task.task_key]) return
+    if (composingRef.current[task.task_key]?.[field]) return
     const previous = autosaveTimersRef.current[key]
     if (previous) window.clearTimeout(previous)
     autosaveTimersRef.current[key] = window.setTimeout(() => {
       delete autosaveTimersRef.current[key]
       const currentItem = editorItemsRef.current[task.task_key] || item
-      void saveField(task, currentItem, field, value, true)
+      void saveField(task, currentItem, field, draftValuesRef.current[task.task_key]?.[field] ?? value, true)
     }, 1500)
   }
 
@@ -620,9 +639,8 @@ export default function MobileTaskTable({
     }
   }
 
-  const retryAutosave = (taskKey: string) => {
-    const pending = Object.entries(autosaveRetryRef.current)
-      .find(([, item]) => item.task.task_key === taskKey)?.[1]
+  const retryAutosave = (taskKey: string, field: string) => {
+    const pending = autosaveRetryRef.current[`${taskKey}:${field}`]
     if (!pending) return
     void saveField(pending.task, pending.item, pending.field, pending.value, true)
   }
@@ -769,7 +787,7 @@ export default function MobileTaskTable({
     const changes = source ? buildMobileTaskChanges(source.values, values, fields) : {}
     const dirtyCount = Object.keys(changes).length
     const editorLoading = loadingEditorKeys.has(task.task_key)
-    const editorDisabled = selectionMode || savingRowKey === task.task_key || editorLoading || editorErrorKeys.has(task.task_key) || !active || !detail?.writeback_enabled
+    const editorDisabled = selectionMode || editorLoading || editorErrorKeys.has(task.task_key) || !active || !detail?.writeback_enabled
     const resultNeedsSecondaryFollowup = String(values['核查结果'] || task.summary.result || '').includes('无法核实')
     const hasSecondaryFeedback = Boolean(String(values['二次反馈'] || '').trim())
     const registrationResult = String(values[detail?.workflow.result_field || ''] || '').trim()
@@ -907,17 +925,17 @@ export default function MobileTaskTable({
                         ? mobileTaskCurrentAddressLabel(task.parser_type, registrationResult)
                         : field}
                   </span>
-                  {saveStates[task.task_key] && (
+                  {saveStates[task.task_key]?.[field] && (
                     <small className="ml-2 inline-flex items-center gap-1 text-xs text-[var(--app-text-secondary)]" aria-live="polite">
-                      {saveStates[task.task_key] === 'saving' && '保存中'}
-                      {saveStates[task.task_key] === 'saved' && '已保存'}
-                      {saveStates[task.task_key] === 'error' && <>
+                      {saveStates[task.task_key]?.[field] === 'saving' && '保存中'}
+                      {saveStates[task.task_key]?.[field] === 'saved' && '已保存'}
+                      {saveStates[task.task_key]?.[field] === 'error' && <>
                         <span>系统繁忙，草稿未丢失</span>
-                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key)}>重试保存</Button>
+                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key, field)}>重试保存</Button>
                       </>}
-                      {saveStates[task.task_key] === 'conflict' && <>
+                      {saveStates[task.task_key]?.[field] === 'conflict' && <>
                         <span>数据冲突，草稿已保留</span>
-                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key)}>核对后重试</Button>
+                        <Button type="link" size="small" className="h-auto p-0 text-xs" onClick={() => retryAutosave(task.task_key, field)}>核对后重试</Button>
                       </>}
                     </small>
                   )}
@@ -953,7 +971,7 @@ disabled={selectionMode || editorDisabled}
                             setPendingAddressMode(current => ({ ...current, [task.task_key]: true }))
                           }
                         }}
-                        onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, values[field] || '') }}
+                        onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, draftValuesRef.current[task.task_key]?.[field] || values[field] || '') }}
                       />
                       <span className="mobile-task-table-inline-hint" aria-live="polite">
                         {pendingAddressMode[task.task_key] ? '待建立房屋档案，建档后补挂正式房屋。' : registrationPropertyState?.matchStatus === 'matching' ? '正在识别地址…' : registrationPropertyState?.matchStatus === 'unique' ? '根据核查补充信息找到唯一候选，请确认' : registrationPropertyState?.matchStatus === 'multiple' ? '找到多个候选，请选择' : registrationPropertyState?.matchStatus === 'none' ? '未找到正式房屋，可填写待建档地址' : registrationPropertyState?.matchStatus === 'error' ? '地址匹配暂时失败，请重试或填写待建档地址' : '选定房屋后，待登记结果和现住址会一次保存。'}
@@ -1011,14 +1029,22 @@ disabled={selectionMode || editorDisabled}
 disabled={selectionMode || editorDisabled}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
-                      onCompositionStart={() => { composingRef.current[task.task_key] = true }}
-                      onCompositionEnd={() => { composingRef.current[task.task_key] = false; scheduleFieldSave(task, item, field, values[field] || '') }}
+                      onCompositionStart={() => {
+                        composingRef.current[task.task_key] = { ...(composingRef.current[task.task_key] || {}), [field]: true }
+                        cancelScheduledFieldSave(task.task_key, field)
+                      }}
+                      onCompositionEnd={() => {
+                        composingRef.current[task.task_key] = { ...(composingRef.current[task.task_key] || {}), [field]: false }
+                        scheduleFieldSave(task, item, field, draftValuesRef.current[task.task_key]?.[field] || values[field] || '')
+                      }}
                       onChange={event => {
                         const nextValue = event.target.value
-                        setEditorValues(current => ({
-                          ...current,
-                          [task.task_key]: { ...values, [field]: nextValue },
-                        }))
+                        draftValuesRef.current[task.task_key] = { ...(draftValuesRef.current[task.task_key] || {}), [field]: nextValue }
+                        setEditorValues(current => {
+                          const next = { ...current, [task.task_key]: { ...(current[task.task_key] || values), [field]: nextValue } }
+                          editorValuesRef.current = next
+                          return next
+                        })
                         if (mobileTaskUsesRegistrationClosure(task.parser_type)
                           && registrationResult === '待登记'
                           && (field === '核查补充信息' || field === '核查反馈')) {
@@ -1038,7 +1064,7 @@ disabled={selectionMode || editorDisabled}
                       onBlur={() => {
                         // 离焦是立即保存，但必须取消尚未到期的防抖定时器，避免同一次编辑发送两次请求。
                         cancelScheduledFieldSave(task.task_key, field)
-                        void saveField(task, item, field, registrationAddressValue(values[field] || ''))
+                        void saveField(task, item, field, registrationAddressValue(draftValuesRef.current[task.task_key]?.[field] || values[field] || ''))
                       }}
                     />
                   )}
