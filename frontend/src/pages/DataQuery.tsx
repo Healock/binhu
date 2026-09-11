@@ -53,7 +53,6 @@ import {
   type QueryDisplayRow as DisplayRow,
 } from '../utils/queryGrid'
 import {
-  buildQuerySheetRequestFilters,
   isQuerySheetFullscreen,
   queryInspectorMismatch,
   queryInspectorOptions,
@@ -148,11 +147,6 @@ export default function DataQuery() {
     user?.permission_groups?.map(group => group.code),
     user?.permissions,
   )
-  const sheetRequestFilters = useMemo(
-    () => buildQuerySheetRequestFilters(sheetFilterCriteria),
-    [sheetFilterCriteria],
-  )
-
   useEffect(() => {
     const handleFullscreenChange = () => {
       setSheetFullscreen(isQuerySheetFullscreen(
@@ -205,8 +199,6 @@ export default function DataQuery() {
         page: requestPage,
         page_size: requestPageSize,
         keyword: keyword || undefined,
-        filters: sheetRequestFilters.filters,
-        grid_filters: sheetRequestFilters.gridFilters,
         sort_by: sortBy,
         sort_order: sortBy ? sortOrder : undefined,
       }))
@@ -254,7 +246,7 @@ export default function DataQuery() {
     } finally {
       if (sequence === fetchSequence.current && !silent) setLoading(false)
     }
-  }, [queryEditAllowed, selectedType, source, keyword, sheetRequestFilters, sortBy, sortOrder])
+  }, [queryEditAllowed, selectedType, source, keyword, sortBy, sortOrder])
 
   useEffect(() => {
     dataVersionRef.current = ''
@@ -858,7 +850,7 @@ export default function DataQuery() {
           )}
         </Spin>
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 工具栏中的筛选和排序会重新查询全部记录，格式调整仅影响当前查看，不写入业务数据。
+          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 表头筛选仅影响当前查看，不会重新查询后端；排序仍按完整结果重新查询，格式调整不写入业务数据。
         </div>
       </div>
 

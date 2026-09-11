@@ -452,6 +452,40 @@ export function QuerySpreadsheet({
       })
     }
 
+    // Use Univer's native range-protection API for columns that are entirely
+    // read-only in the current result. The existing edit guards remain the
+    // source of truth for row-level permissions; this adds the native
+    // protected-range affordance and keeps the UI consistent with Univer.
+    const readOnlyColumns = columns.filter((column) => {
+      const dataRows = sheetRows.filter(row => row.kind === 'data')
+      return dataRows.length > 0 && dataRows.every(row =>
+        !canEditQuerySheetCell(source, row, column, canAdd),
+      )
+    })
+    if (readOnlyColumns.length) {
+      const protectionRows = Math.max(1, filterDataRowCount)
+      void Promise.all(readOnlyColumns.map(async column => {
+        const columnIndex = columns.indexOf(column)
+        if (columnIndex < 0) return
+        try {
+          await worksheet
+            .getRange(1, columnIndex, protectionRows, 1)
+            .getRangePermission()
+            .protect({
+              name: `只读列：${column}`,
+              // A sentinel collaborator ID keeps the current local viewer
+              // outside the edit allow-list while retaining Univer's native
+              // protected-range semantics.
+              allowedUsers: ['__binhu_readonly__'],
+              metadata: { source: 'binhu-query-sheet', column },
+            })
+        } catch {
+          // The local edit guards still enforce the same rule if a host does
+          // not expose the permission service (for example, an older shell).
+        }
+      }))
+    }
+
     let disposed = false
     let suppressCommands = false
     let saving = false
