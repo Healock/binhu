@@ -2,11 +2,35 @@ import tempfile
 import subprocess
 import sys
 import unittest
+import json
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from deploy.environments.staging_data.control import private_json, source_program, safe_diagnostics
 
 
 class ControlTests(unittest.TestCase):
+    def test_package_read_failure_is_recorded_without_exception_text(self):
+        from deploy.environments.staging_data import control
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_fcntl = SimpleNamespace(flock=Mock(), LOCK_EX=1, LOCK_NB=2)
+            with patch.dict(sys.modules, {'fcntl': fake_fcntl}), \
+                    patch.object(control, 'ROOT', root), \
+                    patch.object(control.os, 'umask'), \
+                    patch.object(control, 'safe_directory'), \
+                    patch.object(control, 'preflight', return_value={'container_id':'synthetic'}), \
+                    patch.object(control, 'source_program', side_effect=FileNotFoundError('private-path')), \
+                    patch.object(control.subprocess, 'run') as run:
+                with self.assertRaises(control.SnapshotError):
+                    control.execute('measure')
+                failures = list(root.glob('staging-*/failure.json'))
+                self.assertEqual(len(failures), 1)
+                self.assertNotIn('private-path', failures[0].read_text())
+                self.assertEqual(json.loads(failures[0].read_text())['reason'], 'snapshot_operation_failed')
+                run.assert_not_called()
+
     def test_diagnostic_parser_contract_matches_current_business_fields(self):
         from deploy.environments.staging_data.diagnostic_contract import TASK_COLUMNS
         from deploy.environments.staging_data.tasks import TASK_TYPES
