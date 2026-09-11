@@ -19,7 +19,7 @@ VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 BACKUP_SCOPES = {"none", "online", "daily", "all"}
 RELEASE_SCOPES = {"backend", "frontend", "full"}
-BUNDLE_SCHEMA = 3
+BUNDLE_SCHEMA = 2
 HOTFIX_ID_PATTERN = re.compile(r"^HF-[0-9]{8}-[0-9]{1,6}$")
 
 
@@ -190,3 +190,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
