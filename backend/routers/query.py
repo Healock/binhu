@@ -63,7 +63,11 @@ from services.permissions import (
     can_edit_online_query,
 )
 from services.schema_compat import get_database_column_map, quote_identifier
-from services.task_workflow import TASK_WORKFLOWS, canonical_result_options
+from services.task_workflow import (
+    TASK_WORKFLOWS,
+    canonical_result_options,
+    editable_result_option_allowed,
+)
 from services.task_graph import reconcile_online_task_graph
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 from services.work_activity import (
@@ -385,7 +389,8 @@ async def _managed_column_metadata(
             options.extend(
                 {"id": text, "text": text}
                 for text in workflow.result_options
-                if text not in known_texts
+                if editable_result_option_allowed(parser.parser_type, text)
+                and text not in known_texts
             )
         metadata[result_field] = _editor_select_metadata(
             metadata[result_field], options
