@@ -82,6 +82,7 @@ class LocalSourceHelpersTest(unittest.TestCase):
 
     def test_schema_only_rewrites_the_retired_source_default_when_needed(self):
         source = inspect.getsource(ensure_local_source_schema)
+        self.assertIn('("spreadsheet_id", "INT NOT NULL DEFAULT 0")', source)
         self.assertIn('column_info[4]', source)
         self.assertIn('!= "local_table"', source)
         self.assertIn("MODIFY COLUMN `source_kind`", source)
