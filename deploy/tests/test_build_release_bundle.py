@@ -26,7 +26,7 @@ class ReleaseBundleTests(unittest.TestCase):
         )
         (self.repository / "VERSION").write_text("1.2.3\n", encoding="utf-8")
         (self.repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
-        (self.repository / "backend").mkdir()
+        (self.repository / "backend").mkdir(exist_ok=True)
         (self.repository / "backend" / "app.py").write_text("print('ok')\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(self.repository), "add", "."], check=True)
         subprocess.run(
