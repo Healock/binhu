@@ -110,7 +110,7 @@ class ReleaseBundleTests(unittest.TestCase):
             )
 
     def test_backend_bundle_omits_frontend_and_unrelated_source(self):
-        (self.repository / "backend").mkdir()
+        (self.repository / "backend").mkdir(exist_ok=True)
         (self.repository / "backend" / "main.py").write_text("print('ok')\n", encoding="utf-8")
         (self.repository / "frontend").mkdir()
         (self.repository / "frontend" / "source.ts").write_text("export {}\n", encoding="utf-8")
@@ -198,3 +198,4 @@ class ReleaseBundleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
