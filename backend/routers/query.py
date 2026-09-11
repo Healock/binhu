@@ -982,7 +982,7 @@ async def _update_local_source_fields_once(
                 "SELECT id FROM _online_source_rows "
                 "WHERE parser_type=%s AND row_key=%s AND id<>%s "
                 "AND archived_at IS NULL "
-                f"{active_source_sql_filter(parser_type)} LIMIT 1",
+                f"{active_source_sql_filter(parser_type, '_online_source_rows')} LIMIT 1",
                 (parser_type, new_key, source_id),
             )
             if await cur.fetchone():
@@ -2212,7 +2212,7 @@ async def _projection_query(
         await cur.execute(
             "SELECT cell_meta_json FROM _online_source_rows "
             "WHERE parser_type=%s AND archived_at IS NULL "
-            f"{active_source_sql_filter(parser_type)} ORDER BY id LIMIT 1",
+            f"{active_source_sql_filter(parser_type, '_online_source_rows')} ORDER BY id LIMIT 1",
             (parser_type,),
         )
         metadata_row = await cur.fetchone()
@@ -2502,7 +2502,7 @@ async def create_source_row(
             await cur.execute(
                 "SELECT id FROM _online_source_rows "
                 "WHERE parser_type=%s AND row_key=%s AND archived_at IS NULL "
-                f"{active_source_sql_filter(parser_type)} LIMIT 1",
+                f"{active_source_sql_filter(parser_type, '_online_source_rows')} LIMIT 1",
                 (parser_type, new_key),
             )
             if await cur.fetchone():
