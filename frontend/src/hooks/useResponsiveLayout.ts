@@ -36,6 +36,8 @@ export function useResponsiveLayout(
     const update = () => {
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(() => {
+        // A retained, hidden route has no measurable width. Keep its last layout.
+        if (containerRef?.current && containerRef.current.clientWidth === 0) return
         const next = readViewportSize(containerRef?.current)
         setSize(previous => (
           previous.width === next.width && previous.height === next.height
