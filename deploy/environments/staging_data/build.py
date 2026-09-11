@@ -80,51 +80,26 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 raise SnapshotError("ambiguous_current_source")
             flows = await select(cur,"OnlineData._unverifiable_review_flows",FLOW_FIELDS)
             registrations = await select(cur,"OnlineData._task_registration_links",REGISTRATION_FIELDS)
-            # A small, explicitly opt-in recovery is allowed for the historical
-            # model-three gap.  It reconstructs source projections from the
-            # matching active business rows; it never runs for other parsers and
-            # never treats an archive row as evidence of a current source.
+            observed_source_count = len(sources)
             recovered_source_count = 0
             if recover_model_three_sources:
-                parser_type = "疑似未注销模型三"
-                parser = get_parser(parser_type)
-                business = await select(cur, "OnlineData." + parser.table_name,
-                    ("id", "_row_key", *parser.COLUMNS))
-                existing_keys = {(r["parser_type"], r["row_key"]) for r in sources}
-                registrations_by_key = {(r["parser_type"], r["row_key"]): r
-                    for r in registrations if r["parser_type"] == parser_type
-                    and r["status"] != "cancelled"}
-                source_ids = [int(r["id"]) for r in sources if isinstance(r.get("id"), int)]
-                next_source_id = max(source_ids, default=0) + 1
-                for row in business:
-                    key = (parser_type, row["_row_key"])
-                    if key in existing_keys:
-                        continue
-                    if key not in registrations_by_key:
-                        continue
-                    values = {column: row.get(column, "") for column in parser.COLUMNS}
-                    values_json = json.dumps(values, ensure_ascii=False, sort_keys=True,
-                                              separators=(",", ":"))
-                    registration = registrations_by_key[key]
-                    expected_hash = hashlib.sha256(values_json.encode()).hexdigest()
-                    # Recovery is allowed only when the active registration
-                    # carries the same content hash and source revision. This
-                    # prevents an unrelated registration from manufacturing a
-                    # current source row.
-                    if (registration.get("source_row_hash") not in (None, "", expected_hash)
-                            or (registration.get("source_revision") is not None
-                                and int(registration.get("source_revision") or 0) < 1)):
-                        raise SnapshotError("model_three_source_recovery_mismatch", diagnostics={
-                            "parser_type": parser_type, "total": 1})
-                    sources.append({"id": next_source_id, "parser_type": parser_type,
-                        "physical_row": row["id"], "revision": 1,
-                        "row_key": row["_row_key"],
-                        "row_hash": expected_hash,
-                        "values_json": values_json, "source_kind": "local_table"})
-                    next_source_id += 1
-                    recovered_source_count += 1
-                if recovered_source_count:
-                    sources.sort(key=lambda item: item["id"])
+                from .recovery import PARSER, LEDGER_FIELDS, reconstruct
+                parser = get_parser(PARSER)
+                business = await select(cur, 'OnlineData.' + parser.table_name,
+                    ('id', '_row_key', *parser.COLUMNS))
+                ledgers = await select(cur, 'OnlineData._local_source_records',
+                    LEDGER_FIELDS, ' WHERE parser_type=%s', (PARSER,))
+                # A nonlocal current source must not be silently replaced.
+                other_sources = await select(cur, 'OnlineData._online_source_rows', ('id',),
+                    ' WHERE archived_at IS NULL AND spreadsheet_id<>0 AND parser_type=%s', (PARSER,))
+                if other_sources:
+                    raise SnapshotError('source_recovery_nonlocal_source_present')
+                all_ids = await select(cur, 'OnlineData._online_source_rows', ('id',))
+                reserved = [r['id'] for r in all_ids]
+                reserved.extend(r['source_id'] for r in [*flows, *registrations] if r['source_id'] is not None)
+                recovered = reconstruct(parser, business, sources, ledgers, reserved)
+                recovered_source_count = len(recovered)
+                sources = [*sources, *recovered]
             current = {(row["parser_type"], row["row_key"]): row for row in sources}
             if len(current) != len(sources):
                 raise SnapshotError("duplicate_current_business_key")
@@ -274,7 +249,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 "output_counts":{key:len(value) for key,value in tables.items()},
                 "selected_source_counts":{**{key:len(value) for key,value in raw_registry.items()},
                     **{key:len(value) for key,value in raw_organization.items()},
-                    "OnlineData._online_source_rows":len(sources),
+                    "OnlineData._online_source_rows":observed_source_count,
                     "OnlineData._unverifiable_review_flows":len(flows),
                     "OnlineData._task_registration_links":len(registrations)},
                 "pending_gates":["registration_hmac_rebuild","candidate_database_import","target_verification"],

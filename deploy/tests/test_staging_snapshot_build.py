@@ -1,4 +1,6 @@
 import json
+import copy
+import hashlib
 import re
 import sys
 import unittest
@@ -28,7 +30,11 @@ class Cursor:
             match = re.search(r'FROM `([^`]+)`\.`([^`]+)`', sql)
             table = '.'.join(match.groups())
             columns = re.findall(r'`([^`]+)`', sql.split(' FROM ')[0])
-            self.result = [tuple(row[c] for c in columns) for row in self.tables[table]]
+            rows = self.tables[table]
+            if 'spreadsheet_id<>0' in sql:
+                rows = [row for row in rows if row.get('spreadsheet_id', 0) != 0
+                        and row.get('parser_type') == params[0]]
+            self.result = [tuple(row[c] for c in columns) for row in rows]
     async def fetchall(self):
         return self.result
 
@@ -118,6 +124,55 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
                 result=await build(conn,'staging-'+'a'*16,b'a'*32,settings=settings)
                 self.assertEqual(result['report']['current_task_count'],1)
 
+    def recovery_fixture(self):
+        settings, tables, cur, conn = self.fixture()
+        parser = get_parser('疑似未注销模型三')
+        values = {field: '' for field in parser.COLUMNS}
+        values.update({'社区': '虚构社区', '下发社区': '虚构社区', '姓名': '虚构乙', '身份证号': 'synthetic-id'})
+        key = parser.make_row_key(values)
+        values = {field: str(values.get(field, '') or '') for field in parser.COLUMNS}
+        raw = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        tables['OnlineData.' + parser.table_name] = [{'id': 9, '_row_key': key, **values}]
+        tables['OnlineData._local_source_records'] = [{'parser_type': parser.parser_type,
+            'local_task_id': 9, 'business_key': key, 'status': 'active', 'archived_at': None,
+            'source_kind': 'local_table', 'source_ref': parser.table_name + ':9',
+            'values_json': raw, 'content_hash': hashlib.sha256(raw.encode()).hexdigest(), 'revision': 7}]
+        return settings, tables, cur, conn
+
+    async def test_recovery_requires_opt_in_and_retains_ledger_revision(self):
+        settings, tables, cur, conn = self.recovery_fixture()
+        before = copy.deepcopy(tables)
+        with self.assertRaisesRegex(SnapshotError, 'business_source_count_or_key_mismatch'):
+            await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings)
+        result = await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings,
+            recover_model_three_sources=True)
+        recovered = [r for r in result['tables']['OnlineData._online_source_rows']
+                     if r['parser_type'] == '疑似未注销模型三']
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]['revision'], 7)
+        self.assertEqual(result['report']['recovered_model_three_source_count'], 1)
+        self.assertEqual(result['report']['selected_source_counts']['OnlineData._online_source_rows'], 1)
+        self.assertEqual(tables, before)
+        self.assertTrue(all(sql.startswith(('SELECT', 'SET SESSION', 'START TRANSACTION')) for sql in cur.commands))
+
+    async def test_recovery_rejects_unproven_or_duplicate_ledgers(self):
+        for field, value in [('status','archived'), ('content_hash','f'*64), ('revision',0),
+                ('business_key','bad'), ('values_json','{}'), ('source_kind','txdocs'),
+                ('archived_at','2026-09-01'), ('local_task_id',10)]:
+            with self.subTest(field=field):
+                settings, tables, _, conn = self.recovery_fixture()
+                tables['OnlineData._local_source_records'][0][field] = value
+                with self.assertRaises(SnapshotError):
+                    await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings,
+                        recover_model_three_sources=True)
+        settings, tables, _, conn = self.recovery_fixture()
+        tables['OnlineData._local_source_records'] *= 2
+        with self.assertRaises(SnapshotError):
+            await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings,
+                recover_model_three_sources=True)
+
 
 if __name__ == '__main__':
     unittest.main()
+
+

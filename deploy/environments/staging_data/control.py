@@ -12,7 +12,7 @@ import time
 from .codec import SnapshotError
 
 ROOT = Path('/srv/deploy-backups/environment-triad/staging-snapshots')
-MODULES = ('codec', 'registry', 'tasks', 'fences', 'organization', 'relations', 'digests', 'reconciliation', 'build')
+MODULES = ('codec', 'registry', 'tasks', 'fences', 'organization', 'relations', 'digests', 'reconciliation', 'recovery', 'build')
 
 
 def safe_directory(path, *, create=False):
@@ -150,16 +150,17 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
         path.mkdir(mode=0o700)
         safe_directory(path)
         private_json(path / 'before.json', before)
-        program, hashes = source_program(snapshot_id, secrets.token_bytes(32), measure=action == 'measure',
-            exclude_orphan_property_links=exclude_orphan_property_links,
-            recover_model_three_sources=recover_model_three_sources)
-        private_json(path / 'policy.json', {'exclude_orphan_property_links':exclude_orphan_property_links,
-            'recover_model_three_sources': recover_model_three_sources,
-            'maximum_excluded_links':3 if exclude_orphan_property_links else 0})
-        private_json(path / 'code-hashes.json', hashes)
         started = time.monotonic()
         diagnostics = {}
         try:
+            program, hashes = source_program(snapshot_id, secrets.token_bytes(32), measure=action == 'measure',
+                exclude_orphan_property_links=exclude_orphan_property_links,
+                recover_model_three_sources=recover_model_three_sources)
+            private_json(path / 'policy.json', {'exclude_orphan_property_links':exclude_orphan_property_links,
+                'recover_model_three_sources': recover_model_three_sources,
+                'maximum_excluded_links':3 if exclude_orphan_property_links else 0,
+                'maximum_recovered_sources':261 if recover_model_three_sources else 0})
+            private_json(path / 'code-hashes.json', hashes)
             response = subprocess.run(['docker', 'exec', '-i', before['container_id'], 'python', '-'],
                 input=program, capture_output=True, text=True, timeout=300)
             # Never copy stdout/stderr to diagnostics: a driver error may
