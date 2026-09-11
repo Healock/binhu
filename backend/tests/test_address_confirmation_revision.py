@@ -218,7 +218,7 @@ class AddressConfirmationRevisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status_code, 404)
         self.assertEqual(self.conn.state, before)
         sql, params = self.conn._cursor.executions[0]
-        for clause in ("source.archived_at IS NULL", "source.spreadsheet_id=0",
+        for clause in ("source.archived_at IS NULL",
                        "source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')",
                        "projection.community IN (%s)", "FOR UPDATE"):
             self.assertIn(clause, sql)
