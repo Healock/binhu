@@ -60,7 +60,7 @@ import {
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
 } from '../utils/querySpreadsheet'
-import { connectQueryRealtime, type QueryConnectionState } from '../utils/queryRealtime'
+import { connectQueryRealtime, type QueryConnectionState, type QueryRealtimeEvent } from '../utils/queryRealtime'
 import { canEditOnlineQuery } from '../utils/mobileTaskRouting'
 
 const MOBILE_CARD_PAGE_SIZE = 50
@@ -319,6 +319,33 @@ export default function DataQuery() {
         }
       },
       setQueryRealtimeState,
+      {
+        onEvent: (event: QueryRealtimeEvent) => {
+          if (versionContextRef.current !== requestContext) return
+          if (event.type === 'resync_required') {
+            if (refreshBlockedRef.current) setRefreshAvailable(true)
+            else void fetchData(true)
+            return
+          }
+          if (event.type !== 'row_changed' || source !== 'online') return
+          const sourceId = Number(event.source_id || 0)
+          const rowKey = String(event.row_key || '')
+          const changed = event.changed_fields && typeof event.changed_fields === 'object'
+            ? event.changed_fields as Record<string, unknown> : {}
+          if (!sourceId || !Object.keys(changed).length) return
+          setRows(current => current.map(row => {
+            if (Number(row.__source_id || 0) !== sourceId
+              && (!rowKey || String(row.__row_key || '') !== rowKey)) return row
+            return {
+              ...row,
+              ...changed,
+              __revision: Number(event.revision || row.__revision || 0),
+              __row_hash: String(event.row_hash || row.__row_hash || ''),
+            }
+          }))
+          if (typeof event.data_version === 'string') dataVersionRef.current = event.data_version
+        },
+      },
     )
     queryRealtimeRef.current = realtime
     return () => {

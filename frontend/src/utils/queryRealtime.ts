@@ -45,6 +45,8 @@ export function connectQueryRealtime(
   let stopped = false
   let sequence = 0
   let retryDelay = 1000
+  let lastEventId = 0
+  let lastDataVersion = ''
   let retry: ReturnType<typeof setTimeout> | undefined
   const prefix = Math.random().toString(36).slice(2)
   const pending = new Map<string, {
@@ -64,11 +66,22 @@ export function connectQueryRealtime(
     onState('connecting')
     const current = factory(url)
     socket = current
-    current.onopen = () => { retryDelay = 1000; onState('connected') }
+    current.onopen = () => {
+      retryDelay = 1000
+      onState('connected')
+      if (lastEventId > 0) {
+        try { current.send(JSON.stringify({ type: 'resume', after_event_id: lastEventId, data_version: lastDataVersion })) } catch { /* reconnect will retry */ }
+      }
+    }
     current.onmessage = event => {
       if (stopped || socket !== current) return
       try {
         const data = JSON.parse(event.data)
+        if (typeof data.event_id === 'number') {
+          if (data.event_id <= lastEventId) return
+          lastEventId = data.event_id
+        }
+        if (typeof data.data_version === 'string' && data.data_version) lastDataVersion = data.data_version
         if (data && typeof data.type === 'string' && !['version', 'saved', 'error'].includes(data.type)) {
           options.onEvent?.(data as QueryRealtimeEvent)
           return
@@ -109,6 +122,8 @@ export function connectQueryRealtime(
       return true
     },
     resume(afterEventId: number, dataVersion: string) {
+      lastEventId = Math.max(lastEventId, afterEventId)
+      lastDataVersion = dataVersion || lastDataVersion
       if (stopped || !socket || socket.readyState !== 1) return false
       socket.send(JSON.stringify({ type: 'resume', after_event_id: afterEventId, data_version: dataVersion }))
       return true
