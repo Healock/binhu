@@ -29,8 +29,8 @@ import WorkLogDrafts from './pages/WorkLogDrafts'
 import PermissionGroups from './pages/PermissionGroups'
 import Profile from './pages/Profile'
 import MobileTaskHome from './pages/MobileTaskHome'
-import MobileTaskList from './pages/MobileTaskList'
 import MobileTaskDetail from './pages/MobileTaskDetail'
+import MobileTaskFlow from './pages/MobileTaskFlow'
 import PoliceAddressManagement from './pages/PoliceAddressManagement'
 import AddressConfirmation from './pages/AddressConfirmation'
 import PoliceDispatchBatchDetail from './pages/PoliceDispatchBatchDetail'
@@ -74,7 +74,7 @@ function QueryEntry() {
   return <LazyPage><DataQuery /></LazyPage>
 }
 
-function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
+function MobileTaskFlowEntry() {
   const { user } = useAuth()
   if (!canAccessFlowTaskWorkbench(
     user?.member?.position,
@@ -84,7 +84,7 @@ function MobileTaskEntry({ detail = false }: { detail?: boolean }) {
   )) {
     return <Navigate to="/query" replace />
   }
-  return detail ? <MobileTaskDetail /> : <MobileTaskList />
+  return <MobileTaskFlow key={user?.id} />
 }
 
 function MobileTaskHomeEntry() {
@@ -151,8 +151,7 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
                 <Route path="/query" element={<QueryEntry />} />
                 <Route path="/tasks/home" element={<MobileTaskHomeEntry />} />
-                <Route path="/tasks" element={<MobileTaskEntry />} />
-                <Route path="/tasks/:parserType/:rowKey" element={<MobileTaskEntry detail />} />
+                <Route path="/tasks/*" element={<MobileTaskFlowEntry />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
                 <Route path="/address-confirmation" element={<AddressConfirmation />} />

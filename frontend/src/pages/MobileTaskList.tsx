@@ -67,6 +67,7 @@ import useSystemTime from '../hooks/useSystemTime'
 import { openNativePhoneDialer } from '../utils/nativePhone'
 import { downloadBlob } from '../utils/fileDownload'
 import { retainAvailableMobileTaskFilters } from '../utils/mobileTaskFilters'
+import { useTaskReturnPosition } from '../hooks/useTaskReturnPosition'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
 const ALL_ANALYSIS_TYPES = '__all__'
@@ -208,10 +209,12 @@ function ensureTaskKey(task: MobileTaskItem): MobileTaskItem {
 }
 
 export default function MobileTaskList({
+  active = true,
   mode = 'tasks',
   onAnalysisCountChange,
   manageUrl = true,
 }: {
+  active?: boolean
   mode?: 'tasks' | 'analysis'
   onAnalysisCountChange?: (count: number) => void
   manageUrl?: boolean
@@ -304,6 +307,8 @@ export default function MobileTaskList({
   const [priority, setPriority] = useState<MobileTaskPriority>(readPriority(searchParams.get('priority')))
   const [sort, setSort] = useState<MobileTaskSort>(readSort(searchParams.get('sort')))
   const taskDisplayMode = user?.task_display_mode || 'table'
+  const activeRef = useRef(active)
+  activeRef.current = active
   const restorationRef = useRef<MobileTaskListRestoration | null | undefined>(undefined)
   const snapshotRef = useRef<ReturnType<typeof readMobileTaskListSnapshot> | undefined>(undefined)
   if (restorationRef.current === undefined) {
@@ -336,6 +341,11 @@ export default function MobileTaskList({
     snapshotRef.current?.rows.map(ensureTaskKey) || []
   ))
   const [total, setTotal] = useState(() => snapshotRef.current?.total || 0)
+  const returnPosition = useTaskReturnPosition(pageRootRef, active, useMemo(() => rows.map(row => row.task_key), [rows]), restorationRef.current)
+  const hasLoadedRef = useRef(false)
+  const resumeRef = useRef(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState(false)
   const [page, setPage] = useState(() => snapshotRef.current?.page || 1)
   const [loading, setLoading] = useState(() => !snapshotRef.current)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -377,7 +387,24 @@ export default function MobileTaskList({
   )
 
   const openTask = useCallback((task: MobileTaskItem, addressAnnotation = false) => {
+    returnPosition.capture(task.task_key)
+    resumeRef.current = true
     const scrollContainer = pageRootRef.current?.closest('main')
+    const anchor = Array.from(pageRootRef.current?.querySelectorAll<HTMLElement>('[data-mobile-task-row-key]') || [])
+      .find(element => element.dataset.mobileTaskRowKey === task.task_key && element.getClientRects().length)
+    const restoration = {
+      version: 1 as const,
+      mode,
+      return_url: `${window.location.pathname}${window.location.search}`,
+      display_mode: taskDisplayMode,
+      scroll_top: scrollContainer?.scrollTop || window.scrollY,
+      anchor_offset: anchor ? anchor.getBoundingClientRect().top - (scrollContainer?.getBoundingClientRect().top || 0) : undefined,
+      page,
+      loaded_page: loadedPageRef.current,
+      keyword: keywordInput,
+      row_key: task.task_key,
+      saved_at: Date.now(),
+    }
     writeMobileTaskListSnapshot({
       mode,
       display_mode: taskDisplayMode,
@@ -389,20 +416,9 @@ export default function MobileTaskList({
       source_message: sourceMessage,
       saved_at: Date.now(),
     })
-    writeMobileTaskListRestoration(window.sessionStorage, {
-      version: 1,
-      mode,
-      return_url: `${window.location.pathname}${window.location.search}`,
-      display_mode: taskDisplayMode,
-      scroll_top: scrollContainer?.scrollTop || window.scrollY,
-      page,
-      loaded_page: loadedPageRef.current,
-      keyword: keywordInput,
-      row_key: task.task_key,
-      saved_at: Date.now(),
-    })
+    writeMobileTaskListRestoration(window.sessionStorage, restoration)
     navigate(addressAnnotation ? addressAnnotationUrl(task) : `${analysisOnly ? '/police-analysis' : '/tasks'}/${encodeURIComponent(task.parser_type)}/${task.row_key}?scope=${scope}`, { state: { fromTask: addressAnnotation } })
-  }, [analysisOnly, facets, keywordInput, mode, navigate, page, rows, scope, sourceMessage, taskDisplayMode, total])
+  }, [analysisOnly, facets, keywordInput, mode, navigate, page, rows, scope, sourceMessage, taskDisplayMode, total, returnPosition.capture])
 
   const loadOptions = useCallback(async () => {
     const requestId = ++optionsRequestId.current
@@ -424,7 +440,7 @@ export default function MobileTaskList({
           matchStatuses,
           results,
         )
-      if (requestId !== optionsRequestId.current) return
+      if (!activeRef.current || requestId !== optionsRequestId.current) return
       setCommunityOptions(result.communities)
       setSmallCommunityOptions(result.small_communities || [])
       setMatchStatusOptions(result.match_statuses || [])
@@ -457,7 +473,10 @@ export default function MobileTaskList({
         })
       }
       const watchValues = new Set((result.watch_categories || []).map(option => option.value))
-      setWatchCategories(current => current.filter(value => watchValues.has(value)))
+      setWatchCategories(current => {
+        const next = current.filter(value => watchValues.has(value))
+        return next.length === current.length ? current : next
+      })
     } catch {
       if (requestId !== optionsRequestId.current) return
       // 刷新失败时保留已有选项，避免筛选器闪烁和已选值被清空。
@@ -466,11 +485,16 @@ export default function MobileTaskList({
     }
   }, [analysisOnly, analysisParserTypes, communities, inspectors, matchStatuses, results, parserType, reviewStage, scope, smallCommunities])
 
-  useEffect(() => { void loadOptions() }, [loadOptions])
+  useEffect(() => {
+    if (!active) return undefined
+    void loadOptions()
+    return undefined
+  }, [active, loadOptions])
 
   useEffect(() => {
+    if (!active) return undefined
     if (analysisOnly) onAnalysisCountChange?.(facets.total)
-  }, [analysisOnly, facets.total, onAnalysisCountChange])
+  }, [active, analysisOnly, facets.total, onAnalysisCountChange])
 
   const load = useCallback(async (
     targetPage = 1,
@@ -478,9 +502,11 @@ export default function MobileTaskList({
     silent = false,
     restorePageCount = 0,
   ) => {
+    if (!activeRef.current) return
     if (append && loadingMoreRef.current) return
     if (append) loadingMoreRef.current = true
     const requestId = ++listRequestId.current
+    if (silent) { setRefreshing(true); setRefreshError(false) }
     if (!silent) {
       append ? setLoadingMore(true) : setLoading(true)
       setError('')
@@ -524,15 +550,24 @@ export default function MobileTaskList({
       if (silent || restorePageCount > 0) {
         results = []
         for (let requestedPage = 1; requestedPage <= refreshPageCount; requestedPage += 1) {
+          if (!activeRef.current || requestId !== listRequestId.current) return
           results.push(await requestPage(requestedPage))
         }
       } else {
         results = [await requestPage(targetPage)]
       }
-      if (requestId !== listRequestId.current) return
+      if (!activeRef.current || requestId !== listRequestId.current) return
       const result = results[0]
       const refreshedRows = results.flatMap(item => item.data)
-      setRows(current => append ? [...current, ...result.data] : refreshedRows)
+      setRows(current => {
+        if (append) return [...current, ...result.data].map(ensureTaskKey)
+        const previous = new Map(current.map(task => [task.task_key, task]))
+        return refreshedRows.map(ensureTaskKey).map(task => {
+          const old = previous.get(task.task_key)
+          return old && JSON.stringify(old) === JSON.stringify(task) ? old : task
+        })
+      })
+      hasLoadedRef.current = true
       if (restorePageCount > 0 && refreshedRows.length === 0) {
         clearMobileTaskListRestoration(window.sessionStorage)
         restorationRef.current = null
@@ -545,7 +580,8 @@ export default function MobileTaskList({
       setFacets(result.facets || EMPTY_FACETS)
       setSourceMessage(result.message || '')
     } catch (reason: any) {
-      if (requestId !== listRequestId.current) return
+      if (!activeRef.current || requestId !== listRequestId.current) return
+      if (silent) setRefreshError(true)
       if (!silent) {
         setError(reason?.response?.data?.detail || reason?.message || '任务列表读取失败')
         if (!append) setRows([])
@@ -555,6 +591,7 @@ export default function MobileTaskList({
         restorationRef.current = null
       }
     } finally {
+      if (requestId === listRequestId.current) setRefreshing(false)
       if (!silent && requestId === listRequestId.current) {
         setLoading(false)
         setLoadingMore(false)
@@ -582,6 +619,7 @@ export default function MobileTaskList({
   }, [isModelThree])
 
   useEffect(() => {
+    if (!active) return undefined
     if (!isModelThree) {
       setQmfScan(null)
       return undefined
@@ -594,7 +632,7 @@ export default function MobileTaskList({
       if (previousActive && !active) await load(1, false, true)
     }, qmfScan?.status === 'queued' || qmfScan?.status === 'running' ? 3_000 : 30_000)
     return () => window.clearInterval(timer)
-  }, [isModelThree, load, loadQmfScan, qmfScan?.status])
+  }, [active, isModelThree, load, loadQmfScan, qmfScan?.status])
 
   const confirmStartQmfScan = () => {
     Modal.confirm({
@@ -620,6 +658,7 @@ export default function MobileTaskList({
   }
 
   useEffect(() => {
+    if (!active) return undefined
     const scrollContainer = pageRootRef.current?.closest('main')
     if (!(scrollContainer instanceof HTMLElement) || loading || loadingMore || rows.length >= total) return undefined
     lastScrollTopRef.current = scrollContainer.scrollTop
@@ -650,9 +689,22 @@ export default function MobileTaskList({
       scrollContainer.removeEventListener('scroll', handleScroll)
       window.removeEventListener('keydown', armKeyLoad)
     }
-  }, [load, loading, loadingMore, page, rows.length, total])
+  }, [active, load, loading, loadingMore, page, rows.length, total])
 
   useEffect(() => {
+    if (!active) {
+      ++listRequestId.current
+      ++optionsRequestId.current
+      scrollLoadArmedRef.current = false
+      loadingMoreRef.current = false
+      return undefined
+    }
+    if (resumeRef.current && hasLoadedRef.current) {
+      resumeRef.current = false
+      clearMobileTaskListRestoration(window.sessionStorage)
+      void load(page, false, true)
+      return undefined
+    }
     const restoration = restorationRef.current
     if (restoration) {
       if (!restorationStartedRef.current) {
@@ -660,54 +712,27 @@ export default function MobileTaskList({
         void load(
           restoration.page,
           false,
-          Boolean(snapshotRef.current),
+          rows.length > 0,
           restoration.loaded_page,
         )
       }
       return
     }
     void load()
-  }, [load])
+  }, [active, load])
 
   useEffect(() => {
+    if (!active) return undefined
     const restoration = restorationRef.current
     if (!restoration || loading || rows.length === 0) return undefined
 
-    let frame = 0
-    let attempts = 0
-    const restore = () => {
-      attempts += 1
-      const scrollContainer = pageRootRef.current?.closest('main') as HTMLElement | null
-      if (scrollContainer) {
-        const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight)
-        scrollContainer.scrollTop = Math.min(restoration.scroll_top, maxScrollTop)
-        if (Math.abs(scrollContainer.scrollTop - restoration.scroll_top) <= 16 || attempts >= 20) {
-          if (Math.abs(scrollContainer.scrollTop - restoration.scroll_top) > 16) {
-            const anchor = Array.from(
-              pageRootRef.current?.querySelectorAll<HTMLElement>('[data-mobile-task-row-key]') || [],
-            ).find(element => element.dataset.mobileTaskRowKey === restoration.row_key)
-            anchor?.scrollIntoView({ block: 'center' })
-          }
-          clearMobileTaskListRestoration(window.sessionStorage)
-          restorationRef.current = null
-          return
-        }
-      } else {
-        window.scrollTo({ top: restoration.scroll_top, behavior: 'auto' })
-        clearMobileTaskListRestoration(window.sessionStorage)
-        restorationRef.current = null
-        return
-      }
-      frame = window.requestAnimationFrame(restore)
-    }
-    frame = window.requestAnimationFrame(restore)
-
-    return () => {
-      window.cancelAnimationFrame(frame)
-    }
-  }, [loading, rows])
+    // The layout observer holds the anchor independently of the request marker.
+    clearMobileTaskListRestoration(window.sessionStorage)
+    restorationRef.current = null
+  }, [active, loading, rows])
 
   useEffect(() => {
+    if (!active) return undefined
     const refreshVisibleList = () => {
       if (restorationRef.current) return
       if (document.visibilityState === 'visible') void load(1, false, true)
@@ -723,10 +748,10 @@ export default function MobileTaskList({
       window.removeEventListener('focus', refreshVisibleList)
       document.removeEventListener('visibilitychange', visibilityChanged)
     }
-  }, [load])
+  }, [active, load])
 
   useEffect(() => {
-    if (!manageUrl) return
+    if (!active || !manageUrl) return
     const next = new URLSearchParams()
     if (analysisOnly) {
       analysisParserSelection.forEach(value => next.append('type', value))
@@ -747,7 +772,7 @@ export default function MobileTaskList({
     if (!analysisOnly && priority !== 'all') next.set('priority', priority)
     if (sort !== 'priority') next.set('sort', sort)
     setSearchParams(next, { replace: true })
-  }, [analysisOnly, analysisParserSelection, communities, inspectors, isModelThree, manageUrl, matchStatuses, results, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, smallCommunities, sort, status, watchCategories])
+  }, [active, analysisOnly, analysisParserSelection, communities, inspectors, isModelThree, manageUrl, matchStatuses, results, parserType, priority, qmfFeedbackStates, reviewStage, scope, setSearchParams, smallCommunities, sort, status, watchCategories])
 
   const updateQuery = (type: string, nextScope: MobileTaskScope) => {
     const next = new URLSearchParams()
@@ -1038,6 +1063,10 @@ export default function MobileTaskList({
 
   return (
     <div ref={pageRootRef} className="mobile-task-page">
+      {(refreshing || refreshError || returnPosition.notice) && <div className="mobile-task-return-status" role="status">
+        {refreshError ? <>刷新失败，已保留原列表。<Button type="link" size="small" onClick={() => void load(page, false, true)}>重试</Button></>
+          : returnPosition.notice || '正在核对最新任务…'}
+      </div>}
       <ListToolbar
         className={`mobile-task-filter-card mobile-task-filter-card--${responsiveLayout.mode}`}
         filters={<div className={`mobile-task-filter-layout mobile-task-filter-layout--${responsiveLayout.mode}`}>
@@ -1456,6 +1485,7 @@ export default function MobileTaskList({
           {taskDisplayMode === 'table' && (
             <div className="hidden md:block">
               <MobileTaskTable
+                active={active}
                 rows={rows}
                 loading={loading}
                 analysisMode={analysisOnly}

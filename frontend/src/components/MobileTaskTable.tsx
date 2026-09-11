@@ -63,6 +63,7 @@ function registrationAddressValue(value: string) {
 }
 
 interface MobileTaskTableProps {
+  active?: boolean
   rows: MobileTaskItem[]
   loading: boolean
   analysisMode?: boolean
@@ -95,6 +96,7 @@ function errorMessage(reason: any, fallback: string) {
 }
 
 export default function MobileTaskTable({
+  active = true,
   rows,
   loading,
   analysisMode = false,
@@ -103,7 +105,7 @@ export default function MobileTaskTable({
   selectedRowKeys,
   canSelect,
   onSelect,
-  onOpen,
+  onOpen: onOpenTask,
   onAddressOpen,
   onCopy,
   sort,
@@ -114,6 +116,11 @@ export default function MobileTaskTable({
   onTableFiltersChange,
 }: MobileTaskTableProps) {
   const tableRef = useRef<HTMLDivElement>(null)
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const requestEpochRef = useRef(0)
+  const previousRowsRef = useRef<Map<string, MobileTaskItem>>(new Map())
+  const resumedRef = useRef(false)
   const responsiveLayout = useResponsiveLayout(tableRef)
   const compactPersonnelPresentation = getCompactPersonnelPresentation(responsiveLayout.width)
   const [editorItems, setEditorItems] = useState<Record<string, MobileTaskInlineEditorItem>>({})
@@ -123,6 +130,7 @@ export default function MobileTaskTable({
   const [registrationProperties, setRegistrationProperties] = useState<Record<string, InlineRegistrationPropertyState>>({})
   const [pendingAddressMode, setPendingAddressMode] = useState<Record<string, boolean>>({})
   const [loadingEditorKeys, setLoadingEditorKeys] = useState<Set<string>>(new Set())
+  const [editorErrorKeys, setEditorErrorKeys] = useState<Set<string>>(new Set())
   const [savingRowKey, setSavingRowKey] = useState('')
   const editorItemsRef = useRef<Record<string, MobileTaskInlineEditorItem>>({})
   const loadingEditorKeysRef = useRef<Set<string>>(new Set())
@@ -163,6 +171,8 @@ export default function MobileTaskTable({
   const editorContextRef = useRef(editorContext)
 
   const requestEditors = useCallback(async (taskKeys: string[], force = false) => {
+    if (!activeRef.current) return
+    const epoch = requestEpochRef.current
     const keys = [...new Set(taskKeys)].filter(taskKey => (
       taskKey
       && !loadingEditorKeysRef.current.has(taskKey)
@@ -184,7 +194,7 @@ export default function MobileTaskTable({
           getMobileTaskInlineEditors(parserType, parserTasks.map(task => task.rowKey), analysisMode)
         )),
       )
-      if (requestContext !== editorContextRef.current) return
+      if (!activeRef.current || epoch !== requestEpochRef.current || requestContext !== editorContextRef.current) return
       const values: Record<string, Record<string, string>> = {}
       const items: Record<string, MobileTaskInlineEditorItem> = {}
       batches.forEach(([, parserTasks], batchIndex) => {
@@ -195,7 +205,23 @@ export default function MobileTaskTable({
       })
       Object.entries(items).forEach(([taskKey, item]) => {
         const source = item.detail?.sources[0]
-        if (source) values[taskKey] = { ...source.values }
+        const oldItem = editorItemsRef.current[taskKey]
+        const oldSource = oldItem?.detail?.sources[0]
+        if (oldItem && source && oldSource && source.id === oldSource.id && source.revision < oldSource.revision) {
+          items[taskKey] = oldItem
+          return
+        }
+        const draft = editorValuesRef.current[taskKey]
+        const dirty = oldSource && draft && Object.entries(draft).some(([field, value]) => String(oldSource.values[field] || '') !== String(value || ''))
+        if (dirty) {
+          // Do not silently rebase a pending write onto a newer server revision.
+          if (source?.revision !== oldSource.revision || !item.available) {
+            setSaveStates(current => ({ ...current, [taskKey]: 'conflict' }))
+          }
+          if (item.available && item.detail && oldSource && source && source.id === oldSource.id) {
+            items[taskKey] = { ...item, detail: { ...item.detail, sources: [{ ...oldSource, editable_fields: source.editable_fields }] } }
+          }
+        } else if (source) values[taskKey] = { ...source.values }
       })
       setEditorItems(current => {
         const next = { ...current, ...items }
@@ -203,15 +229,17 @@ export default function MobileTaskTable({
         return next
       })
       setEditorValues(current => ({ ...current, ...values }))
+      setEditorErrorKeys(current => new Set([...current].filter(key => !keys.includes(key))))
     } catch (reason: any) {
-      if (requestContext === editorContextRef.current) {
+      if (activeRef.current && epoch === requestEpochRef.current && requestContext === editorContextRef.current) {
+        setEditorErrorKeys(current => new Set([...current, ...keys]))
         message.error({
           key: 'mobile-task-inline-editor-load',
           content: errorMessage(reason, '当前可见任务的可编辑信息读取失败'),
         })
       }
     } finally {
-      if (requestContext === editorContextRef.current) {
+      if (epoch === requestEpochRef.current && requestContext === editorContextRef.current) {
         keys.forEach(taskKey => loadingEditorKeysRef.current.delete(taskKey))
         setLoadingEditorKeys(new Set(loadingEditorKeysRef.current))
       }
@@ -220,7 +248,7 @@ export default function MobileTaskTable({
 
   const queueEditorLoad = useCallback((taskKey: string) => {
     if (
-      !taskKey
+      !activeRef.current || !taskKey
       || editorItemsRef.current[taskKey]
       || loadingEditorKeysRef.current.has(taskKey)
       || pendingEditorKeysRef.current.has(taskKey)
@@ -258,6 +286,7 @@ export default function MobileTaskTable({
     }
     setEditorItems({})
     setEditorValues({})
+    setEditorErrorKeys(new Set())
     setRegistrationProperties({})
     registrationSearchSequenceRef.current = {}
     registrationResultDraftRef.current = {}
@@ -272,6 +301,25 @@ export default function MobileTaskTable({
   }, [editorContext])
 
   useEffect(() => {
+    if (!active) {
+      resumedRef.current = true
+      ++requestEpochRef.current
+      loadingEditorKeysRef.current.clear()
+      setLoadingEditorKeys(new Set())
+      pendingEditorKeysRef.current.clear()
+      if (editorFlushTimerRef.current !== null) window.clearTimeout(editorFlushTimerRef.current)
+      editorFlushTimerRef.current = null
+      return
+    }
+    const changed = rows.filter(task => editorItemsRef.current[task.task_key]
+      && (resumedRef.current || previousRowsRef.current.get(task.task_key) !== task))
+    previousRowsRef.current = new Map(rows.map(task => [task.task_key, task]))
+    resumedRef.current = false
+    if (changed.length) void requestEditors(changed.map(task => task.task_key), true)
+  }, [active, rows, requestEditors])
+
+  useEffect(() => {
+    if (!active) return undefined
     if (!parserTypesKey) return undefined
     if (typeof IntersectionObserver === 'undefined') {
       rows.slice(0, 20).forEach(task => queueEditorLoad(task.task_key))
@@ -290,7 +338,7 @@ export default function MobileTaskTable({
       observer.disconnect()
       if (editorObserverRef.current === observer) editorObserverRef.current = null
     }
-  }, [parserTypesKey, queueEditorLoad])
+  }, [active, parserTypesKey, queueEditorLoad])
 
   const saveEditor = async (
     task: MobileTaskItem,
@@ -300,6 +348,7 @@ export default function MobileTaskTable({
     registrationProperty?: { id: number; version: number },
     options?: { autosaveKey?: string; silent?: boolean },
   ): Promise<boolean> => {
+    if (!activeRef.current) return false
     const detail = item.detail
     const source = detail?.sources[0]
     if (!source || !Object.keys(changes).length || !detail?.writeback_enabled) return false
@@ -694,6 +743,19 @@ export default function MobileTaskTable({
     return !hasDraft || window.confirm('仍有未保存的修改。取消可继续编辑或重试；确定将放弃这些修改并前往确认地址。')
   }
 
+  const onOpen = (task: MobileTaskItem) => {
+    if (activeAutosavesRef.current.size || Object.keys(autosaveTimersRef.current).length || Object.keys(queuedAutosavesRef.current).length) {
+      message.info('正在保存填写内容，请保存结束后再打开详情。')
+      return
+    }
+    const hasDraft = Object.entries(editorValuesRef.current).some(([key, values]) => {
+      const source = editorItemsRef.current[key]?.detail?.sources[0]
+      return source && Object.entries(values).some(([field, value]) => String(source.values[field] || '') !== String(value || ''))
+    })
+    if (hasDraft && !window.confirm('仍有未保存的修改。继续将保留列表草稿并打开详情，返回后可继续核对和重试。')) return
+    onOpenTask(task)
+  }
+
   const renderExpandedRow = (task: MobileTaskItem) => {
     const surfaceTone = mobileTaskSurfaceTone(task)
     const toneClass = `mobile-task-table-inline-editor--tone-${surfaceTone}`
@@ -707,6 +769,7 @@ export default function MobileTaskTable({
     const changes = source ? buildMobileTaskChanges(source.values, values, fields) : {}
     const dirtyCount = Object.keys(changes).length
     const editorLoading = loadingEditorKeys.has(task.task_key)
+    const editorDisabled = selectionMode || savingRowKey === task.task_key || editorLoading || editorErrorKeys.has(task.task_key) || !active || !detail?.writeback_enabled
     const resultNeedsSecondaryFollowup = String(values['核查结果'] || task.summary.result || '').includes('无法核实')
     const hasSecondaryFeedback = Boolean(String(values['二次反馈'] || '').trim())
     const registrationResult = String(values[detail?.workflow.result_field || ''] || '').trim()
@@ -812,7 +875,7 @@ export default function MobileTaskTable({
             {detail.writeback_enabled ? '当前任务没有可填写字段' : '当前任务暂不可编辑，只能查看'}
           </div>
         ) : (
-          <div className="mobile-task-table-inline-fields">
+          <fieldset disabled={editorDisabled} className="mobile-task-table-inline-fields mobile-task-table-editable-fields">
             {fields.map(field => {
               const metadata = source.cell_meta[field] || { type: 'text' }
               const resultField = field === detail.workflow.result_field
@@ -865,7 +928,7 @@ export default function MobileTaskTable({
                         size="small"
                         value={registrationAddressValue(values[field] || '')}
                         placeholder="输入地址，搜索房屋档案或直接作为待建档地址"
-                        disabled={selectionMode}
+disabled={selectionMode || editorDisabled}
                         options={[
                           ...availableRegistrationProperties.map(property => ({
                             value: `property:${property.id}`,
@@ -903,7 +966,7 @@ export default function MobileTaskTable({
                         showSearch
                         size="small"
                         placeholder="请选择"
-                        disabled={selectionMode}
+disabled={selectionMode || editorDisabled}
                         value={values[field] || undefined}
                         options={options}
                         onChange={value => {
@@ -945,7 +1008,7 @@ export default function MobileTaskTable({
                     <Input.TextArea
                       size="small"
                       placeholder={field === '入住方式' ? '自购、房东出租、中介出租等' : '请输入'}
-                      disabled={selectionMode}
+disabled={selectionMode || editorDisabled}
                       autoSize={{ minRows: 1, maxRows: 3 }}
                       value={values[field] || ''}
                       onCompositionStart={() => { composingRef.current[task.task_key] = true }}
@@ -1005,8 +1068,12 @@ export default function MobileTaskTable({
                 </strong>
               </div>
             )}
-          </div>
+          </fieldset>
         )}
+        {editorErrorKeys.has(task.task_key) && <div className="mobile-task-table-inline-status">
+          填写信息核对失败，草稿已保留。
+          <Button size="small" onClick={() => void requestEditors([task.task_key], true)}>重新核对</Button>
+        </div>}
         </div>
       </div>
     )

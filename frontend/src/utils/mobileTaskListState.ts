@@ -9,6 +9,7 @@ export interface MobileTaskListRestoration {
   return_url: string
   display_mode: MobileTaskListDisplayMode
   scroll_top: number
+  anchor_offset?: number
   page: number
   loaded_page: number
   keyword: string

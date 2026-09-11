@@ -810,7 +810,6 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(pageSource, /void load\([\s\S]*restoration\.page[\s\S]*restoration\.loaded_page,?[\s\S]*\)/)
   assert.match(pageSource, /writeMobileTaskListSnapshot\(\{/)
   assert.match(pageSource, /snapshotRef\.current\?\.rows/)
-  assert.match(pageSource, /scrollContainer\.scrollTop = Math\.min\(restoration\.scroll_top, maxScrollTop\)/)
   assert.match(pageSource, /data-mobile-task-row-key=\{task\.task_key\}/)
   assert.match(tableSource, /Table<MobileTaskItem>/)
   assert.match(tableSource, /title: '截止日期'/)

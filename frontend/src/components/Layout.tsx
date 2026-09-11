@@ -346,7 +346,7 @@ export default function Layout() {
               }}>前往修改</Button>}
             />
           )}
-          <div key={location.pathname} className="app-route-transition">
+          <div key={/^\/tasks(?:\/[^/]+\/[^/]+)?\/?$/.test(location.pathname) ? `tasks:${user?.id}` : location.pathname} className="app-route-transition">
             <Outlet />
           </div>
           <SessionTimeoutGuard />

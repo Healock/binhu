@@ -2195,8 +2195,22 @@ html.desktop-shell .ant-notification-topRight {
 }
 
 .mobile-task-table-inline-editor--loading {
-  min-height: 66px;
+  min-height: 76px;
   align-items: center;
+}
+
+.mobile-task-table-editable-fields { border: 0; padding: 0; margin: 0; }
+.mobile-task-return-status {
+  position: fixed;
+  bottom: 72px;
+  right: 20px;
+  max-width: min(420px, calc(100vw - 40px));
+  z-index: 10;
+  padding: 8px 12px;
+  color: var(--app-text-strong);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
 }
 
 .mobile-task-table-inline-fields {
