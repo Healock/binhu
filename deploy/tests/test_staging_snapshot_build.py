@@ -123,6 +123,8 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
             else:
                 result=await build(conn,'staging-'+'a'*16,b'a'*32,settings=settings)
                 self.assertEqual(result['report']['current_task_count'],1)
+                self.assertEqual(result['tables']['OnlineData._online_source_rows'][0]['source_kind'],kind)
+                self.assertEqual(result['tables']['OnlineData._local_source_records'][0]['source_kind'],kind)
 
     def recovery_fixture(self):
         settings, tables, cur, conn = self.fixture()
@@ -174,5 +176,4 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
 
