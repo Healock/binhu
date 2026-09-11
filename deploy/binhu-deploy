@@ -58,6 +58,8 @@ if [[ "${1:-}" == "hotfix" ]]; then
   release_kind="hotfix"
   [[ $# -eq 7 ]] || fail "expected hotfix arguments"
   shift
+  readonly release_scope="backend"
+  readonly expected_bundle_size="$5"
   hotfix_id="$6"
 elif [[ $# -eq 4 ]]; then
   readonly release_scope="full"
@@ -599,3 +601,4 @@ printf 'DEPLOY_TIMING_DATABASE_BACKUP_SECONDS=%s\n' "$timing_database_backup"
 printf 'DEPLOY_TIMING_SWITCH_FILES_SECONDS=%s\n' "$timing_switch_files"
 printf 'DEPLOY_TIMING_CONTAINER_RECREATE_SECONDS=%s\n' "$timing_container_recreate"
 printf 'DEPLOY_TIMING_HEALTH_CHECKS_SECONDS=%s\n' "$timing_health_checks"
+# hotfix scope initialization is validated before release checks
