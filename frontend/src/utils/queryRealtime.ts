@@ -18,6 +18,7 @@ export interface QueryEditResult {
   inspector_mismatch?: boolean
 }
 export type QueryConnectionState = 'connecting' | 'connected' | 'disconnected' | 'forbidden'
+export type QueryRealtimeEvent = Record<string, unknown> & { type: string }
 
 export function querySocketUrl(apiUrl: string, origin: string): string {
   const url = new URL(apiUrl, origin)
@@ -30,7 +31,11 @@ export function connectQueryRealtime(
   parserType: string,
   onVersion: (data: { data_version: string }) => void,
   onState: (state: QueryConnectionState) => void,
-  options: { url?: string; socketFactory?: (url: string) => WebSocket } = {},
+  options: {
+    url?: string
+    socketFactory?: (url: string) => WebSocket
+    onEvent?: (event: QueryRealtimeEvent) => void
+  } = {},
 ) {
   const url = options.url || querySocketUrl(
     resolveRuntimeApiUrl(`/api/query/live/${encodeURIComponent(parserType)}`), window.location.origin,
@@ -64,6 +69,10 @@ export function connectQueryRealtime(
       if (stopped || socket !== current) return
       try {
         const data = JSON.parse(event.data)
+        if (data && typeof data.type === 'string' && !['version', 'saved', 'error'].includes(data.type)) {
+          options.onEvent?.(data as QueryRealtimeEvent)
+          return
+        }
         if (data.type === 'version' && typeof data.data_version === 'string') {
           onVersion({ data_version: data.data_version })
           return
@@ -94,6 +103,16 @@ export function connectQueryRealtime(
   }
   connect()
   return {
+    sendPresence(payload: Omit<Record<string, unknown>, 'type'>) {
+      if (stopped || !socket || socket.readyState !== 1) return false
+      socket.send(JSON.stringify({ type: 'selection_presence', ...payload }))
+      return true
+    },
+    resume(afterEventId: number, dataVersion: string) {
+      if (stopped || !socket || socket.readyState !== 1) return false
+      socket.send(JSON.stringify({ type: 'resume', after_event_id: afterEventId, data_version: dataVersion }))
+      return true
+    },
     save(sourceId: number, payload: QueryEdit): Promise<QueryEditResult> {
       if (stopped || !socket || socket.readyState !== 1) {
         return Promise.reject(new Error('实时连接尚未就绪，请等待重连后再保存'))
