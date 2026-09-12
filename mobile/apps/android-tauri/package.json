@@ -1,6 +1,6 @@
 {
   "name": "@binhu/android-tauri",
-  "version": "0.28.8",
+  "version": "0.28.20",
   "private": true,
   "scripts": {
     "tauri": "tauri",
