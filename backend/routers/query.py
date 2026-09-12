@@ -1146,6 +1146,10 @@ async def _update_local_source_fields_once(
                 event_key=f"local:{audit_id}",
                 conn=conn,
             )
+        # Return the post-write version while the transaction still owns the
+        # current connection.  The query page can acknowledge this local
+        # change without treating its own save as an external refresh.
+        data_version = await _source_data_version(cur, parser_type)
         await conn.commit()
         launch_online_summary_update_processing()
         warnings = []
@@ -1158,12 +1162,17 @@ async def _update_local_source_fields_once(
         return {
             "message": "已保存到本地业务数据",
             "values": after,
+            "changed_values": {
+                column: after[column]
+                for column in ordered_columns
+            },
             "row_key": new_key,
             "row_hash": local_row_hash(after),
             "revision": locked_revision + 1,
             "operation_id": operation_id,
             "derived_status": "queued",
             "pending_sync": False,
+            "data_version": data_version,
             "warnings": warnings,
             "inspector_mismatch": bool(warnings),
         }
@@ -1499,9 +1508,14 @@ async def update_source_fields(
     return {
         "message": "已保存，滨湖平台数据已同步更新并写回腾讯表格",
         "values": verified_values,
+        "changed_values": {
+            column: verified_values[column]
+            for column in ordered_columns
+        },
         "row_key": new_key,
         "revision": revision,
         "pending_sync": True,
+        "data_version": await _source_data_version(cur, parser_type),
         "warnings": warnings,
         "inspector_mismatch": bool(warnings),
     }

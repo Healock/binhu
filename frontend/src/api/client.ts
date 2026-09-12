@@ -1182,10 +1182,15 @@ export async function updateQuerySourceCell(
   },
 ): Promise<{
   values: Record<string, string>
+  changed_values?: Record<string, string>
   row_key: string
   revision: number
+  row_hash?: string
   pending_sync: boolean
   message: string
+  data_version?: string
+  warnings?: string[]
+  inspector_mismatch?: boolean
 }> {
   const { data } = await api.patch(`/query/${type}/source-rows/${sourceId}`, payload)
   return data

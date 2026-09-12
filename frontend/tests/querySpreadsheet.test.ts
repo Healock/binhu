@@ -198,6 +198,16 @@ test('单元格保存只重绘受影响行且不重新查询整张工作表', ()
   assert.doesNotMatch(pageSource, /if \(keyword \|\| Object\.keys\(sheetFilterCriteria\)\.length > 0\) await fetchData\(\)/)
 })
 
+test('在线查询保存确认本地版本并只合并本次单元格', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(pageSource, /const changedValues = result\.changed_values/)
+  assert.match(pageSource, /Object\.assign\(change\.row, changedValues/)
+  assert.match(pageSource, /dataVersionRef\.current = result\.data_version/)
+})
+
 test('工作表自动列宽保留合理的最小值和最大值', () => {
   assert.equal(fitQuerySheetColumnWidth('下发日期', 40), 92)
   assert.equal(fitQuerySheetColumnWidth('姓名', 96), 114)
