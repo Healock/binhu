@@ -129,6 +129,44 @@
 
 接入外部系统前，要先确定人员唯一编号、重复数据、撤销请假、日期重叠和换班规则，不能只按姓名覆盖。
 
+## Dev/Main 分步同步与部署追踪（2026-09-12）
+
+`dev` 与 `main` 已长期分叉，不能用一次 merge 或 rebase 将二者强行对齐。共同祖先为
+`18ee3375854bf50a1908ec6c7c843e349d33c13b`；本轮以 `origin/dev` 的
+`566a662d137ca9c4db268797e8fcb81ddd47ceea` 为基线，目标是让 Dev 具备部署
+0.28.20 所需的运行支持，同时保留 dev 独立的 queryGrid、事件流、Kafka、Flink、Redis
+和 outbox 架构。
+
+本轮同步已拆成三个独立提交并完成本地验证：
+
+1. `7e37b0fe`：`backend/config.py` 接受 `APP_ENVIRONMENT=development`，保留原有 dev
+   配置和校验边界。
+2. `532d3b31`：使用现有 `sync_versions.py` 将根目录 `VERSION` 及相关客户端/锁文件
+   统一到 `0.28.20`，不搬运 main 的业务实现。
+3. `ce14a927`：引入 `measure-development` / `apply-development` 所需的最小
+   `deploy/environments`、环境身份和运行时模块及其测试；未引入 Staging 数据工具，
+   未覆盖 dev 事件流代码。
+
+差异明细和每步测试证据见
+[dev-main-sync-20260912.md](plans/dev-main-sync-20260912.md)。当前同步分支已推送，
+尚未执行服务器部署；原始 #613 提交不能直接部署，必须在同步后的 dev 基线上生成兼容
+制品并由 Dev 部署流程记录台账。
+
+后续避免再次长期漂移的机制：
+
+- 每次 Dev 部署必须在固定 Dev 目录写入不可变台账，至少记录
+  `deployed_commit`、`deployed_version`、`source_branch`、`included_prs` 和 UTC
+  `deployed_at`；已知历史部署也只按服务器证据补录，未知时明确标记未知来源。
+- 每月或每个 Dev 里程碑前，以 `git fetch origin` 后的 `merge-base` 和文件差异报告
+  做一次盘点；环境支持、版本元数据、部署工具链和业务架构分开评审、分开提交。
+- CI 增加 Dev/Main 漂移检查：检测 `backend/config.py`、`VERSION`、部署脚本和环境身份
+  的必要兼容项；检测到 dev 独有事件流核心文件被意外覆盖时阻断合并。
+- PR 和部署台账同时展示版本号与短 SHA，例如 `0.28.20-dev+<short-sha>`，避免只看
+  版本号误判代码来源；通过 `merge-base` 和提交祖先关系判断某个 PR 是否已进入环境。
+- Dev 部署继续沿用已核实的手动 `measure-development` → `apply-development` 路径，
+  直到具备 Dev 专用 SSH 用户、固定工作目录、Compose 项目和服务端强制命令隔离后，
+  再单独评估 Deploy Dev 工作流。
+
 
 ### 2026-09-06 Redis revision cache 进展
 

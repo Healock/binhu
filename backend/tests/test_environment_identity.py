@@ -26,6 +26,15 @@ class EnvironmentIdentityTests(unittest.TestCase):
                 APP_ENVIRONMENT="staging",
             )
 
+    def test_development_environment_is_allowed(self):
+        configured = Settings(
+            MYSQL_PASSWORD="test-password",
+            ENCRYPTION_KEY="test-encryption-key",
+            APP_ENVIRONMENT="DEVELOPMENT",
+            SESSION_COOKIE_NAME="binhu_dev_session",
+        )
+        self.assertEqual(configured.APP_ENVIRONMENT, "development")
+
     def test_shadow_environment_requires_its_cookie(self):
         with self.assertRaises(ValueError):
             Settings(
