@@ -264,6 +264,26 @@ test('单元格保存只重绘受影响行且不重新查询整张工作表', ()
   assert.match(componentSource, /changedRows\.forEach\(rowIndex => applyRowAppearance/)
   assert.doesNotMatch(pageSource, /setRows\(current => \[\.\.\.current\]\)/)
   assert.doesNotMatch(pageSource, /if \(keyword \|\| Object\.keys\(sheetFilterCriteria\)\.length > 0\) await fetchData\(\)/)
+  assert.match(pageSource, /changedValues = result\.changed_values/)
+  assert.doesNotMatch(pageSource, /Object\.assign\(change\.row, result\.values/)
+  assert.match(pageSource, /\[change\.column\]: String\(result\.values\?\.\[change\.column\]/)
+  assert.match(pageSource, /if \(result\.data_version\) dataVersionRef\.current = result\.data_version/)
+  assert.match(pageSource, /Boolean\(sheetCommitFailure\)/)
+})
+
+test('工作表重建会保存并恢复外层滚动视口，用户主动滚动时取消恢复', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /type QuerySheetViewportSnapshot/)
+  assert.match(componentSource, /anchorRowKey\?: string/)
+  assert.match(componentSource, /restoredSheetRows\.findIndex/)
+  assert.match(componentSource, /targetRowTop - previousViewport\.anchorOffset/)
+  assert.match(componentSource, /viewportSnapshotRef\.current = \{/)
+  assert.match(componentSource, /requestAnimationFrame\(restore\)/)
+  assert.match(componentSource, /addEventListener\('wheel', cancelOnUserInput/)
+  assert.match(componentSource, /addEventListener\('touchstart', cancelOnUserInput/)
 })
 
 test('工作表自动列宽保留合理的最小值和最大值', () => {

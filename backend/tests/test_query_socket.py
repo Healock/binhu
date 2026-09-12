@@ -29,7 +29,14 @@ class QuerySocketTests(unittest.TestCase):
             auth.assert_not_awaited()
 
     def test_live_version_and_edit_use_existing_transaction_and_revision(self):
-        saved = {'revision': 6, 'row_key': 'r', 'values': {'核查结果': '离苏'}, 'pending_sync': False}
+        saved = {
+            'revision': 6,
+            'row_key': 'r',
+            'values': {'核查结果': '离苏', '备注': '其他用户内容'},
+            'changed_values': {'核查结果': '离苏'},
+            'data_version': '12:42:2026-09-12T08:00:00',
+            'pending_sync': False,
+        }
         with patch.object(query_socket, 'get_current_user', new=AsyncMock(return_value=self.user)), \
              patch.object(query_socket, 'read_version', new=AsyncMock(return_value='v1')), \
              patch.object(query_socket, 'save_cell', new=AsyncMock(return_value=saved)) as save:
@@ -40,8 +47,13 @@ class QuerySocketTests(unittest.TestCase):
                 response = ws.receive_json()
                 self.assertEqual(response['type'], 'saved')
                 self.assertEqual(response['result']['revision'], 6)
+                self.assertEqual(response['result']['changed_values'], {'核查结果': '离苏'})
+                self.assertEqual(response['result']['data_version'], '12:42:2026-09-12T08:00:00')
                 self.assertEqual(save.await_args.args[1], 12)
                 self.assertEqual(save.await_args.args[2].expected_revision, 5)
+                # The local save response carries the version read from the
+                # same transaction; no second version query is needed.
+                self.assertEqual(query_socket.read_version.await_count, 1)
 
     def test_flow_member_can_read_version_but_query_edit_is_rejected(self):
         member = {
