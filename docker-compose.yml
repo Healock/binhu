@@ -109,6 +109,8 @@ services:
       BOOTSTRAP_ADMIN_PASSWORD: ${BINHU_BOOTSTRAP_ADMIN_PASSWORD:-}
       OPS_AGENT_URL: http://ops-agent:9001
       OPS_AGENT_TOKEN: ${BINHU_OPS_AGENT_TOKEN:?Set BINHU_OPS_AGENT_TOKEN in .env}
+      ENVIRONMENT_ACCOUNT_GATEWAY_URLS: ${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS:-}
+      ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS: ${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS:-}
       BACKUP_DIR: /app/backups
       WORKFLOW_ATTACHMENT_DIR: /app/workflow-attachments
       WORKFLOW_PHOTO_IMPORT_DIR: /app/workflow-photo-imports
@@ -232,6 +234,8 @@ services:
     command: ["uvicorn", "ops_agent:app", "--host", "0.0.0.0", "--port", "9001"]
     environment:
       OPS_AGENT_TOKEN: ${BINHU_OPS_AGENT_TOKEN:?Set BINHU_OPS_AGENT_TOKEN in .env}
+      ENVIRONMENT_ACCOUNT_GATEWAY_URLS: ${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS:-}
+      ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS: ${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS:-}
       OPS_AGENT_CONTAINERS: backend=binhu-backend,mysql=binhu-mysql
       DOCKER_SOCKET_PATH: /var/run/docker.sock
     volumes:

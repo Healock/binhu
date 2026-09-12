@@ -47,6 +47,8 @@ import dayjs, { Dayjs } from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   downloadBackup,
+  getEnvironmentAccounts,
+  resetEnvironmentAccount,
   downloadDiagnostics,
   getAuditEvents,
   getBackups,
@@ -71,6 +73,7 @@ import type {
   OpsOverview,
   OpsPerformanceSnapshot,
   DiagnosticJob,
+  EnvironmentAccount,
 } from '../types'
 import { ListToolbar, Panel } from '../components/ui'
 import AppTable from '../components/AppTable'
@@ -133,6 +136,49 @@ function StatusTag({ value, label }: { value?: string | null; label?: string | n
       {label || STATUS_LABELS[normalized] || normalized}
     </Tag>
   )
+}
+
+function EnvironmentAccountsTab() {
+  const [rows, setRows] = useState<EnvironmentAccount[]>([])
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<EnvironmentAccount | null>(null)
+  const [adminPassword, setAdminPassword] = useState('')
+  const [issuedPassword, setIssuedPassword] = useState<string | null>(null)
+  const [resetting, setResetting] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    try { setRows((await getEnvironmentAccounts()).data) }
+    catch { message.error('隔离环境账号信息暂时不可用') }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [])
+  const close = () => { setSelected(null); setAdminPassword(''); setIssuedPassword(null) }
+  const reset = async () => {
+    if (!selected || !adminPassword) return
+    setResetting(true)
+    try {
+      const result = await resetEnvironmentAccount({ environment: selected.environment, username: selected.username, current_admin_password: adminPassword })
+      setIssuedPassword(result.temporary_password); setAdminPassword(''); await load(); message.success('已生成一次性初始密码')
+    } catch { message.error('密码重置失败，请检查当前超级管理员密码和隔离环境状态') }
+    finally { setResetting(false) }
+  }
+  return <div className="space-y-4">
+    <Alert type="info" showIcon message="只能重置，不能读取现有密码" description="密码以不可逆哈希保存。重置时需重新输入当前超级管理员密码，新密码只在本次弹窗中显示一次，关闭后无法恢复。" />
+    <AppTable<EnvironmentAccount> rowKey={row => `${row.environment}:${row.username}`} loading={loading} dataSource={rows} pagination={false} columns={[
+      { title: '环境', dataIndex: 'environment', render: value => value === 'development' ? <Tag color="blue">Dev</Tag> : <Tag color="gold">预发布</Tag> },
+      { title: '账号', dataIndex: 'username' },
+      { title: '状态', dataIndex: 'status', render: value => <StatusTag value={value} label={value === 'active' ? '启用' : value} /> },
+      { title: '首次改密', dataIndex: 'password_is_temporary', render: value => value ? <Tag color="orange">需要</Tag> : <Tag>已完成</Tag> },
+      { title: '最近登录', dataIndex: 'last_login_at', render: value => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-' },
+      { title: '最近重置', dataIndex: 'last_reset_at', render: value => value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-' },
+      { title: '操作', render: (_, row) => <Button type="link" disabled={row.status !== 'active'} onClick={() => { setSelected(row); setIssuedPassword(null); setAdminPassword('') }}>重置初始密码</Button> },
+    ]} />
+    <Modal open={Boolean(selected)} onCancel={close} onOk={issuedPassword ? close : reset} okText={issuedPassword ? '关闭并清除密码' : '验证并重置'} cancelButtonProps={{ style: issuedPassword ? { display: 'none' } : undefined }} confirmLoading={resetting} title={issuedPassword ? '一次性初始密码' : '重置环境账号密码'} destroyOnClose>
+      {selected && !issuedPassword && <div className="space-y-3"><p>目标：{selected.environment === 'development' ? 'Dev' : '预发布'} · {selected.username}</p><Input.Password autoFocus value={adminPassword} onChange={event => setAdminPassword(event.target.value)} placeholder="输入当前超级管理员密码" onPressEnter={reset} /><Alert type="warning" showIcon message="新密码只显示一次" description="目标账号下次登录必须修改密码；不会显示旧密码。" /></div>}
+      {selected && issuedPassword && <div className="space-y-3"><Alert type="success" showIcon message="请立即保存此密码" description="关闭此窗口后系统不会再次返回它，也不会自动复制到剪贴板。" /><Input.Password readOnly value={issuedPassword} /><p className="text-xs text-slate-500">账号：{selected.username} · 首次登录后必须修改密码</p></div>}
+    </Modal>
+  </div>
 }
 
 function DiagnosticTab() {
@@ -1383,6 +1429,7 @@ export default function OperationsCenter() {
             label: '运行概况',
             children: <OverviewTab data={overview} loading={overviewLoading} refresh={loadOverview} />,
           },
+          { key: 'environment-accounts', label: '环境账号', children: <EnvironmentAccountsTab /> },
           {
             key: 'performance',
             label: '性能与拥堵',

@@ -213,7 +213,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                     else "active_desktop_session_id"
                 )
                 await cur.execute(
-                    f"UPDATE _users SET {slot_column}=%s, active_session_id=%s WHERE id=%s",
+                    f"UPDATE _users SET {slot_column}=%s, active_session_id=%s, last_login_at=UTC_TIMESTAMP() WHERE id=%s",
                     (session_id, session_id, user_id),
                 )
                 await conn.commit()

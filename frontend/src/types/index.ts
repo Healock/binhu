@@ -440,6 +440,16 @@ export interface UserPreferences {
   theme_mode?: ThemeMode
 }
 
+export interface EnvironmentAccount {
+  environment: 'development' | 'staging'
+  username: string
+  display_name: string
+  status: string
+  password_is_temporary: boolean
+  last_login_at: string | null
+  last_reset_at: string | null
+}
+
 export interface User extends UserPreferences {
   id: number
   username: string

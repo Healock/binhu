@@ -205,6 +205,10 @@ class Settings(BaseSettings):
     # Super-admin operations center
     OPS_AGENT_URL: str = "http://ops-agent:9001"
     OPS_AGENT_TOKEN: str = ""
+    # Production-only control-plane bridge for isolated Dev/Staging account metadata
+    # and one-time password resets. JSON maps environment to a private gateway URL.
+    ENVIRONMENT_ACCOUNT_GATEWAY_URLS: str = ""
+    ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS: str = ""
     BACKUP_DIR: str = "../backups"
     WORKFLOW_ATTACHMENT_DIR: str = "../workflow-attachments"
     WORKFLOW_PHOTO_IMPORT_DIR: str = "../workflow-photo-imports"

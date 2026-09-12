@@ -817,6 +817,7 @@ docker exec binhu-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
 - “备份管理”设置每日备份时间、立即创建备份和下载成功备份。
 - “操作记录”查看超管执行过的重要操作。列表默认显示人员姓名和中文操作、目标、结果及详情摘要；展开一行可核对登录账号、原始操作代码、原始目标和原始审计 JSON。在线汇总、走访汇总和下发反馈 XLSX 的导出也会记录安全摘要，不保存工作簿正文、身份证号、手机号或敏感搜索词。
 - “导出诊断包”下载脱敏后的状态和近期错误日志，不包含业务数据。
+- “环境账号”只读取 Dev 和预发布账号元数据；超级管理员重新验证当前密码后可以为目标环境账号生成一次性初始密码。现有密码不可读取，关闭弹窗后一次性密码不再返回。
 
 每日备份默认按“系统设置”的时区在凌晨 2 点执行。自动和手动备份都包含
 `OnlineData`、`OnlineDataArchive` 和 `daily_report`，保存 7 天，并始终保留最近一份成功备份。
@@ -829,7 +830,11 @@ docker exec binhu-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
 ```dotenv
 BINHU_OPS_AGENT_TOKEN=<单独生成的随机内部令牌>
 BINHU_BACKUP_DIR=<服务器上的专用备份目录>
+BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS='{"development":"http://<private-dev-gateway>","staging":"http://<private-staging-gateway>"}'
+BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS='{"development":"<dev-only-token>","staging":"<staging-only-token>"}'
 ```
+
+环境账号网关必须只在服务器内部可达，并为 Dev、Staging 使用不同令牌。生产接口不会在网关不可用时回退到生产账号库。
 
 内部令牌不能和数据库、SSH、管理员或应用密钥共用。备份目录只用于平台备份，不要指向项目根目录或数据卷。
 

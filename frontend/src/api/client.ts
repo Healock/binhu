@@ -692,6 +692,20 @@ export async function deleteAnnouncement(id: number): Promise<void> {
 }
 
 // ---- Super-admin operations center ----
+export async function getEnvironmentAccounts(): Promise<{ data: import('../types').EnvironmentAccount[]; passwords_available: false }> {
+  const { data } = await api.get('/admin/ops/environment-accounts')
+  return data
+}
+
+export async function resetEnvironmentAccount(payload: {
+  environment: 'development' | 'staging'
+  username: string
+  current_admin_password: string
+}): Promise<{ environment: string; username: string; temporary_password: string; password_is_temporary: true; issued_at: string | null }> {
+  const { data } = await api.post('/admin/ops/environment-accounts/reset', payload)
+  return data
+}
+
 export async function getOpsOverview(): Promise<OpsOverview> {
   const { data } = await api.get('/admin/ops/overview')
   return data
