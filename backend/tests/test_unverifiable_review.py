@@ -288,6 +288,22 @@ class UnverifiableReviewTests(unittest.IsolatedAsyncioTestCase):
             "INSERT INTO _unverifiable_review_events" in sql
             for sql, _ in cursor.executions
         ))
+        select_sql = next(
+            sql for sql, _ in cursor.executions
+            if "projection.source_count,projection.conflict" in sql
+        )
+        self.assertIn("LIMIT %s", select_sql)
+        self.assertIn("FOR UPDATE SKIP LOCKED", select_sql)
+
+    async def test_source_context_reconciliation_rejects_unbounded_batches(self):
+        with self.assertRaisesRegex(ValueError, "batch size"):
+            await review.reconcile_unverifiable_source_contexts(
+                _DecisionCursor(), batch_size=0
+            )
+        with self.assertRaisesRegex(ValueError, "batch size"):
+            await review.reconcile_unverifiable_source_contexts(
+                _DecisionCursor(), batch_size=1001
+            )
 
     async def test_apply_decision_uses_optimistic_flow_version(self):
         flow_row = (
@@ -454,6 +470,12 @@ class UnverifiableReviewTests(unittest.IsolatedAsyncioTestCase):
                     "flow.feedback_submitted" in sql
                     for sql, _ in cursor.executions
                 ))
+                overdue_sql = next(
+                    sql for sql, _ in cursor.executions
+                    if "review_due_date <" in sql
+                )
+                self.assertIn("LIMIT 100", overdue_sql)
+                self.assertIn("FOR UPDATE SKIP LOCKED", overdue_sql)
                 self.assertEqual(
                     enqueue.await_args.kwargs["changes"],
                     {"研判": "初步延时已到期，自动进入深度研判", "二次反馈": ""},
