@@ -130,7 +130,12 @@ jobs:
       - name: Run frontend tests
         run: npm test
         working-directory: frontend
-      - name: Build frontend
+      - name: Run autosave browser regression tests
+        # Exercise real React editors against fictional, intercepted API responses.
+        # Browser binaries are kept outside the dependency lockfile.
+        run: npx playwright install --with-deps chromium && npm run test:autosave:browser
+        working-directory: frontend
+      - name: Build frontend production bundle
         env:
           NODE_OPTIONS: --max-old-space-size=8192
         run: npm run build

@@ -8933,3 +8933,17 @@ html[data-theme='dark'] .fullscreen-notice__panel { box-shadow: 0 24px 70px rgb(
 .address-workbench.is-narrow .list-toolbar__filters { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .address-workbench.is-narrow .list-toolbar__filters > :last-child { grid-column:1/-1; }
 .address-workbench.is-narrow .address-facts { grid-template-columns:minmax(0,1fr); }
+
+/* Save feedback has a permanent slot: appearing text must not move the input. */
+.mobile-task-field-save-state {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  min-height: 24px;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--app-text-secondary);
+}
+.mobile-task-field-save-state > span { overflow: hidden; text-overflow: ellipsis; }
+.mobile-task-field-save-state .ant-btn { flex-shrink: 0; }

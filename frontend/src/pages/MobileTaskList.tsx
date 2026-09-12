@@ -1511,19 +1511,6 @@ export default function MobileTaskList({
                   setInspectors((filters.inspector || []).map(String))
                   setPage(1)
                 }}
-                onSaved={async context => {
-                  const scrollContainer = pageRootRef.current?.closest('main') as HTMLElement | null
-                  const scrollTop = scrollContainer?.scrollTop || window.scrollY
-                  await load(page, false, true)
-                  if (context?.taskKey) {
-                    window.requestAnimationFrame(() => {
-                      const anchor = pageRootRef.current?.querySelector<HTMLElement>(`[data-mobile-task-row-key="${CSS.escape(context.taskKey)}"]`)
-                      if (anchor) anchor.scrollIntoView({ block: 'center', behavior: 'auto' })
-                      if (scrollContainer) scrollContainer.scrollTop = scrollTop
-                      else window.scrollTo({ top: scrollTop, behavior: 'auto' })
-                    })
-                  }
-                }}
               />
             </div>
           )}
