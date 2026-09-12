@@ -612,3 +612,10 @@ order: 999
 
 - 后续每一步应追加独立提交、测试结果和失败证据。
 - 最终同步完成后，在 `docs/future-plans.md` 或单独计划中记录分叉点、同步范围、结果和定期同步/CI 检查机制。
+
+## 第一步实施记录：development 环境兼容
+
+- 提交：`7e37b0fe`（基于本报告提交 `30f0e9d9`）。
+- 范围：仅将 dev 的 `backend/config.py` 环境枚举扩展为接受 `development`，并增加对应的配置单元测试；没有覆盖 dev 的事件流配置、查询网格或其他业务逻辑。
+- 验证：后端完整单元测试 `898 passed`；部署测试 `68 passed, 1 skipped`；前端测试 `305 passed`；前端生产构建通过；`git diff --check` 通过。
+- 结论：dev 后端现在可以解析服务器使用的 `APP_ENVIRONMENT=development`，但尚未同步版本号或部署工具链，不能据此部署 `566a662d`。
