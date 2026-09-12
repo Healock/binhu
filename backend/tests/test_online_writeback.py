@@ -1276,7 +1276,7 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             [item["text"] for item in metadata["核查结果"]["options"]],
             [
                 "已登记", "无法核实", "待登记", "移交（所内）",
-                "移交（所外）", "移交", "无需登记", "离苏",
+                "移交（所外）", "无需登记", "离苏",
             ],
         )
         self.assertEqual(
@@ -1287,7 +1287,6 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
                 {"id": "待登记", "text": "待登记"},
                 {"id": "移交（所内）", "text": "移交（所内）"},
                 {"id": "移交（所外）", "text": "移交（所外）"},
-                {"id": "移交", "text": "移交"},
                 {"id": "无需登记", "text": "无需登记"},
                 {"id": "离苏", "text": "离苏"},
             ],
@@ -1340,6 +1339,22 @@ class OnlineWritebackTests(unittest.IsolatedAsyncioTestCase):
             [item["text"] for item in metadata["核查反馈"]["write_options"]],
             ["无需登记", "已登记", "待登记", "移交", "移交，移交哪个社区写备注", "无法核实", "离苏"],
         )
+
+    async def test_fullchain_legacy_transfer_is_not_editable(self):
+        parser = get_parser("全链条")
+        metadata = await _managed_column_metadata(
+            ManagedMetadataCursor(),
+            parser,
+            {"核查结果": {
+                "type": "select",
+                "options": [{"id": "legacy", "text": "移交"}],
+            }},
+        )
+
+        texts = [item["text"] for item in metadata["核查结果"]["options"]]
+        self.assertNotIn("移交", texts)
+        self.assertIn("移交（所内）", texts)
+        self.assertIn("移交（所外）", texts)
 
 
     async def test_business_fallback_options_validate_select_text_writeback(self):

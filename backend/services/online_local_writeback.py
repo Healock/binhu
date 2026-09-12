@@ -28,6 +28,7 @@ from services.parsers import get_parser
 from services.task_workflow import (
     TASK_WORKFLOWS,
     canonical_result_option,
+    editable_result_option_allowed,
 )
 from services.txdocs_client import TxDocsAPIError, TxDocsClient
 
@@ -63,7 +64,12 @@ def writeback_cell_metadata(
         text = canonical_result_option(
             parser_type, str(option.get("text") or "").strip()
         )
-        if not option_id or not text or text in known_texts:
+        if (
+            not option_id
+            or not text
+            or not editable_result_option_allowed(parser_type, text)
+            or text in known_texts
+        ):
             continue
         normalized = dict(option)
         normalized["id"] = option_id
@@ -73,7 +79,7 @@ def writeback_cell_metadata(
 
     for text in workflow.result_options:
         text = canonical_result_option(parser_type, text)
-        if text == "已登记":
+        if text == "已登记" or not editable_result_option_allowed(parser_type, text):
             continue
         if text not in known_texts:
             options.append({"id": text, "text": text})

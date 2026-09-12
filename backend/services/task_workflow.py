@@ -27,6 +27,17 @@ def canonical_result_option(parser_type: str, value: str) -> str:
     return text
 
 
+def editable_result_option_allowed(parser_type: str, value: str) -> bool:
+    """Return whether a result may be newly selected in the task editor.
+
+    ``移交`` is a legacy full-chain value kept for historical rows and the
+    review/archive workflow.  New edits must choose the explicit internal or
+    external transfer variant so that the transfer destination is never
+    ambiguous.
+    """
+    return not (parser_type == "全链条" and str(value or "").strip() == "移交")
+
+
 def canonical_result_options(
     parser_type: str,
     options: list[dict] | tuple[dict, ...],
@@ -41,7 +52,12 @@ def canonical_result_options(
         text = canonical_result_option(
             parser_type, str(option.get("text") or "").strip()
         )
-        if not option_id or not text or text in seen:
+        if (
+            not option_id
+            or not text
+            or not editable_result_option_allowed(parser_type, text)
+            or text in seen
+        ):
             continue
         normalized = dict(option)
         normalized["id"] = option_id
@@ -172,7 +188,7 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         secondary_fields=("二次反馈",),
         result_options=(
             "已登记", "待登记", "无法核实", "移交（所内）", "移交（所外）",
-            "移交", "无需登记", "离苏",
+            "无需登记", "离苏",
         ),
     ),
     "出租房屋核查": TaskWorkflow(

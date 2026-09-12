@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from openpyxl import Workbook, load_workbook
 
 from routers.fullchain_archive import (
+    REVIEW_RESULTS,
     CandidateSearch,
     POLICE_RAW_RETIRED_MESSAGE,
     _candidate_rows,
@@ -177,11 +178,12 @@ class FullchainArchiveTests(unittest.TestCase):
                 self.assertIn(column, init_sql)
                 self.assertIn(column, runtime_schema)
 
-    def test_transfer_options_are_split_but_legacy_value_remains_readable(self):
+    def test_transfer_options_are_split_and_legacy_value_is_not_newly_editable(self):
         options = TASK_WORKFLOWS["全链条"].result_options
         self.assertIn("移交（所内）", options)
         self.assertIn("移交（所外）", options)
-        self.assertIn("移交", options)
+        self.assertNotIn("移交", options)
+        self.assertIn("移交", REVIEW_RESULTS)
 
     def test_report_category_prefers_specific_transfer_value(self):
         builder = BaseReportBuilder()
