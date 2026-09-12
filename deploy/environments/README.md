@@ -60,6 +60,15 @@ contract, durable delivery ledger, fixed Flink aggregation and revision-fenced
 Redis bridge. Its preparation/startup and minimal synthetic acceptance are separate
 from schema-registry, recovery and full business integration acceptance.
 
+Before a Dev runtime acceptance, verify the current Bootstrap identity with
+`python -m deploy.environments.dev_bootstrap_acceptance verify
+--expected-version <candidate-version>`. The verifier uses only the fixed
+loopback Dev endpoint. It requires `server_version`, `environment=development`,
+`environment_id=development`, `api_entry=/dev/api`, `environment_label=Dev 环境 ·
+虚构数据`, and `data_kind=虚构或脱敏开发数据`. Its report contains only these
+allowlisted identity values. Do not replace `server_version` with the obsolete
+`version` field or `/dev/api` with the obsolete `/dev-api` entry.
+
 ## Immutable candidate packages
 
 `python -m deploy.environments.artifact build --repository <checkout> --commit
