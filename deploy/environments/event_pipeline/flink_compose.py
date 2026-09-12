@@ -37,6 +37,7 @@ taskmanager.memory.network.max: 32m
 taskmanager.memory.managed.size: 64m
 taskmanager.numberOfTaskSlots: 1
 """
+APPROVED_PIDS_LIMIT = 256
 
 
 def _image(value: str) -> str:
@@ -132,12 +133,20 @@ def _without_environment_labels(spec: dict) -> dict:
     return value
 
 
+def _without_approved_runtime_limits(spec: dict) -> dict:
+    value = copy.deepcopy(spec)
+    for service in ("jobmanager", "taskmanager"):
+        if value["services"][service].get("pids_limit") == APPROVED_PIDS_LIMIT:
+            value["services"][service].pop("pids_limit")
+    return value
+
+
 def measure(image: str, artifact_root: Path) -> dict:
     if TARGET.is_symlink() or TARGET.parent != ROOT or not TARGET.is_file():
         raise ValueError("fixed Dev Flink Compose file required")
     current = json.loads(TARGET.read_text(encoding="utf-8"))
     expected = specification(image, artifact_root)
-    if _without_environment_labels(current) != _without_environment_labels(expected):
+    if _without_approved_runtime_limits(_without_environment_labels(current)) != _without_approved_runtime_limits(_without_environment_labels(expected)):
         raise ValueError("Dev Flink Compose differs beyond the approved labels")
     labels = {
         service: current["services"][service].get("labels", {}).get("binhu.environment")
@@ -148,14 +157,22 @@ def measure(image: str, artifact_root: Path) -> dict:
         "project": PROJECT,
         "target": str(TARGET),
         "labels": labels,
-        "requires_update": any(value != "development" for value in labels.values()),
+        "labels_update_required": any(value != "development" for value in labels.values()),
+        "requires_update": any(value != "development" for value in labels.values()) or any(
+            current["services"][service].get("pids_limit") != APPROVED_PIDS_LIMIT
+            for service in ("jobmanager", "taskmanager")
+        ),
         "other_changes": False,
+        "pids_limit": {
+            service: current["services"][service].get("pids_limit")
+            for service in ("jobmanager", "taskmanager")
+        },
     }
 
 
 def apply(image: str, artifact_root: Path, evidence_id: str) -> dict:
     before = measure(image, artifact_root)
-    if not re.fullmatch(r"dev-flink-label-[0-9a-f]{16}", evidence_id or ""):
+    if not re.fullmatch(r"dev-flink-(?:label|runtime)-[0-9a-f]{16}", evidence_id or ""):
         raise ValueError("fresh Dev Flink label evidence ID required")
     evidence = EVIDENCE_ROOT / evidence_id
     if evidence.exists() or evidence.is_symlink():
@@ -182,7 +199,8 @@ def apply(image: str, artifact_root: Path, evidence_id: str) -> dict:
         "evidence_id": evidence_id,
         "before_sha256": hashlib.sha256(original).hexdigest(),
         "after_sha256": hashlib.sha256(payload).hexdigest(),
-        "labels_added": before["requires_update"],
+        "labels_added": before["labels_update_required"],
+        "pids_limit_updated": before["pids_limit"] != {"jobmanager": APPROVED_PIDS_LIMIT, "taskmanager": APPROVED_PIDS_LIMIT},
         "verified": not after["requires_update"],
     }
     target = evidence / "result.json"
