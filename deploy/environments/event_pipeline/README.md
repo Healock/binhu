@@ -53,6 +53,11 @@
    `--no-deps --force-recreate` 滚动重建，每个 broker 都要等 ISR 完整后再处理
    下一个；不得执行 `down`、`down -v`，也不得重建网络或数据卷。完成后执行
    `event_pipeline.kafka_compose verify` 核对容器、项目、网络和原数据卷身份。
+   三个 broker 的 Compose 还必须显式设置 Docker `json-file` 日志轮换
+   `max-size=5m`、`max-file=2`；该限制由生成/修补工具和运行时 verify 同时核对，
+   防止 broker 日志无限增长。Flink JobManager 与 TaskManager 必须显式设置
+   `pids_limit=256`，并保留既有 CPU、内存和日志限制；这些资源门禁缺失时不得进入
+   后续事件验收。
    2026-09-12 对当前 14 个 Dev 容器和 7 个唯一镜像的 `VOLUME` 声明再次完成核对：
    MySQL 的 `/var/lib/mysql` 与 Redis 的 `/data` 均由 Dev 命名卷覆盖，三个
    pipeline worker 的 `/tmp` 已使用 tmpfs，Backend、Flink 和 Schema Registry

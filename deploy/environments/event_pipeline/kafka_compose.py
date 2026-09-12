@@ -46,9 +46,14 @@ BROKER_TMPFS = tuple(
     for value in BROKER_EPHEMERAL_STORAGE.values()
 )
 BROKER_TMPFS_PATHS = tuple(value["target"] for value in BROKER_EPHEMERAL_STORAGE.values())
+BROKER_LOGGING = {
+    "driver": "json-file",
+    "options": {"max-size": "5m", "max-file": "2"},
+}
 LEGACY_MODEL_SHA256 = "756812ddb694773504874e53d1e76efccd14fc38fe364e7a45ffb3cf6e6aeb28"
 HOST_TMPFS_MODEL_SHA256 = "35cbd9a64d8a1d433c09359026e392dba0f37326f3735efea2a01d3e88f81ced"
-APPROVED_MODEL_SHA256 = "8691774b69e3dd2219d4cc19dd24ce2a0d446636cefcf08d46f4dceda1514278"
+PREVIOUS_APPROVED_MODEL_SHA256 = "8691774b69e3dd2219d4cc19dd24ce2a0d446636cefcf08d46f4dceda1514278"
+APPROVED_MODEL_SHA256 = "a568a7dbd3deb788f8a00a0beca85f68c886366786ae16124ba0b68750b91999"
 
 
 def _sha256(payload: bytes) -> str:
@@ -96,6 +101,16 @@ def _broker_service_volume_lines(service: str, newline: str) -> list[str]:
             f"      - {_broker_volume_name(service, suffix)}:{definition['target']}{newline}"
             for suffix, definition in BROKER_EPHEMERAL_STORAGE.items()
         ],
+    ]
+
+
+def _broker_logging_lines(newline: str) -> list[str]:
+    return [
+        f"    logging:{newline}",
+        f"      driver: json-file{newline}",
+        f"      options:{newline}",
+        f"        max-size: 5m{newline}",
+        f"        max-file: 2{newline}",
     ]
 
 
@@ -190,6 +205,33 @@ def patch_runtime_guardrails(text: str) -> str:
             lines.insert(label_start + 1, f"      binhu.environment: development{newline}")
     blocks = _service_blocks(lines)
     for service in reversed(BROKER_SERVICES):
+        start, end = blocks[service]
+        logging_lines = [
+            index
+            for index in range(start + 1, end)
+            if re.fullmatch(r"    logging:\s*", lines[index].rstrip("\r\n"))
+        ]
+        if len(logging_lines) > 1:
+            raise ValueError(f"{service} has duplicate logging blocks")
+        expected_logging = _broker_logging_lines(newline)
+        if logging_lines:
+            logging_start = logging_lines[0]
+            logging_end = end
+            for index in range(logging_start + 1, end):
+                body = lines[index].rstrip("\r\n")
+                if body and not body.startswith("      "):
+                    logging_end = index
+                    break
+            if lines[logging_start:logging_end] != expected_logging:
+                raise ValueError(f"{service} has unexpected logging configuration")
+        else:
+            insert_at = next(
+                (index for index in range(start + 1, end)
+                 if re.match(r"    (?:networks|volumes):", lines[index].rstrip("\r\n"))),
+                end,
+            )
+            lines[insert_at:insert_at] = expected_logging
+        blocks = _service_blocks(lines)
         start, end = blocks[service]
         tmpfs_lines = [
             index
@@ -332,9 +374,21 @@ def _without_approved_ephemeral_storage(specification: dict) -> dict:
     return value
 
 
+def _without_approved_resource_limits(specification: dict) -> dict:
+    """Remove only the reviewed broker logging guardrail for baseline comparison."""
+    value = copy.deepcopy(specification)
+    for service in BROKER_SERVICES:
+        logging = value["services"][service].get("logging")
+        if logging is not None:
+            if logging != BROKER_LOGGING:
+                raise ValueError(f"{service} has unapproved logging configuration")
+            value["services"][service].pop("logging")
+    return value
+
+
 def _without_approved_tmpfs(specification: dict) -> dict:
     """Compatibility alias retained for callers of the first tmpfs patch."""
-    return _without_approved_ephemeral_storage(specification)
+    return _without_approved_resource_limits(_without_approved_ephemeral_storage(specification))
 
 
 def _model_sha256(specification: dict) -> str:
@@ -376,6 +430,7 @@ def measure() -> dict:
     if current_model_sha256 not in {
         LEGACY_MODEL_SHA256,
         HOST_TMPFS_MODEL_SHA256,
+        PREVIOUS_APPROVED_MODEL_SHA256,
         APPROVED_MODEL_SHA256,
     }:
         raise ValueError("Dev event-bus Compose is not the reviewed baseline")
@@ -384,9 +439,10 @@ def measure() -> dict:
     if current_model_sha256 != APPROVED_MODEL_SHA256:
         current_without_labels = _without_approved_labels(current_model)
         target_without_labels = _without_approved_labels(proposed_model)
-        if (
+        if _without_approved_resource_limits(
             _without_approved_ephemeral_storage(target_without_labels)
-            != _without_approved_ephemeral_storage(current_without_labels)
+        ) != _without_approved_resource_limits(
+            _without_approved_ephemeral_storage(current_without_labels)
         ):
             raise ValueError("Dev event-bus Compose differs beyond approved runtime changes")
     elif _without_approved_labels(current_model) != _without_approved_labels(proposed_model):
@@ -548,6 +604,9 @@ def verify_runtime() -> dict:
             or anonymous_volumes
         ):
             raise ValueError(f"{service} runtime identity mismatch")
+        logging = (item.get("HostConfig", {}).get("LogConfig") or {})
+        if logging.get("Type") != BROKER_LOGGING["driver"] or logging.get("Config") != BROKER_LOGGING["options"]:
+            raise ValueError(f"{service} log rotation contract mismatch")
         filesystem_types = _checked(
             ["docker", "exec", name, "stat", "-f", "-c", "%T", *BROKER_TMPFS_PATHS]
         ).splitlines()
@@ -564,6 +623,7 @@ def verify_runtime() -> dict:
             "volume": expected_volume,
             "network": NETWORK,
             "tmpfs_backed_volumes": expected_ephemeral_volumes,
+            "logging": BROKER_LOGGING,
         }
 
     network = json.loads(_checked(["docker", "network", "inspect", NETWORK]))[0]
