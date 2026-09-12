@@ -10,7 +10,6 @@ import {
   createQuerySheetClipboardSnapshot,
   fitQuerySheetColumnWidth,
   isQuerySheetExactTextColumn,
-  isQuerySheetFullscreen,
   isQuerySheetAutomaticTextConversion,
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
@@ -26,7 +25,6 @@ import {
   resolveQuerySheetThinBorderStyle,
   selectedQuerySheetRow,
   querySheetEditGenerationMatches,
-  toggleQuerySheetFullscreen,
   updateQuerySheetDrafts,
 } from '../src/utils/querySpreadsheet.ts'
 
@@ -254,26 +252,36 @@ test('查询工作表同时启用标题区域和经典工具栏', () => {
   assert.equal(QUERY_SHEET_UI_CONFIG.header, true)
   assert.equal(QUERY_SHEET_UI_CONFIG.toolbar, true)
   assert.equal(QUERY_SHEET_UI_CONFIG.ribbonType, 'classic')
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /\.setAllowInvalid\(false\)/)
 })
 
-test('查询工作表使用文档根节点全屏以保留工具栏和筛选浮层', async () => {
-  let requested = 0
-  let exited = 0
-  const documentRoot = {
-    requestFullscreen: async () => { requested += 1 },
-  } as unknown as HTMLElement
-  const sheetCard = {} as HTMLElement
+test('查询工作表全屏只切换应用内部布局并提供原生查找按钮', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(pageSource, /setSheetFullscreen\(current => !current\)/)
+  assert.doesNotMatch(pageSource, /requestFullscreen\(|exitFullscreen\(/)
+  assert.match(pageSource, /aria-label="查找"/)
+  assert.match(pageSource, /new KeyboardEvent\('keydown',[\s\S]*?ctrlKey: true/)
+})
 
-  assert.equal(isQuerySheetFullscreen(sheetCard, documentRoot), false)
-  assert.equal(isQuerySheetFullscreen(documentRoot, documentRoot), true)
-
-  await toggleQuerySheetFullscreen(documentRoot, null, async () => { exited += 1 })
-  assert.equal(requested, 1)
-  assert.equal(exited, 0)
-
-  await toggleQuerySheetFullscreen(documentRoot, documentRoot, async () => { exited += 1 })
-  assert.equal(requested, 1)
-  assert.equal(exited, 1)
+test('实时连接未就绪时保存使用 HTTP 入口且不重复显示失败提示', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(pageSource, /isQueryRealtimeUnavailable\(error\)/)
+  assert.match(pageSource, /updateQuerySourceCell\(selectedType, sourceId, payload\)/)
+  assert.doesNotMatch(componentSource, /保存失败，失败单元格已保留；可显式重试/)
 })
 
 test('工作表值筛选和条件筛选转换为完整查询请求', () => {

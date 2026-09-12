@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { connectQueryRealtime, querySocketUrl } from '../src/utils/queryRealtime.ts'
+import {
+  connectQueryRealtime,
+  isQueryRealtimeUnavailable,
+  querySocketUrl,
+} from '../src/utils/queryRealtime.ts'
 
 class Socket {
   readyState = 1
@@ -52,7 +56,10 @@ test('unconnected save fails immediately rather than being queued for replay', a
   const channel = connectQueryRealtime('全链条', () => {}, () => {}, {
     url: 'ws://example.test/api/query/live/test', socketFactory: () => socket as any,
   })
-  await assert.rejects(channel.save(1, { column: 'x', value: 'y', expected_revision: 1 }), /连接/)
+  await assert.rejects(
+    channel.save(1, { column: 'x', value: 'y', expected_revision: 1 }),
+    error => isQueryRealtimeUnavailable(error),
+  )
   assert.equal(socket.sent.length, 0)
   channel.close()
 })

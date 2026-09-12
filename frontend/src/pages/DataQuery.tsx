@@ -34,6 +34,7 @@ import {
   getQueryTypes,
   getQueryWritebackAudit,
   queryData,
+  updateQuerySourceCell,
   type QueryColumnMeta,
   type QueryDataRow,
   type QueryDependentOptions,
@@ -53,14 +54,18 @@ import {
   type QueryDisplayRow as DisplayRow,
 } from '../utils/queryGrid'
 import {
-  isQuerySheetFullscreen,
   queryInspectorMismatch,
   queryInspectorOptions,
-  toggleQuerySheetFullscreen,
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
 } from '../utils/querySpreadsheet'
-import { connectQueryRealtime, type QueryConnectionState, type QueryRealtimeEvent } from '../utils/queryRealtime'
+import {
+  connectQueryRealtime,
+  isQueryRealtimeUnavailable,
+  type QueryConnectionState,
+  type QueryEdit,
+  type QueryRealtimeEvent,
+} from '../utils/queryRealtime'
 import { canEditOnlineQuery } from '../utils/mobileTaskRouting'
 
 const MOBILE_CARD_PAGE_SIZE = 50
@@ -150,34 +155,26 @@ export default function DataQuery() {
     user?.permissions,
   )
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      setSheetFullscreen(isQuerySheetFullscreen(
-        document.fullscreenElement,
-        document.documentElement,
-      ))
-    }
-    document.addEventListener('fullscreenchange', handleFullscreenChange)
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
-  }, [])
-
-  useEffect(() => {
     document.documentElement.classList.toggle('query-sheet-fullscreen-active', sheetFullscreen)
     return () => document.documentElement.classList.remove('query-sheet-fullscreen-active')
   }, [sheetFullscreen])
 
-  const handleSheetFullscreen = useCallback(async () => {
-    try {
-      await toggleQuerySheetFullscreen(
-        document.documentElement,
-        document.fullscreenElement,
-        typeof document.exitFullscreen === 'function'
-          ? () => document.exitFullscreen()
-          : undefined,
-      )
-    } catch {
-      messageApi.error('当前浏览器不支持全屏，请尝试更新浏览器或使用电脑端 Chrome')
-    }
-  }, [messageApi])
+  const handleSheetFullscreen = useCallback(() => {
+    // This is an in-app layout mode. Do not call the browser Fullscreen API:
+    // desktop shells would resize the native window and hide the app chrome.
+    setSheetFullscreen(current => !current)
+  }, [])
+
+  const openSheetSearch = useCallback(() => {
+    // Use the same native Univer Ctrl+F path instead of a second search UI.
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'f',
+      code: 'KeyF',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    }))
+  }, [])
 
   useEffect(() => {
     getQueryTypes()
@@ -440,6 +437,28 @@ export default function DataQuery() {
     [columnMeta],
   )
 
+  const saveQueryCell = useCallback(async (
+    sourceId: number,
+    payload: QueryEdit,
+  ) => {
+    const realtimeSave = queryRealtimeRef.current?.save
+    if (queryRealtimeState === 'connected' && realtimeSave) {
+      try {
+        return await realtimeSave(sourceId, payload)
+      } catch (error) {
+        // A pre-send disconnect is safe to retry over HTTP. Once a socket
+        // request was sent, the outcome is unknown and must not be replayed.
+        if (!isQueryRealtimeUnavailable(error)) throw error
+      }
+    }
+    const result = await updateQuerySourceCell(selectedType, sourceId, payload)
+    return {
+      ...result,
+      row_hash: result.row_hash || payload.expected_row_hash,
+      inspector_mismatch: false,
+    }
+  }, [queryRealtimeState, selectedType])
+
   const handleSheetCommit = useCallback(async (changes: QuerySheetCellChange[]) => {
     if (!queryEditAllowed) {
       throw new Error('当前岗位不能通过在线数据查询修改数据')
@@ -453,9 +472,7 @@ export default function DataQuery() {
         const initialRevision = Number(change.row.__revision)
         if (!sourceId || !initialRevision) throw new Error('缺少本地任务版本')
         const expectedRevision = revisions.get(sourceId) || initialRevision
-        const save = queryRealtimeRef.current?.save
-        if (!save) throw new Error('实时连接尚未就绪，请等待重连后再保存')
-        const result = await save(sourceId, {
+        const result = await saveQueryCell(sourceId, {
           column: change.column,
           value: change.after,
           expected_revision: expectedRevision,
@@ -497,7 +514,7 @@ export default function DataQuery() {
       })
       throw commitError
     }
-  }, [fetchData, messageApi, queryEditAllowed, selectedType])
+  }, [messageApi, queryEditAllowed, saveQueryCell])
 
   const openAdd = () => {
     setAddValues(Object.fromEntries(columns.map(column => [column, ''])))
@@ -555,12 +572,10 @@ export default function DataQuery() {
     }
     setDrawerSaving(true)
     try {
-      const save = queryRealtimeRef.current?.save
-      if (!save) throw new Error('实时连接尚未就绪，请等待重连后再保存')
       await saveChangedSourceFields(
         selectedDrawerSource,
         drawerDraft,
-        (column, value, expectedRevision, expectedRowHash) => save(selectedDrawerSource.id, {
+        (column, value, expectedRevision, expectedRowHash) => saveQueryCell(selectedDrawerSource.id, {
             column,
             value,
             expected_revision: expectedRevision,
@@ -846,6 +861,15 @@ export default function DataQuery() {
                 {queryRealtimeState === 'forbidden' ? '实时编辑无权限' : '实时编辑连接中'}
               </Tag>
             )}
+            <Button
+              size="small"
+              icon={<SearchOutlined />}
+              title="使用 Univer 原生查找（Ctrl+F）"
+              aria-label="查找"
+              onClick={openSheetSearch}
+            >
+              查找
+            </Button>
             <Button
               size="small"
               icon={sheetFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}

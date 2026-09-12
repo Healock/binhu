@@ -20,6 +20,18 @@ export interface QueryEditResult {
 export type QueryConnectionState = 'connecting' | 'connected' | 'disconnected' | 'forbidden'
 export type QueryRealtimeEvent = Record<string, unknown> & { type: string }
 
+export interface QueryRealtimeUnavailableError extends Error {
+  code: 'query_realtime_unavailable'
+}
+
+export function isQueryRealtimeUnavailable(error: unknown): error is QueryRealtimeUnavailableError {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && (error as { code?: unknown }).code === 'query_realtime_unavailable',
+  )
+}
+
 export function querySocketUrl(apiUrl: string, origin: string): string {
   const url = new URL(apiUrl, origin)
   if (!['https:', 'http:'].includes(url.protocol)) throw new Error('非法实时连接地址')
@@ -139,7 +151,10 @@ export function connectQueryRealtime(
     },
     save(sourceId: number, payload: QueryEdit): Promise<QueryEditResult> {
       if (stopped || !socket || socket.readyState !== 1) {
-        return Promise.reject(new Error('实时连接尚未就绪，请等待重连后再保存'))
+        return Promise.reject(Object.assign(
+          new Error('实时连接尚未就绪'),
+          { code: 'query_realtime_unavailable' as const },
+        ))
       }
       const requestId = `${prefix}_${++sequence}`
       return new Promise((resolve, reject) => {

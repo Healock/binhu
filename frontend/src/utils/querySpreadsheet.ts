@@ -236,34 +236,6 @@ export function resolveQuerySheetColumnWidth(column: string, values: unknown[]):
   return fitQuerySheetColumnWidth(column, measuredWidth)
 }
 
-export function isQuerySheetFullscreen(
-  activeElement: Element | null,
-  documentRoot: HTMLElement | null,
-): boolean {
-  return Boolean(documentRoot && activeElement === documentRoot)
-}
-
-export async function toggleQuerySheetFullscreen(
-  documentRoot: HTMLElement | null,
-  activeElement: Element | null,
-  exitFullscreen?: () => Promise<void>,
-): Promise<void> {
-  if (!documentRoot) throw new Error('fullscreen_target_missing')
-  if (activeElement === documentRoot) {
-    if (!exitFullscreen) throw new Error('fullscreen_not_supported')
-    await exitFullscreen()
-    return
-  }
-  if (activeElement) {
-    if (!exitFullscreen) throw new Error('fullscreen_not_supported')
-    await exitFullscreen()
-  }
-  if (typeof documentRoot.requestFullscreen !== 'function') {
-    throw new Error('fullscreen_not_supported')
-  }
-  await documentRoot.requestFullscreen()
-}
-
 export interface QuerySheetPalette {
   background: string
   border: string
