@@ -626,3 +626,11 @@ order: 999
 - 范围：将根目录 `VERSION` 与现有版本同步脚本覆盖的前端、桌面、Win7、Win10、Android、Cargo 和锁文件版本统一为 `0.28.20`；未引入 main 的业务实现或环境工具链。
 - 验证：`desktop/scripts/sync_versions.py --check` 通过；后端完整单元测试 `898 passed`；部署测试 `68 passed, 1 skipped`；前端测试 `305 passed`；前端生产构建通过；`git diff --check` 通过。
 - 结论：dev 版本元数据已与当前 Dev 运行版本一致，可作为后续部署工具链同步的基线；PR #613 原始提交仍不可直接部署，后续需在该基线上重新适配并生成新的完整提交。
+
+## 第三步实施记录：Dev 部署工具链
+
+- 提交：`ce14a927`。
+- 范围：从当前 `origin/main` 精确引入 `deploy/environments` 的制品、镜像、运行时、数据库身份和 Dev 更新模块，以及 `backend/environment_static.py` 和对应的 6 个测试文件；没有引入 Staging 数据工具，也没有覆盖 dev 的事件流实现。
+- 静态检查：部署工具 CLI 帮助、Python 编译和 `git diff --check` 通过。
+- 验证：后端完整单元测试 `898 passed`；部署测试 `99 passed, 1 skipped`；前端测试 `305 passed`；前端生产构建通过。
+- 结论：dev 现在具备 `measure-development` / `apply-development` 所需的代码入口，但尚未在服务器上执行；服务器实际目录、Compose 项目和 Dev 八库隔离仍需作为部署前门禁再次核对。
