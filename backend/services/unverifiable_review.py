@@ -640,8 +640,18 @@ def _flow_matches_source(flow: dict[str, Any], source: dict[str, Any]) -> bool:
 async def reconcile_unverifiable_source_contexts(
     cur,
     parser_type: str | None = None,
+    *,
+    batch_size: int = 100,
 ) -> int:
-    """Persistently pause active flows whose unique Tencent source changed."""
+    """Pause changed source contexts in a bounded, non-blocking batch.
+
+    This reconciliation is a derived consistency check.  It must not hold a
+    range lock over every active flow while users are saving tasks.  A bounded
+    ``SKIP LOCKED`` batch lets the next scheduler pass pick up rows that were
+    busy, while keeping the business write path responsive.
+    """
+    if type(batch_size) is not int or not 1 <= batch_size <= 1000:
+        raise ValueError("invalid reconciliation batch size")
     params: list[Any] = [
         INITIAL_PENDING,
         INITIAL_EXTENSION,
@@ -669,9 +679,10 @@ async def reconcile_unverifiable_source_contexts(
          AND projection.row_key=flow.row_key
         WHERE flow.state IN (%s,%s,%s,%s,%s,%s){parser_clause}
         ORDER BY flow.id
-        FOR UPDATE
+        LIMIT %s
+        FOR UPDATE SKIP LOCKED
         """,
-        params,
+        [*params, batch_size],
     )
     paused = 0
     for row in await cur.fetchall():
@@ -1003,7 +1014,8 @@ async def reconcile_unverifiable_once() -> int:
                     WHERE flow.state IN (%s,%s)
                       AND flow.review_due_date < %s
                     ORDER BY flow.review_due_date,flow.id
-                    FOR UPDATE
+                    LIMIT 100
+                    FOR UPDATE SKIP LOCKED
                 """, (INITIAL_EXTENSION, DEEP_EXTENSION, business_date))
                 rows = await cur.fetchall()
                 for row in rows:

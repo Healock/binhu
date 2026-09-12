@@ -9,6 +9,7 @@
 | 项目 | 当前状态 | 文档 |
 | --- | --- | --- |
 | 事件总线与实时计算基础设施 | dev 长期架构线承接；历史停止线及待验收项保留 | [事件总线与实时计算基础设施](future-plans/eventbus-realtime-infrastructure.md) |
+| Dev Kafka、Flink 与 Redis 架构升级 | Dev 元数据链路已合入主线，开发验收中；未切换生产 | [Dev Kafka、Flink 与 Redis 架构升级](future-plans/dev-kafka-flink-redis-runtime.md) |
 | 腾讯表时代数据模型退场 | 长期迁移规划，实施前重新盘点 | [腾讯表时代数据模型退场](future-plans/legacy-task-model-retirement.md) |
 | 生产接口拥堵诊断与抗压治理 | 排查记录已归档，整改另行推进 | [生产接口拥堵治理](future-plans/production-congestion-observability.md) |
 | 外部出勤和请假系统对接 | 已确定方向，未开始 | [外部出勤和请假系统](future-plans/external-attendance-leave.md) |
