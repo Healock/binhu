@@ -434,6 +434,54 @@ Agent 开始较大的功能、修复或数据库改动前，先按本页确定�
 CI 通过或创建标签都不能自动触发生产切换。数据库备份范围仍按本页和运维手册判断，不能为了省时间统一选择
 `none`。同一时刻只允许一个生产发布任务。
 
+### 4.1 Dev、Staging 与 Production 的部署台账
+
+环境运行时不要求保留 Git 工作区，但每次切换都必须绑定一个不可变制品或镜像，
+并在环境专用的固定路径保存部署台账。台账至少包含以下字段：
+
+```json
+{
+  "environment": "development",
+  "deployed_commit": "完整 40 位提交号",
+  "deployed_version": "0.28.20",
+  "artifact_id": "制品或镜像摘要",
+  "deployed_at": "UTC 时间",
+  "source_branch": "来源分支或 tag",
+  "workflow_run_id": "CI 运行号",
+  "included_prs": [613]
+}
+```
+
+建议固定写入服务器的环境私有目录，例如
+`/srv/deploy-backups/environment-triad/deployment-ledger/development.json`；真实路径
+以该环境部署脚本的配置为准。台账不得写入密码、令牌、业务正文或完整日志，更新时保留
+上一份可回退记录和对应制品摘要。`deployed_version` 只是产品版本，不能单独表示环境中
+运行了哪些 PR；页面或 Bootstrap 可以组合显示为 `0.28.20-dev+5112279a`。
+
+核对某个已经合并的 PR 是否进入某个环境时，取 PR 的 merge commit 和台账中的
+`deployed_commit`，在同一份 Git 引用上执行：
+
+```bash
+git merge-base --is-ancestor <pr-merge-commit> <deployed-commit>
+```
+
+命令成功才表示该 PR 已包含在环境提交中。未合并 PR 如果经过审批直接部署其分支制品，
+必须把该分支和精确 `deployed_commit` 记录为来源，并把 PR 编号作为直接部署项，不能将其
+标记成已经进入 `main`。检查清单应同时展示环境提交、制品摘要、部署时间和来源分支，
+而不是只比较版本号。
+
+Dev 可以运行长期独立于 `main` 的开发分支。若同一功能在 Dev 架构和主线架构需要不同
+实现，应分别建立目标为 `dev` 和 `main` 的 PR，并在各自台账中记录对应提交；不要通过
+复制 commit、修改版本号或手工覆盖文件制造“同一个 PR 已进入两个环境”的假象。Dev 验收
+通过后，Staging 和 Production 应晋级同一个已验收的不可变制品，并分别记录各自的
+`deployed_commit`、摘要和验收运行号。
+
+推荐的晋级顺序是：开发分支/PR → Dev 制品 → Dev 验收 → 合并 `main` → 同一制品进入
+Staging → Staging 验收 → Production。没有专用 Dev 工作流时，应复用已经审核过的
+`artifact build → image build/verify → measure-development → apply-development` 流程；
+如果服务器没有授权入口或部署脚本，先记录缺口，不得使用生产发布网关或临时 SSH 命令
+替代 Dev 部署。
+
 ### 5. 数据迁移分成三步
 
 涉及数据库时固定执行：
