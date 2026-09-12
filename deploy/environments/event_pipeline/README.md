@@ -43,16 +43,22 @@
    `event_pipeline.kafka_compose measure` 证明除身份标签和已批准的临时挂载外
    没有任何差异，再执行 `apply`：移除旧 `binhu.shadow` 标签、写入
    `binhu.environment=development`，并把上游 Kafka 镜像声明但未由 Compose
-   覆盖的空目录 `/etc/kafka/secrets`、`/mnt/shared/config` 显式挂载为限额
-   tmpfs，避免重建后留下无环境身份的匿名卷。`/var/lib/kafka/data` 继续使用
+   覆盖的空目录 `/etc/kafka/secrets`、`/mnt/shared/config` 分别挂载为每个 broker
+   独立的具名 tmpfs-backed volume，避免 Docker 先按镜像 `VOLUME` 声明创建匿名卷。
+   不得只使用 Compose 的 service-level `tmpfs:`：这种写法虽然会把容器内实际文件
+   系统覆盖为 tmpfs，Docker 仍会保留镜像声明生成的匿名 volume。每个具名卷必须
+   使用 local driver 的 `type=tmpfs`、固定 uid/gid、权限和容量。
+   `/var/lib/kafka/data` 继续使用
    原有三个 Dev 命名卷。Kafka 只允许按 1、2、3 逐个使用
    `--no-deps --force-recreate` 滚动重建，每个 broker 都要等 ISR 完整后再处理
    下一个；不得执行 `down`、`down -v`，也不得重建网络或数据卷。完成后执行
    `event_pipeline.kafka_compose verify` 核对容器、项目、网络和原数据卷身份。
-   2026-09-12 对当前 14 个 Dev 容器和 7 个唯一镜像的 `VOLUME` 声明完成核对：
+   2026-09-12 对当前 14 个 Dev 容器和 7 个唯一镜像的 `VOLUME` 声明再次完成核对：
    MySQL 的 `/var/lib/mysql` 与 Redis 的 `/data` 均由 Dev 命名卷覆盖，三个
    pipeline worker 的 `/tmp` 已使用 tmpfs，Backend、Flink 和 Schema Registry
-   当前镜像没有未覆盖声明；只有 Kafka 的上述两个空目录会产生匿名卷。以后更换
+   当前镜像没有未覆盖声明；只有 Kafka 的上述两个空目录会产生匿名卷。刷新审计
+   证据保存在服务器 `dev-volume-audit-20260912-0ec4f48b43d44ce0` 目录，报告哈希为
+   `c6441d5c910c9e74a220e2c16c24b54438a704f265b5f8576354f1023291317b`。以后更换
    任一基础镜像时必须重复核对镜像 `Config.Volumes`、Compose 显式挂载和实际
    容器 Mounts，发现匿名卷时不得进入验收。
    注册 schema、确认作业为 RUNNING 后执行 `event_pipeline.verify seed`，
