@@ -288,15 +288,21 @@ test('查询工作表同时启用标题区域和经典工具栏', () => {
   assert.match(componentSource, /\.setAllowInvalid\(false\)/)
 })
 
-test('查询工作表全屏只切换应用内部布局并提供原生查找按钮', () => {
+test('查询工作表全屏只切换应用内部布局并使用 Univer 原生查找', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/DataQuery.tsx', import.meta.url),
     'utf8',
   )
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
   assert.match(pageSource, /setSheetFullscreen\(current => !current\)/)
   assert.doesNotMatch(pageSource, /requestFullscreen\(|exitFullscreen\(/)
-  assert.match(pageSource, /aria-label="查找"/)
-  assert.match(pageSource, /new KeyboardEvent\('keydown',[\s\S]*?ctrlKey: true/)
+  assert.doesNotMatch(pageSource, /new KeyboardEvent\('keydown'/)
+  assert.doesNotMatch(pageSource, /aria-label="查找"/)
+  assert.match(componentSource, /UniverSheetsFindReplacePreset\(\)/)
+  assert.match(componentSource, /QUERY_SHEET_UI_CONFIG/)
 })
 
 test('实时连接未就绪时保存使用 HTTP 入口且不重复显示失败提示', () => {

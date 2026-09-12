@@ -12,13 +12,16 @@ try {
   await page.goto('http://127.0.0.1:5207/tests/queryEditorScroll.fixture.html')
   await page.locator('.query-spreadsheet canvas').first().waitFor()
   await page.waitForTimeout(500)
+  await page.getByRole('tab', { name: '数据' }).click()
+  const nativeFindButton = page.locator('[data-u-command="ui.operation.open-find-dialog"]')
+  assert.ok((await nativeFindButton.count()) >= 1)
   const info = await page.evaluate(() => ({
     canvases: document.querySelectorAll('.query-spreadsheet canvas').length,
     inputs: document.querySelectorAll('.query-spreadsheet input, .query-spreadsheet textarea').length,
   }))
   assert.ok(info.canvases > 0)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ ...info, result: 'fixture-mounted' }))
+  console.log(JSON.stringify({ ...info, nativeFindButton: true, result: 'fixture-mounted' }))
 } finally {
   await browser.close()
   await server.close()
