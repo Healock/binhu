@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 import unittest
 import tempfile
 from pathlib import Path
@@ -71,18 +72,21 @@ services:
       binhu.shadow: \"true\"
       binhu.development.run_id: dev-test-1
     networks: [internal]
+    volumes: [kafka-1-data:/var/lib/kafka/data]
   kafka-2:
     image: kafka
     labels:
       binhu.shadow: \"true\"
       binhu.development.run_id: dev-test-1
     networks: [internal]
+    volumes: [kafka-2-data:/var/lib/kafka/data]
   kafka-3:
     image: kafka
     labels:
       binhu.shadow: \"true\"
       binhu.development.run_id: dev-test-1
     networks: [internal]
+    volumes: [kafka-3-data:/var/lib/kafka/data]
   schema-registry:
     image: registry
     labels:
@@ -91,13 +95,23 @@ services:
 networks:
   internal:
     internal: true
+volumes:
+  kafka-1-data: {}
+  kafka-2-data: {}
+  kafka-3-data: {}
 """
         patched = kafka_compose.patch_runtime_guardrails(source)
         self.assertEqual(patched.count("binhu.environment: development"), 4)
         self.assertNotIn("binhu.shadow", patched)
-        self.assertEqual(patched.count("    tmpfs:"), 3)
-        for value in kafka_compose.BROKER_TMPFS:
-            self.assertEqual(patched.count(f"      - {value}"), 3)
+        self.assertNotIn("    tmpfs:", patched)
+        self.assertEqual(patched.count("    driver: local"), 6)
+        self.assertEqual(patched.count("      type: tmpfs"), 6)
+        for service in kafka_compose.BROKER_SERVICES:
+            for suffix, definition in kafka_compose.BROKER_EPHEMERAL_STORAGE.items():
+                volume = f"{service}-{suffix}"
+                self.assertIn(f"      - {volume}:{definition['target']}", patched)
+                self.assertIn(f"  {volume}:\n", patched)
+                self.assertIn(f"      o: {definition['options']}", patched)
         self.assertEqual(kafka_compose.patch_runtime_guardrails(patched), patched)
         self.assertIn("binhu.development.run_id: dev-test-1", patched)
 
@@ -136,8 +150,26 @@ networks:
         for service in kafka_compose.BASE_SERVICES:
             target["services"][service]["labels"].pop("binhu.shadow")
             target["services"][service]["labels"]["binhu.environment"] = "development"
+        base["volumes"] = {}
+        target["volumes"] = {}
         for service in kafka_compose.BROKER_SERVICES:
-            target["services"][service]["tmpfs"] = list(kafka_compose.BROKER_TMPFS)
+            data_mount = {
+                "type": "volume",
+                "source": f"{service}-data",
+                "target": "/var/lib/kafka/data",
+            }
+            base["services"][service]["volumes"] = [data_mount]
+            target["services"][service]["volumes"] = [copy.deepcopy(data_mount)]
+            base["volumes"][f"{service}-data"] = {}
+            target["volumes"][f"{service}-data"] = {}
+            for suffix, definition in kafka_compose.BROKER_EPHEMERAL_STORAGE.items():
+                name = f"{service}-{suffix}"
+                target["services"][service]["volumes"].append(
+                    {"type": "volume", "source": name, "target": definition["target"]}
+                )
+                target["volumes"][name] = kafka_compose._named_tmpfs_volume_definition(
+                    definition["options"]
+                )
         self.assertEqual(
             kafka_compose._without_approved_labels(base),
             kafka_compose._without_approved_tmpfs(
@@ -159,7 +191,7 @@ networks:
             kafka_compose._model_sha256(changed),
         )
         unexpected_tmpfs = copy.deepcopy(target)
-        unexpected_tmpfs["services"]["kafka-1"]["tmpfs"].append("/unexpected:size=1m")
+        unexpected_tmpfs["volumes"]["kafka-1-secrets-tmpfs"]["driver_opts"]["o"] = "size=1"
         with self.assertRaises(ValueError):
             kafka_compose._without_approved_tmpfs(unexpected_tmpfs)
 
@@ -169,7 +201,10 @@ networks:
             "    labels:\n"
             "      binhu.environment: development\n"
             "    networks: [internal]\n"
+            + (f"    volumes: [{service}-data:/var/lib/kafka/data]\n" if service in kafka_compose.BROKER_SERVICES else "")
             for service in kafka_compose.BASE_SERVICES
+        ) + "volumes:\n" + "".join(
+            f"  {service}-data: {{}}\n" for service in kafka_compose.BROKER_SERVICES
         )
         partial = complete.replace(
             "  kafka-1:\n    labels:",
@@ -177,6 +212,99 @@ networks:
         )
         with self.assertRaises(ValueError):
             kafka_compose.patch_runtime_guardrails(partial)
+
+    def test_eventbus_runtime_verify_requires_named_tmpfs_backed_volumes(self):
+        containers = []
+        for service in kafka_compose.BROKER_SERVICES:
+            mounts = [
+                {
+                    "Type": "volume",
+                    "Name": f"{kafka_compose.PROJECT}_{service}-data",
+                    "Destination": "/var/lib/kafka/data",
+                    "RW": True,
+                }
+            ]
+            for suffix, definition in kafka_compose.BROKER_EPHEMERAL_STORAGE.items():
+                mounts.append(
+                    {
+                        "Type": "volume",
+                        "Name": f"{kafka_compose.PROJECT}_{service}-{suffix}",
+                        "Destination": definition["target"],
+                        "RW": True,
+                    }
+                )
+            containers.append(
+                {
+                    "Name": f"/{kafka_compose.PROJECT}-{service}-1",
+                    "Id": service,
+                    "Image": "sha256:" + "a" * 64,
+                    "State": {"Running": True},
+                    "Config": {
+                        "Labels": {
+                            "com.docker.compose.project": kafka_compose.PROJECT,
+                            "com.docker.compose.service": service,
+                            "binhu.environment": "development",
+                        }
+                    },
+                    "NetworkSettings": {"Networks": {kafka_compose.NETWORK: {}}},
+                    "Mounts": mounts,
+                }
+            )
+
+        def checked(argv, cwd=None):
+            if argv[:2] == ["docker", "inspect"]:
+                return json.dumps(containers)
+            if argv[:3] == ["docker", "network", "inspect"]:
+                return json.dumps(
+                    [{
+                        "Id": "network-id",
+                        "Internal": True,
+                        "Labels": {"com.docker.compose.project": kafka_compose.PROJECT},
+                    }]
+                )
+            if argv[:3] == ["docker", "volume", "inspect"]:
+                name = argv[3]
+                if name.endswith("-data"):
+                    return json.dumps(
+                        [{"Labels": {"com.docker.compose.project": kafka_compose.PROJECT}}]
+                    )
+                suffix = next(
+                    key for key in kafka_compose.BROKER_EPHEMERAL_STORAGE if name.endswith(key)
+                )
+                definition = kafka_compose.BROKER_EPHEMERAL_STORAGE[suffix]
+                return json.dumps(
+                    [{
+                        "Driver": "local",
+                        "Labels": {"com.docker.compose.project": kafka_compose.PROJECT},
+                        "Options": kafka_compose._named_tmpfs_volume_definition(
+                            definition["options"]
+                        )["driver_opts"],
+                    }]
+                )
+            if argv[:2] == ["docker", "exec"] and argv[3:7] == [
+                "stat", "-f", "-c", "%T"
+            ]:
+                return "tmpfs\ntmpfs\n"
+            if argv[:2] == ["docker", "exec"] and argv[3:6] == ["stat", "-c", "%u:%g:%a"]:
+                return "1000:1000:750\n1000:1000:750\n"
+            raise AssertionError(argv)
+
+        with patch.object(
+            kafka_compose,
+            "measure",
+            return_value={"requires_update": False, "before_sha256": "definition"},
+        ), patch.object(kafka_compose, "_checked", side_effect=checked):
+            result = kafka_compose.verify_runtime()
+        self.assertTrue(result["verified"])
+        self.assertEqual(set(result["brokers"]), set(kafka_compose.BROKER_SERVICES))
+
+        containers[0]["Mounts"][1]["Name"] = "a" * 64
+        with patch.object(
+            kafka_compose,
+            "measure",
+            return_value={"requires_update": False, "before_sha256": "definition"},
+        ), patch.object(kafka_compose, "_checked", side_effect=checked), self.assertRaises(ValueError):
+            kafka_compose.verify_runtime()
 
     def test_all_generated_event_pipeline_containers_have_development_label(self):
         specifications = (
