@@ -619,3 +619,10 @@ order: 999
 - 范围：仅将 dev 的 `backend/config.py` 环境枚举扩展为接受 `development`，并增加对应的配置单元测试；没有覆盖 dev 的事件流配置、查询网格或其他业务逻辑。
 - 验证：后端完整单元测试 `898 passed`；部署测试 `68 passed, 1 skipped`；前端测试 `305 passed`；前端生产构建通过；`git diff --check` 通过。
 - 结论：dev 后端现在可以解析服务器使用的 `APP_ENVIRONMENT=development`，但尚未同步版本号或部署工具链，不能据此部署 `566a662d`。
+
+## 第二步实施记录：版本管理
+
+- 提交：`532d3b31`。
+- 范围：将根目录 `VERSION` 与现有版本同步脚本覆盖的前端、桌面、Win7、Win10、Android、Cargo 和锁文件版本统一为 `0.28.20`；未引入 main 的业务实现或环境工具链。
+- 验证：`desktop/scripts/sync_versions.py --check` 通过；后端完整单元测试 `898 passed`；部署测试 `68 passed, 1 skipped`；前端测试 `305 passed`；前端生产构建通过；`git diff --check` 通过。
+- 结论：dev 版本元数据已与当前 Dev 运行版本一致，可作为后续部署工具链同步的基线；PR #613 原始提交仍不可直接部署，后续需在该基线上重新适配并生成新的完整提交。
