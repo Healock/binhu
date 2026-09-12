@@ -23,7 +23,6 @@ import {
   FullscreenOutlined,
   HistoryOutlined,
   PlusOutlined,
-  SearchOutlined,
 } from '@ant-design/icons'
 import {
   createQuerySourceRow,
@@ -163,17 +162,6 @@ export default function DataQuery() {
     // This is an in-app layout mode. Do not call the browser Fullscreen API:
     // desktop shells would resize the native window and hide the app chrome.
     setSheetFullscreen(current => !current)
-  }, [])
-
-  const openSheetSearch = useCallback(() => {
-    // Use the same native Univer Ctrl+F path instead of a second search UI.
-    document.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'f',
-      code: 'KeyF',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    }))
   }, [])
 
   useEffect(() => {
@@ -861,15 +849,6 @@ export default function DataQuery() {
                 {queryRealtimeState === 'forbidden' ? '实时编辑无权限' : '实时编辑连接中'}
               </Tag>
             )}
-            <Button
-              size="small"
-              icon={<SearchOutlined />}
-              title="使用 Univer 原生查找（Ctrl+F）"
-              aria-label="查找"
-              onClick={openSheetSearch}
-            >
-              查找
-            </Button>
             <Button
               size="small"
               icon={sheetFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}

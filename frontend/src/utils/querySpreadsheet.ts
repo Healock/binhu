@@ -55,6 +55,27 @@ export function querySheetEditGenerationMatches(
   return expectedGeneration === currentGeneration
 }
 
+export interface QuerySheetHorizontalScrollState {
+  sheetViewStartColumn?: number
+  offsetX?: number
+}
+
+/**
+ * Detect a real horizontal viewport change while preserving the current value
+ * when Univer omits an axis from a scroll command.
+ */
+export function querySheetScrollMovesHorizontally(
+  current: QuerySheetHorizontalScrollState | null | undefined,
+  next: QuerySheetHorizontalScrollState | null | undefined,
+): boolean {
+  if (!next) return false
+  if (!current) {
+    return next.sheetViewStartColumn !== undefined || next.offsetX !== undefined
+  }
+  return (next.sheetViewStartColumn ?? current.sheetViewStartColumn) !== current.sheetViewStartColumn
+    || (next.offsetX ?? current.offsetX) !== current.offsetX
+}
+
 export function querySheetCellKey(row: number, column: number): string {
   return `${row}:${column}`
 }
