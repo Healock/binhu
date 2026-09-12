@@ -104,7 +104,7 @@ def prepare(args):
         'LOCAL_REPORT_SCHEDULER_ENABLED': 'false', 'REALTIME_EVENTS_ENABLED': 'false',
         'ENCRYPTION_KEY': base64.urlsafe_b64encode(secrets.token_bytes(32)).decode(),
         'REDIS_URL': f'redis://:{redis_password}@redis:6379/0',
-        'BOOTSTRAP_ADMIN_USERNAME': username, 'BOOTSTRAP_ADMIN_PASSWORD': initial_password,
+        'BOOTSTRAP_ADMIN_USERNAME': username, 'BOOTSTRAP_ADMIN_PASSWORD': initial_password, 'ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS': json.dumps({args.environment: secrets.token_urlsafe(32)}),
         'STATIC_DIR': '/app/static', 'OPS_AGENT_URL': '', 'OPS_AGENT_TOKEN': '',
     }
     for flag in ('PLATFORM_DOMAIN_ACTIVE', 'VISIT_DOMAIN_ACTIVE', 'DISPATCH_DOMAIN_ACTIVE', 'DAILY_DOMAIN_ACTIVE', 'REGISTRY_ADDRESS_DOMAIN_ACTIVE', 'REGISTRY_FEATURE_ENABLED', 'WORKFLOW_FEATURE_ENABLED'):

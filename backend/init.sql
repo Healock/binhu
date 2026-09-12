@@ -1104,6 +1104,8 @@ CREATE TABLE IF NOT EXISTS _users (
     mobile_navigation_mode   VARCHAR(10) NOT NULL DEFAULT 'dock',
     mobile_dock_config       JSON DEFAULT NULL,
     theme_mode               VARCHAR(10) NOT NULL DEFAULT 'light',
+    last_login_at            DATETIME DEFAULT NULL,
+    last_password_reset_at   DATETIME DEFAULT NULL,
     created_at               DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at               DATETIME DEFAULT CURRENT_TIMESTAMP
                              ON UPDATE CURRENT_TIMESTAMP,

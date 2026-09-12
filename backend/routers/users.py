@@ -460,14 +460,22 @@ async def update_user(
                 updates["password_hash"] = bcrypt.hashpw(
                     req.password.encode(), bcrypt.gensalt()
                 ).decode()
+                updates["last_password_reset_at"] = "UTC_TIMESTAMP()"
             if req.password_is_temporary is not None:
                 updates["password_is_temporary"] = int(
                     req.password_is_temporary
                 )
-            set_clause = ", ".join(f"{key}=%s" for key in updates)
+            assignments = []
+            values = []
+            for key, value in updates.items():
+                if value == "UTC_TIMESTAMP()":
+                    assignments.append(f"{key}=UTC_TIMESTAMP()")
+                else:
+                    assignments.append(f"{key}=%s")
+                    values.append(value)
             await cur.execute(
-                f"UPDATE _users SET {set_clause} WHERE id=%s",
-                [*updates.values(), user_id],
+                f"UPDATE _users SET {', '.join(assignments)} WHERE id=%s",
+                [*values, user_id],
             )
             await _replace_custom_group_links(
                 cur,

@@ -43,6 +43,11 @@ from services.ops_overview import build_operations_overview
 from services.ops_redaction import redact_text, sanitize_detail
 from services.diagnostics import get_job, query_incidents, queue_job
 from services.platform_performance import build_performance_snapshot
+from services.environment_accounts import (
+    EnvironmentAccountGatewayError,
+    list_accounts as list_environment_accounts,
+    reset_account as reset_environment_account,
+)
 
 
 router = APIRouter(prefix="/api/admin/ops", tags=["超级管理员运维中心"])
@@ -78,6 +83,15 @@ class DiagnosticRunRequest(BaseModel):
     job_id: str = Field(min_length=1, max_length=64)
 
 
+class EnvironmentAccountResetRequest(BaseModel):
+    environment: str = Field(pattern="^(development|staging)$")
+    username: str = Field(min_length=3, max_length=100)
+    current_admin_password: str = Field(min_length=1, max_length=200)
+
+
+_environment_account_reset_at: dict[tuple[int, str], float] = {}
+
+
 def _require_log_source(source: str) -> str:
     if source not in LOG_SOURCES:
         raise HTTPException(status_code=404, detail="未知日志来源")
@@ -89,6 +103,72 @@ async def operations_overview(
     user: dict = Depends(require_super_admin),
 ):
     return await build_operations_overview()
+
+
+@router.get("/environment-accounts")
+async def environment_accounts(user: dict = Depends(require_super_admin)):
+    """Return only non-sensitive Dev/Staging account metadata."""
+    del user
+    accounts: list[dict] = []
+    for environment in ("development", "staging"):
+        try:
+            accounts.extend(await list_environment_accounts(environment))
+        except EnvironmentAccountGatewayError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "environment_account_gateway_unavailable",
+                    "environment": exc.environment,
+                    "message": "隔离环境账号服务暂时不可用，未回退到生产账号库",
+                },
+            ) from exc
+    return {"data": accounts, "passwords_available": False}
+
+
+@router.post("/environment-accounts/reset")
+async def reset_environment_account_password(
+    payload: EnvironmentAccountResetRequest,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+):
+    import time as _time
+
+    normalized_username = payload.username.strip().lower()
+    key = (int(user["id"]), payload.environment)
+    now = _time.monotonic()
+    if now - _environment_account_reset_at.get(key, 0) < 15:
+        raise HTTPException(status_code=429, detail={"code": "reset_rate_limited", "message": "请稍后再试"})
+    if not await _verify_current_password(int(user["id"]), payload.current_admin_password):
+        _environment_account_reset_at[key] = now
+        await record_admin_audit(
+            user, "environment_account.password.reset",
+            target_type="environment_account", target_name=f"{payload.environment}:{normalized_username}",
+            result="denied", detail={"reason": "admin_password_invalid"},
+            **request_audit_fields(request),
+        )
+        raise HTTPException(status_code=403, detail="当前超级管理员密码错误")
+    _environment_account_reset_at[key] = now
+    try:
+        result = await reset_environment_account(payload.environment, normalized_username)
+    except EnvironmentAccountGatewayError as exc:
+        await record_admin_audit(
+            user, "environment_account.password.reset",
+            target_type="environment_account", target_name=f"{payload.environment}:{normalized_username}",
+            result="failed", detail={"reason": exc.reason[:80]},
+            **request_audit_fields(request),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "environment_account_gateway_unavailable", "environment": payload.environment,
+                    "message": "隔离环境账号服务暂时不可用，未修改任何生产账号"},
+        ) from exc
+    await record_admin_audit(
+        user, "environment_account.password.reset",
+        target_type="environment_account", target_name=f"{payload.environment}:{normalized_username}",
+        detail={"temporary_password_issued": True, "password_is_temporary": True},
+        **request_audit_fields(request),
+    )
+    return result
 
 
 @router.get("/performance")

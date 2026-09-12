@@ -526,6 +526,8 @@ async def ensure_permission_schema(cur) -> None:
         ),
         ("avatar_storage_key", "VARCHAR(500) DEFAULT NULL"),
         ("avatar_mime", "VARCHAR(100) DEFAULT NULL"),
+        ("last_login_at", "DATETIME DEFAULT NULL"),
+        ("last_password_reset_at", "DATETIME DEFAULT NULL"),
     ]:
         await _ensure_column(cur, "_users", column_name, definition)
     await _ensure_index(
