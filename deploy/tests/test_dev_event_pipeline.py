@@ -104,6 +104,9 @@ volumes:
         self.assertEqual(patched.count("binhu.environment: development"), 4)
         self.assertNotIn("binhu.shadow", patched)
         self.assertNotIn("    tmpfs:", patched)
+        self.assertEqual(patched.count("    logging:"), 3)
+        self.assertEqual(patched.count("        max-size: 5m"), 3)
+        self.assertEqual(patched.count("        max-file: 2"), 3)
         self.assertEqual(patched.count("    driver: local"), 6)
         self.assertEqual(patched.count("      type: tmpfs"), 6)
         for service in kafka_compose.BROKER_SERVICES:
@@ -247,6 +250,7 @@ volumes:
                         }
                     },
                     "NetworkSettings": {"Networks": {kafka_compose.NETWORK: {}}},
+                    "HostConfig": {"LogConfig": {"Type": "json-file", "Config": {"max-size": "5m", "max-file": "2"}}},
                     "Mounts": mounts,
                 }
             )
@@ -361,6 +365,7 @@ volumes:
             self.assertEqual(service["labels"], {"binhu.environment": "development"})
             self.assertEqual(service["environment"]["APP_ENVIRONMENT"], "development")
             self.assertEqual(set(service["networks"]), {"internal"})
+            self.assertEqual(service["pids_limit"], 256)
             self.assertEqual(service["volumes"][0]["source"], "flink-checkpoints")
         self.assertEqual(
             spec["volumes"]["flink-checkpoints"]["name"],

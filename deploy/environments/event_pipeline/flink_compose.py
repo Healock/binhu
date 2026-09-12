@@ -87,6 +87,7 @@ def specification(image: str, artifact_root: Path) -> dict:
         "image": image,
         "labels": {"binhu.environment": "development"},
         "mem_limit": "805306368",
+        "pids_limit": 256,
         "networks": {"internal": None},
         "volumes": mounts,
         "logging": {
