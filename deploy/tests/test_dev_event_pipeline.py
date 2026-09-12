@@ -70,16 +70,19 @@ services:
     labels:
       binhu.shadow: \"true\"
       binhu.development.run_id: dev-test-1
+    networks: [internal]
   kafka-2:
     image: kafka
     labels:
       binhu.shadow: \"true\"
       binhu.development.run_id: dev-test-1
+    networks: [internal]
   kafka-3:
     image: kafka
     labels:
       binhu.shadow: \"true\"
       binhu.development.run_id: dev-test-1
+    networks: [internal]
   schema-registry:
     image: registry
     labels:
@@ -89,10 +92,13 @@ networks:
   internal:
     internal: true
 """
-        patched = kafka_compose.patch_identity_labels(source)
+        patched = kafka_compose.patch_runtime_guardrails(source)
         self.assertEqual(patched.count("binhu.environment: development"), 4)
         self.assertNotIn("binhu.shadow", patched)
-        self.assertEqual(kafka_compose.patch_identity_labels(patched), patched)
+        self.assertEqual(patched.count("    tmpfs:"), 3)
+        for value in kafka_compose.BROKER_TMPFS:
+            self.assertEqual(patched.count(f"      - {value}"), 3)
+        self.assertEqual(kafka_compose.patch_runtime_guardrails(patched), patched)
         self.assertIn("binhu.development.run_id: dev-test-1", patched)
 
     def test_eventbus_identity_patch_rejects_other_services_and_wrong_environment(self):
@@ -102,17 +108,17 @@ networks:
       binhu.environment: production
 """
         with self.assertRaises(ValueError):
-            kafka_compose.patch_identity_labels(source)
+            kafka_compose.patch_runtime_guardrails(source)
         complete = "services:\n" + "".join(
             f"  {service}:\n    labels:\n      binhu.environment: development\n"
             for service in kafka_compose.BASE_SERVICES
         )
         with self.assertRaises(ValueError):
-            kafka_compose.patch_identity_labels(
+            kafka_compose.patch_runtime_guardrails(
                 complete + "  unexpected-worker:\n    labels:\n      binhu.environment: development\n"
             )
 
-    def test_eventbus_comparison_ignores_only_approved_identity_labels(self):
+    def test_eventbus_comparison_ignores_only_approved_runtime_changes(self):
         base = {
             "name": kafka_compose.PROJECT,
             "services": {
@@ -130,11 +136,15 @@ networks:
         for service in kafka_compose.BASE_SERVICES:
             target["services"][service]["labels"].pop("binhu.shadow")
             target["services"][service]["labels"]["binhu.environment"] = "development"
+        for service in kafka_compose.BROKER_SERVICES:
+            target["services"][service]["tmpfs"] = list(kafka_compose.BROKER_TMPFS)
         self.assertEqual(
             kafka_compose._without_approved_labels(base),
-            kafka_compose._without_approved_labels(target),
+            kafka_compose._without_approved_tmpfs(
+                kafka_compose._without_approved_labels(target)
+            ),
         )
-        self.assertEqual(
+        self.assertNotEqual(
             kafka_compose._model_sha256(base),
             kafka_compose._model_sha256(target),
         )
@@ -148,6 +158,25 @@ networks:
             kafka_compose._model_sha256(base),
             kafka_compose._model_sha256(changed),
         )
+        unexpected_tmpfs = copy.deepcopy(target)
+        unexpected_tmpfs["services"]["kafka-1"]["tmpfs"].append("/unexpected:size=1m")
+        with self.assertRaises(ValueError):
+            kafka_compose._without_approved_tmpfs(unexpected_tmpfs)
+
+    def test_eventbus_runtime_patch_rejects_partial_or_unknown_tmpfs(self):
+        complete = "services:\n" + "".join(
+            f"  {service}:\n"
+            "    labels:\n"
+            "      binhu.environment: development\n"
+            "    networks: [internal]\n"
+            for service in kafka_compose.BASE_SERVICES
+        )
+        partial = complete.replace(
+            "  kafka-1:\n    labels:",
+            "  kafka-1:\n    tmpfs:\n      - /etc/kafka/secrets:size=1m\n    labels:",
+        )
+        with self.assertRaises(ValueError):
+            kafka_compose.patch_runtime_guardrails(partial)
 
     def test_all_generated_event_pipeline_containers_have_development_label(self):
         specifications = (
