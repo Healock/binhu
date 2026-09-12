@@ -58,7 +58,10 @@ if [[ "${1:-}" == "hotfix" ]]; then
   release_kind="hotfix"
   [[ $# -eq 7 ]] || fail "expected hotfix arguments"
   shift
-  readonly release_scope="backend"
+  # After removing the command, hotfix has the same five release fields plus
+  # the unique identifier: version commit backup_scope release_scope size id.
+  [[ $# -eq 6 ]] || fail "expected hotfix arguments"
+  readonly release_scope="$4"
   readonly expected_bundle_size="$5"
   hotfix_id="$6"
 elif [[ $# -eq 4 ]]; then
