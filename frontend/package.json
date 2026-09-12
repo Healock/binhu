@@ -27,6 +27,7 @@
     "@univerjs/preset-sheets-filter": "^0.25.1",
     "@univerjs/preset-sheets-find-replace": "0.25.1",
     "@univerjs/preset-sheets-sort": "^0.25.1",
+    "@univerjs/sheets-ui": "^0.25.1",
     "@univerjs/themes": "^0.25.1",
     "@xyflow/react": "^12.11.3",
     "antd": "^6.5.2",

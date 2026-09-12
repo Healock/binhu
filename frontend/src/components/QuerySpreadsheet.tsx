@@ -28,6 +28,7 @@ import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort'
 import sortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace'
 import findReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
+import { ScrollCommand } from '@univerjs/sheets-ui'
 
 import '@univerjs/preset-sheets-core/lib/index.css'
 import '@univerjs/preset-sheets-data-validation/lib/index.css'
@@ -51,6 +52,7 @@ import {
   queryInspectorMismatch,
   queryInspectorOptions,
   querySheetEditGenerationMatches,
+  querySheetScrollMovesHorizontally,
   querySheetTextCell,
   querySheetCellKey,
   resolveQuerySheetCommitFailureChanges,
@@ -886,6 +888,15 @@ export function QuerySpreadsheet({
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeCommandExecute, event => {
         if (suppressCommands) return
+        if (event.id === ScrollCommand.id && workbook.isCellEditing()) {
+          const currentScroll = workbook.getScrollStateBySheetId(sheetId)
+          if (querySheetScrollMovesHorizontally(currentScroll, event.params)) {
+            // Commit through Univer's native editor lifecycle before its canvas
+            // moves. BeforeSheetEditEnd captures the exact draft and the normal
+            // reconciliation path persists it once.
+            void workbook.endEditingAsync(true)
+          }
+        }
         if ([UndoCommand.id, RedoCommand.id].includes(event.id)) {
           event.cancel = true
           callbacksRef.current.onBlocked('在线工作表不提供本地撤销；保存失败时系统会自动恢复原值')

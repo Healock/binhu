@@ -16,6 +16,7 @@ import {
   QUERY_SHEET_FEATURE_CONFIG,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
+  querySheetScrollMovesHorizontally,
   querySheetTextCell,
   querySheetCellKey,
   resolveQuerySheetColumnWidth,
@@ -221,6 +222,34 @@ test('工作表点击和拖动同时锁定主内容区与浏览器文档位置',
   assert.match(componentSource, /container\.addEventListener\('pointerdown', handlePointerDown, true\)/)
   assert.doesNotMatch(componentSource, /isQuerySheetHorizontalScrollbarPointer/)
   assert.match(componentSource, /}, 420\)/)
+})
+
+test('Univer 横向滚动前确认当前原生单元格编辑', () => {
+  assert.equal(querySheetScrollMovesHorizontally(
+    { sheetViewStartColumn: 3, offsetX: 8 },
+    { sheetViewStartColumn: 4, offsetX: 0, },
+  ), true)
+  assert.equal(querySheetScrollMovesHorizontally(
+    { sheetViewStartColumn: 3, offsetX: 8 },
+    { sheetViewStartColumn: 3, offsetX: 9 },
+  ), true)
+  assert.equal(querySheetScrollMovesHorizontally(
+    { sheetViewStartColumn: 3, offsetX: 8 },
+    { sheetViewStartColumn: 3, offsetX: 8 },
+  ), false)
+  assert.equal(querySheetScrollMovesHorizontally(
+    { sheetViewStartColumn: 3, offsetX: 8 },
+    { sheetViewStartRow: 5, offsetY: 12 },
+  ), false)
+
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /event\.id === ScrollCommand\.id/)
+  assert.match(componentSource, /workbook\.isCellEditing\(\)/)
+  assert.match(componentSource, /workbook\.endEditingAsync\(true\)/)
+  assert.doesNotMatch(componentSource, /query-editor-scroll.*querySelector|style\.display\s*=\s*['"]none/)
 })
 
 test('单元格保存只重绘受影响行且不重新查询整张工作表', () => {
