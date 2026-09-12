@@ -40,12 +40,21 @@
    早期 Dev eventbus 的 Kafka 基础 Compose 来自服务器外部留存模板，未由当前
    `development_eventbus.py` 生成；该模块只产生不可执行的迁移提案。三个 broker
    和基础 Compose 中的 Schema Registry 定义必须先由
-   `event_pipeline.kafka_compose measure` 证明除身份标签外没有任何差异，再执行
-   `apply`：移除旧 `binhu.shadow` 标签并写入
-   `binhu.environment=development`。Kafka 只允许按 1、2、3 逐个使用
+   `event_pipeline.kafka_compose measure` 证明除身份标签和已批准的临时挂载外
+   没有任何差异，再执行 `apply`：移除旧 `binhu.shadow` 标签、写入
+   `binhu.environment=development`，并把上游 Kafka 镜像声明但未由 Compose
+   覆盖的空目录 `/etc/kafka/secrets`、`/mnt/shared/config` 显式挂载为限额
+   tmpfs，避免重建后留下无环境身份的匿名卷。`/var/lib/kafka/data` 继续使用
+   原有三个 Dev 命名卷。Kafka 只允许按 1、2、3 逐个使用
    `--no-deps --force-recreate` 滚动重建，每个 broker 都要等 ISR 完整后再处理
    下一个；不得执行 `down`、`down -v`，也不得重建网络或数据卷。完成后执行
    `event_pipeline.kafka_compose verify` 核对容器、项目、网络和原数据卷身份。
+   2026-09-12 对当前 14 个 Dev 容器和 7 个唯一镜像的 `VOLUME` 声明完成核对：
+   MySQL 的 `/var/lib/mysql` 与 Redis 的 `/data` 均由 Dev 命名卷覆盖，三个
+   pipeline worker 的 `/tmp` 已使用 tmpfs，Backend、Flink 和 Schema Registry
+   当前镜像没有未覆盖声明；只有 Kafka 的上述两个空目录会产生匿名卷。以后更换
+   任一基础镜像时必须重复核对镜像 `Config.Volumes`、Compose 显式挂载和实际
+   容器 Mounts，发现匿名卷时不得进入验收。
    注册 schema、确认作业为 RUNNING 后执行 `event_pipeline.verify seed`，
    再执行 `event_pipeline.verify verify`。首次验收包含重复入队、乱序 revision、
    Kafka ACK 后台账完成及 MySQL/Redis 最终 revision 一致。
