@@ -109,6 +109,17 @@ function rangeSize(range: IRange): { rows: number; columns: number } {
   }
 }
 
+type QuerySheetViewportSnapshot = {
+  mainScrollTop: number
+  mainScrollLeft: number
+  documentScrollTop: number
+  documentScrollLeft: number
+  anchorRowKey?: string
+  anchorRowIndex?: number
+  anchorOffset?: number
+  selection?: IRange
+}
+
 function commandRanges(params: any, worksheet: FWorksheet): IRange[] {
   if (Array.isArray(params?.ranges)) return params.ranges
   if (params?.range) return [params.range]
@@ -171,6 +182,8 @@ export function QuerySpreadsheet({
   const themeModeRef = useRef(themeMode)
   const filterCriteriaRef = useRef(filterCriteria)
   const applyAppearanceRef = useRef<((darkMode: boolean) => void) | null>(null)
+  const viewportSnapshotRef = useRef<QuerySheetViewportSnapshot | null>(null)
+  const viewportRestoreCancelledRef = useRef(false)
   const callbacksRef = useRef({
     onDraftsChange,
     onFilterCriteriaChange,
@@ -291,6 +304,99 @@ export function QuerySpreadsheet({
   useEffect(() => {
     const container = containerRef.current
     if (!container || columns.length === 0) return
+    const pageScroller = container.closest('main') instanceof HTMLElement
+      ? container.closest('main') as HTMLElement
+      : null
+    const documentScroller = document.scrollingElement
+    const previousViewport = viewportSnapshotRef.current
+    viewportSnapshotRef.current = null
+    viewportRestoreCancelledRef.current = false
+    let restoredSheetRows: QuerySheetRow[] = []
+
+    const restoreViewport = () => {
+      if (!previousViewport || viewportRestoreCancelledRef.current) return
+      if (pageScroller) {
+        // Keep the selected task at the same viewport offset when a refresh
+        // reorders rows.  The absolute scroll value remains the fallback for
+        // an unavailable/removed anchor.
+        let mainScrollTop = previousViewport.mainScrollTop
+        if (previousViewport.anchorRowKey && previousViewport.anchorOffset !== undefined) {
+          const anchorIndex = restoredSheetRows.findIndex(row => (
+            row.kind === 'data'
+            && String(row.data.__row_key || '') === previousViewport.anchorRowKey
+          ))
+          const dataRowIndices = restoredSheetRows.flatMap((row, index) => (
+            row.kind === 'data' ? [index] : []
+          ))
+          const fallbackIndex = typeof previousViewport.anchorRowIndex === 'number'
+            && dataRowIndices.length > 0
+            ? dataRowIndices[Math.min(
+              Math.max(previousViewport.anchorRowIndex, 0),
+              dataRowIndices.length - 1,
+            )]
+            : -1
+          const targetIndex = anchorIndex >= 0 ? anchorIndex : fallbackIndex
+          if (targetIndex >= 0) {
+            const targetRowTop = 36 + targetIndex * 32
+            mainScrollTop = Math.max(0, targetRowTop - previousViewport.anchorOffset)
+          }
+        }
+        pageScroller.scrollTop = mainScrollTop
+        pageScroller.scrollLeft = previousViewport.mainScrollLeft
+      }
+      if (documentScroller) {
+        documentScroller.scrollTop = previousViewport.documentScrollTop
+        documentScroller.scrollLeft = previousViewport.documentScrollLeft
+      }
+    }
+
+    let restoreFrame = 0
+    let restoreTimer: number | undefined
+    let removeUserInputListeners = () => {}
+    const cancelViewportRestore = () => {
+      viewportRestoreCancelledRef.current = true
+      if (restoreFrame) window.cancelAnimationFrame(restoreFrame)
+      if (restoreTimer) window.clearTimeout(restoreTimer)
+      restoreFrame = 0
+      restoreTimer = undefined
+      removeUserInputListeners()
+      removeUserInputListeners = () => {}
+    }
+    const scheduleViewportRestore = () => {
+      if (!previousViewport || (!pageScroller && !documentScroller)) return
+      const cancelOnUserInput = () => cancelViewportRestore()
+      pageScroller?.addEventListener('wheel', cancelOnUserInput, { passive: true, once: true })
+      pageScroller?.addEventListener('touchstart', cancelOnUserInput, { passive: true, once: true })
+      window.addEventListener('keydown', cancelOnUserInput, { once: true })
+      removeUserInputListeners = () => {
+        pageScroller?.removeEventListener('wheel', cancelOnUserInput)
+        pageScroller?.removeEventListener('touchstart', cancelOnUserInput)
+        window.removeEventListener('keydown', cancelOnUserInput)
+      }
+      let frames = 0
+      const restore = () => {
+        if (viewportRestoreCancelledRef.current) {
+          removeUserInputListeners()
+          removeUserInputListeners = () => {}
+          return
+        }
+        restoreViewport()
+        frames += 1
+        if (frames < 4) {
+          restoreFrame = window.requestAnimationFrame(restore)
+        } else {
+          restoreFrame = 0
+          restoreTimer = window.setTimeout(() => {
+            restoreTimer = undefined
+            restoreViewport()
+            removeUserInputListeners()
+            removeUserInputListeners = () => {}
+          }, 120)
+        }
+      }
+      restoreFrame = window.requestAnimationFrame(restore)
+    }
+
     container.replaceChildren()
 
     const generation = `${businessType}-${source}-${revision}`
@@ -302,6 +408,7 @@ export function QuerySpreadsheet({
       index => `draft-${generation}-${index}`,
       100,
     )
+    restoredSheetRows = sheetRows
     const workbookId = `query-${Date.now()}-${revision}`
     const sheetId = `sheet-${revision}`
     const { univer, univerAPI } = createQueryUniver(
@@ -345,6 +452,24 @@ export function QuerySpreadsheet({
     worksheet.setFreeze({ startRow: 1, startColumn: 0, xSplit: 0, ySplit: 1 })
     worksheet.setRowHeight(0, 36)
     worksheet.setRowHeights(1, sheetRows.length, 32)
+    if (previousViewport?.selection) {
+      const selection = previousViewport.selection
+      const maxRow = sheetRows.length
+      const maxColumn = columns.length - 1
+      if (
+        selection.startRow >= 0
+        && selection.startColumn >= 0
+        && selection.endRow <= maxRow
+        && selection.endColumn <= maxColumn
+      ) {
+        worksheet.setActiveRange(worksheet.getRange(
+          selection.startRow,
+          selection.startColumn,
+          selection.endRow - selection.startRow + 1,
+          selection.endColumn - selection.startColumn + 1,
+        ))
+      }
+    }
     columns.forEach((column, index) => {
       worksheet.setColumnWidth(
         index,
@@ -980,10 +1105,32 @@ export function QuerySpreadsheet({
       }),
     ]
 
+    scheduleViewportRestore()
+
     return () => {
+      if (pageScroller || documentScroller) {
+        const selected = selectedQuerySheetRow(sheetRows, selectedWorksheetRow)
+        const selectedRowIndex = selectedWorksheetRow >= 1
+          ? selectedWorksheetRow - 1
+          : -1
+        const selectedRowTop = selectedRowIndex >= 0 ? 36 + selectedRowIndex * 32 : 0
+        viewportSnapshotRef.current = {
+          mainScrollTop: pageScroller?.scrollTop || 0,
+          mainScrollLeft: pageScroller?.scrollLeft || 0,
+          documentScrollTop: documentScroller?.scrollTop || 0,
+          documentScrollLeft: documentScroller?.scrollLeft || 0,
+          anchorRowKey: selected?.__row_key ? String(selected.__row_key) : undefined,
+          anchorRowIndex: selectedRowIndex >= 0 ? selectedRowIndex : undefined,
+          anchorOffset: selectedRowIndex >= 0
+            ? selectedRowTop - (pageScroller?.scrollTop || 0)
+            : undefined,
+          selection: worksheet.getActiveRange()?.getRange(),
+        }
+      }
       disposed = true
       callbacksRef.current.onEditingChange?.(false)
       if (reconcileTimer) clearTimeout(reconcileTimer)
+      cancelViewportRestore()
       disposables.forEach(disposable => disposable.dispose())
       if (applyAppearanceRef.current === applyAppearance) applyAppearanceRef.current = null
       univer.dispose()

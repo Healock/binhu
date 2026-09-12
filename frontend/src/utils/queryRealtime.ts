@@ -9,6 +9,10 @@ export interface QueryEdit {
 }
 export interface QueryEditResult {
   values: Record<string, string>
+  // The server returns a complete row for detail/audit consumers, but the
+  // spreadsheet must only apply the cells included in this commit.  Keeping
+  // this optional preserves compatibility with older websocket servers.
+  changed_values?: Record<string, string>
   row_key: string
   row_hash: string
   revision: number
@@ -16,6 +20,7 @@ export interface QueryEditResult {
   message: string
   warnings?: string[]
   inspector_mismatch?: boolean
+  data_version?: string
 }
 export type QueryConnectionState = 'connecting' | 'connected' | 'disconnected' | 'forbidden'
 export type QueryRealtimeEvent = Record<string, unknown> & { type: string }

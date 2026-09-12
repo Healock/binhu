@@ -244,6 +244,7 @@ export default function DataQuery() {
 
   const refreshBlocked = sheetSaving
     || sheetEditing
+    || Boolean(sheetCommitFailure)
     || adding
     || drawerSaving
     || savingDraftIds.size > 0
@@ -469,13 +470,21 @@ export default function DataQuery() {
         })
         revisions.set(sourceId, result.revision)
         const wasPending = Boolean(change.row.__pending)
-        Object.assign(change.row, result.values, {
+        // The API also returns a complete row snapshot for audit/detail
+        // consumers.  Applying that snapshot here would overwrite another
+        // user's concurrent edit to a different cell.  The worktable only
+        // applies the cells in this commit; row metadata is updated separately.
+        const changedValues = result.changed_values || {
+          [change.column]: String(result.values?.[change.column] ?? change.after),
+        }
+        Object.assign(change.row, changedValues, {
           __revision: result.revision,
           __row_hash: result.row_hash || change.row.__row_hash,
           __row_key: result.row_key,
           __pending: result.pending_sync,
           __inspector_mismatch: Boolean(result.inspector_mismatch),
         })
+        if (result.data_version) dataVersionRef.current = result.data_version
         if (result.warnings?.length) {
           result.warnings.forEach(warning => messageApi.warning(warning))
         }

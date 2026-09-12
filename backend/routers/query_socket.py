@@ -218,7 +218,14 @@ async def spreadsheet_socket(socket: WebSocket, parser_type: str):
                 data = CellUpdate(**edit.model_dump(exclude={'type', 'request_id', 'source_id'}))
                 result = await save_cell(parser_type, edit.source_id, data, _request(socket, active=True), user)
                 await socket.send_json({'type': 'saved', 'request_id': edit.request_id, 'result': result})
-                current_version = await read_version(parser_type, user)
+                # Local saves already calculate the authoritative version on
+                # the same transaction/connection.  Reusing it avoids taking
+                # a second online-data connection while the save request is
+                # still being handled.  The fallback is retained only for
+                # legacy compatibility responses which predate data_version.
+                current_version = str(result.get('data_version') or '')
+                if not current_version:
+                    current_version = await read_version(parser_type, user)
                 version = current_version
                 event = {
                     'type': 'row_changed',
