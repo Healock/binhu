@@ -30,6 +30,14 @@ import {
 } from '../utils/mobileTasks'
 import { getCompactPersonnelPresentation } from '../utils/mobileTaskTableLayout'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
+import { useAuth } from '../context/AuthContext'
+import {
+  clearExpiredTaskDrafts,
+  deleteTaskDraft,
+  getTaskDrafts,
+  putTaskDraft,
+  taskDraftValueHash,
+} from '../utils/taskDraftStore'
 import QmfFeedbackStatus from './QmfFeedbackStatus'
 import ResidenceRegistrationStatus from './ResidenceRegistrationStatus'
 import RegistrationLinkStatus from './RegistrationLinkStatus'
@@ -108,6 +116,8 @@ export default function MobileTaskTable({
   tableFilters,
   onTableFiltersChange,
 }: MobileTaskTableProps) {
+  const { user, environment } = useAuth()
+  const accountScope = user ? `${environment}:${user.id}` : ''
   const tableRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef(active)
   activeRef.current = active
@@ -133,13 +143,30 @@ export default function MobileTaskTable({
   const registrationSearchSequenceRef = useRef<Record<string, number>>({})
   const composingRef = useRef<Record<string, Record<string, boolean>>>({})
   const autosaveTimersRef = useRef<Record<string, number>>({})
+  const pendingFieldSavesRef = useRef<Record<string, {
+    task: MobileTaskItem
+    item: MobileTaskInlineEditorItem
+    field: string
+    resolvers: Array<(value: boolean) => void>
+  }>>({})
+  const runningTaskSavesRef = useRef<Set<string>>(new Set())
+  const inFlightFieldsRef = useRef<Set<string>>(new Set())
+  const draftPersistenceRef = useRef<Record<string, {
+    accountScope: string
+    taskKey: string
+    field: string
+    value: string
+    baseRevision: number | null
+    baseValueHash: string
+    draftVersion: number
+  }>>({})
+  const draftPersistenceTimerRef = useRef<number | null>(null)
   type FieldSaveState = 'idle' | 'composing' | 'saving' | 'saved' | 'error' | 'conflict'
   const [saveStates, setSaveStates] = useState<Record<string, Record<string, FieldSaveState>>>({})
   const stateRef = useRef<Record<string, Record<string, FieldSaveState>>>({})
   const draftVersionsRef = useRef<Record<string, Record<string, number>>>({})
   const lifecycleRef = useRef(0)
   const activeAutosavesRef = useRef<Set<symbol>>(new Set())
-  const taskSaveChainsRef = useRef<Record<string, Promise<void>>>({})
   const retryRef = useRef<Record<string, () => void>>({})
   const conflictsRef = useRef<Record<string, { revision: number; values: Record<string, string> }>>({})
   const failedFieldsRef = useRef(new Set<string>())
@@ -152,16 +179,49 @@ export default function MobileTaskTable({
     stateRef.current = next
     setSaveStates(next)
   }
+  const flushDraftPersistence = () => {
+    const pending = Object.values(draftPersistenceRef.current)
+    draftPersistenceRef.current = {}
+    if (draftPersistenceTimerRef.current !== null) {
+      window.clearTimeout(draftPersistenceTimerRef.current)
+      draftPersistenceTimerRef.current = null
+    }
+    pending.forEach(draft => { void putTaskDraft(draft) })
+  }
+  const scheduleDraftPersistence = (draft: {
+    accountScope: string
+    taskKey: string
+    field: string
+    value: string
+    baseRevision: number | null
+    baseValueHash: string
+    draftVersion: number
+  }) => {
+    draftPersistenceRef.current[fieldKey(draft.taskKey, draft.field)] = draft
+    if (draftPersistenceTimerRef.current !== null) return
+    draftPersistenceTimerRef.current = window.setTimeout(flushDraftPersistence, 250)
+  }
   const setDraft = (taskKey: string, field: string, value: string) => {
     const current = editorValuesRef.current[taskKey] || editorItemsRef.current[taskKey]?.detail?.sources[0]?.values || {}
-    if (current[field] !== value) {
-      draftVersionsRef.current[taskKey] = { ...draftVersionsRef.current[taskKey], [field]: (draftVersionsRef.current[taskKey]?.[field] || 0) + 1 }
-    }
+    const changed = current[field] !== value
+    if (changed) draftVersionsRef.current[taskKey] = { ...draftVersionsRef.current[taskKey], [field]: (draftVersionsRef.current[taskKey]?.[field] || 0) + 1 }
     const next = { ...current, [field]: value }
     editorValuesRef.current = { ...editorValuesRef.current, [taskKey]: next }
     setEditorValues(editorValuesRef.current)
     const state = stateRef.current[taskKey]?.[field]
     if (state !== 'conflict' && state !== 'error') fieldState(taskKey, field, composingRef.current[taskKey]?.[field] ? 'composing' : 'idle')
+    if (changed && accountScope) {
+      const source = editorItemsRef.current[taskKey]?.detail?.sources[0]
+      scheduleDraftPersistence({
+        accountScope,
+        taskKey,
+        field,
+        value,
+        baseRevision: source?.revision ?? null,
+        baseValueHash: taskDraftValueHash(source?.values[field] ?? null),
+        draftVersion: draftVersionsRef.current[taskKey]?.[field] || 0,
+      })
+    }
   }
   const taskByKey = useMemo(
     () => new Map(rows.map(task => [task.task_key, task])),
@@ -257,6 +317,50 @@ export default function MobileTaskTable({
     }
   }, [analysisMode, editorContext, taskByKey])
 
+  const restoreTaskDrafts = useCallback(async (taskKey: string, item: MobileTaskInlineEditorItem) => {
+    if (!accountScope || !item.detail?.sources[0]) return
+    const source = item.detail.sources[0]
+    const drafts = await getTaskDrafts(accountScope, taskKey)
+    if (!drafts.length || editorValuesRef.current[taskKey] === undefined) return
+    const currentVersions = draftVersionsRef.current[taskKey] || {}
+    const currentValues = editorValuesRef.current[taskKey] || { ...source.values }
+    const nextValues = { ...currentValues }
+    let changed = false
+    for (const draft of drafts) {
+      if (currentVersions[draft.field]) continue
+      nextValues[draft.field] = draft.value || ''
+      draftVersionsRef.current[taskKey] = { ...draftVersionsRef.current[taskKey], [draft.field]: draft.draftVersion || 1 }
+      changed = true
+      if (draft.baseRevision !== source.revision) {
+        const key = fieldKey(taskKey, draft.field)
+        failedFieldsRef.current.add(key)
+        conflictsRef.current[key] = { revision: source.revision, values: { [draft.field]: source.values[draft.field] || '' } }
+        fieldState(taskKey, draft.field, 'conflict')
+      }
+    }
+    if (changed) {
+      editorValuesRef.current = { ...editorValuesRef.current, [taskKey]: nextValues }
+      setEditorValues(editorValuesRef.current)
+    }
+  }, [accountScope])
+
+  useEffect(() => {
+    if (!accountScope) return
+    Object.entries(editorItems).forEach(([taskKey, item]) => { void restoreTaskDrafts(taskKey, item) })
+    void clearExpiredTaskDrafts()
+  }, [accountScope, editorItems, restoreTaskDrafts])
+
+  useEffect(() => {
+    const flush = () => flushDraftPersistence()
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', flush)
+      flush()
+    }
+  }, [])
+
   const queueEditorLoad = useCallback((taskKey: string) => {
     if (
       !activeRef.current || !taskKey
@@ -302,6 +406,10 @@ export default function MobileTaskTable({
     stateRef.current = {}
     setSaveStates({})
     draftVersionsRef.current = {}
+    Object.values(pendingFieldSavesRef.current).forEach(pending => pending.resolvers.forEach(resolve => resolve(false)))
+    pendingFieldSavesRef.current = {}
+    runningTaskSavesRef.current.clear()
+    inFlightFieldsRef.current.clear()
     failedFieldsRef.current.clear()
     conflictsRef.current = {}
     retryRef.current = {}
@@ -442,8 +550,16 @@ export default function MobileTaskTable({
         if ((draftVersionsRef.current[task.task_key]?.[field] || 0) !== (versions[field] || 0) || composingRef.current[task.task_key]?.[field]) return
         fieldState(task.task_key, field, conflict && columns.includes(field) ? 'conflict' : 'error')
       })
-      // Pause automatic replay after every failure, including an obsolete response.
-      fields.forEach(field => { failedFieldsRef.current.add(fieldKey(task.task_key, field)) })
+      // A failure for an obsolete request must not block the newer local draft.
+      fields.forEach(field => {
+        const currentVersion = draftVersionsRef.current[task.task_key]?.[field] || 0
+        const sentVersion = versions[field] || 0
+        if (currentVersion === sentVersion && !composingRef.current[task.task_key]?.[field]) {
+          failedFieldsRef.current.add(fieldKey(task.task_key, field))
+        } else if (!conflict) {
+          void requestFieldSave(task, item, field, undefined, false)
+        }
+      })
       return false
     }
   }
@@ -477,29 +593,20 @@ export default function MobileTaskTable({
     return confirmed ? true : null
   }
 
-  const enqueueTaskSave = (taskKey: string, operation: () => Promise<boolean>) => {
-    const previous = taskSaveChainsRef.current[taskKey] || Promise.resolve()
-    const run = previous.catch(() => undefined).then(operation)
-    taskSaveChainsRef.current[taskKey] = run.then(() => undefined, () => undefined)
-    return run
-  }
-
   const cancelScheduledFieldSave = (taskKey: string, field: string) => {
     const key = fieldKey(taskKey, field)
     window.clearTimeout(autosaveTimersRef.current[key])
     delete autosaveTimersRef.current[key]
   }
 
-  const saveField = async (
+  const saveFieldNow = async (
     task: MobileTaskItem, item: MobileTaskInlineEditorItem, field: string, value: string, _autosave = true,
   ) => {
     const key = fieldKey(task.task_key, field)
     const epoch = lifecycleRef.current
-    retryRef.current[key] = () => { void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? value) }
-    const operationId = Symbol(key)
-    activeAutosavesRef.current.add(operationId)
-    try {
-      await enqueueTaskSave(task.task_key, async () => {
+    const versions = { ...draftVersionsRef.current[task.task_key] }
+    retryRef.current[key] = () => { void requestFieldSave(task, item, field) }
+    {
         if (!activeRef.current || epoch !== lifecycleRef.current || composingRef.current[task.task_key]?.[field]) return false
         if (failedFieldsRef.current.has(key)) {
           fieldState(task.task_key, field, conflictsRef.current[key] ? 'conflict' : 'error')
@@ -534,23 +641,85 @@ export default function MobileTaskTable({
           // it later must be able to complete the same atomic save automatically.
           if (!changes['现住址'].trim()) { fieldState(task.task_key, field, 'idle'); return false }
         } else if (!Object.keys(changes).length) { fieldState(task.task_key, field, 'saved'); return true }
-        fields.forEach(f => { retryRef.current[fieldKey(task.task_key, f)] = () => { void saveField(task, item, f, editorValuesRef.current[task.task_key]?.[f] || '') } })
+        fields.forEach(f => { retryRef.current[fieldKey(task.task_key, f)] = () => { void requestFieldSave(task, item, f) } })
         const saved = await saveEditor(task, currentItem, changes, claim, property ? { id: property.id, version: property.version } : undefined, {
           fields, ...(registration && !property ? { registrationAddress: draft['现住址'] || '' } : {}),
         })
+        if (saved && accountScope) {
+          for (const savedField of fields) {
+            const sentVersion = versions[savedField] || 0
+            if ((draftVersionsRef.current[task.task_key]?.[savedField] || 0) === sentVersion && !conflictsRef.current[fieldKey(task.task_key, savedField)]) {
+              void deleteTaskDraft(accountScope, task.task_key, savedField)
+            }
+          }
+        }
         if (saved && property === chosenPropertyRef.current[task.task_key]) delete chosenPropertyRef.current[task.task_key]
+        if (saved && (draftVersionsRef.current[task.task_key]?.[field] || 0) !== (versions[field] || 0)) {
+          void requestFieldSave(task, currentItem, field, undefined, false)
+        }
         return saved
-      })
-    } finally { activeAutosavesRef.current.delete(operationId) }
+    }
   }
 
-  const scheduleFieldSave = (task: MobileTaskItem, item: MobileTaskInlineEditorItem, field: string, value: string) => {
-    cancelScheduledFieldSave(task.task_key, field)
+  const drainTaskSaves = async (taskKey: string) => {
+    if (runningTaskSavesRef.current.has(taskKey)) return
+    runningTaskSavesRef.current.add(taskKey)
+    try {
+      while (true) {
+        const key = Object.keys(pendingFieldSavesRef.current).find(candidate => pendingFieldSavesRef.current[candidate]?.task.task_key === taskKey)
+        if (!key) break
+        const pending = pendingFieldSavesRef.current[key]
+        delete pendingFieldSavesRef.current[key]
+        if (!pending) continue
+        inFlightFieldsRef.current.add(key)
+        const result = await saveFieldNow(pending.task, pending.item, pending.field, editorValuesRef.current[taskKey]?.[pending.field] || '')
+        inFlightFieldsRef.current.delete(key)
+        pending.resolvers.forEach(resolve => resolve(result))
+      }
+    } finally {
+      runningTaskSavesRef.current.delete(taskKey)
+    }
+  }
+
+  const requestFieldSave = (
+    task: MobileTaskItem,
+    item: MobileTaskInlineEditorItem,
+    field: string,
+    _value?: string,
+    wait = true,
+  ): Promise<boolean> => {
+    const key = fieldKey(task.task_key, field)
+    const promise = wait
+      ? new Promise<boolean>(resolve => {
+        const existing = pendingFieldSavesRef.current[key]
+        if (existing) existing.resolvers.push(resolve)
+        else pendingFieldSavesRef.current[key] = { task, item, field, resolvers: [resolve] }
+      })
+      : Promise.resolve(true)
+    if (!wait) {
+      const existing = pendingFieldSavesRef.current[key]
+      if (existing) {
+        existing.task = task
+        existing.item = item
+      } else pendingFieldSavesRef.current[key] = { task, item, field, resolvers: [] }
+    }
+    if (wait) {
+      const operationId = Symbol(key)
+      activeAutosavesRef.current.add(operationId)
+      void promise.finally(() => activeAutosavesRef.current.delete(operationId))
+    }
+    void drainTaskSaves(task.task_key)
+    return promise
+  }
+
+  const scheduleFieldSave = (task: MobileTaskItem, item: MobileTaskInlineEditorItem, field: string, _value: string) => {
     if (composingRef.current[task.task_key]?.[field]) return
-    autosaveTimersRef.current[fieldKey(task.task_key, field)] = window.setTimeout(() => {
+    const key = fieldKey(task.task_key, field)
+    if (autosaveTimersRef.current[key]) return
+    autosaveTimersRef.current[key] = window.setTimeout(() => {
       cancelScheduledFieldSave(task.task_key, field)
-      void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? value)
-    }, 700)
+      void requestFieldSave(task, item, field)
+    }, 10000)
   }
 
   const retryAutosave = (taskKey: string, field: string) => {
@@ -592,6 +761,8 @@ export default function MobileTaskTable({
     Object.values(autosaveTimersRef.current).forEach(timer => window.clearTimeout(timer))
     Object.entries(registrationSearchSequenceRef.current).filter(([key]) => key.endsWith(':timer')).forEach(([, timer]) => window.clearTimeout(timer))
     autosaveTimersRef.current = {}
+    Object.values(pendingFieldSavesRef.current).forEach(pending => pending.resolvers.forEach(resolve => resolve(false)))
+    pendingFieldSavesRef.current = {}
   }, [editorContext])
 
   const compositionStart = (taskKey: string, field: string) => {
@@ -657,7 +828,7 @@ export default function MobileTaskTable({
     chosenPropertyRef.current[task.task_key] = property
     setDraft(task.task_key, resultField, '待登记')
     setDraft(task.task_key, '现住址', address)
-    await saveField(task, item, '现住址', address)
+    await requestFieldSave(task, item, '现住址')
   }
 
   const flushAddressNavigation = async () => {
@@ -879,7 +1050,14 @@ export default function MobileTaskTable({
                       >
                         <Input aria-labelledby={`editor-label-${fieldKey(task.task_key, field)}`} onCompositionStart={() => compositionStart(task.task_key, field)}
                           onCompositionEnd={event => compositionEnd(task, item, field, event.currentTarget.value)}
-                          onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? '') }} />
+                          onKeyDown={event => {
+                            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                              event.preventDefault()
+                              cancelScheduledFieldSave(task.task_key, field)
+                              void requestFieldSave(task, item, field)
+                            }
+                          }}
+                          onBlur={() => { cancelScheduledFieldSave(task.task_key, field); void requestFieldSave(task, item, field) }} />
                       </AutoComplete>
                       <span className="mobile-task-table-inline-hint" aria-live="polite">
                         {registrationPropertyState?.matchStatus === 'matching' ? '正在识别地址…' : registrationPropertyState?.matchStatus === 'unique' ? '根据核查补充信息找到唯一候选，请确认' : registrationPropertyState?.matchStatus === 'multiple' ? '找到多个候选，请选择' : registrationPropertyState?.matchStatus === 'none' ? '未找到正式房屋，可填写待建档地址' : registrationPropertyState?.matchStatus === 'error' ? '地址匹配暂时失败，请重试或填写待建档地址' : '地址会与待登记结果一起保存；房屋候选可按需选择。'}
@@ -902,7 +1080,7 @@ export default function MobileTaskTable({
                           if (registrationResultField) {
                             delete chosenPropertyRef.current[task.task_key]
                           }
-                          void saveField(task, item, field, nextValue)
+                          void requestFieldSave(task, item, field)
                         }}
                       />
                       {registrationResultField && registrationResult === '待登记' && (
@@ -919,13 +1097,20 @@ export default function MobileTaskTable({
                       value={values[field] || ''}
                       onCompositionStart={() => compositionStart(task.task_key, field)}
                       onCompositionEnd={event => compositionEnd(task, item, field, event.currentTarget.value)}
+                      onKeyDown={event => {
+                        if (/地址/.test(field) && event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                          event.preventDefault()
+                          cancelScheduledFieldSave(task.task_key, field)
+                          void requestFieldSave(task, item, field)
+                        }
+                      }}
                       onChange={event => {
                         setDraft(task.task_key, field, event.target.value)
                         scheduleFieldSave(task, item, field, event.target.value)
                       }}
                       onBlur={() => {
                         cancelScheduledFieldSave(task.task_key, field)
-                        void saveField(task, item, field, editorValuesRef.current[task.task_key]?.[field] ?? '')
+                        void requestFieldSave(task, item, field)
                       }}
                     />
                   )}
