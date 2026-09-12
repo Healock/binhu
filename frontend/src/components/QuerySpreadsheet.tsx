@@ -1015,3 +1015,4 @@ export function QuerySpreadsheet({
 
   return <div ref={containerRef} className="query-spreadsheet" aria-label={`${businessType}在线工作表`} />
 }
+// Horizontal scroll ends native editing before Univer repositions its editor.
