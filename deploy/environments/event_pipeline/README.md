@@ -30,6 +30,10 @@
    `/opt/flink/private/pipeline.sql`，设置 `APP_ENVIRONMENT=development`。
    不使用会回显 SQL 和密码的交互 SQL Client；提交 Java 入口，并检查日志无凭据。
 5. JobManager 与 TaskManager 使用 Dev 自己的 checkpoint 卷和内部网络。
+   两个服务还必须由 `event_pipeline.flink_compose` 生成，并显式携带
+   `binhu.environment=development` 标签；只设置容器环境变量不能代替 Docker
+   资源身份标签。修补既有 Compose 时，工具只允许增加这两个标签，发现其他
+   配置差异立即拒绝。
    提交前执行 `python -m event_pipeline.checkpoint measure`，如新卷根目录属主
    不匹配，再 `apply`；工具核对全部运行/停止容器的卷引用，只调整卷根目录，
    不递归改写旧检查点。新 Docker 卷默认属于 root，不能假定 Flink 用户可写。

@@ -18,6 +18,7 @@ from deploy.environments.event_pipeline import schema_registry
 from deploy.environments.event_pipeline import registry_runtime
 from deploy.environments.event_pipeline import checkpoint
 from deploy.environments.event_pipeline import control
+from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 
 
@@ -73,7 +74,8 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(all((entry / "schema-check.log").exists() for entry in evidence))
 
     def test_checkpoint_repair_rejects_shared_or_foreign_volume(self):
-        items = [{"Name": name, "Config": {"Labels": {"com.docker.compose.project": "binhu-development-flink"}},
+        items = [{"Name": name, "Config": {"Labels": {"com.docker.compose.project": "binhu-development-flink",
+                  "binhu.environment": "development"}},
                   "Mounts": [{"Name": checkpoint.VOLUME, "Destination": checkpoint.TARGET, "RW": True}],
                   "NetworkSettings": {"Networks": {"binhu-development-eventbus_internal": {}}}}
                  for name in (checkpoint.JM, checkpoint.TM)]
@@ -85,6 +87,39 @@ class ContractTests(unittest.TestCase):
         items[0]["Mounts"][0]["Destination"] = "/unexpected"
         with self.assertRaises(ValueError):
             checkpoint.inspect_holders(items)
+
+    def test_flink_compose_has_explicit_development_identity(self):
+        spec = flink_compose.specification(
+            "sha256:" + "a" * 64,
+            Path("/srv/binhu-environments/build-dev-pipeline-a9409fce"),
+        )
+        self.assertEqual(spec["name"], "binhu-development-flink")
+        self.assertEqual(set(spec["services"]), {"jobmanager", "taskmanager"})
+        for service in spec["services"].values():
+            self.assertEqual(service["labels"], {"binhu.environment": "development"})
+            self.assertEqual(service["environment"]["APP_ENVIRONMENT"], "development")
+            self.assertEqual(set(service["networks"]), {"internal"})
+            self.assertEqual(service["volumes"][0]["source"], "flink-checkpoints")
+        self.assertEqual(
+            spec["volumes"]["flink-checkpoints"]["name"],
+            "binhu-development_flink-checkpoints",
+        )
+        with self.assertRaises(ValueError):
+            flink_compose.specification("flink:latest", Path("/srv/binhu-environments/build-dev-pipeline-a9409fce"))
+
+    def test_flink_compose_patch_rejects_unapproved_changes(self):
+        expected = flink_compose.specification(
+            "sha256:" + "a" * 64,
+            Path("/srv/binhu-environments/build-dev-pipeline-a9409fce"),
+        )
+        without_labels = flink_compose._without_environment_labels(expected)
+        self.assertNotIn("labels", without_labels["services"]["jobmanager"])
+        changed = copy.deepcopy(without_labels)
+        changed["services"]["jobmanager"]["mem_limit"] = "1g"
+        self.assertNotEqual(
+            flink_compose._without_environment_labels(changed),
+            flink_compose._without_environment_labels(expected),
+        )
 
     def test_schema_registry_identity_and_closed_body(self):
         import json
