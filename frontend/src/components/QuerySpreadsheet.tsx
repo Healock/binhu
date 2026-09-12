@@ -413,7 +413,9 @@ export function QuerySpreadsheet({
         renderMode: univerAPI.Enum.DataValidationRenderMode.ARROW,
       })
       .setAllowBlank(true)
-      .setAllowInvalid(true)
+      // Keep enum enforcement in Univer itself.  Free text such as "111" in
+      // 核查结果 must be rejected before it reaches the save API.
+      .setAllowInvalid(false)
       .build()
     columns.forEach((column, columnIndex) => {
       const meta = metaByColumn[column]
@@ -653,11 +655,6 @@ export function QuerySpreadsheet({
             await commitSourceChanges(pending)
           }
           callbacksRef.current.onCommitFailure?.(retryable.map(change => ({ ...change })), retry)
-          callbacksRef.current.onBlocked(
-            retryable.length
-              ? '保存失败，失败单元格已保留；可显式重试或重新读取确认'
-              : '保存失败，请重新读取在线内容确认',
-          )
         }
       } finally {
         saving = false

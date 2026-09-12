@@ -57,7 +57,7 @@ test('超级管理员默认 Dock 使用前四类，设置类仍可配置加入',
   )
 })
 
-test('管理员权限组可以配置独立流口任务入口', () => {
+test('在线查询只要求查看权限而流口任务仍遵循岗位或管理权限', () => {
   const regular = defaultMobileDockConfig('member', ['online.raw.view'])
   const delegatedAdmin = defaultMobileDockConfig(
     'member',
@@ -75,7 +75,7 @@ test('管理员权限组可以配置独立流口任务入口', () => {
   )
   assert.equal(
     regular.groups.some(group => group.items.includes('online_query')),
-    false,
+    true,
   )
   assert.equal(
     delegatedAdmin.groups.some(group => group.items.includes('online_query')),

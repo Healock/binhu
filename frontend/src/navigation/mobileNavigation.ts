@@ -321,10 +321,6 @@ export function isNavigationItemAccessible(
 ): boolean {
   const adminAccess = ['admin', 'super_admin'].includes(role)
     || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
-  const queryAdminAccess = permissionGroupCodes.length > 0
-    ? permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
-    : ['admin', 'super_admin'].includes(role)
-  if (item.id === 'online_query' && !queryAdminAccess) return false
   if (
     item.id === 'flow_tasks'
     && !['组长', '组员', '片长', '基础管控', '中队长', '社区民警', '所队领导'].includes(position || '')

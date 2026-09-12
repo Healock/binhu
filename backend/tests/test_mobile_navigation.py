@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from deps import require_admin_account
 from routers.auth import UserPreferencesRequest, update_preferences
 from services.mobile_navigation import (
+    _item_is_accessible,
     default_mobile_dock_config,
     normalize_mobile_dock_config,
     normalize_mobile_navigation_mode,
@@ -101,7 +102,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
                 for item in group["items"]
             },
         )
-        self.assertNotIn(
+        self.assertIn(
             "online_query",
             {item for group in member["groups"] for item in group["items"]},
         )
@@ -299,15 +300,21 @@ class MobileNavigationConfigTests(unittest.TestCase):
 
 
 class AdminQueryAccessTests(unittest.IsolatedAsyncioTestCase):
-    async def test_raw_view_permission_alone_does_not_grant_query_access(self):
-        with self.assertRaises(HTTPException) as raised:
-            await require_admin_account({
-                "role": "member",
-                "permissions": ["online.raw.view"],
-                "permission_groups": [{"code": "flow_post"}],
-            })
+    async def test_raw_view_permission_alone_grants_query_access(self):
+        self.assertTrue(_item_is_accessible(
+            "online_query",
+            "member",
+            ["online.raw.view"],
+            ["flow_post"],
+        ))
 
-        self.assertEqual(raised.exception.status_code, 403)
+    async def test_query_without_view_permission_is_rejected(self):
+        self.assertFalse(_item_is_accessible(
+            "online_query",
+            "member",
+            [],
+            ["flow_post"],
+        ))
 
     async def test_admin_permission_group_grants_query_access(self):
         user = {

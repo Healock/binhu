@@ -1,6 +1,6 @@
 {
   "name": "@binhu/win7-electron",
-  "version": "0.28.18",
+  "version": "0.28.19",
   "private": true,
   "main": "src/main.js",
   "scripts": {

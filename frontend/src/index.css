@@ -6444,10 +6444,9 @@ html.native-mobile-shell .app-sidebar__item-label {
   border-width: 2px !important;
 }
 
-.query-spreadsheet-card:fullscreen,
 .query-spreadsheet-card--fullscreen {
   display: flex !important;
-  width: 100vw;
+  width: auto;
   height: 100vh;
   height: 100dvh;
   flex-direction: column;
@@ -6459,8 +6458,12 @@ html.native-mobile-shell .app-sidebar__item-label {
 
 .query-spreadsheet-card--fullscreen {
   position: fixed;
-  z-index: 100;
-  inset: 0;
+  z-index: 40;
+  inset: 0 0 0 232px;
+}
+
+.app-shell:has(.app-sidebar--collapsed) .query-spreadsheet-card--fullscreen {
+  left: 64px;
 }
 
 .query-spreadsheet-card--fullscreen .query-spreadsheet-toolbar {
@@ -6478,7 +6481,6 @@ html.query-sheet-fullscreen-active .app-route-transition {
   animation: none !important;
 }
 
-.query-spreadsheet-card:fullscreen > .query-spreadsheet-loading,
 .query-spreadsheet-card--fullscreen > .query-spreadsheet-loading {
   display: flex;
   min-height: 0;
@@ -6488,7 +6490,6 @@ html.query-sheet-fullscreen-active .app-route-transition {
   overflow: hidden;
 }
 
-.query-spreadsheet-card:fullscreen > .query-spreadsheet-loading > .ant-spin-container,
 .query-spreadsheet-card--fullscreen > .query-spreadsheet-loading > .ant-spin-container {
   display: flex;
   min-height: 0;
@@ -6498,7 +6499,6 @@ html.query-sheet-fullscreen-active .app-route-transition {
   overflow: hidden;
 }
 
-.query-spreadsheet-card:fullscreen .query-spreadsheet,
 .query-spreadsheet-card--fullscreen .query-spreadsheet {
   min-height: 0;
   height: 100%;
