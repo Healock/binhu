@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     @classmethod
     def validate_app_environment(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized not in {"production", "shadow"}:
-            raise ValueError("APP_ENVIRONMENT 只允许 production 或 shadow")
+        if normalized not in {"production", "development", "shadow"}:
+            raise ValueError("APP_ENVIRONMENT 只允许 production、development 或 shadow")
         return normalized
 
     # MySQL（同一实例，八个按业务域划分的数据库）
