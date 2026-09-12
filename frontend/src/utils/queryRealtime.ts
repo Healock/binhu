@@ -18,6 +18,7 @@ export interface QueryEditResult {
   inspector_mismatch?: boolean
 }
 export type QueryConnectionState = 'connecting' | 'connected' | 'disconnected' | 'forbidden'
+export type QueryRealtimeEvent = Record<string, unknown> & { type: string }
 
 export function querySocketUrl(apiUrl: string, origin: string): string {
   const url = new URL(apiUrl, origin)
@@ -30,7 +31,11 @@ export function connectQueryRealtime(
   parserType: string,
   onVersion: (data: { data_version: string }) => void,
   onState: (state: QueryConnectionState) => void,
-  options: { url?: string; socketFactory?: (url: string) => WebSocket } = {},
+  options: {
+    url?: string
+    socketFactory?: (url: string) => WebSocket
+    onEvent?: (event: QueryRealtimeEvent) => void
+  } = {},
 ) {
   const url = options.url || querySocketUrl(
     resolveRuntimeApiUrl(`/api/query/live/${encodeURIComponent(parserType)}`), window.location.origin,
@@ -40,6 +45,10 @@ export function connectQueryRealtime(
   let stopped = false
   let sequence = 0
   let retryDelay = 1000
+  let lastEventId = 0
+  let lastDataVersion = ''
+  let pendingPresence: Record<string, unknown> | null = null
+  let presenceTimer: ReturnType<typeof setTimeout> | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
   const prefix = Math.random().toString(36).slice(2)
   const pending = new Map<string, {
@@ -59,11 +68,26 @@ export function connectQueryRealtime(
     onState('connecting')
     const current = factory(url)
     socket = current
-    current.onopen = () => { retryDelay = 1000; onState('connected') }
+    current.onopen = () => {
+      retryDelay = 1000
+      onState('connected')
+      if (lastEventId > 0) {
+        try { current.send(JSON.stringify({ type: 'resume', after_event_id: lastEventId, data_version: lastDataVersion })) } catch { /* reconnect will retry */ }
+      }
+    }
     current.onmessage = event => {
       if (stopped || socket !== current) return
       try {
         const data = JSON.parse(event.data)
+        if (typeof data.event_id === 'number') {
+          if (data.event_id <= lastEventId) return
+          lastEventId = data.event_id
+        }
+        if (typeof data.data_version === 'string' && data.data_version) lastDataVersion = data.data_version
+        if (data && typeof data.type === 'string' && !['version', 'saved', 'error'].includes(data.type)) {
+          options.onEvent?.(data as QueryRealtimeEvent)
+          return
+        }
         if (data.type === 'version' && typeof data.data_version === 'string') {
           onVersion({ data_version: data.data_version })
           return
@@ -94,6 +118,25 @@ export function connectQueryRealtime(
   }
   connect()
   return {
+    sendPresence(payload: Omit<Record<string, unknown>, 'type'>) {
+      if (stopped) return false
+      pendingPresence = payload
+      if (presenceTimer) clearTimeout(presenceTimer)
+      presenceTimer = setTimeout(() => {
+        presenceTimer = undefined
+        if (!pendingPresence || !socket || socket.readyState !== 1) return
+        try { socket.send(JSON.stringify({ type: 'selection_presence', ...pendingPresence })) } catch { /* reconnect will clear stale presence */ }
+        pendingPresence = null
+      }, 250)
+      return true
+    },
+    resume(afterEventId: number, dataVersion: string) {
+      lastEventId = Math.max(lastEventId, afterEventId)
+      lastDataVersion = dataVersion || lastDataVersion
+      if (stopped || !socket || socket.readyState !== 1) return false
+      socket.send(JSON.stringify({ type: 'resume', after_event_id: afterEventId, data_version: dataVersion }))
+      return true
+    },
     save(sourceId: number, payload: QueryEdit): Promise<QueryEditResult> {
       if (stopped || !socket || socket.readyState !== 1) {
         return Promise.reject(new Error('实时连接尚未就绪，请等待重连后再保存'))
@@ -112,6 +155,8 @@ export function connectQueryRealtime(
     close() {
       stopped = true
       clearTimeout(retry)
+      clearTimeout(presenceTimer)
+      pendingPresence = null
       socket?.close()
       failPending()
     },

@@ -53,7 +53,6 @@ import {
   type QueryDisplayRow as DisplayRow,
 } from '../utils/queryGrid'
 import {
-  buildQuerySheetRequestFilters,
   isQuerySheetFullscreen,
   queryInspectorMismatch,
   queryInspectorOptions,
@@ -61,7 +60,7 @@ import {
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
 } from '../utils/querySpreadsheet'
-import { connectQueryRealtime, type QueryConnectionState } from '../utils/queryRealtime'
+import { connectQueryRealtime, type QueryConnectionState, type QueryRealtimeEvent } from '../utils/queryRealtime'
 import { canEditOnlineQuery } from '../utils/mobileTaskRouting'
 
 const MOBILE_CARD_PAGE_SIZE = 50
@@ -138,6 +137,8 @@ export default function DataQuery() {
   const pollingRef = useRef(false)
   const queryRealtimeRef = useRef<ReturnType<typeof connectQueryRealtime> | null>(null)
   const [queryRealtimeState, setQueryRealtimeState] = useState<QueryConnectionState>('disconnected')
+  const [remotePresence, setRemotePresence] = useState<Record<number, { displayName: string; mode: string; color: string }>>({})
+  const presenceTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
   const [messageApi, messageContext] = message.useMessage()
 
   const isSuperAdmin = user?.role === 'super_admin'
@@ -148,11 +149,6 @@ export default function DataQuery() {
     user?.permission_groups?.map(group => group.code),
     user?.permissions,
   )
-  const sheetRequestFilters = useMemo(
-    () => buildQuerySheetRequestFilters(sheetFilterCriteria),
-    [sheetFilterCriteria],
-  )
-
   useEffect(() => {
     const handleFullscreenChange = () => {
       setSheetFullscreen(isQuerySheetFullscreen(
@@ -205,8 +201,6 @@ export default function DataQuery() {
         page: requestPage,
         page_size: requestPageSize,
         keyword: keyword || undefined,
-        filters: sheetRequestFilters.filters,
-        grid_filters: sheetRequestFilters.gridFilters,
         sort_by: sortBy,
         sort_order: sortBy ? sortOrder : undefined,
       }))
@@ -254,7 +248,7 @@ export default function DataQuery() {
     } finally {
       if (sequence === fetchSequence.current && !silent) setLoading(false)
     }
-  }, [queryEditAllowed, selectedType, source, keyword, sheetRequestFilters, sortBy, sortOrder])
+  }, [queryEditAllowed, selectedType, source, keyword, sortBy, sortOrder])
 
   useEffect(() => {
     dataVersionRef.current = ''
@@ -327,13 +321,58 @@ export default function DataQuery() {
         }
       },
       setQueryRealtimeState,
+      {
+        onEvent: (event: QueryRealtimeEvent) => {
+          if (versionContextRef.current !== requestContext) return
+          if (event.type === 'resync_required') {
+            if (refreshBlockedRef.current) setRefreshAvailable(true)
+            else void fetchData(true)
+            return
+          }
+          if (event.type === 'selection_presence') {
+            const userId = Number(event.user_id || 0)
+            if (!userId || userId === Number(user?.id || 0)) return
+            const name = String(event.display_name || '协作者')
+            const color = `hsl(${Math.abs(userId * 137) % 360} 70% 42%)`
+            setRemotePresence(current => ({ ...current, [userId]: { displayName: name, mode: String(event.mode || 'viewing'), color } }))
+            const previous = presenceTimersRef.current[userId]
+            if (previous) clearTimeout(previous)
+            presenceTimersRef.current[userId] = setTimeout(() => {
+              setRemotePresence(current => {
+                const next = { ...current }
+                delete next[userId]
+                return next
+              })
+              delete presenceTimersRef.current[userId]
+            }, 10000)
+            return
+          }
+          if (event.type !== 'row_changed' || source !== 'online') return
+          const sourceId = Number(event.source_id || 0)
+          const rowKey = String(event.row_key || '')
+          const changed = event.changed_fields && typeof event.changed_fields === 'object'
+            ? event.changed_fields as Record<string, unknown> : {}
+          if (!sourceId || !Object.keys(changed).length) return
+          setRows(current => current.map(row => {
+            if (Number(row.__source_id || 0) !== sourceId
+              && (!rowKey || String(row.__row_key || '') !== rowKey)) return row
+            return {
+              ...row,
+              ...changed,
+              __revision: Number(event.revision || row.__revision || 0),
+              __row_hash: String(event.row_hash || row.__row_hash || ''),
+            }
+          }))
+          if (typeof event.data_version === 'string') dataVersionRef.current = event.data_version
+        },
+      },
     )
     queryRealtimeRef.current = realtime
     return () => {
       realtime.close()
       if (queryRealtimeRef.current === realtime) queryRealtimeRef.current = null
     }
-  }, [fetchData, selectedType, source])
+  }, [fetchData, selectedType, source, user?.id])
 
   useEffect(() => {
     if (refreshAvailable && !refreshBlocked) void fetchData(true)
@@ -817,6 +856,15 @@ export default function DataQuery() {
             </Button>
           </div>
         </div>
+        {source === 'online' && Object.keys(remotePresence).length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2" aria-label="当前协作者">
+            {Object.entries(remotePresence).map(([id, presence]) => (
+              <Tag key={id} color={presence.color}>
+                {presence.displayName}{presence.mode === 'editing' ? ' 正在编辑' : ' 正在查看'}
+              </Tag>
+            ))}
+          </div>
+        )}
         <Spin
           spinning={loading}
         tip="正在加载本地业务数据"
@@ -852,13 +900,19 @@ export default function DataQuery() {
               onBlocked={messageApi.warning}
               onSavingChange={setSheetSaving}
               onEditingChange={setSheetEditing}
+              onPresence={presence => {
+                queryRealtimeRef.current?.sendPresence({
+                  ...presence,
+                  source: 'online',
+                })
+              }}
             />
           ) : (
             <div className="p-10"><Empty description={error || '没有找到符合条件的数据'} /></div>
           )}
         </Spin>
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
-          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 工具栏中的筛选和排序会重新查询全部记录，格式调整仅影响当前查看，不写入业务数据。
+          蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 表头筛选仅影响当前查看，不会重新查询后端；排序仍按完整结果重新查询，格式调整不写入业务数据。
         </div>
       </div>
 
