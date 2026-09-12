@@ -7,6 +7,7 @@ import tarfile
 import unittest
 from unittest.mock import patch
 
+import deploy.environments.artifact as artifact
 from deploy.environments.artifact import build_artifact, verify_artifact, extract_source, json_hash, file_hash
 
 
@@ -41,6 +42,22 @@ class EnvironmentArtifactTests(unittest.TestCase):
         (dist / 'assets').mkdir(parents=True)
         (dist / 'index.html').write_text('<html><head><script type="module" src="./assets/app.js"></script></head></html>')
         (dist / 'assets/app.js').write_text('export const synthetic = true;')
+
+    def test_frontend_build_uses_artifact_output_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            evidence = root / 'evidence'
+            (source / 'frontend').mkdir(parents=True)
+            evidence.mkdir()
+            with patch.object(artifact.shutil, 'which', return_value='npm'), \
+                    patch.object(artifact.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+                artifact.run_frontend_build(source, evidence)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                run.call_args_list[1].args[0],
+                ['npm', 'run', 'build', '--', '--mode', 'environment', '--outDir', 'dist-environment'],
+            )
 
     def test_dirty_worktree_is_not_used_and_verified_package_binds_commit_and_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

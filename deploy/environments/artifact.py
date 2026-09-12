@@ -73,7 +73,14 @@ def run_frontend_build(source, evidence):
     # No per-shell Vite override may bind an immutable package to another API.
     env = {key: value for key, value in os.environ.items() if not key.startswith('VITE_')}
     env['NODE_OPTIONS'] = '--max-old-space-size=8192'
-    for step, args in [('dependencies', ['ci']), ('frontend', ['run', 'build', '--', '--mode', 'environment'])]:
+    # Keep the environment build output separate from a developer's default
+    # ``frontend/dist`` directory.  The artifact contract below packages only
+    # this explicitly named directory, so the output path must be part of the
+    # command rather than an implicit Vite default.
+    for step, args in [
+        ('dependencies', ['ci']),
+        ('frontend', ['run', 'build', '--', '--mode', 'environment', '--outDir', 'dist-environment']),
+    ]:
         log = evidence / (step + '.log')
         with log.open('xb') as stream:
             log.chmod(0o600)
