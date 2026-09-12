@@ -1265,7 +1265,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                       : '填写或修改研判内容，清空后将重新回到待研判'
                     : data.dependency_blocked
                       ? '基础管控可同时研判；重新核实后可直接修改结果并保存'
-                      : '文本停止输入 1.5 秒后自动保存，选项选择后立即保存'}
+                      : '输入先保留为本地草稿；备注和反馈失焦保存，地址失焦或明确选择后保存，选项选择后立即保存'}
               </p>
             </div>
             <span className="text-xs text-[var(--app-text-muted)]">

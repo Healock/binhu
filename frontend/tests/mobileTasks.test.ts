@@ -10,6 +10,15 @@ test('研判导入只显示可读错误信息，不渲染结构化正文', () =>
   assert.equal(analysisImportReason(null, '请重试'), '请重试')
 })
 
+test('任务草稿存储按账号任务字段隔离并具备过期清理字段', () => {
+  const source = readFileSync(new URL('../src/utils/taskDraftStore.ts', import.meta.url), 'utf8')
+  assert.match(source, /accountScope/)
+  assert.match(source, /taskKey/)
+  assert.match(source, /expiresAt/)
+  assert.match(source, /indexedDB\.open/)
+  assert.match(source, /clearExpiredTaskDrafts/)
+})
+
 import {
   buildMobileTaskChanges,
   mergeMobileTaskSaveValues,
@@ -839,7 +848,10 @@ test('流口任务支持账号级表格视图并在手机端保留卡片', () =>
   assert.match(clientSource, /source-rows\/\$\{sourceId\}\/claim/)
   assert.match(tableSource, /const visiblePhones = phones\.slice\(0, 3\)/)
   assert.match(tableSource, /phones\.length - visiblePhones\.length/)
-  assert.match(tableSource, /const saveField = async/)
+  assert.match(tableSource, /const saveFieldNow = async/)
+  assert.match(tableSource, /const requestFieldSave =/)
+  assert.match(tableSource, /10000/)
+  assert.match(tableSource, /putTaskDraft/)
   assert.match(tableSource, /cancelScheduledFieldSave\(task\.task_key, field\)/)
   assert.match(tableSource, /editorValuesRef\.current\[task\.task_key\]\?\.\[field\]/)
   assert.match(tableSource, /saveStates\[task\.task_key\]\?\.\[field\]/)
