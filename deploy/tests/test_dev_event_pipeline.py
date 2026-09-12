@@ -134,11 +134,19 @@ networks:
             kafka_compose._without_approved_labels(base),
             kafka_compose._without_approved_labels(target),
         )
+        self.assertEqual(
+            kafka_compose._model_sha256(base),
+            kafka_compose._model_sha256(target),
+        )
         changed = copy.deepcopy(target)
         changed["services"]["kafka-1"]["image"] = "sha256:" + "b" * 64
         self.assertNotEqual(
             kafka_compose._without_approved_labels(base),
             kafka_compose._without_approved_labels(changed),
+        )
+        self.assertNotEqual(
+            kafka_compose._model_sha256(base),
+            kafka_compose._model_sha256(changed),
         )
 
     def test_all_generated_event_pipeline_containers_have_development_label(self):
