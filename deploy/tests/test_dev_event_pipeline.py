@@ -19,6 +19,7 @@ from deploy.environments.event_pipeline import registry_runtime
 from deploy.environments.event_pipeline import checkpoint
 from deploy.environments.event_pipeline import control
 from deploy.environments.event_pipeline import flink_compose
+from deploy.environments.event_pipeline import kafka_compose
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 
 
@@ -61,6 +62,110 @@ class BusinessBridgeTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
+    def test_eventbus_identity_patch_covers_all_base_services(self):
+        source = """name: binhu-development-eventbus
+services:
+  kafka-1:
+    image: kafka
+    labels:
+      binhu.shadow: \"true\"
+      binhu.development.run_id: dev-test-1
+  kafka-2:
+    image: kafka
+    labels:
+      binhu.shadow: \"true\"
+      binhu.development.run_id: dev-test-1
+  kafka-3:
+    image: kafka
+    labels:
+      binhu.shadow: \"true\"
+      binhu.development.run_id: dev-test-1
+  schema-registry:
+    image: registry
+    labels:
+      binhu.shadow: \"true\"
+      binhu.development.run_id: dev-test-1
+networks:
+  internal:
+    internal: true
+"""
+        patched = kafka_compose.patch_identity_labels(source)
+        self.assertEqual(patched.count("binhu.environment: development"), 4)
+        self.assertNotIn("binhu.shadow", patched)
+        self.assertEqual(kafka_compose.patch_identity_labels(patched), patched)
+        self.assertIn("binhu.development.run_id: dev-test-1", patched)
+
+    def test_eventbus_identity_patch_rejects_other_services_and_wrong_environment(self):
+        source = """services:
+  kafka-1:
+    labels:
+      binhu.environment: production
+"""
+        with self.assertRaises(ValueError):
+            kafka_compose.patch_identity_labels(source)
+        complete = "services:\n" + "".join(
+            f"  {service}:\n    labels:\n      binhu.environment: development\n"
+            for service in kafka_compose.BASE_SERVICES
+        )
+        with self.assertRaises(ValueError):
+            kafka_compose.patch_identity_labels(
+                complete + "  unexpected-worker:\n    labels:\n      binhu.environment: development\n"
+            )
+
+    def test_eventbus_comparison_ignores_only_approved_identity_labels(self):
+        base = {
+            "name": kafka_compose.PROJECT,
+            "services": {
+                service: {
+                    "image": "sha256:" + "a" * 64,
+                    "labels": {
+                        "binhu.shadow": "true",
+                        "binhu.development.run_id": "dev-test-1",
+                    },
+                }
+                for service in kafka_compose.BASE_SERVICES
+            },
+        }
+        target = copy.deepcopy(base)
+        for service in kafka_compose.BASE_SERVICES:
+            target["services"][service]["labels"].pop("binhu.shadow")
+            target["services"][service]["labels"]["binhu.environment"] = "development"
+        self.assertEqual(
+            kafka_compose._without_approved_labels(base),
+            kafka_compose._without_approved_labels(target),
+        )
+        self.assertEqual(
+            kafka_compose._model_sha256(base),
+            kafka_compose._model_sha256(target),
+        )
+        changed = copy.deepcopy(target)
+        changed["services"]["kafka-1"]["image"] = "sha256:" + "b" * 64
+        self.assertNotEqual(
+            kafka_compose._without_approved_labels(base),
+            kafka_compose._without_approved_labels(changed),
+        )
+        self.assertNotEqual(
+            kafka_compose._model_sha256(base),
+            kafka_compose._model_sha256(changed),
+        )
+
+    def test_all_generated_event_pipeline_containers_have_development_label(self):
+        specifications = (
+            compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker")}),
+            registry_runtime.specification("sha256:" + "a" * 64),
+            flink_compose.specification(
+                "sha256:" + "a" * 64,
+                Path("/srv/binhu-environments/build-dev-pipeline-a9409fce"),
+            ),
+        )
+        for specification in specifications:
+            for service, definition in specification["services"].items():
+                with self.subTest(service=service):
+                    self.assertEqual(
+                        definition.get("labels", {}).get("binhu.environment"),
+                        "development",
+                    )
+
     def test_failed_schema_check_prevents_start_and_keeps_each_attempt(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}), patch('time.time_ns', return_value=123):
             with patch.object(control.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="schema unavailable")) as command:
