@@ -28,6 +28,9 @@ Python worker 使用增量 reducer，不再保存完整事件正文；事件 ID 
 - 当前验证：`deploy/tests` 全套 211 passed、2 skipped、94 subtests passed（2026-09-14）
 - 主线 CI：run `34778302779`（提交 `befd1236aeb98882be20bbeda847845da72c319d`）全部通过（2026-09-13）
 - 本轮增量 reducer/Flink 去重定向验证：36 passed、22 subtests passed；真实 Flink SQL 运行仍待 Dev 服务器执行
+- Dev 候选包生成器：`deploy/environments/event_pipeline/deploy.py`；手动工作流：`.github/workflows/prepare-dev-event-pipeline.yml`。
+  候选包已经具备提交、运行编号、镜像摘要、源码清单和 SHA-256 门禁，但当前服务器还没有
+  对应的固定 Dev event-pipeline 部署网关，因此尚未上传或启动新的 Python worker。
 
 本次代码验证的是合同、去重、revision 冲突和差异脱敏；本机没有 Docker、
 Kafka、Flink 或真实 MySQL，不能把本地测试写成服务器验收。服务器运行时必须
