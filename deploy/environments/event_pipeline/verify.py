@@ -46,6 +46,20 @@ def fixture(run_id, revision, *, nonce="legacy"):
             "environment": "development", "run_id": run_id}
 
 
+def acceptance_event_ids(run_id, base_revision, nonce):
+    """Return the three unique delivery IDs for one acceptance attempt.
+
+    A run can intentionally contain older attempts.  Verification must scope
+    delivery counts to this attempt instead of treating every historical row
+    for the run as part of the current result.
+    """
+    target_revision = base_revision + 2
+    return tuple(
+        fixture(run_id, revision, nonce=nonce)["event_id"]
+        for revision in (base_revision, target_revision, base_revision + 1)
+    )
+
+
 async def run(mode):
     config = configuration()
     pool = await connect(config)
@@ -90,7 +104,12 @@ async def run(mode):
                                       (config["DEV_RUN_ID"], expected["event_id"]))
                     delivery = await cur.fetchone()
                     if mode != "business":
-                        await cur.execute("SELECT status,COUNT(*) FROM _kafka_event_delivery WHERE run_id=%s GROUP BY status", (config["DEV_RUN_ID"],))
+                        event_ids = acceptance_event_ids(config["DEV_RUN_ID"], base_revision, nonce)
+                        await cur.execute(
+                            "SELECT status,COUNT(*) FROM _kafka_event_delivery "
+                            "WHERE run_id=%s AND event_id IN (%s,%s,%s) GROUP BY status",
+                            (config["DEV_RUN_ID"], *event_ids),
+                        )
                         states = dict(await cur.fetchall())
                     else:
                         states = {delivery[0]: 1} if delivery else {}

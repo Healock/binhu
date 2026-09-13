@@ -22,7 +22,7 @@ from deploy.environments.event_pipeline import control
 from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline import kafka_compose
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
-from deploy.environments.event_pipeline.verify import fixture
+from deploy.environments.event_pipeline.verify import fixture, acceptance_event_ids
 
 
 def settings():
@@ -66,6 +66,12 @@ class BusinessBridgeTests(unittest.TestCase):
         first = fixture("dev-test-1", 3, nonce="accept-a")
         second = fixture("dev-test-1", 3, nonce="accept-b")
         self.assertNotEqual(first["event_id"], second["event_id"])
+
+    def test_acceptance_verification_scopes_delivery_ids_to_current_attempt(self):
+        ids = acceptance_event_ids("dev-test-1", 7, "accept-a")
+        self.assertEqual(len(ids), 3)
+        self.assertEqual(len(set(ids)), 3)
+        self.assertTrue(set(ids).isdisjoint(acceptance_event_ids("dev-test-1", 7, "accept-b")))
 
 
 class ContractTests(unittest.TestCase):
