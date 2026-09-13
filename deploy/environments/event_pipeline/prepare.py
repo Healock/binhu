@@ -63,6 +63,12 @@ def compose(images):
         "command": ["python", "-m", "event_pipeline.runtime", "backend-outbox-relay"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {}}
+    services["python-metadata-worker"] = {**common, "image": images["worker"],
+        "env_file": ["runtime.env"], "mem_limit": "160m", "cpus": .25,
+        "read_only": True, "tmpfs": ["/tmp:size=16m"],
+        "command": ["python", "-m", "event_pipeline.runtime", "python-metadata-worker"],
+        "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
     return {"name": PROJECT, "services": services,
             "networks": {"internal": {"external": True, "name": NETWORK},
                          "backend": {"external": True, "name": BACKEND_NETWORK}},
@@ -127,6 +133,26 @@ INSERT INTO _pipeline_identity VALUES (1,'development','{run_id}','Dev_EventPipe
 CREATE TABLE dev_task_revisions (
  run_id VARCHAR(80) NOT NULL, task_id VARCHAR(96) NOT NULL,
  source_id BIGINT NOT NULL, revision BIGINT NOT NULL,
+ PRIMARY KEY (run_id,task_id,source_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_task_metadata (
+ run_id VARCHAR(80) NOT NULL, task_id VARCHAR(96) NOT NULL,
+ source_id BIGINT NOT NULL, revision BIGINT NOT NULL,
+ event_count BIGINT NOT NULL, changed_field_count BIGINT NOT NULL,
+ created_count BIGINT NOT NULL, saved_count BIGINT NOT NULL,
+ claimed_count BIGINT NOT NULL, assigned_count BIGINT NOT NULL,
+ reviewed_count BIGINT NOT NULL, archived_count BIGINT NOT NULL,
+ deleted_count BIGINT NOT NULL,
+ PRIMARY KEY (run_id,task_id,source_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_task_metadata_python (
+ run_id VARCHAR(80) NOT NULL, task_id VARCHAR(96) NOT NULL,
+ source_id BIGINT NOT NULL, revision BIGINT NOT NULL,
+ event_count BIGINT NOT NULL, changed_field_count BIGINT NOT NULL,
+ created_count BIGINT NOT NULL, saved_count BIGINT NOT NULL,
+ claimed_count BIGINT NOT NULL, assigned_count BIGINT NOT NULL,
+ reviewed_count BIGINT NOT NULL, archived_count BIGINT NOT NULL,
+ deleted_count BIGINT NOT NULL,
  PRIMARY KEY (run_id,task_id,source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 """

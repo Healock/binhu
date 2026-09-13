@@ -40,4 +40,33 @@ FROM dev_events
 WHERE environment = 'development' AND run_id = '{run}'
  AND schema_version = 1 AND source_id > 0 AND revision >= 0
 GROUP BY run_id, task_id, source_id;
+
+CREATE TABLE dev_task_metadata (
+ run_id VARCHAR(80), task_id VARCHAR(96), source_id BIGINT, revision BIGINT,
+ event_count BIGINT, changed_field_count BIGINT,
+ created_count BIGINT, saved_count BIGINT, claimed_count BIGINT,
+ assigned_count BIGINT, reviewed_count BIGINT, archived_count BIGINT,
+ deleted_count BIGINT,
+ PRIMARY KEY (run_id, task_id, source_id) NOT ENFORCED
+) WITH (
+ 'connector' = 'jdbc',
+ 'url' = 'jdbc:mysql://dev-derived-mysql:3306/Dev_EventPipeline?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
+ 'table-name' = 'dev_task_metadata', 'username' = 'dev_pipeline',
+ 'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
+ 'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
+);
+INSERT INTO dev_task_metadata
+SELECT run_id, task_id, source_id, MAX(revision), COUNT(*),
+ SUM(CARDINALITY(changed_fields)),
+ SUM(CASE WHEN event_type='task.created' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.saved' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.claimed' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.assigned' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.reviewed' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.archived' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)
+FROM dev_events
+WHERE environment = 'development' AND run_id = '{run}'
+ AND schema_version = 1 AND source_id > 0 AND revision >= 0
+GROUP BY run_id, task_id, source_id;
 """

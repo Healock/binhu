@@ -127,6 +127,11 @@ async def business_bridge(config, pool):
     await run(config, pool)
 
 
+async def python_metadata_worker(config):
+    from .services.python_metadata_worker import run
+    await run(config)
+
+
 def backend_relay_configuration(environ=None):
     """Validate the Dev-only Backend outbox relay targets.
 
@@ -194,6 +199,9 @@ async def main(mode):
     config = configuration()
     from .schema_registry import verify
     await asyncio.to_thread(verify)
+    if mode == "python-metadata-worker":
+        await python_metadata_worker(config)
+        return
     pool = await connect(config)
     try:
         if mode == "relay":
@@ -209,7 +217,7 @@ async def main(mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay"))
+    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay", "python-metadata-worker"))
     args = parser.parse_args()
     try:
         asyncio.run(main(args.mode))
