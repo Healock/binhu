@@ -1,4 +1,7 @@
-"""Verify the fixed Dev Bootstrap identity without exposing response details."""
+"""Verify the fixed Dev Bootstrap identity without exposing response details.
+
+This contract is intentionally shared by candidate health checks and release evidence.
+"""
 from __future__ import annotations
 
 import argparse
