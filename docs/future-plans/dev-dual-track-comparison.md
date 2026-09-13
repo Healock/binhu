@@ -10,6 +10,8 @@ Python worker 和 Flink 作业分别写入独立的输出命名空间。每个�
 `environment + run_id + task_id + source_id` 定位，并包含最高 `revision`、
 `event_count`、`changed_field_count` 以及七类事件计数。事件 ID 去重；同一事件
 ID 或同一 revision 出现不同元数据时，记录为不可自动归因的差异并停止签署。
+Python worker 使用增量 reducer，不再保存完整事件正文；事件 ID 缓存有界（默认 250,000，覆盖本次 100,000 事件门禁）。Flink
+先通过 `dev_unique_events` 对完整事件去重再聚合，避免 Kafka 重投放大事件计数。
 
 `deploy/environments/event_pipeline/dual_track.py` 读取两边的脱敏 JSONL 输出，
 只把任务 ID 的 SHA-256、revision、字段名和两边的计数写入差异台账。台账不保存
@@ -24,6 +26,8 @@ ID 或同一 revision 出现不同元数据时，记录为不可自动归因的�
 - 比对器与脱敏差异台账：`dual_track.py`
 - 本地单元测试：`deploy/tests/test_task_metadata_projection.py`
 - 当前验证：`deploy/tests` 全套 211 passed、2 skipped、94 subtests passed（2026-09-14）
+- 主线 CI：run `34778302779`（提交 `befd1236aeb98882be20bbeda847845da72c319d`）全部通过（2026-09-13）
+- 本轮增量 reducer/Flink 去重定向验证：36 passed、22 subtests passed；真实 Flink SQL 运行仍待 Dev 服务器执行
 
 本次代码验证的是合同、去重、revision 冲突和差异脱敏；本机没有 Docker、
 Kafka、Flink 或真实 MySQL，不能把本地测试写成服务器验收。服务器运行时必须

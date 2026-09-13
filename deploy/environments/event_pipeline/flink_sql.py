@@ -55,18 +55,22 @@ CREATE TABLE dev_task_metadata (
  'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
-INSERT INTO dev_task_metadata
-SELECT run_id, task_id, source_id, MAX(revision), COUNT(*),
- SUM(CARDINALITY(changed_fields)),
- SUM(CASE WHEN event_type='task.created' THEN 1 ELSE 0 END),
- SUM(CASE WHEN event_type='task.saved' THEN 1 ELSE 0 END),
- SUM(CASE WHEN event_type='task.claimed' THEN 1 ELSE 0 END),
- SUM(CASE WHEN event_type='task.assigned' THEN 1 ELSE 0 END),
- SUM(CASE WHEN event_type='task.reviewed' THEN 1 ELSE 0 END),
- SUM(CASE WHEN event_type='task.archived' THEN 1 ELSE 0 END),
- SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)
+CREATE VIEW dev_unique_events AS
+SELECT DISTINCT schema_version, event_id, event_type, task_id, source_id, revision,
+       operation_id, changed_fields, `timestamp`, environment, run_id
 FROM dev_events
 WHERE environment = 'development' AND run_id = '{run}'
- AND schema_version = 1 AND source_id > 0 AND revision >= 0
+  AND schema_version = 1 AND source_id > 0 AND revision >= 0;
+INSERT INTO dev_task_metadata
+SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),
+ SUM(CARDINALITY(changed_fields)),
+ COUNT(DISTINCT CASE WHEN event_type='task.created' THEN event_id END),
+ COUNT(DISTINCT CASE WHEN event_type='task.saved' THEN event_id END),
+ COUNT(DISTINCT CASE WHEN event_type='task.claimed' THEN event_id END),
+ COUNT(DISTINCT CASE WHEN event_type='task.assigned' THEN event_id END),
+ COUNT(DISTINCT CASE WHEN event_type='task.reviewed' THEN event_id END),
+ COUNT(DISTINCT CASE WHEN event_type='task.archived' THEN event_id END),
+ COUNT(DISTINCT CASE WHEN event_type='task.deleted' THEN event_id END)
+FROM dev_unique_events
 GROUP BY run_id, task_id, source_id;
 """

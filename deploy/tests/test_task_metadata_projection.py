@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from deploy.environments.event_pipeline.dual_track import compare
 from deploy.environments.event_pipeline.services.task_metadata_projection import (
-    ProjectionConflict, flatten_projection, project_events,
+    IncrementalTaskMetadataProjector, ProjectionConflict, flatten_projection, project_events,
 )
 from deploy.environments.event_pipeline.services.python_metadata_worker import upsert_sql
 
@@ -59,6 +59,22 @@ class TaskMetadataProjectionTests(unittest.TestCase):
                 event("11111111-1111-4111-8111-111111111111", 1),
                 event("33333333-3333-4333-8333-333333333333", 1, "task.deleted"),
             ])
+
+    def test_incremental_projector_deduplicates_and_bounds_event_cache(self):
+        projector = IncrementalTaskMetadataProjector(max_event_ids=2)
+        projector.apply(event("11111111-1111-4111-8111-111111111111", 1))
+        projector.apply(event("22222222-2222-4222-8222-222222222222", 2))
+        projector.apply(event("33333333-3333-4333-8333-333333333333", 3))
+        self.assertEqual(projector.event_cache_size, 2)
+        self.assertEqual(
+            flatten_projection(projector.snapshot(("dev-test-1", "t_fullchain:1", 1)))["event_count"],
+            3,
+        )
+        with self.assertRaises(ProjectionConflict):
+            projector.apply({
+                **event("33333333-3333-4333-8333-333333333333", 3),
+                "event_type": "task.deleted",
+            })
 
     def test_dual_track_report_is_redacted_and_records_mismatch(self):
         with tempfile.TemporaryDirectory() as root:

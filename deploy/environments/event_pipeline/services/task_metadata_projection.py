@@ -7,7 +7,7 @@ this module.
 """
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from typing import Any, Iterable
 
 from .kafka_event_contract import validate_task_event
@@ -88,6 +88,63 @@ def project_events(events: Iterable[dict[str, Any]]) -> dict[tuple[str, str, int
     return result
 
 
+class IncrementalTaskMetadataProjector:
+    """Apply one validated event without retaining the complete event stream.
+
+    The event-id cache is bounded so a long-running Dev worker cannot grow
+    without limit.  The default retains more IDs than the 100,000-event gate;
+    the durable output table remains the source of truth after a restart.
+    """
+
+    def __init__(self, max_event_ids: int = 250_000):
+        if max_event_ids < 1:
+            raise ValueError("max_event_ids must be positive")
+        self.max_event_ids = max_event_ids
+        self._seen: dict[str, str] = {}
+        self._order: deque[str] = deque()
+        self._rows: dict[tuple[str, str, int], dict[str, Any]] = {}
+
+    def apply(self, raw: dict[str, Any]) -> dict[str, Any]:
+        event = validate_task_event(raw)
+        canonical = _canonical(event)
+        previous = self._seen.get(event["event_id"])
+        if previous is not None:
+            if previous != canonical:
+                raise ProjectionConflict("event id reused with different metadata")
+            return self._rows[_key(event)]
+        self._seen[event["event_id"]] = canonical
+        self._order.append(event["event_id"])
+        while len(self._order) > self.max_event_ids:
+            self._seen.pop(self._order.popleft(), None)
+
+        key = _key(event)
+        row = self._rows.setdefault(key, _empty(key))
+        # A task revision is immutable metadata.  Conflicting replay must be
+        # visible to the acceptance ledger instead of silently overwriting it.
+        revision_signature = _revision_signature(event)
+        revisions = row.setdefault("_revision_signatures", {})
+        old_signature = revisions.get(event["revision"])
+        if old_signature is not None and old_signature != revision_signature:
+            raise ProjectionConflict("revision has incompatible metadata")
+        revisions[event["revision"]] = revision_signature
+        row["revision"] = max(row["revision"], event["revision"])
+        row["event_count"] += 1
+        row["changed_field_count"] += len(event["changed_fields"])
+        event_name = event["event_type"].removeprefix("task.")
+        row["event_counts"][event_name] += 1
+        return row
+
+    def snapshot(self, key: tuple[str, str, int]) -> dict[str, Any]:
+        row = self._rows[key].copy()
+        row.pop("_revision_signatures", None)
+        row["event_counts"] = dict(row["event_counts"])
+        return row
+
+    @property
+    def event_cache_size(self) -> int:
+        return len(self._seen)
+
+
 def _revision_signature(event: dict[str, Any]) -> str:
     return f"{event['event_type']}|{','.join(event['changed_fields'])}"
 
@@ -114,4 +171,7 @@ def flatten_projection(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-__all__ = ["EVENT_COUNTERS", "ProjectionConflict", "flatten_projection", "project_events"]
+__all__ = [
+    "EVENT_COUNTERS", "IncrementalTaskMetadataProjector", "ProjectionConflict",
+    "flatten_projection", "project_events",
+]
