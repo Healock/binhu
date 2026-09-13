@@ -29,7 +29,7 @@ CREATE TABLE dev_revisions (
  PRIMARY KEY (run_id, task_id, source_id) NOT ENFORCED
 ) WITH (
  'connector' = 'jdbc',
- 'url' = 'jdbc:mysql://dev-derived-mysql:3306/Dev_EventPipeline',
+ 'url' = 'jdbc:mysql://dev-derived-mysql:3306/Dev_EventPipeline?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
  'table-name' = 'dev_task_revisions', 'username' = 'dev_pipeline',
  'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'

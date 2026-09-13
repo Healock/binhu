@@ -487,6 +487,10 @@ volumes:
                          "PRIMARY KEY (run_id, task_id, source_id)", "execution.checkpointing.interval",
                          "dev.task.events.v1", "Dev_EventPipeline"):
             self.assertIn(expected, sql)
+        self.assertIn(
+            "autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000",
+            sql,
+        )
         self.assertNotIn("shadow", sql)
         with self.assertRaises(ValueError):
             render({**settings(), "MYSQL_PASSWORD": "x';secret"})
