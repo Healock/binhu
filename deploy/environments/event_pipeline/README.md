@@ -29,6 +29,11 @@
    编译 `PipelineJob.java`，将私密 `pipeline.sql` 只读挂入
    `/opt/flink/private/pipeline.sql`，设置 `APP_ENVIRONMENT=development`。
    不使用会回显 SQL 和密码的交互 SQL Client；提交 Java 入口，并检查日志无凭据。
+
+   JDBC sink 的 URL 固定启用受控的断线恢复参数（自动重连最多 3 次、TCP keepalive、
+   5 秒连接超时和 15 秒读写超时）。这是为了处理 Dev MySQL `wait_timeout` 关闭长期空闲
+   连接后首个事件写入失败的情况；Flink 的批次重试仍保留。该设置只用于独立 Dev 派生库，
+   不改变业务数据模型、topic 或 Production/Staging 连接配置。
 5. JobManager 与 TaskManager 使用 Dev 自己的 checkpoint 卷和内部网络。
    两个服务还必须由 `event_pipeline.flink_compose` 生成，并显式携带
    `binhu.environment=development` 标签；只设置容器环境变量不能代替 Docker
