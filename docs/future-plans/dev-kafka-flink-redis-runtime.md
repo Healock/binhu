@@ -42,3 +42,9 @@ Dev 回滚只停止本次 Dev worker、Flink 作业和桥，保留配置、镜�
 - Staging 脱敏副本、权限、回归和压测门禁另有通过证据。
 
 本计划不授权直接修改 Production、建立真实生产双轨、迁移生产研判任务或退役 Shadow。那些动作必须在对应环境验收和发布门禁完成后单独执行。
+
+## 2026-09-14 更新：Backend outbox relay 已接入 Dev
+
+Dev Backend outbox relay 已在服务器部署并验证一条合成业务事件闭环，证据目录为 `dev-backend-outbox-relay-20260914-ef5ddb80`。该结果证明 Backend outbox 能进入 Dev Redis 和现有 Kafka/Flink 派生链路；不代表完整 Dev 11 项、双轨比对、Staging 晋级或 Production 架构切换已通过。relay 仅使用 development 身份和 Dev 专属数据库、Redis、网络与资源限制，Production、Staging、Shadow 未受影响。
+
+当前仍不能标记架构升级完成：完整第 6–11 项恢复与故障演练、7 天/10 万事件双轨比对、Staging 脱敏副本、75 人趋势复测和 Production 切换门禁尚未完成。后续验收 fixture 必须显式使用 UTF-8，避免中文业务类型在受控 SQL 工具中被错误转码。
