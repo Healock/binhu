@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from deploy.environments.event_pipeline.runtime import configuration, cache_result
+from deploy.environments.event_pipeline.runtime import configuration, cache_result, backend_relay_configuration
 from deploy.environments.event_pipeline.prepare import compose
 from deploy.environments.event_pipeline.flink_sql import render
 from deploy.environments.event_pipeline.services.kafka_envelope import delivery_topic
@@ -23,6 +23,7 @@ from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline import kafka_compose
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 from deploy.environments.event_pipeline.verify import fixture, acceptance_event_ids
+from deploy.environments.event_pipeline.services.backend_outbox_relay import BackendOutboxRelay
 
 
 def settings():
@@ -452,6 +453,29 @@ volumes:
             with self.subTest(key=key), self.assertRaises(ValueError):
                 configuration(changed)
 
+    def test_backend_relay_is_dev_only_and_uses_backend_targets(self):
+        env = {"APP_ENVIRONMENT": "development", "DEV_RUN_ID": "dev-test-1",
+               "BACKEND_MYSQL_HOST": "environment-mysql", "BACKEND_MYSQL_DATABASE": "Dev_OnlineData",
+               "BACKEND_MYSQL_USER": "environment_app", "BACKEND_MYSQL_PASSWORD": "x" * 48,
+               "BACKEND_REDIS_URL": "redis://:synthetic@redis:6379/0"}
+        result = backend_relay_configuration(env)
+        self.assertEqual(result["BACKEND_MYSQL_DATABASE"], "Dev_OnlineData")
+        for key, value in (("APP_ENVIRONMENT", "production"),
+                           ("BACKEND_MYSQL_HOST", "binhu-mysql"),
+                           ("BACKEND_REDIS_URL", "redis://production:6379/0")):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                backend_relay_configuration({**env, key: value})
+
+    def test_compose_includes_isolated_backend_outbox_relay(self):
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker")})
+        service = spec["services"]["backend-outbox-relay"]
+        self.assertEqual(service["networks"], ["backend"])
+        self.assertEqual(service["env_file"], ["backend-relay.env"])
+        self.assertEqual(service["command"][-1], "backend-outbox-relay")
+        self.assertEqual(service["labels"]["binhu.environment"], "development")
+        self.assertEqual(service["pids_limit"], 128)
+        self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
+
     def test_text_and_external_events_cannot_enter_task_topic(self):
         for bad in ({**event(), "name": "synthetic-person"},
                     {**event(), "event_type": "photo.writeback.requested"},
@@ -503,6 +527,38 @@ volumes:
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_backend_outbox_relay_publishes_bounded_metadata(self):
+        class Cursor:
+            async def execute(self, *args): self.args = args
+            async def fetchall(self): return []
+        class Conn:
+            async def begin(self): pass
+            async def commit(self): pass
+            async def rollback(self): pass
+            def cursor(self):
+                class Ctx:
+                    async def __aenter__(self): return Cursor()
+                    async def __aexit__(self, *args): pass
+                return Ctx()
+        class Pool:
+            def acquire(self):
+                class Ctx:
+                    async def __aenter__(self): return Conn()
+                    async def __aexit__(self, *args): pass
+                return Ctx()
+        redis = AsyncMock()
+        relay = BackendOutboxRelay(Pool(), redis, {"BACKEND_REDIS_STREAM_KEY": "binhu:events"})
+        row = ("11111111-1111-4111-8111-111111111111", 1, "online", "online.task.changed",
+               "online_task", "全链条:synthetic-row", 2, '["authenticated"]', "pending", 0,
+               None, None, None, "", "", None, None)
+        relay._claim = AsyncMock(return_value=[row])
+        relay._finish = AsyncMock()
+        self.assertEqual(await relay.run_once(), "published")
+        payload = json.loads(redis.xadd.call_args.args[1]["event"])
+        self.assertEqual(payload["aggregate_revision"], 2)
+        self.assertNotIn("detail", payload)
+        relay._claim.assert_awaited_once()
+
     async def test_ack_then_failed_commit_does_not_mark_transport_retry(self):
         delivery = Delivery("event", b"{}", b"key", "lease", 1, "events")
         store = AsyncMock()

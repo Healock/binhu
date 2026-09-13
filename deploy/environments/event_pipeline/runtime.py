@@ -127,7 +127,70 @@ async def business_bridge(config, pool):
     await run(config, pool)
 
 
+def backend_relay_configuration(environ=None):
+    """Validate the Dev-only Backend outbox relay targets.
+
+    This relay deliberately uses the Dev Backend database and Redis stream;
+    it never shares the pipeline database credentials or Production relay.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("APP_ENVIRONMENT") != "development":
+        raise ValueError("development identity required")
+    run_id = env.get("DEV_RUN_ID", "")
+    if not re.fullmatch(r"dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
+        raise ValueError("Dev run ID required")
+    host = env.get("BACKEND_MYSQL_HOST", "")
+    database = env.get("BACKEND_MYSQL_DATABASE", "")
+    user = env.get("BACKEND_MYSQL_USER", "")
+    password = env.get("BACKEND_MYSQL_PASSWORD", "")
+    redis_url = env.get("BACKEND_REDIS_URL", "")
+    if host != "environment-mysql" or not re.fullmatch(r"Dev_[A-Za-z0-9_]+", database):
+        raise ValueError("isolated Dev Backend database required")
+    if user != "environment_app" or not password or len(password) < 32:
+        raise ValueError("independent Backend credential required")
+    if not redis_url or any(value in redis_url.lower() for value in ("production", "staging", "shadow")):
+        raise ValueError("isolated Dev Backend Redis required")
+    return {
+        "APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
+        "BACKEND_MYSQL_HOST": host, "BACKEND_MYSQL_DATABASE": database,
+        "BACKEND_MYSQL_USER": user, "BACKEND_MYSQL_PASSWORD": password,
+        "BACKEND_REDIS_URL": redis_url,
+        "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),
+    }
+
+
+async def backend_outbox_relay(config):
+    from .services.backend_outbox_relay import BackendOutboxRelay
+    import aiomysql
+    from redis.asyncio import Redis
+
+    pool = await aiomysql.create_pool(
+        host=config["BACKEND_MYSQL_HOST"], port=3306,
+        user=config["BACKEND_MYSQL_USER"], password=config["BACKEND_MYSQL_PASSWORD"],
+        db=config["BACKEND_MYSQL_DATABASE"], minsize=1, maxsize=2,
+        connect_timeout=5, autocommit=True, charset="utf8mb4",
+        init_command="SET time_zone='+00:00'",
+    )
+    client = Redis.from_url(config["BACKEND_REDIS_URL"], decode_responses=True,
+                            socket_timeout=10, socket_connect_timeout=5)
+    try:
+        await client.ping()
+        worker = BackendOutboxRelay(pool, client, config)
+        while True:
+            state = await worker.run_once()
+            if state != "idle":
+                print(json.dumps({"component": "dev-backend-outbox-relay", "state": state}), flush=True)
+            await asyncio.sleep(.5 if state == "idle" else .01)
+    finally:
+        await client.aclose()
+        pool.close()
+        await pool.wait_closed()
+
+
 async def main(mode):
+    if mode == "backend-outbox-relay":
+        await backend_outbox_relay(backend_relay_configuration())
+        return
     config = configuration()
     from .schema_registry import verify
     await asyncio.to_thread(verify)
@@ -146,7 +209,7 @@ async def main(mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge"))
+    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay"))
     args = parser.parse_args()
     try:
         asyncio.run(main(args.mode))
