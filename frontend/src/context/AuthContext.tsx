@@ -13,6 +13,7 @@ import { detectClientDeviceType, getDeviceId } from '../utils/device.ts'
 import {
   assertApiEnvironmentIdentity,
   environmentForUsername,
+  environmentPath,
   getApiEnvironment,
   resetApiEnvironment,
   setApiEnvironment,
@@ -72,7 +73,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (payload.server_version) setServerVersion(payload.server_version)
     if (payload.timezone) setSystemTimezone(payload.timezone)
     setEnvironment(expected)
-    setEnvironmentLabel(payload.environment_label || (expected === 'shadow' ? '影子压测环境' : '正式环境'))
+    setEnvironmentLabel(payload.environment_label || {
+      production: '正式环境',
+      staging: '预发布环境 · 脱敏数据',
+      development: 'Dev 环境 · 虚构数据',
+      shadow: '历史影子环境',
+    }[expected])
     setLoadTestRunId(payload.load_test_run_id || '')
   }
 
@@ -101,6 +107,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (username: string, password: string) => {
     const targetEnvironment = environmentForUsername(username)
+    const prefix = environmentPath()
+    if ((prefix === '/dev' && targetEnvironment !== 'development')
+      || (prefix === '/staging' && targetEnvironment !== 'staging')) {
+      throw new Error('账号不属于当前环境，请使用对应的环境账号')
+    }
+    if (!prefix && (targetEnvironment === 'development' || targetEnvironment === 'staging')) {
+      throw new Error(`请先打开 ${targetEnvironment === 'development' ? '/dev/' : '/staging/'} 入口，再登录环境账号`)
+    }
     setApiEnvironment(targetEnvironment)
     setEnvironment(targetEnvironment)
     try {

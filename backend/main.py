@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app_version import APP_VERSION
+from environment_static import frontend_index_response
 from config import settings
 from database import init_db, close_db
 from deps import get_current_user
@@ -350,10 +351,10 @@ async def spa_fallback(full_path: str):
         return {"error": "Not found", "path": f"/{full_path}"}
     # 尝试返回对应静态文件（favicon、vite.svg 等）
     file_path = os.path.join(STATIC_DIR, full_path)
-    if os.path.isfile(file_path):
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.realpath(file_path) != os.path.realpath(index_path) and os.path.isfile(file_path):
         return FileResponse(file_path)
     # SPA 路由回退
-    index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.isfile(index_path):
-        return FileResponse(index_path)
+        return frontend_index_response(index_path, settings.APP_ENVIRONMENT)
     return {"error": "Frontend not built", "static_dir": STATIC_DIR}

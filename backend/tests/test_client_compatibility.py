@@ -185,6 +185,9 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["server_version"], APP_VERSION)
         self.assertEqual(payload["environment"], "production")
+        self.assertEqual(payload["environment_id"], "production")
+        self.assertEqual(payload["api_entry"], "/api")
+        self.assertEqual(payload["data_kind"], "真实业务数据")
         self.assertEqual(payload["environment_label"], "正式环境")
         self.assertEqual(payload["load_test_run_id"], "")
         self.assertEqual(payload["business_date"], "2026-08-11")

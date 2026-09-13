@@ -1,3 +1,4 @@
+import { environmentLoginPath } from '../utils/apiEnvironment.ts'
 import axios from 'axios'
 import type {
   StatsResponse, StatsItem, AppNotification,
@@ -191,7 +192,10 @@ export interface MaintenanceStatus {
 export interface AppBootstrapSummary {
   server_version: string
   timezone: string
-  environment: 'production' | 'shadow'
+  environment: 'production' | 'staging' | 'development' | 'shadow'
+  environment_id: 'production' | 'staging' | 'development' | 'shadow'
+  api_entry: '/api' | '/staging/api' | '/dev/api' | '/shadow-api'
+  data_kind: string
   environment_label: string
   load_test_run_id: string
 }
@@ -313,7 +317,7 @@ export function handleUnauthorized(detail?: unknown): void {
     : '登录状态已失效'
   unauthorizedRedirectStarted = true
   sessionStorage.setItem('auth_exit_reason', JSON.stringify({ code, message }))
-  window.location.href = '/login'
+  window.location.href = environmentLoginPath()
 }
 
 export function handleMaintenance(detail?: unknown): boolean {
@@ -332,7 +336,7 @@ export function handleMaintenance(detail?: unknown): boolean {
       code: 'shadow_environment_offline',
       message,
     }))
-    window.location.href = '/login'
+    window.location.href = environmentLoginPath()
     return true
   }
   if (payload?.code !== 'maintenance_mode') {
@@ -349,7 +353,7 @@ export function handleMaintenance(detail?: unknown): boolean {
     code: 'maintenance_mode',
     message,
   }))
-  window.location.href = '/login'
+  window.location.href = environmentLoginPath()
   return true
 }
 

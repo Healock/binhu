@@ -47,6 +47,10 @@ function androidCssCompatibility(): Plugin {
 }
 
 export default defineConfig(({ mode }) => ({
+  // A single nonproduction bundle is promoted from Dev to Staging. Backend
+  // supplies the fixed HTML base; module imports and CSS remain relative.
+  base: mode === 'environment' ? './' : '/',
+  build: { outDir: mode === 'environment' ? 'dist-environment' : 'dist' },
   plugins: [
     react(),
     ...(mode === 'android' ? [androidCssCompatibility()] : []),
@@ -67,6 +71,7 @@ export default defineConfig(({ mode }) => ({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        ws: true,
       },
     },
   },

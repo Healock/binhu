@@ -38,6 +38,8 @@ class Cursor:
     async def fetchone(self):
         if "SELECT run_id,payload_sha256" in self.last_sql:
             return self.delivery[1], self.delivery[3]
+        if "SELECT COUNT(*), COALESCE(SUM(revision), 0), MAX(refreshed_at)" in self.last_sql:
+            return (1, 4, None)
         return (27,)
 
 
