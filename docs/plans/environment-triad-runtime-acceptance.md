@@ -342,3 +342,15 @@ Staging 脱敏副本或生产架构切换验收。
 - Production 与 Staging 只读基线未改变，没有生产数据、生产网络、外部平台或 Shadow 资源操作。
 
 本次只签署 Backend outbox → Dev Redis → business-bridge → Dev Kafka 投递台账 → Schema Registry/Flink → 派生 MySQL/Redis 的业务事件证据，以及重复/乱序最小事件结果。checkpoint/savepoint 恢复、完整第 6–11 项故障演练、7 天/10 万事件双轨比对、Staging 脱敏副本和 75 人压测仍未签署。
+
+### 2026-09-14：Dev relay 接入后的持久会话只读复核
+
+使用 `E:\\bhzh-ssh-mcp` 的持久 stdio MCP，在同一 SSH 会话内完成 Dev 资源和日志只读核验；会话已主动关闭，未执行写入、重启、数据库命令或容器变更。核验对象包括：
+
+- `binhu-development-pipeline-backend-outbox-relay-1`、`business-bridge`、旧 relay/bridge、三 Kafka broker、Schema Registry、Flink JobManager/TaskManager、派生 MySQL/Redis 和 Dev Backend；均处于运行状态，relay/bridge 未出现新的错误输出。
+- Backend outbox relay 容器具备 `APP_ENVIRONMENT=development`、`binhu-development_internal` 网络、只读根文件系统、`/tmp` tmpfs、`pids_limit=128`、CPU/内存限制和 `json-file` `5m×2` 日志轮换；未挂载匿名卷。
+- 派生 Redis 使用 `binhu-development-pipeline_redis` 具名卷、派生 MySQL 使用 `binhu-development-pipeline_mysql` 具名卷；两者均位于 `binhu-development-eventbus_internal`，没有发现 Production/Staging 网络混入。
+- Flink TaskManager 日志显示从 `dev-jdbc-reconnect-20260913-e8d2a878` savepoint 恢复并进入 `RUNNING`，JobManager 日志持续记录 checkpoint 完成；本次只读复核未重新触碰 checkpoint/savepoint。
+- 主机资源快照为约 3.4 GiB 可用内存、975 MiB Swap 已满、`/data` 约 245 GiB 可用空间；资源数值已记录为当前基线，未因本次检查改变任何容器。
+
+本轮证据只能确认 Dev 运行资源、身份和元数据事件链路仍健康；`event_pipeline.verify business` 的合成事件结果、重复/乱序结果和 relay 部署证据仍以 `dev-backend-outbox-relay-20260914-ef5ddb80` 目录为准。完整第 6–11 项中的业务派生、桥/relay 故障重启幂等、checkpoint/savepoint 独立恢复报告尚未形成新的通过证据。仓库当前没有等价 Python worker 与 Flink 的真实业务输出比较器，因而不能开始或宣称已开始“连续 7 天、至少 100,000 事件、零未归因差异”双轨门槛；实现第一个业务派生域会改变架构设计，必须另行评审后再继续。Production、Staging 和 Shadow 本轮均未操作。
