@@ -187,6 +187,26 @@
 `binhu_dev_session`、`/dev` 路由、环境静态 bundle、账号后缀和环境横幅。每月或每个
 Dev 里程碑继续运行 `git fetch origin`、`merge-base` 和契约文件差异检查，避免分叉再次
 造成不完整同步。Production 与 Staging 在本次修补中未变。
+2026-09-13 运行契约修补已完成部署。基于 Dev 合并提交
+`6d65c568c13683b7781cd3ceadf2e3bead4df510` 生成全新制品
+`be7bc0b6f02ebd20fd82e1e04912929cc57735f27c83d9cfcfa35373f0275fe8`，版本仍为
+`0.28.20`；服务器镜像为固定 ID `sha256:3c53452a9ff9e4c8cde105002b1aba73f4a9b838eb29cc3037913ac2fd26d867`。
+补传缺失的 `source.tar` 后，制品校验、镜像构建和 `measure-development` 均通过，随后用
+全新的证据目录执行 `apply-development`，结果为健康且 `business_acceptance=false`。
+部署台账已写入服务器固定证据目录
+`/srv/deploy-backups/environment-triad/dev-update-90bed1817609433a/deployment-ledger.json`，
+记录 `source_branch=dev`、包含 PR `[613, 617, 619, 623]`、UTC 部署时间和上一次旧提交；
+三次失败尝试目录均保留，未覆盖旧证据。
+
+部署后的只读核对：Dev `/api/health` 返回 200/`0.28.20`，Bootstrap 返回
+`environment=development`、`environment_id=development`、`api_entry=/dev/api`、Dev
+环境标签和虚构/脱敏数据类型；`/dev/`、`/dev/login`、`/dev/api/health` 均返回 200，
+环境静态资源使用 Dev 基址。Dev backend、MySQL 和 Redis 容器正常，Production 与 Staging
+容器 ID 在部署前证据中保持一致。Kafka Dev 主题元数据和 Flink 作业管理器只读探针可用，
+派生 Redis 认证 ping 成功，近期 relay 日志无错误分类；现有 pipeline manifest 仍标记
+`acceptance=pending`，业务派生、双轨 7 天/100,000 事件和用户业务验收尚未完成，不能将
+这些组件状态当作最终验收通过。Dev 专用 MCP 入口仍未建立，当前部署沿用手动
+`measure-development` → `apply-development` 路径。
 
 
 ### 2026-09-06 Redis revision cache 进展
