@@ -476,6 +476,15 @@ volumes:
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
 
+    def test_compose_includes_isolated_python_metadata_worker(self):
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker")})
+        service = spec["services"]["python-metadata-worker"]
+        self.assertEqual(service["networks"], ["internal"])
+        self.assertEqual(service["command"][-1], "python-metadata-worker")
+        self.assertEqual(service["labels"]["binhu.environment"], "development")
+        self.assertEqual(service["pids_limit"], 128)
+        self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
+
     def test_text_and_external_events_cannot_enter_task_topic(self):
         for bad in ({**event(), "name": "synthetic-person"},
                     {**event(), "event_type": "photo.writeback.requested"},
@@ -515,7 +524,8 @@ volumes:
         sql = render(settings())
         for expected in ("MAX(revision)", "run_id = 'dev-test-1'", "environment = 'development'",
                          "PRIMARY KEY (run_id, task_id, source_id)", "execution.checkpointing.interval",
-                         "dev.task.events.v1", "Dev_EventPipeline"):
+                         "dev.task.events.v1", "Dev_EventPipeline", "dev_task_metadata",
+                         "event_count", "changed_field_count", "CARDINALITY(changed_fields)"):
             self.assertIn(expected, sql)
         self.assertIn(
             "autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000",
