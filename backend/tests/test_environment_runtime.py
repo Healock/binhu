@@ -22,6 +22,7 @@ def test_accepts_explicit_isolated_target():
 
 @pytest.mark.parametrize('field,value', [('MYSQL_ONLINE_DATA_DB', 'OnlineData'),
     ('MYSQL_HOST', 'mysql'), ('MYSQL_USER', 'binhu'), ('TXDOCS_ENABLED', True),
+    ('TXDOCS_MONITORING_ENABLED', True),
     ('VENUE_CLOUD_PULL_ENABLED', True), ('QMF_REGISTRATION_ENABLED', True)])
 def test_rejects_production_and_external_configuration(field, value):
     config = isolated()

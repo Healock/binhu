@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     TXDOCS_ENABLED: bool = False
     TXDOCS_MIGRATION_MODE: str = "readonly"
     TXDOCS_CUTOFF_AT: str = ""
+    # Independent, read-only statistics channel.  This switch must never be
+    # used to reactivate the retired Tencent business data source.
+    TXDOCS_MONITORING_ENABLED: bool = False
+    TXDOCS_MONITORING_SPREADSHEET_IDS: str = ""
+    TXDOCS_MONITORING_INTERVAL_SECONDS: int = 600
+    TXDOCS_MONITORING_SHEET_TIMEOUT_SECONDS: int = 120
+    TXDOCS_MONITORING_MAX_ROWS_PER_SHEET: int = 100000
 
     # Visit/rating source acquisition. Keep disabled until the internal
     # platform contract and server-side credentials are configured.

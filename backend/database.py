@@ -47,6 +47,7 @@ from services.help_docs import ensure_help_docs_schema
 from services.address_match_feedback import ensure_address_match_feedback_schema
 from services.online_projection_jobs import ensure_online_projection_job_schema
 from services.online_summary_updates import ensure_online_summary_update_schema
+from services.txdocs_statistics_monitor import ensure_txdocs_statistics_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -2967,6 +2968,7 @@ class DatabaseManager:
 
         async with cls._pools["daily_report"].acquire() as conn:
             async with conn.cursor() as cur:
+                await ensure_txdocs_statistics_schema(cur)
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _daily_task_ledger (
                         report_date DATE NOT NULL,

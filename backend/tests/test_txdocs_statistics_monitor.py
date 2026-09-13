@@ -1,0 +1,226 @@
+import inspect
+import os
+import unittest
+from collections import Counter
+from datetime import datetime, timezone
+from unittest.mock import patch
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
+
+from services import txdocs_statistics_monitor as monitor
+
+
+def variant(key: str, content: str, community: str = "社区甲") -> monitor.MonitorVariant:
+    return monitor.MonitorVariant(
+        business_key_hash=key * 64,
+        content_hash=content * 64,
+        community_hash=("c" if community == "社区甲" else "d") * 64,
+        community=community,
+    )
+
+
+class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
+    def test_allowlist_is_fixed_positive_ids(self):
+        self.assertEqual(monitor.monitoring_spreadsheet_ids("3, 2, 3"), (3, 2))
+        for invalid in ("0", "-1", "1,abc"):
+            with self.assertRaises(ValueError):
+                monitor.monitoring_spreadsheet_ids(invalid)
+
+    def test_first_snapshot_is_a_baseline_not_mass_addition(self):
+        current = Counter({variant("a", "1"): 2})
+
+        delta = monitor.compare_monitor_snapshots(
+            Counter(), current, has_baseline=False
+        )
+
+        self.assertEqual(delta.current_total, 2)
+        self.assertEqual((delta.added, delta.changed, delta.removed), (0, 0, 0))
+
+    def test_reordering_and_identical_duplicates_do_not_create_changes(self):
+        snapshot = Counter({variant("a", "1"): 2, variant("b", "2"): 1})
+
+        delta = monitor.compare_monitor_snapshots(
+            snapshot.copy(), snapshot.copy(), has_baseline=True
+        )
+
+        self.assertEqual(delta.current_total, 3)
+        self.assertEqual((delta.added, delta.changed, delta.removed), (0, 0, 0))
+
+    def test_same_business_key_content_edit_is_one_change(self):
+        previous = Counter({variant("a", "1"): 1})
+        current = Counter({variant("a", "2"): 1})
+
+        delta = monitor.compare_monitor_snapshots(
+            previous, current, has_baseline=True
+        )
+
+        self.assertEqual((delta.added, delta.changed, delta.removed), (0, 1, 0))
+        self.assertEqual(delta.communities["社区甲"]["changed"], 1)
+
+    def test_count_growth_and_removal_are_not_misclassified_as_edits(self):
+        previous = Counter({variant("a", "1"): 1, variant("b", "2"): 2})
+        current = Counter({variant("a", "1"): 3, variant("b", "2"): 1})
+
+        delta = monitor.compare_monitor_snapshots(
+            previous, current, has_baseline=True
+        )
+
+        self.assertEqual((delta.added, delta.changed, delta.removed), (2, 0, 1))
+
+    def test_snapshot_discards_personal_text_and_physical_rows(self):
+        source = [{
+            "physical_row": 87,
+            "values": {
+                "下发日期": "2026-09-14",
+                "截止日期": "2026-09-15",
+                "核查人": "测试人员",
+                "社区": "虚构社区",
+                "来源": "测试",
+                "姓名": "虚构甲",
+                "身份证号": "320000190001010000",
+                "电话号码": "13000000000",
+                "地址": "测试路1号",
+                "创建时间": "",
+                "现住址": "测试路2号",
+                "核查结果": "",
+                "研判": "",
+                "二次反馈": "",
+                "登记情况": "",
+            },
+        }]
+
+        snapshot, unkeyed = monitor.build_monitor_snapshot(7, "全链条", source)
+
+        self.assertEqual(sum(snapshot.values()), 1)
+        self.assertEqual(unkeyed, 0)
+        serialized = repr(snapshot)
+        for forbidden in ("虚构甲", "320000190001010000", "13000000000", "测试路1号"):
+            self.assertNotIn(forbidden, serialized)
+        self.assertIn("虚构社区", serialized)
+        self.assertFalse(hasattr(next(iter(snapshot)), "physical_row"))
+
+    async def test_disabled_switch_makes_no_database_or_network_access(self):
+        with patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", False):
+            self.assertEqual(await monitor.run_txdocs_statistics_once(), 0)
+
+    async def test_configuration_requires_credentials_and_every_allowlisted_source(self):
+        class Cursor:
+            def __init__(self, credentials, configs):
+                self.credentials = credentials
+                self.configs = configs
+                self.query = ""
+
+            async def execute(self, query, params=None):
+                self.query = query
+
+            async def fetchone(self):
+                return self.credentials if "oauth" in self.query else None
+
+            async def fetchall(self):
+                return self.configs
+
+        with (
+            patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", True),
+            patch.object(
+                monitor.settings, "TXDOCS_MONITORING_SPREADSHEET_IDS", "7,8"
+            ),
+        ):
+            self.assertTrue(
+                await monitor.monitoring_configuration_ready(
+                    Cursor(("client", "token", "open"), [(7, "全链条"), (8, "出租房屋核查")])
+                )
+            )
+            self.assertFalse(
+                await monitor.monitoring_configuration_ready(
+                    Cursor(None, [(7, "全链条"), (8, "出租房屋核查")])
+                )
+            )
+            self.assertFalse(
+                await monitor.monitoring_configuration_ready(
+                    Cursor(("client", "token", "open"), [(7, "全链条")])
+                )
+            )
+
+    async def test_empty_successful_snapshot_is_counted_as_a_read(self):
+        class Cursor:
+            def __init__(self):
+                self.results = iter([
+                    (0,),
+                    (0, 0, 0),
+                    (2,),
+                    (datetime.now(timezone.utc).replace(tzinfo=None), 2),
+                    (0,),
+                ])
+
+            async def execute(self, query, params=None):
+                return None
+
+            async def fetchone(self):
+                return next(self.results)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        class Connection:
+            def __init__(self):
+                self._cursor = Cursor()
+
+            def cursor(self):
+                return self._cursor
+
+        class Pool:
+            def __init__(self):
+                self.connection = Connection()
+
+            async def acquire(self):
+                return self.connection
+
+            def release(self, conn):
+                return None
+
+        pool = Pool()
+        with (
+            patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", True),
+            patch.object(
+                monitor.settings, "TXDOCS_MONITORING_SPREADSHEET_IDS", "7"
+            ),
+            patch("database.db_manager.get_pool", return_value=pool),
+        ):
+            result = await monitor.get_txdocs_statistics_overview(
+                "2026-09-14",
+                "2026-09-14",
+                ["全链条"],
+                None,
+                configuration_ready=True,
+            )
+
+        self.assertEqual(result["current_rows"], 0)
+        self.assertEqual(result["successful_reads"], 2)
+        self.assertEqual(result["status"], "healthy")
+
+    def test_monitor_read_path_does_not_call_tencent_write_methods(self):
+        source = inspect.getsource(monitor._read_config)
+        for forbidden in (
+            "batch_update", "clear_range", "clear_cell", "ensure_sheet",
+            "build_delete_row_request",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_monitor_schema_has_no_remote_body_or_physical_row_columns(self):
+        source = inspect.getsource(monitor.ensure_txdocs_statistics_schema)
+        self.assertIn("business_key_hash", source)
+        self.assertIn("content_hash", source)
+        self.assertNotIn("first_seen_at", source)
+        for forbidden in (
+            "identity_number", "phone", "address", "values_json",
+            "physical_row", "access_token", "client_secret",
+        ):
+            self.assertNotIn(forbidden, source)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -44,6 +44,20 @@ XLSX 清理和导入不包含在程序发布中，必须另有文件、影子核
 
 阶段二、阶段三必须分别使用独立 PR；任何新功能不得新增腾讯来源字段、OAuth 凭据、外部物理行号或腾讯写回依赖。
 
+## 腾讯表只读统计监控
+
+腾讯业务数据源仍保持下线，`LOCAL_DATA_SOURCE_ENABLED=true` 与 `TXDOCS_ENABLED=false` 不变。确需在在线汇总中观察外部腾讯表变化时，使用独立配置：
+
+```text
+BINHU_TXDOCS_MONITORING_ENABLED=true
+BINHU_TXDOCS_MONITORING_SPREADSHEET_IDS=1,2
+BINHU_TXDOCS_MONITORING_INTERVAL_SECONDS=600
+```
+
+白名单值是生产 `_config_spreadsheets` 中已经登记的固定编号，不能由网页或请求参数覆盖。启用前只读核对 OAuth 令牌有效期、表格编号、业务类型和腾讯接口额度；不要把文件编号、令牌或表格正文写入部署台账。`TXDOCS_MONITORING_MAX_ROWS_PER_SHEET` 与单表超时必须保持有限值。
+
+监控结果写入 `daily_report` 的 `_txdocs_monitor_*` 独立表，只包含 HMAC 摘要、社区级计数和安全错误码。它不更新 `OnlineData` 业务表、`_online_source_*`、任务流水或本地日报。回退时先关闭监控开关；兼容新增表可以保留，不应删除历史统计来模拟回退。Dev、Staging 和 Shadow 必须保持该开关关闭。
+
 ## 全链条已登记归档改用居住证自动确认（待合并）
 
 - 数据上传中心不再提供公安网原始数据上传。旧预览和确认接口返回 HTTP 410；历史上传列表、受控文件下载、历史表和 HMAC 摘要继续只读保留，不能在本次发布中删除。
