@@ -129,3 +129,12 @@ Redis 内存 48 MiB，禁止自动淘汰，AOF 有重写阈值。Docker 日志�
 不执行 `down -v`，不删除 shadow，不重启生产。Schema Registry、业务派生计算、
 Backend 读取与 WebSocket 的完整验收需单独证据；此元数据 MAX(revision)
 作业只能证明传输、聚合和版本保护基础能力，不能冒充业务架构已经全部迁移。
+
+### Dev Backend outbox relay
+
+`backend-outbox-relay` 是独立的 Dev 服务，读取 `environment-mysql` 中的
+`Dev_OnlineData._domain_event_outbox`，只把经过白名单过滤的事件元数据写入 Dev
+Redis `binhu:events`。它使用单独的 `backend-relay.env`、`backend` 内部网络、只读
+根文件系统、tmpfs 临时目录、CPU/内存/pids 限制和 Docker 日志轮换；禁止连接
+Production、Staging、Shadow 或任何外部平台。服务器部署时只新增该服务，不重建
+Kafka、Flink、Schema Registry 或既有数据卷。
