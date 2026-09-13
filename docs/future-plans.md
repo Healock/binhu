@@ -167,6 +167,27 @@
   直到具备 Dev 专用 SSH 用户、固定工作目录、Compose 项目和服务端强制命令隔离后，
   再单独评估 Deploy Dev 工作流。
 
+### 2026-09-13 运行契约补齐与首次部署失败记录
+
+2026-09-13 基于 PR #617 的第一次 Dev 部署在候选 Bootstrap 验收阶段失败，
+`apply-development` 按设计完成回滚，Dev 继续运行旧提交。根因是 `dev` 与 `main`
+长期分叉后只同步了部分 `config.py`、`VERSION` 和部署工具链，遗漏了 Bootstrap
+完整身份字段、前端环境类型、`/dev/api` 基址、路由 basename、环境静态 bundle
+相对资源、登录环境校验和 Dev 账号后缀绑定；这不是业务数据或数据库问题。
+
+本次修补补齐并测试了以下契约：
+
+- Bootstrap 返回 `environment_id`、`api_entry`、`data_kind`，并使用 Dev 环境标签；
+- 前端识别 `development`，从 `/dev` 入口使用 `/dev/api`，登录失效回到 `/dev/login`；
+- `/dev` 路由使用对应 basename，环境构建使用相对资源和 `dist-environment`；
+- Dev 使用 `binhu_dev_session`，账号必须使用 `@dev` 后缀，非生产环境显示数据隔离标识；
+- 部署健康检查复用完整 Dev Bootstrap 合同，缺字段时在候选阶段拒绝激活。
+
+以后每次 Dev 部署前必须自动盘点并验证 Bootstrap 字段、`/dev/api`、
+`binhu_dev_session`、`/dev` 路由、环境静态 bundle、账号后缀和环境横幅。每月或每个
+Dev 里程碑继续运行 `git fetch origin`、`merge-base` 和契约文件差异检查，避免分叉再次
+造成不完整同步。Production 与 Staging 在本次修补中未变。
+
 
 ### 2026-09-06 Redis revision cache 进展
 

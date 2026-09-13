@@ -15,6 +15,7 @@ import urllib.request
 from pathlib import Path
 
 from .artifact import file_hash, tree_hashes, verify_artifact, write_json
+from .dev_bootstrap_acceptance import verify as verify_dev_bootstrap
 from .image import verify_image
 from .runtime import DOMAINS, KEYS, SPEC, root_for
 
@@ -169,15 +170,23 @@ def backup_databases(root, manifest, evidence):
 
 def health(environment, version):
     port = SPEC[environment][2]
-    with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/app/bootstrap', timeout=8) as response:
-        payload = json.load(response)
-    if (payload.get('environment') != environment or payload.get('server_version') != version
-            or payload.get('api_entry') != '/' + SPEC[environment][1] + '/api'):
-        raise ValueError('environment_bootstrap_mismatch')
+    if environment == 'development':
+        bootstrap = verify_dev_bootstrap(version)
+    else:
+        with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/app/bootstrap', timeout=8) as response:
+            payload = json.load(response)
+        if (payload.get('environment') != environment or payload.get('server_version') != version
+                or payload.get('api_entry') != '/' + SPEC[environment][1] + '/api'):
+            raise ValueError('environment_bootstrap_mismatch')
+        bootstrap = {
+            'environment': environment,
+            'server_version': version,
+            'api_entry': '/' + SPEC[environment][1] + '/api',
+        }
     with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/health', timeout=8) as response:
         if response.status != 200:
             raise ValueError('environment_health_failed')
-    return {'environment': environment, 'version': version, 'health': True}
+    return {'environment': environment, 'version': version, 'health': True, 'bootstrap': bootstrap}
 
 
 def wait_healthy(environment, version):

@@ -67,13 +67,31 @@ async def get_app_bootstrap(
     return {
         "server_version": APP_VERSION,
         "environment": settings.APP_ENVIRONMENT,
+        "environment_id": settings.APP_ENVIRONMENT,
+        "data_kind": {
+            "production": "真实业务数据",
+            "staging": "生产脱敏副本",
+            "development": "虚构或脱敏开发数据",
+            "shadow": "历史压测数据",
+        }.get(settings.APP_ENVIRONMENT, "未知数据"),
+        "api_entry": {
+            "production": "/api",
+            "staging": "/staging/api",
+            "development": "/dev/api",
+            "shadow": "/shadow-api",
+        }.get(settings.APP_ENVIRONMENT, "/api"),
         "environment_label": (
             settings.APP_ENVIRONMENT_LABEL.strip()
-            or ("影子压测环境" if settings.APP_ENVIRONMENT == "shadow" else "正式环境")
+            or {
+                "production": "正式环境",
+                "staging": "预发布环境 · 脱敏数据",
+                "development": "Dev 环境 · 虚构数据",
+                "shadow": "历史影子环境",
+            }.get(settings.APP_ENVIRONMENT, settings.APP_ENVIRONMENT)
         ),
         "load_test_run_id": (
             settings.LOAD_TEST_RUN_ID.strip()
-            if settings.APP_ENVIRONMENT == "shadow"
+            if settings.APP_ENVIRONMENT in {"staging", "shadow"}
             else ""
         ),
         "minimum_supported_versions": minimum_versions,

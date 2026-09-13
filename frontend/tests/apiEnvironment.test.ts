@@ -43,6 +43,8 @@ function installSessionStorage() {
 test('shadow suffix selects the shadow environment without fuzzy matching', () => {
   assert.equal(environmentForUsername('observer@shadow'), 'shadow')
   assert.equal(environmentForUsername(' Observer@Shadow '), 'shadow')
+  assert.equal(environmentForUsername('observer@staging'), 'staging')
+  assert.equal(environmentForUsername('observer@dev'), 'development')
   assert.equal(environmentForUsername('shadow-observer'), 'production')
 })
 
@@ -54,6 +56,17 @@ test('shadow environment stays in session storage and resolves only the fixed pa
   assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/shadow-api/auth/login')
   resetApiEnvironment()
   assert.equal(getApiEnvironment(), 'production')
+
+  setApiEnvironment('staging')
+  assert.equal(getApiEnvironment(), 'staging')
+  assert.equal(getApiBaseUrl(), '/staging/api')
+  assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/staging/api/auth/login')
+
+  setApiEnvironment('development')
+  assert.equal(getApiEnvironment(), 'development')
+  assert.equal(getApiBaseUrl(), '/dev/api')
+  assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/dev/api/auth/login')
+  resetApiEnvironment()
   assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/api/auth/login')
 })
 
@@ -147,7 +160,11 @@ test('authenticated UI keeps a persistent shadow marker and environment-bound re
 
   assert.match(authSource, /resetApiEnvironment\(\)/)
   assert.match(layoutSource, /shadow-environment-banner/)
-  assert.match(layoutSource, /全部为虚构数据 · 不会写入正式业务/)
+  assert.match(layoutSource, /全部为虚构数据/)
+  assert.match(layoutSource, /脱敏验证数据/)
+  assert.match(layoutSource, /虚构开发数据/)
+  assert.match(layoutSource, /不会写入正式业务/)
+  assert.match(layoutSource, /environment !== 'production'/)
   assert.match(layoutSource, /运行编号：/)
   assert.match(styles, /\.shadow-environment-banner\s*\{/)
   assert.match(realtimeSource, /resolveRuntimeApiUrl\('\/api\/events\/stream'\)/)
