@@ -525,7 +525,8 @@ volumes:
         for expected in ("MAX(revision)", "run_id = 'dev-test-1'", "environment = 'development'",
                          "PRIMARY KEY (run_id, task_id, source_id)", "execution.checkpointing.interval",
                          "dev.task.events.v1", "Dev_EventPipeline", "dev_task_metadata",
-                         "event_count", "changed_field_count", "CARDINALITY(changed_fields)"):
+                         "event_count", "changed_field_count", "CARDINALITY(changed_fields)",
+                         "dev_unique_events", "COUNT(DISTINCT event_id)"):
             self.assertIn(expected, sql)
         self.assertIn(
             "autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000",

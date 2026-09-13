@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from .kafka_event_contract import validate_task_event
-from .task_metadata_projection import flatten_projection, project_events
+from .task_metadata_projection import IncrementalTaskMetadataProjector, flatten_projection
 
 TABLE = "dev_task_metadata_python"
 
@@ -44,15 +44,14 @@ async def run(config):
         minsize=1, maxsize=2, connect_timeout=5, autocommit=True,
         charset="utf8mb4", init_command="SET time_zone='+00:00'",
     )
-    events: list[dict[str, Any]] = []
+    projector = IncrementalTaskMetadataProjector()
     await consumer.start()
     try:
         async for message in consumer:
             event = validate_task_event(json.loads(message.value))
             if event["run_id"] != config["DEV_RUN_ID"]:
                 continue
-            events.append(event)
-            row = project_events(events)[(event["run_id"], event["task_id"], event["source_id"])]
+            row = projector.apply(event)
             sql, params = upsert_sql(row)
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
