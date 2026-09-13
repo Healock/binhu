@@ -53,4 +53,6 @@ Dev Backend outbox relay 已在服务器部署并验证一条合成业务事件�
 
 本轮使用已登记的 `E:\\bhzh-ssh-mcp` 持久 stdio MCP 完成同一会话的服务器只读核验，并主动关闭会话。Dev Backend outbox relay、business-bridge、Kafka 三 broker、Schema Registry、Flink JobManager/TaskManager、派生 MySQL/Redis 和 Backend 均保持运行；Flink 日志显示 savepoint 恢复后持续完成 checkpoint。未执行服务器写入、数据库命令、容器重启或卷操作，Production、Staging、Shadow 未受影响。
 
+这次复核属于运行状态取证，不会把“容器为 running”当作业务验收；业务闭环仍必须以带验收编号的合成事件报告、恢复演练和后续派生域对账为准。
+
 当前可签署范围仍是 Backend outbox → Dev Redis → bridge → Kafka → Schema Registry/Flink → 派生 MySQL/Redis 的合成元数据事件闭环，以及重复/乱序 revision 保护。完整业务派生域尚未接入，仓库也没有可对齐 Python worker 与 Flink 真实业务输出的比较器，因此“7 天、至少 100,000 事件、零未归因差异”尚未开始计时。选择和实现第一个业务派生域会改变架构设计，需单独评审后再推进；在此之前不得把 Dev 标记为完整架构验收通过，也不得开展 Staging 晋级或 Production 切换。
