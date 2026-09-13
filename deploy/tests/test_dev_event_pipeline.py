@@ -22,6 +22,7 @@ from deploy.environments.event_pipeline import control
 from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline import kafka_compose
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
+from deploy.environments.event_pipeline.verify import fixture
 
 
 def settings():
@@ -60,6 +61,11 @@ class BusinessBridgeTests(unittest.TestCase):
                   "aggregate_revision": 1}
         self.assertIsNone(event_to_task_event({**source, "event_type": "unknown"}, "dev-x"))
         self.assertIsNone(event_to_task_event({**source, "aggregate_id": "unknown:key"}, "dev-x"))
+
+    def test_acceptance_fixture_nonce_prevents_ledger_reuse(self):
+        first = fixture("dev-test-1", 3, nonce="accept-a")
+        second = fixture("dev-test-1", 3, nonce="accept-b")
+        self.assertNotEqual(first["event_id"], second["event_id"])
 
 
 class ContractTests(unittest.TestCase):
