@@ -56,6 +56,13 @@ def compose(images):
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"},
                        "dev-derived-redis": {"condition": "service_started"}}}
+    services["backend-outbox-relay"] = {**common, "image": images["worker"],
+        "networks": ["backend"], "env_file": ["backend-relay.env"],
+        "mem_limit": "160m", "cpus": .25, "read_only": True,
+        "tmpfs": ["/tmp:size=16m"],
+        "command": ["python", "-m", "event_pipeline.runtime", "backend-outbox-relay"],
+        "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "depends_on": {}}
     return {"name": PROJECT, "services": services,
             "networks": {"internal": {"external": True, "name": NETWORK},
                          "backend": {"external": True, "name": BACKEND_NETWORK}},
@@ -103,6 +110,10 @@ def prepare(run_id, images):
            "BACKEND_REDIS_URL": os.environ.get("DEV_BACKEND_REDIS_URL", ""),
            "BACKEND_REDIS_STREAM_KEY": "binhu:events",
            "BACKEND_REDIS_START_ID": "$"}
+    backend_password = os.environ.get("DEV_BACKEND_MYSQL_PASSWORD", "")
+    backend_redis_url = os.environ.get("DEV_BACKEND_REDIS_URL", "")
+    if not backend_password or not backend_redis_url:
+        raise ValueError("Dev Backend relay credentials must be supplied out of band")
     configuration(env)
     preflight()
     for image in images.values():
@@ -122,6 +133,12 @@ CREATE TABLE dev_task_revisions (
     files = {
         "compose.json": json.dumps(spec, indent=2), "init.sql": sql,
         "runtime.env": "\n".join(f"{k}={v}" for k, v in env.items()) + "\n",
+        "backend-relay.env": "\n".join([
+            "APP_ENVIRONMENT=development", f"DEV_RUN_ID={run_id}",
+            "BACKEND_MYSQL_HOST=environment-mysql", "BACKEND_MYSQL_DATABASE=Dev_OnlineData",
+            "BACKEND_MYSQL_USER=environment_app", f"BACKEND_MYSQL_PASSWORD={backend_password}",
+            f"BACKEND_REDIS_URL={backend_redis_url}", "BACKEND_REDIS_STREAM_KEY=binhu:events",
+        ]) + "\n",
         "mysql.env": f"MYSQL_ROOT_PASSWORD={root_password}\nMYSQL_DATABASE=Dev_EventPipeline\nMYSQL_USER=dev_pipeline\nMYSQL_PASSWORD={db_password}\n",
         "redis.conf": f"bind 0.0.0.0\nprotected-mode yes\nrequirepass {redis_password}\nmaxmemory 48mb\nmaxmemory-policy noeviction\nappendonly yes\nappendfsync everysec\nauto-aof-rewrite-percentage 100\nauto-aof-rewrite-min-size 16mb\n",
         "pipeline.sql": render(env),
