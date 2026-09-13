@@ -294,3 +294,38 @@ Dev 的业务事件桥、Kafka→Schema Registry→Flink→Redis/派生库闭环
 在连接器恢复并完成一次已登录页面检查前，签署状态为“接口与运行门禁通过，视觉验收待补”，
 不能退役 Shadow，也不能删除其证据、卷、网络或回滚材料。
 
+
+## 2026-09-13：Dev savepoint 重跑失败诊断与验收工具修复
+
+验收编号：dev-accept-20260913-9260b881bc5c4c24。
+
+Kafka 三 broker 日志轮换、Flink pids_limit=256 资源修补已完成；Kafka 按
+1→2→3 滚动重建后 ISR、topic、数据卷、网络和 Schema Registry 均保持正常；
+Flink 作业从新 savepoint 恢复成功，第 2–5 项资源、身份、Schema Registry 和
+checkpoint/savepoint 门禁通过。
+
+第 9 项最小事件流第一次重跑失败，失败证据保留在
+/srv/deploy-backups/environment-triad/dev-accept-20260913-9260b881bc5c4c24/09-revision-flow-failure.txt。
+只读诊断确认这是实际验收 fixture 与恢复状态不兼容，不是验收器字段合同或入口问题：
+
+- savepoint 恢复后的 Flink/派生状态和 Redis 已有该合成任务 revision=3；
+- relay delivery ledger 仍保留旧验收的固定 event_id，重跑 seed 会命中历史投递记录；
+- 旧 seed 的 revision 1/2/3 不高于 savepoint 高水位，会被 Flink revision fence 跳过；
+- bridge/relay 容器本身没有新的运行异常，Production 基线未变化。
+
+修复已合并于 PR #622（主线提交 10550374b380c1ce86962d863a3adf320dbbaa83），
+主线 CI 34739128268（Backend、Frontend、Desktop clients）全部成功。修复内容是：
+
+- 每轮验收使用 DEV_ACCEPT_NONCE 生成隔离的 event ID，避免复用历史 ledger；
+- 使用 DEV_ACCEPT_BASE_REVISION 选择高于 savepoint 的 seed 起始 revision；
+- 保留乱序和重复事件覆盖，继续验证 revision fence 与投递幂等；
+- 验收脚本不删除旧 ledger、checkpoint 或失败证据。
+
+本次失败说明已知流程约束：从 savepoint 恢复后的状态与重新 seed 事件不匹配
+时，必须为新验收使用新的 nonce，并将 seed revision 提升到状态高水位之上；
+不能通过重复固定事件编号或低 revision 伪造验收通过。
+
+当前状态：第 9 项待使用合并后的工具、DEV_ACCEPT_NONCE=accept-20260913-9260、
+DEV_ACCEPT_BASE_REVISION=4 重跑；成功后继续第 6–11 项。即使元数据事件链路
+通过，也只签署 Dev 元数据事件和 revision 高水位一致性，不能替代完整业务双轨、
+Staging 脱敏副本或生产架构切换验收。
