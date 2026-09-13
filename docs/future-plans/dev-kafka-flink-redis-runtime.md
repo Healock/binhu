@@ -48,3 +48,9 @@ Dev 回滚只停止本次 Dev worker、Flink 作业和桥，保留配置、镜�
 Dev Backend outbox relay 已在服务器部署并验证一条合成业务事件闭环，证据目录为 `dev-backend-outbox-relay-20260914-ef5ddb80`。该结果证明 Backend outbox 能进入 Dev Redis 和现有 Kafka/Flink 派生链路；不代表完整 Dev 11 项、双轨比对、Staging 晋级或 Production 架构切换已通过。relay 仅使用 development 身份和 Dev 专属数据库、Redis、网络与资源限制，Production、Staging、Shadow 未受影响。
 
 当前仍不能标记架构升级完成：完整第 6–11 项恢复与故障演练、7 天/10 万事件双轨比对、Staging 脱敏副本、75 人趋势复测和 Production 切换门禁尚未完成。后续验收 fixture 必须显式使用 UTF-8，避免中文业务类型在受控 SQL 工具中被错误转码。
+
+## 2026-09-14：relay 后 Dev 只读复核与剩余门禁
+
+本轮使用已登记的 `E:\\bhzh-ssh-mcp` 持久 stdio MCP 完成同一会话的服务器只读核验，并主动关闭会话。Dev Backend outbox relay、business-bridge、Kafka 三 broker、Schema Registry、Flink JobManager/TaskManager、派生 MySQL/Redis 和 Backend 均保持运行；Flink 日志显示 savepoint 恢复后持续完成 checkpoint。未执行服务器写入、数据库命令、容器重启或卷操作，Production、Staging、Shadow 未受影响。
+
+当前可签署范围仍是 Backend outbox → Dev Redis → bridge → Kafka → Schema Registry/Flink → 派生 MySQL/Redis 的合成元数据事件闭环，以及重复/乱序 revision 保护。完整业务派生域尚未接入，仓库也没有可对齐 Python worker 与 Flink 真实业务输出的比较器，因此“7 天、至少 100,000 事件、零未归因差异”尚未开始计时。选择和实现第一个业务派生域会改变架构设计，需单独评审后再推进；在此之前不得把 Dev 标记为完整架构验收通过，也不得开展 Staging 晋级或 Production 切换。
