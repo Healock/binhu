@@ -329,3 +329,16 @@ checkpoint/savepoint 门禁通过。
 DEV_ACCEPT_BASE_REVISION=4 重跑；成功后继续第 6–11 项。即使元数据事件链路
 通过，也只签署 Dev 元数据事件和 revision 高水位一致性，不能替代完整业务双轨、
 Staging 脱敏副本或生产架构切换验收。
+
+### 2026-09-14：Dev Backend outbox relay 接入与业务事件闭环
+
+- PR #628 已合并到 `main`，合并提交为 `ef5ddb80ca2ab267dff3447c8a85bc66d5d8cc32`；PR CI 与主线 CI（run `34772014150`）均通过。
+- 从合并提交构建 Dev worker 镜像，摘要为 `sha256:a416630d98496bc54822052adf843409102eea34f88671f9e90968aa081c379d`；服务器 Dev Compose 哈希为 `b09600eab249082d0bbcbdc6dea14ab89f4aea4584ca686da05186dab83e12b9`。
+- 新证据目录为 `/srv/deploy-backups/environment-triad/dev-backend-outbox-relay-20260914-ef5ddb80/`，保留 Compose 变更前副本、运行时文件哈希、镜像上下文哈希、容器检查结果和验收摘要，未覆盖历史失败目录。
+- 新增 `backend-outbox-relay`，仅连接 Dev Backend `Dev_OnlineData`、Dev Redis `binhu:events` 和 `binhu-development_internal`，具备 development 标签、独立运行编号、只读根文件系统、tmpfs、CPU/内存/pids 限制和 json-file 日志轮换；未重建 Kafka/Flink/Schema Registry，未删除或替换任何数据卷。
+- 使用虚构 aggregate `全链条:dev-outbox-20260914-ef5ddb80`、revision 101 生成 Backend outbox 事件。relay 发布到 Dev Redis，business-bridge 写入 Dev `_kafka_event_delivery`，Flink 将 `t_fullchain:1970109204584868461` 的派生 revision 更新为 101。
+- `event_pipeline.verify business` 结果为 `delivery_published=true`、`mysql_revision_correct=true`、`redis_revision_correct=true`、`business_integration_verified=true`。重复/乱序最小事件验收使用新 nonce `accept-20260914-outbox`、base revision 110，三条事件均 published 且 revision fence 通过。
+- 验收中发现合成 SQL 未显式使用 UTF-8 时中文 aggregate 会乱码并被 bridge 拒绝；该问题属于 fixture 编码，已改用 utf8mb4/十六进制字面量重跑通过。后续 seed 必须显式使用 UTF-8。
+- Production 与 Staging 只读基线未改变，没有生产数据、生产网络、外部平台或 Shadow 资源操作。
+
+本次只签署 Backend outbox → Dev Redis → business-bridge → Dev Kafka 投递台账 → Schema Registry/Flink → 派生 MySQL/Redis 的业务事件证据，以及重复/乱序最小事件结果。checkpoint/savepoint 恢复、完整第 6–11 项故障演练、7 天/10 万事件双轨比对、Staging 脱敏副本和 75 人压测仍未签署。
