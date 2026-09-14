@@ -42,6 +42,13 @@ class CurrentFlowCleanupContractTests(unittest.TestCase):
         self.assertTrue(should_archive_current_flow({"下发日期": "2026-09-14"}))
         self.assertTrue(should_archive_current_flow({"下发日期": ""}))
 
+    def test_backend_exposes_automated_backup_manifest_read_only(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "${BINHU_DEPLOY_BACKUP_DIR:-./deploy-backups/automated}:/root/binhu/deploy-backups/automated:ro",
+            compose,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
