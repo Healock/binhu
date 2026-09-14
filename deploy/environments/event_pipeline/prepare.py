@@ -17,6 +17,7 @@ PROJECT = "binhu-development-pipeline"
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
 BACKEND_NETWORK = "binhu-development_internal"
+SECRET_RE = re.compile(r"[0-9a-f]{48}\Z")
 EXPECTED_SERVICES = frozenset(
     {
         "dev-derived-mysql",
@@ -116,6 +117,50 @@ def validate_existing_container_identity(item):
     raise ValueError("existing Dev project identity mismatch")
 
 
+def _read_env_file(path: Path) -> dict[str, str]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("persistent Dev credential files are incomplete")
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if not separator or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            raise ValueError("persistent Dev credential files are invalid")
+        values[key] = value
+    return values
+
+
+def _load_credentials() -> tuple[str, str, str]:
+    """Reuse credentials belonging to retained named volumes.
+
+    The MySQL and Redis accounts live in their persistent volumes.  Generating
+    a new env file on every prepare would change the container configuration
+    without changing those accounts, so updates must reuse the last trusted
+    credentials and fail closed when the private files disagree.
+    """
+    if not ROOT.exists():
+        return tuple(secrets.token_hex(24) for _ in range(3))
+    runtime = _read_env_file(ROOT / "runtime.env")
+    mysql = _read_env_file(ROOT / "mysql.env")
+    redis_path = ROOT / "redis.conf"
+    if redis_path.is_symlink() or not redis_path.is_file():
+        raise ValueError("persistent Dev credential files are incomplete")
+    redis_matches = re.findall(r"(?m)^requirepass ([0-9a-f]{48})\s*$", redis_path.read_text(encoding="utf-8"))
+    db_password = runtime.get("MYSQL_PASSWORD", "")
+    redis_password = runtime.get("REDIS_PASSWORD", "")
+    root_password = mysql.get("MYSQL_ROOT_PASSWORD", "")
+    if (
+        not SECRET_RE.fullmatch(db_password)
+        or not SECRET_RE.fullmatch(redis_password)
+        or not SECRET_RE.fullmatch(root_password)
+        or mysql.get("MYSQL_PASSWORD") != db_password
+        or redis_matches != [redis_password]
+    ):
+        raise ValueError("persistent Dev credential mismatch")
+    return db_password, redis_password, root_password
+
+
 def preflight():
     if ROOT.is_symlink() or ROOT.parent.is_symlink() or ROOT.resolve() != ROOT:
         raise ValueError("new absolute Dev output required")
@@ -157,7 +202,8 @@ def preflight():
 
 def prepare(run_id, images):
     spec = compose(images)
-    db_password, redis_password, root_password = [secrets.token_hex(24) for _ in range(3)]
+    preflight()
+    db_password, redis_password, root_password = _load_credentials()
     env = {"APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
            "MYSQL_HOST": "dev-derived-mysql", "MYSQL_DATABASE": "Dev_EventPipeline",
            "MYSQL_USER": "dev_pipeline", "MYSQL_PASSWORD": db_password,
@@ -184,7 +230,6 @@ def prepare(run_id, images):
     if not backend_password or not backend_redis_url:
         raise ValueError("Dev Backend relay credentials must be supplied out of band")
     configuration(env)
-    preflight()
     for image in images.values():
         if checked(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip() != image:
             raise ValueError("image identity mismatch")

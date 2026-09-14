@@ -45,8 +45,10 @@ async def run(config):
         charset="utf8mb4", init_command="SET time_zone='+00:00'",
     )
     projector = IncrementalTaskMetadataProjector()
-    await consumer.start()
+    from ..runtime import ensure_database_identity
     try:
+        await ensure_database_identity(pool, config)
+        await consumer.start()
         async for message in consumer:
             event = validate_task_event(json.loads(message.value))
             if event["run_id"] != config["DEV_RUN_ID"]:

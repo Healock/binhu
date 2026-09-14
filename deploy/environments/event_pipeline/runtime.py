@@ -53,14 +53,27 @@ async def connect(config):
                 await cur.execute("SELECT DATABASE()")
                 if await cur.fetchone() != (config["MYSQL_DATABASE"],):
                     raise ValueError("database target mismatch")
-                await cur.execute("SELECT environment,run_id,database_name FROM _pipeline_identity")
-                if list(await cur.fetchall()) != [("development", config["DEV_RUN_ID"], config["MYSQL_DATABASE"])]:
-                    raise ValueError("database identity mismatch")
+        await ensure_database_identity(pool, config)
         return pool
     except BaseException:
         pool.close()
         await pool.wait_closed()
         raise
+
+
+async def ensure_database_identity(pool, config):
+    """Verify and rebind the retained Dev database to the current run ID."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT environment,run_id,database_name FROM _pipeline_identity WHERE id=1")
+            row = await cur.fetchone()
+            if row is None or row[0] != "development" or row[2] != config["MYSQL_DATABASE"]:
+                raise ValueError("database identity mismatch")
+            if row[1] != config["DEV_RUN_ID"]:
+                await cur.execute(
+                    "UPDATE _pipeline_identity SET run_id=%s WHERE id=1 AND environment=%s AND database_name=%s",
+                    (config["DEV_RUN_ID"], "development", config["MYSQL_DATABASE"]),
+                )
 
 
 async def relay(config, pool):

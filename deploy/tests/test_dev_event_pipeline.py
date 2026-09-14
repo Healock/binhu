@@ -21,6 +21,8 @@ from deploy.environments.event_pipeline import checkpoint
 from deploy.environments.event_pipeline import control
 from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline import kafka_compose
+from deploy.environments.event_pipeline import prepare as event_prepare
+from deploy.environments.event_pipeline import runtime as event_runtime
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 from deploy.environments.event_pipeline.verify import fixture, acceptance_event_ids
 from deploy.environments.event_pipeline.services.backend_outbox_relay import BackendOutboxRelay
@@ -73,6 +75,82 @@ class BusinessBridgeTests(unittest.TestCase):
         self.assertEqual(len(ids), 3)
         self.assertEqual(len(set(ids)), 3)
         self.assertTrue(set(ids).isdisjoint(acceptance_event_ids("dev-test-1", 7, "accept-b")))
+
+
+class PersistentCredentialTests(unittest.TestCase):
+    def test_reuses_credentials_when_named_data_volumes_are_retained(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime.env").write_text(
+                "MYSQL_PASSWORD=" + "a" * 48 + "\n"
+                "REDIS_PASSWORD=" + "b" * 48 + "\n",
+                encoding="utf-8",
+            )
+            (root / "mysql.env").write_text(
+                "MYSQL_ROOT_PASSWORD=" + "c" * 48 + "\n"
+                "MYSQL_PASSWORD=" + "a" * 48 + "\n",
+                encoding="utf-8",
+            )
+            (root / "redis.conf").write_text(
+                "requirepass " + "b" * 48 + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(event_prepare, "ROOT", root):
+                self.assertEqual(event_prepare._load_credentials(), ("a" * 48, "b" * 48, "c" * 48))
+
+    def test_rejects_inconsistent_persistent_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "runtime.env").write_text("MYSQL_PASSWORD=" + "a" * 48 + "\nREDIS_PASSWORD=" + "b" * 48 + "\n", encoding="utf-8")
+            (root / "mysql.env").write_text("MYSQL_ROOT_PASSWORD=" + "c" * 48 + "\nMYSQL_PASSWORD=" + "d" * 48 + "\n", encoding="utf-8")
+            (root / "redis.conf").write_text("requirepass " + "b" * 48 + "\n", encoding="utf-8")
+            with patch.object(event_prepare, "ROOT", root), self.assertRaisesRegex(ValueError, "persistent Dev credential mismatch"):
+                event_prepare._load_credentials()
+
+
+class DatabaseIdentityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rebinds_retained_dev_database_to_new_run_id(self):
+        class Cursor:
+            def __init__(self):
+                self.statements = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def execute(self, statement, params=()):
+                self.statements.append((statement, params))
+
+            async def fetchone(self):
+                return ("development", "dev-previous-run", "Dev_EventPipeline")
+
+        class Connection:
+            def __init__(self, cursor):
+                self.cursor_value = cursor
+
+            def cursor(self):
+                return self.cursor_value
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+        class Pool:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def acquire(self):
+                return self.connection
+
+        cursor = Cursor()
+        await event_runtime.ensure_database_identity(Pool(Connection(cursor)), settings())
+        self.assertEqual(cursor.statements[0][0].split()[0:2], ["SELECT", "environment,run_id,database_name"])
+        self.assertIn("UPDATE _pipeline_identity", cursor.statements[1][0])
+        self.assertEqual(cursor.statements[1][1], ("dev-test-1", "development", "Dev_EventPipeline"))
 
 
 class ContractTests(unittest.TestCase):
