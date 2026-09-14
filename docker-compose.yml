@@ -161,7 +161,7 @@ services:
       - ./frontend/dist:/app/static:ro
       - ./VERSION:/app/VERSION:ro
       - ${BINHU_BACKUP_DIR:-./backups}:/app/backups
-      # Deployment manifests are checked by the fixed maintenance contract.
+      # Deployment manifests are checked by the fixed maintenance contract (read-only).
       # Expose the host's immutable automated backups read-only so the
       # container cannot mistake its application backup mount for the
       # deployment backup store (or write into it).
