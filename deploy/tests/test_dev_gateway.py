@@ -13,6 +13,16 @@ IMPLEMENTATION = ROOT / "deploy/environments/event_pipeline/binhu-dev-event-pipe
 
 
 class DevGatewayContractTests(unittest.TestCase):
+    def test_dev_workflows_use_dedicated_environment(self):
+        workflows = (
+            ROOT / ".github/workflows/install-dev-event-pipeline-gateway.yml",
+            ROOT / ".github/workflows/prepare-dev-event-pipeline.yml",
+            ROOT / ".github/workflows/deploy-dev-event-pipeline.yml",
+        )
+        for workflow in workflows:
+            text = workflow.read_text(encoding="utf-8")
+            self.assertIn("environment: development", text, workflow.name)
+
     def test_wrapper_has_only_fixed_operations(self):
         text = WRAPPER.read_text(encoding="utf-8")
         self.assertIn("prepare)", text)
