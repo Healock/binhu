@@ -136,6 +136,19 @@ def prepare(run_id, images):
            "BACKEND_REDIS_START_ID": "$"}
     backend_password = os.environ.get("DEV_BACKEND_MYSQL_PASSWORD", "")
     backend_redis_url = os.environ.get("DEV_BACKEND_REDIS_URL", "")
+    # Updates to an already trusted Dev project reuse only that project's
+    # private relay credentials. First-time creation still requires the
+    # gateway's out-of-band configuration.
+    relay_file = ROOT / "backend-relay.env"
+    if (not backend_password or not backend_redis_url) and relay_file.is_file() and not relay_file.is_symlink():
+        previous = {}
+        for line in relay_file.read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                previous[key] = value
+        if previous.get("APP_ENVIRONMENT") == "development" and previous.get("BACKEND_MYSQL_HOST") == "environment-mysql" and previous.get("BACKEND_MYSQL_DATABASE") == "Dev_OnlineData":
+            backend_password = backend_password or previous.get("BACKEND_MYSQL_PASSWORD", "")
+            backend_redis_url = backend_redis_url or previous.get("BACKEND_REDIS_URL", "")
     if not backend_password or not backend_redis_url:
         raise ValueError("Dev Backend relay credentials must be supplied out of band")
     configuration(env)
