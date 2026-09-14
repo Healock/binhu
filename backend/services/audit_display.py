@@ -240,6 +240,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "online_source_row": "腾讯原始行",
     "local_source_row": "本地业务数据",
     "spreadsheet": "在线表格配置",
+    "txdocs_monitor_config": "腾讯只读监控配置",
     "system_config": "系统设置",
     "sync": "同步任务",
     "sync_schedule": "自动同步计划",
