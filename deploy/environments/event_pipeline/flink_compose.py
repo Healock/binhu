@@ -35,6 +35,7 @@ taskmanager.memory.jvm-overhead.max: 64m
 taskmanager.memory.network.min: 32m
 taskmanager.memory.network.max: 32m
 taskmanager.memory.managed.size: 64m
+# The metadata projection has three independent JDBC sink/source tasks.
 taskmanager.numberOfTaskSlots: 3
 """
 APPROVED_PIDS_LIMIT = 256
