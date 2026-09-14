@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from deploy.environments.event_pipeline.runtime import configuration, cache_result, backend_relay_configuration
-from deploy.environments.event_pipeline.prepare import compose
+from deploy.environments.event_pipeline.prepare import compose, validate_existing_container_identity
 from deploy.environments.event_pipeline.flink_sql import render
 from deploy.environments.event_pipeline.services.kafka_envelope import delivery_topic
 from deploy.environments.event_pipeline.services.kafka_event_contract import validate_event, EventContractError
@@ -339,6 +339,27 @@ volumes:
                         definition.get("labels", {}).get("binhu.environment"),
                         "development",
                     )
+
+    def test_existing_dev_project_allows_only_known_legacy_missing_label(self):
+        base = {
+            "Name": "/binhu-development-pipeline-backend-outbox-relay-1",
+            "Config": {"Labels": {
+                "com.docker.compose.project": "binhu-development-pipeline",
+                "com.docker.compose.service": "backend-outbox-relay",
+            }},
+        }
+        validate_existing_container_identity(base)
+        current = copy.deepcopy(base)
+        current["Config"]["Labels"]["binhu.environment"] = "development"
+        validate_existing_container_identity(current)
+        unknown = copy.deepcopy(base)
+        unknown["Config"]["Labels"]["com.docker.compose.service"] = "relay"
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
+            validate_existing_container_identity(unknown)
+        foreign = copy.deepcopy(base)
+        foreign["Config"]["Labels"]["binhu.environment"] = "production"
+        with self.assertRaisesRegex(ValueError, "identity mismatch"):
+            validate_existing_container_identity(foreign)
 
     def test_failed_schema_check_prevents_start_and_keeps_each_attempt(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}), patch('time.time_ns', return_value=123):

@@ -17,6 +17,21 @@ PROJECT = "binhu-development-pipeline"
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
 BACKEND_NETWORK = "binhu-development_internal"
+EXPECTED_SERVICES = frozenset(
+    {
+        "dev-derived-mysql",
+        "dev-derived-redis",
+        "relay",
+        "bridge",
+        "business-bridge",
+        "backend-outbox-relay",
+        "python-metadata-worker",
+    }
+)
+# The relay was introduced after the first trusted Dev project was created.
+# Its legacy container can therefore lack the environment label; Compose will
+# recreate it from the current definition, which carries the label.
+LEGACY_MISSING_ENV_LABEL_SERVICES = frozenset({"backend-outbox-relay"})
 
 
 def compose(images):
@@ -82,6 +97,25 @@ def checked(command):
     return result.stdout
 
 
+def validate_existing_container_identity(item):
+    """Accept only trusted Dev containers, including one known legacy label gap."""
+    labels = item.get("Config", {}).get("Labels", {})
+    name = str(item.get("Name", "")).lstrip("/")
+    service = labels.get("com.docker.compose.service")
+    if (
+        labels.get("com.docker.compose.project") != PROJECT
+        or not name.startswith(PROJECT + "-")
+        or service not in EXPECTED_SERVICES
+    ):
+        raise ValueError("existing Dev project identity mismatch")
+    environment = labels.get("binhu.environment")
+    if environment == "development":
+        return
+    if environment is None and service in LEGACY_MISSING_ENV_LABEL_SERVICES:
+        return
+    raise ValueError("existing Dev project identity mismatch")
+
+
 def preflight():
     if ROOT.is_symlink() or ROOT.parent.is_symlink() or ROOT.resolve() != ROOT:
         raise ValueError("new absolute Dev output required")
@@ -98,9 +132,7 @@ def preflight():
     existing = checked(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={PROJECT}"]).strip()
     if existing:
         for item in json.loads(checked(["docker", "inspect", *existing.split()])):
-            labels = item.get("Config", {}).get("Labels", {})
-            if labels.get("com.docker.compose.project") != PROJECT or labels.get("binhu.environment") != "development":
-                raise ValueError("existing Dev project identity mismatch")
+            validate_existing_container_identity(item)
     network = json.loads(checked(["docker", "network", "inspect", NETWORK]))[0]
     if not network.get("Internal") or network.get("Labels", {}).get("com.docker.compose.project") != "binhu-development-eventbus":
         raise ValueError("isolated Dev eventbus network required")
