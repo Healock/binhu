@@ -52,6 +52,28 @@ PY
   exit 0
 fi
 
+if [[ "${1:-}" == "current-flow-cleanup" ]]; then
+  [[ $# -eq 5 ]] || fail "current-flow-cleanup requires phase, run id, business date and parser type"
+  readonly cleanup_phase="$2"
+  readonly cleanup_run_id="$3"
+  readonly cleanup_business_date="$4"
+  readonly cleanup_parser_type="$5"
+  case "$cleanup_phase" in
+    measure|backup-check|prepare|apply|verify) ;;
+    *) fail "invalid current-flow-cleanup phase" ;;
+  esac
+  [[ "$cleanup_parser_type" == "全链条" ]] || fail "unsupported current-flow-cleanup parser type"
+  [[ "$cleanup_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || fail "invalid cleanup run id"
+  [[ "$cleanup_business_date" == "2026-09-14" ]] || fail "cleanup date is outside the approved window"
+  [[ -f "$BINHU_PROJECT_DIR/backend/migrations/current_flow_cleanup.py" ]] || fail "cleanup tool is not installed"
+  exec docker exec \
+    -e BINHU_CLEANUP_EVIDENCE_ROOT=/srv \
+    -e BINHU_DEPLOY_BACKUP_ROOT="$BINHU_PROJECT_DIR/deploy-backups/automated" \
+    binhu-backend python -m migrations.current_flow_cleanup \
+    "$cleanup_phase" "$cleanup_run_id" "$cleanup_business_date" \
+    --parser-type "$cleanup_parser_type"
+fi
+
 release_kind="release"
 hotfix_id=""
 if [[ "${1:-}" == "hotfix" ]]; then

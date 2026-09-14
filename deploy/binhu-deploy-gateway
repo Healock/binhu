@@ -8,6 +8,24 @@ if [[ "${command_parts[0]:-}" == "status" && "${#command_parts[@]}" -eq 1 ]]; th
   exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy status
 fi
 
+# 生产当前任务维护只允许通过固定的五阶段合同进入。参数中的业务类型
+# 固定为“全链条”（页面名称：流口指令核查），避免把网关变成任意 SQL
+# 或任意业务表写入口。
+if [[ "${command_parts[0]:-}" == "current-flow-cleanup" && "${#command_parts[@]}" -eq 4 ]]; then
+  readonly cleanup_phase="${command_parts[1]}"
+  readonly cleanup_run_id="${command_parts[2]}"
+  readonly cleanup_business_date="${command_parts[3]}"
+  case "$cleanup_phase" in
+    measure|backup-check|prepare|apply|verify) ;;
+    *) echo "Invalid current-flow-cleanup phase." >&2; exit 64 ;;
+  esac
+  [[ "$cleanup_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || { echo "Invalid cleanup run id." >&2; exit 64; }
+  [[ "$cleanup_business_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "Invalid cleanup business date." >&2; exit 64; }
+  [[ "$cleanup_business_date" == "2026-09-14" ]] || { echo "Cleanup date is outside the approved window." >&2; exit 64; }
+  exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy \
+    current-flow-cleanup "$cleanup_phase" "$cleanup_run_id" "$cleanup_business_date" "全链条"
+fi
+
 if [[ "${command_parts[0]:-}" == "hotfix" && "${#command_parts[@]}" -eq 7 ]]; then
   readonly version="${command_parts[1]}"; readonly commit="${command_parts[2]}"
   readonly backup_scope="${command_parts[3]}"; readonly release_scope="${command_parts[4]}"
