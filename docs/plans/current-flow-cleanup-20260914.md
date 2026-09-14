@@ -33,3 +33,5 @@ current-flow-cleanup <phase> <run_id> 2026-09-14
 运行 `cleanup-20260914-b` 的 `measure` 已确认当前目标为 340 条全链条任务；首次运行的零数量结果来自旧的日期筛选错误，失败证据目录保持不变。随后 `backup-check` 返回 `backup_missing_or_invalid`。只读核对发现最新八库备份已在宿主机自动备份目录生成且清单、压缩文件和校验文件齐全，但 Backend 容器此前只挂载应用备份目录，无法读取宿主机自动备份目录。修补后的 Compose 为该目录增加只读显式挂载，清理工具仍只验证清单、文件可读性、哈希和新鲜度；在修补版本部署并重新通过 `backup-check` 前不得进入 `prepare/apply`。
 
 `0.28.24` 部署后重新执行 `backup-check` 已通过，但同一运行的 `prepare` 返回 `target_manifest_missing`。根因是清理证据原先写入 Backend 容器内的 `/srv`，容器重建后目标清单没有持久化；本次没有执行 `apply`，生产数据未改变。后续修补将清理证据目录绑定到宿主机的 `BINHU_CLEANUP_EVIDENCE_DIR`，并把维护工具的证据根切换为容器内固定挂载点；必须使用新的运行编号重新 `measure → backup-check → prepare → apply → verify`，保留 `cleanup-20260914-a`、`cleanup-20260914-b` 失败证据。
+
+`0.28.25` 已部署后使用新运行 `cleanup-20260914-c` 完成全部阶段：`measure` 识别 340 条目标，`backup-check` 使用八库备份 `0.28.25-0875d9007774-20260914_061534`，`prepare` 固化清单，`apply` 成功归档 340 条，`verify` 返回 `ready=true`、当前目标剩余 0、归档 340 条、2026-09-14 日报切片剩余 0。失败运行 `cleanup-20260914-a`、`cleanup-20260914-b` 及其证据均保留；本次未减少更早历史日报，生产容器健康。
