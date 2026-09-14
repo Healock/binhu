@@ -153,3 +153,6 @@ Redis `binhu:events`。它使用单独的 `backend-relay.env`、`backend` 内部
 根文件系统、tmpfs 临时目录、CPU/内存/pids 限制和 Docker 日志轮换；禁止连接
 Production、Staging、Shadow 或任何外部平台。服务器部署时只新增该服务，不重建
 Kafka、Flink、Schema Registry 或既有数据卷。
+
+### Workflow environment contract
+All install, prepare, and deploy workflows must run in the GitHub development Environment.
