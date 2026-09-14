@@ -3043,6 +3043,9 @@ class DatabaseManager:
         # responsibility and registry tables. Create all dependent schemas
         # before the first migration, including in a fresh split-domain install.
         async with cls._pools["online_data"].acquire() as conn:
+            from services.txdocs_statistics_monitor import ensure_txdocs_monitor_config_schema
+            async with conn.cursor() as cur:
+                await ensure_txdocs_monitor_config_schema(cur)
             await run_local_source_migration(conn)
         return cls
 

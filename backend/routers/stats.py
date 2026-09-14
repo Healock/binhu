@@ -7,8 +7,9 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from config import settings
 from database import get_db
-from deps import get_current_user, require_permission
+from deps import get_current_user, require_permission, require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
@@ -23,7 +24,14 @@ from services.report_view import project_report_payload
 from services.txdocs_statistics_monitor import (
     get_txdocs_statistics_overview,
     monitoring_configuration_ready,
+    _load_monitor_config,
+    ensure_txdocs_monitor_config_schema,
+    run_txdocs_statistics_once,
 )
+from services.qmf_config import encrypt_secret
+from services.parsers import PARSER_REGISTRY
+from urllib.parse import urlparse
+import re
 from services.data_scope import (
     allowed_community_names,
     community_names_for_scopes,
@@ -52,6 +60,54 @@ ScopeMode = Literal["permission", "responsibility"]
 
 class SummaryConfigUpdate(BaseModel):
     types: list[str] = Field(min_length=1)
+
+
+class TxDocsMonitorConfigUpdate(BaseModel):
+    spreadsheet_url: str = Field(min_length=1, max_length=1000)
+    data_sheet_id: str = Field(min_length=1, max_length=100)
+    parser_type: str = Field(min_length=1, max_length=50)
+    header_row: int = Field(default=1, ge=1, le=100)
+    interval_seconds: int = Field(default=600, ge=60, le=86400)
+    client_id: str = Field(default="", max_length=200)
+    access_token: str = Field(default="", max_length=10000)
+    open_id: str = Field(default="", max_length=200)
+    enabled: bool = False
+
+
+def _txdocs_file_id(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "https" or parsed.netloc.lower() != "docs.qq.com":
+        raise HTTPException(status_code=400, detail="腾讯文档链接必须是 https://docs.qq.com/sheet/... 地址")
+    match = re.fullmatch(r"/sheet/([A-Za-z0-9_-]+)", parsed.path.rstrip("/"))
+    if not match:
+        raise HTTPException(status_code=400, detail="腾讯文档链接格式不受支持，请使用表格链接")
+    return match.group(1)
+
+
+def _txdocs_config_payload(config: dict | None) -> dict:
+    if not config:
+        return {
+            "enabled": False, "configured": False, "spreadsheet_url_configured": False, "spreadsheet_url": "",
+            "file_id": "", "data_sheet_id": "", "header_row": 1,
+            "parser_type": "", "interval_seconds": 600,
+            "client_id_configured": False, "access_token_configured": False,
+            "open_id_configured": False, "status": "未配置",
+        }
+    credentials = bool(config.get("client_id") and config.get("access_token") and config.get("open_id"))
+    ready = bool(config.get("enabled") and config.get("file_id") and config.get("sheet_id")
+                 and config.get("parser_type") in PARSER_REGISTRY and credentials)
+    return {
+        "enabled": bool(config.get("enabled")), "configured": ready,
+        "spreadsheet_url_configured": bool(config.get("spreadsheet_url")),
+        "spreadsheet_url": config.get("spreadsheet_url", ""),
+        "file_id": config.get("file_id", ""), "data_sheet_id": config.get("sheet_id", ""),
+        "header_row": config.get("header_row", 1), "parser_type": config.get("parser_type", ""),
+        "interval_seconds": config.get("interval_seconds", 600),
+        "client_id_configured": bool(config.get("client_id")),
+        "access_token_configured": bool(config.get("access_token")),
+        "open_id_configured": bool(config.get("open_id")),
+        "status": "已启用" if ready else ("已禁用" if not config.get("enabled") else "配置不完整"),
+    }
 
 
 def _normalize_summary_types(raw_types: list[str]) -> list[str]:
@@ -287,6 +343,66 @@ async def get_txdocs_monitor_overview(
         raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/txdocs-monitor/config")
+async def get_txdocs_monitor_config(_user: dict = Depends(require_super_admin), conn=Depends(get_db)):
+    async with conn.cursor() as cur:
+        await ensure_txdocs_monitor_config_schema(cur)
+        config = await _load_monitor_config(cur)
+    return _txdocs_config_payload(config)
+
+
+@router.put("/txdocs-monitor/config")
+async def update_txdocs_monitor_config(payload: TxDocsMonitorConfigUpdate, request: Request,
+                                       user: dict = Depends(require_super_admin), conn=Depends(get_db)):
+    file_id = _txdocs_file_id(payload.spreadsheet_url)
+    if payload.parser_type not in PARSER_REGISTRY or payload.parser_type == "default":
+        raise HTTPException(status_code=400, detail="请选择受支持的只读监控业务类型")
+    async with conn.cursor() as cur:
+        await ensure_txdocs_monitor_config_schema(cur)
+        current = await _load_monitor_config(cur)
+        access_token = encrypt_secret(payload.access_token.strip()) if payload.access_token.strip() else encrypt_secret(str((current or {}).get("access_token") or ""))
+        if payload.enabled and not (payload.client_id.strip() and access_token and payload.open_id.strip()):
+            raise HTTPException(status_code=400, detail="启用监控前必须填写 client_id、access_token 和 open_id")
+        await cur.execute(
+            """INSERT INTO _txdocs_monitor_config
+               (id, enabled, spreadsheet_url, file_id, data_sheet_id, header_row,
+                parser_type, client_id, access_token, open_id, interval_seconds, updated_by)
+               VALUES (1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), spreadsheet_url=VALUES(spreadsheet_url),
+                 file_id=VALUES(file_id), data_sheet_id=VALUES(data_sheet_id), header_row=VALUES(header_row),
+                 parser_type=VALUES(parser_type), client_id=VALUES(client_id), access_token=VALUES(access_token),
+                 open_id=VALUES(open_id), interval_seconds=VALUES(interval_seconds), updated_by=VALUES(updated_by)""",
+            (int(payload.enabled), payload.spreadsheet_url.strip(), file_id, payload.data_sheet_id.strip(), payload.header_row,
+             payload.parser_type, payload.client_id.strip(), access_token, payload.open_id.strip(), payload.interval_seconds, int(user["id"])),
+        )
+    await record_admin_audit(user, "txdocs.monitor.config.update", target_type="txdocs_monitor_config",
+                             target_name="腾讯只读监控", detail={"enabled": payload.enabled, "interval_seconds": payload.interval_seconds},
+                             **request_audit_fields(request))
+    async with conn.cursor() as cur:
+        return _txdocs_config_payload(await _load_monitor_config(cur))
+
+
+@router.post("/txdocs-monitor/config/disable")
+async def disable_txdocs_monitor_config(request: Request, user: dict = Depends(require_super_admin), conn=Depends(get_db)):
+    async with conn.cursor() as cur:
+        await ensure_txdocs_monitor_config_schema(cur)
+        await cur.execute("UPDATE _txdocs_monitor_config SET enabled=0, updated_by=%s WHERE id=1", (int(user["id"]),))
+    await record_admin_audit(user, "txdocs.monitor.config.disable", target_type="txdocs_monitor_config", target_name="腾讯只读监控", detail={}, **request_audit_fields(request))
+    return {"enabled": False, "message": "腾讯只读监控已禁用"}
+
+
+@router.post("/txdocs-monitor/run")
+async def run_txdocs_monitor_now(request: Request, user: dict = Depends(require_super_admin)):
+    if not settings.TXDOCS_MONITORING_ENABLED:
+        raise HTTPException(status_code=409, detail="服务器未开启腾讯只读监控开关")
+    try:
+        count = await run_txdocs_statistics_once()
+    except Exception as exc:  # noqa: BLE001 - do not expose remote details
+        raise HTTPException(status_code=502, detail="腾讯表读取失败，请查看监控状态后重试") from exc
+    await record_admin_audit(user, "txdocs.monitor.run", target_type="txdocs_monitor_config", target_name="腾讯只读监控", detail={"successful_sources": count}, **request_audit_fields(request))
+    return {"successful_sources": count, "message": "已完成一次只读读取"}
 
 
 @router.get("/overview/details")

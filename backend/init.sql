@@ -188,6 +188,24 @@ CREATE TABLE IF NOT EXISTS _config_oauth_tokens (
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 腾讯只读统计监控的独立配置；不参与平台业务数据同步或写回。
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_config (
+    id              TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+    enabled         TINYINT(1) NOT NULL DEFAULT 0,
+    spreadsheet_url TEXT NOT NULL,
+    file_id         VARCHAR(200) NOT NULL DEFAULT '',
+    data_sheet_id   VARCHAR(100) NOT NULL DEFAULT '',
+    header_row      INT UNSIGNED NOT NULL DEFAULT 1,
+    parser_type     VARCHAR(50) NOT NULL DEFAULT '',
+    client_id       VARCHAR(200) NOT NULL DEFAULT '',
+    access_token    TEXT NOT NULL,
+    open_id         VARCHAR(200) NOT NULL DEFAULT '',
+    interval_seconds INT UNSIGNED NOT NULL DEFAULT 600,
+    updated_by      INT DEFAULT NULL,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _sync_log (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     status          VARCHAR(20) DEFAULT 'pending',

@@ -15,7 +15,7 @@ import {
 import type { TableColumnsType } from 'antd'
 import { DownloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
 import SummaryReportConfigButton from '../components/SummaryReportConfigButton'
@@ -132,6 +132,7 @@ const reportTableSummary = (
 
 export default function Dashboard() {
   const { user, recordActivity, systemTimezone } = useAuth()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const reportColumnMode = user?.report_column_mode || 'three'
   const browserToday = formatDateInTimezone()
@@ -463,10 +464,11 @@ export default function Dashboard() {
         </Panel>
       )}
 
-      {isImplemented && (txdocsOverview?.enabled || txdocsOverviewError) && (
+      {isImplemented && (txdocsOverview?.enabled || txdocsOverviewError || user?.role === 'super_admin') && (
         <Panel
           title="外部腾讯表监控"
           description="独立只读统计；不导入平台任务，不参与核查完成率，也不向腾讯表回写"
+          extra={user?.role === 'super_admin' ? <Button size="small" onClick={() => navigate('/settings/txdocs-monitor')}>配置外部监控</Button> : undefined}
         >
           <div className="grid gap-3">
             {(txdocsOverviewError || (txdocsOverview && txdocsOverview.status !== 'healthy')) && (
