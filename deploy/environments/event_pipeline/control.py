@@ -10,6 +10,15 @@ import tempfile
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
 
 
+def expected_networks(service):
+    """Return the only networks allowed for a Dev pipeline service."""
+    if service == "business-bridge":
+        return {NETWORK, "binhu-development_internal"}
+    if service == "backend-outbox-relay":
+        return {"binhu-development_internal"}
+    return {NETWORK}
+
+
 def measure():
     if ROOT.is_symlink() or ROOT.parent.is_symlink() or ROOT.resolve() != ROOT:
         raise ValueError("unexpected Dev root")
@@ -37,10 +46,8 @@ def measure():
             if mount.get("Name", "").startswith(PROJECT + "_") and project != PROJECT:
                 raise ValueError("Dev volume referenced by another project")
         if project == PROJECT:
-            expected_networks = {NETWORK}
-            if item["Config"].get("Labels", {}).get("com.docker.compose.service") == "business-bridge":
-                expected_networks.add("binhu-development_internal")
-            if set(item["NetworkSettings"]["Networks"]) != expected_networks:
+            service = item["Config"].get("Labels", {}).get("com.docker.compose.service")
+            if set(item["NetworkSettings"]["Networks"]) != expected_networks(service):
                 raise ValueError("pipeline container has unexpected network")
     memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     available = int(memory["MemAvailable"].split()[0])
