@@ -3,7 +3,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from backend.migrations.current_flow_cleanup import parse_business_date
+from backend.migrations.current_flow_cleanup import parse_business_date, should_archive_current_flow
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +36,11 @@ class CurrentFlowCleanupContractTests(unittest.TestCase):
         source = ast.unparse(tree)
         self.assertNotIn("print(values", source)
         self.assertIn("digest_row", source)
+
+    def test_current_flow_cleanup_archives_all_live_rows_but_keeps_date_gate_for_summary(self):
+        self.assertTrue(should_archive_current_flow({"下发日期": "2026-09-04"}))
+        self.assertTrue(should_archive_current_flow({"下发日期": "2026-09-14"}))
+        self.assertTrue(should_archive_current_flow({"下发日期": ""}))
 
 
 if __name__ == "__main__":

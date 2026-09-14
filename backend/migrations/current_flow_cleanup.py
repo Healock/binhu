@@ -36,6 +36,17 @@ DATABASES = (
 SAFE_RUN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$")
 
 
+def should_archive_current_flow(values: dict[str, Any]) -> bool:
+    """Every live row in the named flow is in the approved cleanup scope.
+
+    The workflow's fixed business date identifies the maintenance run and the
+    summary slice to remove.  It is not a filter on the current task table:
+    those rows use historical dispatch dates, while the 2026-09-14 summary is
+    a separately materialized daily-report slice.
+    """
+    return True
+
+
 class CleanupError(RuntimeError):
     pass
 
@@ -139,7 +150,7 @@ async def load_target(cur, target_date: date) -> list[dict[str, Any]]:
     for raw in rows:
         values = dict(zip(selected, raw))
         business = next((parse_business_date(values.get(field)) for field in DATE_FIELDS if field in values), None)
-        if business == target_date:
+        if should_archive_current_flow(values):
             targets.append({
                 "id": int(values["id"]),
                 "row_key": str(values.get("_row_key") or ""),
@@ -231,9 +242,14 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
                 source_rows = await query_all(cur, "SELECT id FROM `_online_source_rows` WHERE parser_type=%s AND row_key IN (" + ",".join(["%s"] * len(row_keys) or ["NULL"]) + ") AND archived_at IS NULL", (PARSER_TYPE, *row_keys)) if row_keys else []
                 payload = {"schema": 1, "run_id": run_id, "parser_type": PARSER_TYPE, "business_date": business_date.isoformat(), "targets": targets, "source_ids": [int(row[0]) for row in source_rows], "counts": await counts(cur, row_keys, [int(row[0]) for row in source_rows]), "measured_at": datetime.now(timezone.utc).isoformat()}
                 _json_dump(root / "target.json", payload)
-                all_rows = await query_all(cur, f"SELECT `下发日期` FROM `{TABLE}`")
-                preserved_before = sum(1 for (raw_date,) in all_rows if (parsed := parse_business_date(raw_date)) and parsed < business_date)
-                _json_dump(root / "measure.json", {"target_count": len(targets), "counts": payload["counts"], "preserved_before_date_count": preserved_before})
+                await cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_schema='daily_report' AND "
+                    "(table_name LIKE %s OR table_name LIKE %s)",
+                    (f"{business_date.isoformat()}_daily_%", f"{business_date.isoformat()}_snapshot_%"),
+                )
+                report_table_count = int((await cur.fetchone())[0])
+                _json_dump(root / "measure.json", {"target_count": len(targets), "counts": payload["counts"], "current_business_count": len(targets), "report_table_count": report_table_count})
                 return {"phase": phase, "target_count": len(targets), "counts": payload["counts"]}
             manifest = await load_manifest(root)
             if phase == "prepare":
@@ -247,15 +263,22 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
                 source_ids = [int(item) for item in manifest.get("source_ids", [])]
                 after = await counts(cur, row_keys, source_ids)
                 remaining = int((await query_one(cur, f"SELECT COUNT(*) FROM `{TABLE}` WHERE `_row_key` IN ({','.join(['%s'] * len(row_keys) or ['NULL'])})", tuple(row_keys)))[0]) if row_keys else 0
-                all_rows = await query_all(cur, f"SELECT `下发日期` FROM `{TABLE}`")
-                old_count = sum(1 for (raw_date,) in all_rows if (parsed := parse_business_date(raw_date)) and parsed < business_date)
-                measured_before = None
-                if (root / "measure.json").is_file():
-                    try:
-                        measured_before = int(json.loads((root / "measure.json").read_text(encoding="utf-8")).get("preserved_before_date_count", -1))
-                    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                        measured_before = None
-                payload = {"ready": remaining == 0 and measured_before is not None and old_count == measured_before, "remaining_target_business": remaining, "preserved_before_date_count": old_count, "after_counts": after}
+                await cur.execute(
+                    "SELECT COUNT(*) FROM `OnlineDataArchive`.`t_fullchain_archive` "
+                    "WHERE `_archive_reason`=%s AND `_row_key` IN (" + ",".join(["%s"] * len(row_keys) or ["NULL"]) + ")",
+                    ("current_flow_cleanup_20260914", *row_keys),
+                )
+                archived_count = int((await cur.fetchone())[0])
+                report_remaining = 0
+                await cur.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='daily_report' "
+                    "AND (table_name LIKE %s OR table_name LIKE %s)",
+                    (f"{business_date.isoformat()}_daily_%", f"{business_date.isoformat()}_snapshot_%"),
+                )
+                for (table_name,) in await cur.fetchall():
+                    await cur.execute(f"SELECT COUNT(*) FROM `daily_report`.`{table_name}`")
+                    report_remaining += int((await cur.fetchone())[0])
+                payload = {"ready": remaining == 0 and archived_count == len(row_keys) and report_remaining == 0, "remaining_target_business": remaining, "archived_count": archived_count, "report_remaining": report_remaining, "after_counts": after}
                 _json_dump(root / "verify.json", payload)
                 if not payload["ready"]:
                     raise CleanupError("verification_failed")
@@ -293,6 +316,15 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
                 await cur.execute(f"UPDATE `_online_summary_updates` SET status='cancelled', error_code='current_flow_archived', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders}) AND status IN ('pending','queued','running','retry')", (PARSER_TYPE, *row_keys))
                 await cur.execute(f"UPDATE `_task_registration_links` SET status='cancelled', reason_code='source_missing', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders})", (PARSER_TYPE, *row_keys))
                 await cur.execute(f"UPDATE `_unverifiable_review_flows` SET archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
+                # The 2026-09-14 online summary is a materialized report slice.
+                # Remove only that day's rows; historical daily reports remain.
+                await cur.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema='daily_report' "
+                    "AND (table_name LIKE %s OR table_name LIKE %s)",
+                    (f"{business_date.isoformat()}_daily_%", f"{business_date.isoformat()}_snapshot_%"),
+                )
+                for (table_name,) in await cur.fetchall():
+                    await cur.execute(f"DELETE FROM `daily_report`.`{table_name}`")
                 workflow = os.environ.get("MYSQL_WORKFLOW_DB", "WorkflowData")
                 if await table_exists(cur, workflow, "task_graph_nodes"):
                     await cur.execute(f"UPDATE `{workflow}`.`task_graph_nodes` SET status='source_missing', reason_code='current_flow_archived', archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE provider='online' AND parser_type=%s AND source_ref IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
