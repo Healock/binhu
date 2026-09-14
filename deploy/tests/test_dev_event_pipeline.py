@@ -325,7 +325,7 @@ volumes:
 
     def test_all_generated_event_pipeline_containers_have_development_label(self):
         specifications = (
-            compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker")}),
+            compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")}),
             registry_runtime.specification("sha256:" + "a" * 64),
             flink_compose.specification(
                 "sha256:" + "a" * 64,
@@ -467,7 +467,7 @@ volumes:
                 backend_relay_configuration({**env, key: value})
 
     def test_compose_includes_isolated_backend_outbox_relay(self):
-        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker")})
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
         service = spec["services"]["backend-outbox-relay"]
         self.assertEqual(service["networks"], ["backend"])
         self.assertEqual(service["env_file"], ["backend-relay.env"])
@@ -477,7 +477,7 @@ volumes:
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
 
     def test_compose_includes_isolated_python_metadata_worker(self):
-        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker")})
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
         service = spec["services"]["python-metadata-worker"]
         self.assertEqual(service["networks"], ["internal"])
         self.assertEqual(service["command"][-1], "python-metadata-worker")
@@ -507,7 +507,7 @@ volumes:
                 MySQLDeliveryStore(None, run_id=bad)
 
     def test_compose_has_no_host_ports_or_old_storage(self):
-        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker")})
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
         for service in spec["services"].values():
             self.assertNotIn("ports", service)
             self.assertNotIn("privileged", service)

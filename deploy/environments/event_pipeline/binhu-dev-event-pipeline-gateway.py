@@ -164,7 +164,7 @@ def run_module(run_id: str, module: str) -> None:
         env["PYTHONPATH"] = str(SOURCE / "deploy" / "environments")
         if module == "prepare":
             args = [sys.executable, "-m", "event_pipeline.prepare", "--run-id", run_id]
-            for key in ("mysql", "redis", "worker"):
+            for key in ("mysql", "redis", "worker", "flink"):
                 args += [f"--{key}-image", manifest["images"][key]]
         else:
             args = [sys.executable, "-m", "event_pipeline.control", module]

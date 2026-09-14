@@ -20,10 +20,10 @@ BACKEND_NETWORK = "binhu-development_internal"
 
 
 def compose(images):
-    if set(images) != {"mysql", "redis", "worker"} or any(
+    if set(images) != {"mysql", "redis", "worker", "flink"} or any(
         not re.fullmatch(r"sha256:[0-9a-f]{64}", v or "") for v in images.values()
     ):
-        raise ValueError("three immutable image identities required")
+        raise ValueError("four immutable image identities required")
     common = {"networks": ["internal"], "labels": {"binhu.environment": "development"},
               "restart": "on-failure:3", "pull_policy": "never", "pids_limit": 128,
               "logging": {"driver": "json-file", "options": {"max-size": "5m", "max-file": "2"}},
@@ -190,11 +190,11 @@ CREATE TABLE dev_task_metadata_python (
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", required=True)
-    for component in ("mysql", "redis", "worker"):
+    for component in ("mysql", "redis", "worker", "flink"):
         parser.add_argument("--" + component + "-image", required=True)
     args = parser.parse_args()
     try:
-        result = prepare(args.run_id, {k: getattr(args, k + "_image") for k in ("mysql", "redis", "worker")})
+        result = prepare(args.run_id, {k: getattr(args, k + "_image") for k in ("mysql", "redis", "worker", "flink")})
         print(json.dumps(result))
     except Exception:
         raise SystemExit("Dev pipeline preparation failed; preserve evidence and inspect private files") from None
