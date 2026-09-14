@@ -83,10 +83,24 @@ def checked(command):
 
 
 def preflight():
-    if ROOT.is_symlink() or ROOT.parent.is_symlink() or ROOT.resolve() != ROOT or ROOT.exists():
+    if ROOT.is_symlink() or ROOT.parent.is_symlink() or ROOT.resolve() != ROOT:
         raise ValueError("new absolute Dev output required")
-    if checked(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={PROJECT}"]).strip():
-        raise ValueError("existing project requires separate review")
+    if ROOT.exists():
+        manifest_path = ROOT / "manifest.json"
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            raise ValueError("existing Dev root has no trusted manifest")
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise ValueError("existing Dev manifest is unreadable") from None
+        if previous.get("environment") != "development" or previous.get("project") != PROJECT:
+            raise ValueError("existing root identity mismatch")
+    existing = checked(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={PROJECT}"]).strip()
+    if existing:
+        for item in json.loads(checked(["docker", "inspect", *existing.split()])):
+            labels = item.get("Config", {}).get("Labels", {})
+            if labels.get("com.docker.compose.project") != PROJECT or labels.get("binhu.environment") != "development":
+                raise ValueError("existing Dev project identity mismatch")
     network = json.loads(checked(["docker", "network", "inspect", NETWORK]))[0]
     if not network.get("Internal") or network.get("Labels", {}).get("com.docker.compose.project") != "binhu-development-eventbus":
         raise ValueError("isolated Dev eventbus network required")
@@ -94,8 +108,12 @@ def preflight():
         if not item["Name"].startswith("binhu-development-"):
             raise ValueError("foreign network dependency")
     volumes = checked(["docker", "volume", "ls", "--format", "{{.Name}}"]).splitlines()
-    if any(v.startswith(PROJECT + "_") for v in volumes):
-        raise ValueError("old volumes must not be reused")
+    for volume in volumes:
+        if volume.startswith(PROJECT + "_"):
+            info = json.loads(checked(["docker", "volume", "inspect", volume]))[0]
+            labels = info.get("Labels", {})
+            if labels.get("com.docker.compose.project") != PROJECT or labels.get("binhu.environment") != "development":
+                raise ValueError("existing Dev volume identity mismatch")
     memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     if int(memory["MemAvailable"].split()[0]) < 3 * 1024**2:
         raise ValueError("insufficient memory reserve")
@@ -125,7 +143,8 @@ def prepare(run_id, images):
     for image in images.values():
         if checked(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip() != image:
             raise ValueError("image identity mismatch")
-    ROOT.mkdir(mode=0o700)
+    ROOT.mkdir(mode=0o700, exist_ok=True)
+    ROOT.chmod(0o700)
     sql = f"""USE Dev_EventPipeline;
 CREATE TABLE _pipeline_identity (id INT PRIMARY KEY, environment VARCHAR(32), run_id VARCHAR(80), database_name VARCHAR(64));
 INSERT INTO _pipeline_identity VALUES (1,'development','{run_id}','Dev_EventPipeline');
