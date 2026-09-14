@@ -1,0 +1,67 @@
+name: Current flow cleanup
+run-name: Current flow cleanup ${{ inputs.phase }} ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Fixed maintenance phase
+        required: true
+        type: choice
+        options: [measure, backup-check, prepare, apply, verify]
+      run_id:
+        description: New immutable evidence run id
+        required: true
+        type: string
+      business_date:
+        description: Approved business date (fixed to 2026-09-14)
+        required: true
+        default: '2026-09-14'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-current-flow-cleanup
+  cancel-in-progress: false
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Prepare restricted SSH identity
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.BINHU_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/deploy_key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-ssh/deploy_key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/binhu-ssh/deploy_key" >/dev/null
+      - name: Run fixed production maintenance contract
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.BINHU_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.BINHU_DEPLOY_PORT }}
+          PHASE: ${{ inputs.phase }}
+          RUN_ID: ${{ inputs.run_id }}
+          BUSINESS_DATE: ${{ inputs.business_date }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$BUSINESS_DATE" == "2026-09-14" ]]
+          [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]]
+          ssh -F /dev/null \
+            -i "$RUNNER_TEMP/binhu-ssh/deploy_key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o PasswordAuthentication=no -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/binhu-ssh/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 -p "$DEPLOY_PORT" \
+            "binhu-deploy@$DEPLOY_HOST" \
+            "current-flow-cleanup $PHASE $RUN_ID $BUSINESS_DATE"
