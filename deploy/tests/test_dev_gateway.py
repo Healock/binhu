@@ -23,6 +23,20 @@ class DevGatewayContractTests(unittest.TestCase):
             text = workflow.read_text(encoding="utf-8")
             self.assertIn("environment: development", text, workflow.name)
 
+    def test_dev_workflows_use_explicit_ssh_port_secret(self):
+        workflows = (
+            ROOT / ".github/workflows/install-dev-event-pipeline-gateway.yml",
+            ROOT / ".github/workflows/deploy-dev-event-pipeline.yml",
+        )
+        for workflow in workflows:
+            text = workflow.read_text(encoding="utf-8")
+            self.assertIn("BINHU_DEV_EVENT_PIPELINE_PORT", text, workflow.name)
+        install = workflows[0].read_text(encoding="utf-8")
+        deploy = workflows[1].read_text(encoding="utf-8")
+        self.assertIn("scp -P \"$DEV_PORT\"", install)
+        self.assertIn("ssh -p \"$DEV_PORT\"", install)
+        self.assertIn("ssh -p \"$DEV_PORT\"", deploy)
+
     def test_wrapper_has_only_fixed_operations(self):
         text = WRAPPER.read_text(encoding="utf-8")
         self.assertIn("prepare)", text)

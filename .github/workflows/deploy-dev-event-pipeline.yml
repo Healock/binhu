@@ -62,6 +62,7 @@ jobs:
         shell: bash
         env:
           DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          DEV_PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
           DEV_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_SSH_KEY }}
           DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
           RUN_ID: ${{ inputs.run_id }}
@@ -69,14 +70,14 @@ jobs:
           BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
         run: |
           set -Eeuo pipefail
-          [[ -n "$DEV_HOST" && -n "$DEV_KEY" && -n "$DEV_KNOWN_HOSTS" ]]
+          [[ -n "$DEV_HOST" && "$DEV_PORT" =~ ^[0-9]+$ && -n "$DEV_KEY" && -n "$DEV_KNOWN_HOSTS" ]]
           install -d -m 700 "$RUNNER_TEMP/dev-ssh"
           printf '%s\n' "$DEV_KEY" > "$RUNNER_TEMP/dev-ssh/key"
           printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
           bundle="candidate/binhu-dev-event-pipeline.tar.gz"
           size="$(wc -c < "$bundle")"
-          cat "$bundle" | ssh -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "binhu-dev-deploy@$DEV_HOST" "prepare $RUN_ID $COMMIT $size $BUNDLE_SHA256"
-          ssh -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "binhu-dev-deploy@$DEV_HOST" "measure $RUN_ID"
-          ssh -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "binhu-dev-deploy@$DEV_HOST" "apply $RUN_ID"
+          cat "$bundle" | ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "binhu-dev-deploy@$DEV_HOST" "prepare $RUN_ID $COMMIT $size $BUNDLE_SHA256"
+          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "binhu-dev-deploy@$DEV_HOST" "measure $RUN_ID"
+          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "binhu-dev-deploy@$DEV_HOST" "apply $RUN_ID"
           rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
