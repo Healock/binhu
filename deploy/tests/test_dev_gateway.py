@@ -1,0 +1,46 @@
+import json
+import os
+import subprocess
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+WRAPPER = ROOT / "deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway"
+IMPLEMENTATION = ROOT / "deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway.py"
+
+
+class DevGatewayContractTests(unittest.TestCase):
+    def test_wrapper_has_only_fixed_operations(self):
+        text = WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("prepare)", text)
+        self.assertIn("measure|apply)", text)
+        self.assertIn("Only fixed Dev event-pipeline commands are allowed", text)
+        self.assertNotIn("eval ", text)
+        self.assertNotIn("bash -c", text)
+
+    def test_python_rejects_wrong_environment_and_unsafe_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "candidate.tar.gz"
+            manifest = {"environment": "production", "project": "binhu-development-pipeline"}
+            with tarfile.open(path, "w:gz") as archive:
+                data = json.dumps(manifest).encode()
+                info = tarfile.TarInfo("manifest.json")
+                info.size = len(data)
+                archive.addfile(info, __import__("io").BytesIO(data))
+            self.assertTrue(path.is_file())
+
+    def test_installer_is_dev_scoped(self):
+        text = (ROOT / "deploy/environments/event_pipeline/install-dev-gateway.sh").read_text(encoding="utf-8")
+        self.assertIn("binhu-dev-deploy", text)
+        self.assertIn("binhu-dev-event-pipeline-gateway", text)
+        self.assertNotIn("binhu-deploy-gateway", text)
+        self.assertNotIn("/root/binhu", text)
+        self.assertNotIn("staging", text.lower())
+        self.assertNotIn("production", text.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()

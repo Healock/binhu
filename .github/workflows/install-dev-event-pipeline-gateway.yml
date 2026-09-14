@@ -1,0 +1,41 @@
+name: Install Dev event-pipeline gateway
+run-name: Install Dev event-pipeline gateway
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Install only the Dev gateway
+        shell: bash
+        env:
+          DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          ADMIN_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          DEV_PUBLIC_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_DEPLOY_PUBLIC_KEY }}
+          DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$DEV_HOST" && -n "$ADMIN_KEY" && -n "$DEV_PUBLIC_KEY" && -n "$DEV_KNOWN_HOSTS" ]]
+          install -d -m 700 "$RUNNER_TEMP/dev-ssh"
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/dev-ssh/key"
+          printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
+          printf '%s\n' "$DEV_PUBLIC_KEY" > "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub"
+          chmod 600 "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts" "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub"
+          scp -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
+            deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway \
+            deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway.py \
+            deploy/environments/event_pipeline/install-dev-gateway.sh \
+            "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub" \
+            "root@$DEV_HOST:/tmp/"
+          ssh -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "root@$DEV_HOST" \
+            "cd /tmp && ./install-dev-gateway.sh /tmp/dev-deploy-key.pub"
+          rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts" "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub"
