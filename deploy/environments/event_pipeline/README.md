@@ -12,6 +12,14 @@
 
 ## 操作顺序
 
+### GitHub Actions 隔离环境
+
+`Install Dev event-pipeline gateway`、`Prepare Dev event pipeline` 和
+`Deploy Dev event pipeline` 三个工作流都绑定 GitHub `development` Environment。
+Dev 主机、部署密钥和已知主机指纹只能从该环境读取；生产发布工作流的
+`production` Environment 与密钥不会被这些工作流引用。若 `development`
+Environment 未配置完整，工作流必须在连接服务器前失败。
+
 0. 从已经合并到 `main` 的提交触发 `Prepare Dev event pipeline` 工作流，传入新的
    `dev-YYYYMMDD-...` 运行编号和四个不可变镜像摘要。工作流只生成并上传候选包，
    包含提交 SHA、镜像摘要、源码清单和 SHA-256；它不会连接服务器、启动容器或
@@ -145,3 +153,6 @@ Redis `binhu:events`。它使用单独的 `backend-relay.env`、`backend` 内部
 根文件系统、tmpfs 临时目录、CPU/内存/pids 限制和 Docker 日志轮换；禁止连接
 Production、Staging、Shadow 或任何外部平台。服务器部署时只新增该服务，不重建
 Kafka、Flink、Schema Registry 或既有数据卷。
+
+### Workflow environment contract
+All install, prepare, and deploy workflows must run in the GitHub development Environment.
