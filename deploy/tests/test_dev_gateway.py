@@ -60,6 +60,8 @@ class DevGatewayContractTests(unittest.TestCase):
         text = (ROOT / "deploy/environments/event_pipeline/install-dev-gateway.sh").read_text(encoding="utf-8")
         self.assertIn("binhu-dev-deploy", text)
         self.assertIn("binhu-dev-event-pipeline-gateway", text)
+        self.assertIn("usermod --password", text)
+        self.assertNotIn("passwd -l", text)
         self.assertNotIn("binhu-deploy-gateway", text)
         self.assertNotIn("/root/binhu", text)
         self.assertNotIn("staging", text.lower())
