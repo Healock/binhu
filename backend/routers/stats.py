@@ -1,6 +1,7 @@
 """日报 API - 生成和查看分汇总表 + 总汇总表"""
 
 import json
+from datetime import date
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -19,6 +20,10 @@ from services.report_overview import (
     get_online_overview_details,
 )
 from services.report_view import project_report_payload
+from services.txdocs_statistics_monitor import (
+    get_txdocs_statistics_overview,
+    monitoring_configuration_ready,
+)
 from services.data_scope import (
     allowed_community_names,
     community_names_for_scopes,
@@ -235,6 +240,51 @@ async def get_overview(
             await _overview_community_names(conn, formal),
             inspector=_responsibility_inspector(user, scope),
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/txdocs-monitor")
+async def get_txdocs_monitor_overview(
+    start_date: str = Query(..., description="yyyy-MM-dd"),
+    end_date: str = Query(..., description="yyyy-MM-dd"),
+    parser_type: str = Query("全链条"),
+    user: dict = Depends(require_permission(ONLINE_SUMMARY_VIEW)),
+    scope: ScopeMode = Query("permission"),
+    community: str = Query("", max_length=100),
+    conn=Depends(get_db),
+):
+    """读取独立的腾讯表只读监控聚合，不返回任何外部行正文。"""
+    try:
+        date.fromisoformat(start_date)
+        date.fromisoformat(end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="日期必须使用 yyyy-MM-dd") from exc
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
+    if parser_type not in IMPLEMENTED_SUBTYPES:
+        raise HTTPException(status_code=400, detail="当前业务类型不支持在线汇总")
+    try:
+        async with conn.cursor() as cur:
+            formal = await _requested_formal_communities(
+                cur, user, scope, community
+            )
+            parser_types = (
+                await _read_summary_types(cur)
+                if parser_type == "总汇总表"
+                else [parser_type]
+            )
+            configuration_ready = await monitoring_configuration_ready(cur)
+        visible_communities = await _overview_community_names(conn, formal)
+        return await get_txdocs_statistics_overview(
+            start_date,
+            end_date,
+            parser_types,
+            visible_communities,
+            configuration_ready=configuration_ready,
+        )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

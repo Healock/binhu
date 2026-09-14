@@ -981,6 +981,23 @@ export interface OnlineDataOverview {
   completion_rate: number
 }
 
+export interface TxDocsMonitoringOverview {
+  enabled: boolean
+  configured: boolean
+  status: 'disabled' | 'misconfigured' | 'awaiting_first_snapshot' | 'healthy' | 'stale' | 'error' | 'unavailable'
+  start_date: string
+  end_date: string
+  current_rows: number
+  added_rows: number
+  changed_rows: number
+  removed_rows: number
+  successful_reads: number
+  failed_sources: number
+  last_success_at: string | null
+  is_stale: boolean
+  message: string
+}
+
 export type OnlineOverviewCategory = 'carryover' | 'new' | 'changed' | 'pending' | 'completed'
 
 export interface OnlineOverviewDetailItem {
@@ -1021,6 +1038,23 @@ export async function getOnlineDataOverview(
   filters?: { scope?: 'permission' | 'responsibility'; community?: string },
 ): Promise<OnlineDataOverview> {
   const { data } = await api.get('/stats/overview', {
+    params: {
+      start_date: startDate,
+      end_date: endDate,
+      parser_type: parserType,
+      ...filters,
+    },
+  })
+  return data
+}
+
+export async function getTxDocsMonitoringOverview(
+  startDate: string,
+  endDate: string,
+  parserType: string,
+  filters?: { scope?: 'permission' | 'responsibility'; community?: string },
+): Promise<TxDocsMonitoringOverview> {
+  const { data } = await api.get('/stats/txdocs-monitor', {
     params: {
       start_date: startDate,
       end_date: endDate,

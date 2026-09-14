@@ -93,6 +93,8 @@ from services.online_summary_updates import (
     run_online_summary_update_worker,
     stop_online_summary_update_processing,
 )
+from services.txdocs_statistics_monitor import run_txdocs_statistics_monitor
+from services.txdocs_usage import stop_txdocs_usage_tasks
 
 
 @asynccontextmanager
@@ -150,6 +152,7 @@ async def lifespan(app: FastAPI):
     performance_sampler_task = asyncio.create_task(run_performance_sampler())
     online_projection_task = asyncio.create_task(run_online_projection_worker())
     online_summary_task = asyncio.create_task(run_online_summary_update_worker())
+    txdocs_statistics_task = asyncio.create_task(run_txdocs_statistics_monitor())
     try:
         yield
     finally:
@@ -166,6 +169,7 @@ async def lifespan(app: FastAPI):
         performance_sampler_task.cancel()
         online_projection_task.cancel()
         online_summary_task.cancel()
+        txdocs_statistics_task.cancel()
         with suppress(asyncio.CancelledError):
             await backup_scheduler_task
         with suppress(asyncio.CancelledError):
@@ -192,7 +196,10 @@ async def lifespan(app: FastAPI):
             await online_projection_task
         with suppress(asyncio.CancelledError):
             await online_summary_task
+        with suppress(asyncio.CancelledError):
+            await txdocs_statistics_task
         await stop_online_summary_update_processing()
+        await stop_txdocs_usage_tasks()
         await stop_backup_tasks()
         await stop_certificate_source_tasks()
         await stop_police_publish_tasks()

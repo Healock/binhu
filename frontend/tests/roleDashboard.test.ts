@@ -84,6 +84,17 @@ test('在线数据汇总直接同时展示网格员和社区表，不再使用�
   assert.match(source, /const communityTitle = '社区汇总'/)
 })
 
+test('在线数据汇总将腾讯只读监控与平台任务指标分开展示', () => {
+  const source = read('../src/pages/Dashboard.tsx')
+  const client = read('../src/api/client.ts')
+  assert.match(source, /title="外部腾讯表监控"/)
+  assert.match(source, /不导入平台任务，不参与核查完成率，也不向腾讯表回写/)
+  assert.match(source, /title: '外部新增'/)
+  assert.match(source, /title: '外部内容变化'/)
+  assert.match(source, /title: '外部移除'/)
+  assert.match(client, /api\.get\('\/stats\/txdocs-monitor'/)
+})
+
 test('社区完成图表为零值数据保留可见坐标轴', () => {
   const source = read('../src/components/charts/MonoRoundedStackedBarChart.tsx')
   assert.match(source, /const maxTotal = Math\.max\(\.\.\.rows\.map\(item => Number\(item\.total\) \|\| 0\), 1\)/)

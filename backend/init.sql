@@ -1674,3 +1674,49 @@ CREATE TABLE IF NOT EXISTS _daily_task_ledger_runs (
     PRIMARY KEY (report_date, parser_type),
     INDEX idx_ledger_run_date (report_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 腾讯表只读统计监控只保存 HMAC 摘要、社区计数和运行状态。
+-- 它不属于在线任务来源，也不保存或回写腾讯表正文。
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_current (
+    spreadsheet_id INT NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    business_key_hash CHAR(64) NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    community_hash CHAR(64) NOT NULL,
+    community VARCHAR(200) NOT NULL DEFAULT '',
+    row_count INT UNSIGNED NOT NULL,
+    last_seen_at DATETIME NOT NULL,
+    PRIMARY KEY (spreadsheet_id, business_key_hash, content_hash, community_hash),
+    INDEX idx_txdocs_monitor_current_type (parser_type, community_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_runs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    spreadsheet_id INT NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    observed_date DATE NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    is_baseline TINYINT(1) NOT NULL DEFAULT 0,
+    row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    added_count INT UNSIGNED NOT NULL DEFAULT 0,
+    changed_count INT UNSIGNED NOT NULL DEFAULT 0,
+    removed_count INT UNSIGNED NOT NULL DEFAULT 0,
+    unkeyed_count INT UNSIGNED NOT NULL DEFAULT 0,
+    error_code VARCHAR(64) NOT NULL DEFAULT '',
+    started_at DATETIME NOT NULL,
+    finished_at DATETIME NOT NULL,
+    INDEX idx_txdocs_monitor_runs_source (spreadsheet_id, id),
+    INDEX idx_txdocs_monitor_runs_date (observed_date, parser_type, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_run_communities (
+    run_id BIGINT NOT NULL,
+    community_hash CHAR(64) NOT NULL,
+    community VARCHAR(200) NOT NULL DEFAULT '',
+    current_count INT UNSIGNED NOT NULL DEFAULT 0,
+    added_count INT UNSIGNED NOT NULL DEFAULT 0,
+    changed_count INT UNSIGNED NOT NULL DEFAULT 0,
+    removed_count INT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, community_hash),
+    INDEX idx_txdocs_monitor_run_community (community_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

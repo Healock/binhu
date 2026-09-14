@@ -52,7 +52,7 @@ class EnvironmentUpdateTests(unittest.TestCase):
     def test_production_target_foreign_network_overrides_and_mounts_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             target, (manifest, compose, env_text) = self.fixture(Path(directory))
-            for kind in ('production', 'network', 'volume', 'env_override', 'port', 'database', 'external'):
+            for kind in ('production', 'network', 'volume', 'env_override', 'port', 'database', 'external', 'external_monitor'):
                 modified = copy.deepcopy(compose)
                 altered_env = env_text
                 environment = 'development'
@@ -63,6 +63,7 @@ class EnvironmentUpdateTests(unittest.TestCase):
                 if kind == 'port': modified['services']['backend']['ports'] = ['48125:37125']
                 if kind == 'database': altered_env = env_text.replace('MYSQL_ONLINE_DATA_DB=Dev_OnlineData', 'MYSQL_ONLINE_DATA_DB=OnlineData')
                 if kind == 'external': altered_env = env_text.replace('TXDOCS_ENABLED=false', 'TXDOCS_ENABLED=true')
+                if kind == 'external_monitor': altered_env = env_text.replace('TXDOCS_MONITORING_ENABLED=false', 'TXDOCS_MONITORING_ENABLED=true')
                 with self.subTest(kind=kind), self.assertRaises(ValueError):
                     candidate_configuration(environment, target, manifest, modified, altered_env, self.image())
 
