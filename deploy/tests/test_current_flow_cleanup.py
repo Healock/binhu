@@ -49,6 +49,18 @@ class CurrentFlowCleanupContractTests(unittest.TestCase):
             compose,
         )
 
+    def test_cleanup_evidence_is_persisted_outside_the_backend_container(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "${BINHU_CLEANUP_EVIDENCE_DIR:-./deploy-evidence/current-flow-cleanup}:/srv/binhu-release-evidence-current-flow-cleanup",
+            compose,
+        )
+        gateway = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
+        self.assertIn(
+            "BINHU_CLEANUP_EVIDENCE_ROOT=/srv/binhu-release-evidence-current-flow-cleanup",
+            gateway,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

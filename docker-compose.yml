@@ -166,6 +166,10 @@ services:
       # container cannot mistake its application backup mount for the
       # deployment backup store (or write into it).
       - ${BINHU_DEPLOY_BACKUP_DIR:-./deploy-backups/automated}:/root/binhu/deploy-backups/automated:ro
+      # Maintenance evidence must survive backend container recreation. Keep
+      # this directory separate from application data and expose it only to
+      # the backend maintenance contract.
+      - ${BINHU_CLEANUP_EVIDENCE_DIR:-./deploy-evidence/current-flow-cleanup}:/srv/binhu-release-evidence-current-flow-cleanup
       - ${BINHU_WORKFLOW_ATTACHMENT_DIR:-/data/binhu/workflow-attachments}:/app/workflow-attachments
       - ${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:-/data/binhu/workflow-photo-imports}:/app/workflow-photo-imports
       - ${BINHU_USER_AVATAR_DIR:-/data/binhu/user-avatars}:/app/user-avatars
