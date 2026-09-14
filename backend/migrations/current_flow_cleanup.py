@@ -19,9 +19,6 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import aiomysql
-
-
 PARSER_TYPE = "全链条"
 TABLE = "t_fullchain"
 ARCHIVE_TABLE = "t_fullchain_archive"
@@ -87,6 +84,10 @@ def _json_dump(path: Path, payload: Any) -> None:
 
 
 async def connect():
+    # Keep the migration's pure date/manifest helpers usable in the release
+    # bundle validation job, where the database driver is intentionally absent.
+    import aiomysql
+
     return await aiomysql.connect(
         host=os.environ.get("MYSQL_HOST", "mysql"),
         port=int(os.environ.get("MYSQL_PORT", "3306")),
@@ -275,7 +276,13 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
                 raise CleanupError("maintenance_lock_unavailable")
             try:
                 # Archive the exact current rows, then remove them from the live table.
-                await cur.execute(f"INSERT INTO `OnlineDataArchive`.`{ARCHIVE_TABLE}` SELECT current.*, UTC_TIMESTAMP(), 'current_flow_cleanup_20260914' FROM `OnlineData`.`{TABLE}` current WHERE current.`_row_key` IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM `OnlineDataArchive`.`{ARCHIVE_TABLE}` archived WHERE archived.`_row_key`=current.`_row_key` AND archived.`_archive_reason`='current_flow_cleanup_20260914')", tuple(row_keys))
+                # Keep the archive contract independent from table column order
+                # and from future additive columns.  The archive service uses
+                # the same business-column mapping and deliberately lets its
+                # own id/metadata defaults populate archive-only fields.
+                archive_columns = ["_row_key", "下发日期", "截止日期", "核查人", "社区", "来源", "姓名", "身份证号", "电话号码", "地址", "登记情况", "创建时间", "现住址", "核查结果", "研判", "二次反馈"]
+                quoted_columns = ",".join(f"`{column}`" for column in archive_columns)
+                await cur.execute(f"INSERT INTO `OnlineDataArchive`.`{ARCHIVE_TABLE}` ({quoted_columns},`_archive_reason`) SELECT {','.join(f'current.`{column}`' for column in archive_columns)}, %s FROM `OnlineData`.`{TABLE}` current WHERE current.`_row_key` IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM `OnlineDataArchive`.`{ARCHIVE_TABLE}` archived WHERE archived.`_row_key`=current.`_row_key` AND archived.`_archive_reason`=%s)", ("current_flow_cleanup_20260914", *row_keys, "current_flow_cleanup_20260914"))
                 await cur.execute(f"DELETE FROM `OnlineData`.`{TABLE}` WHERE `_row_key` IN ({placeholders})", tuple(row_keys))
                 await cur.execute(f"UPDATE `_online_source_rows` SET archived_at=UTC_TIMESTAMP(), revision=revision+1, source_kind='current_flow_cleanup' WHERE parser_type=%s AND row_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
                 await cur.execute(f"UPDATE `_local_source_records` SET status='archived', archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND business_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
