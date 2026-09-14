@@ -575,6 +575,11 @@ volumes:
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
 
+    def test_business_bridge_receives_pipeline_and_backend_runtime_credentials(self):
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
+        service = spec["services"]["business-bridge"]
+        self.assertEqual(service["env_file"], ["runtime.env", "backend-relay.env"])
+
     def test_control_expected_networks_match_backend_relay_compose(self):
         self.assertEqual(control.expected_networks("backend-outbox-relay"), {"binhu-development_internal"})
         self.assertEqual(control.expected_networks("business-bridge"), {"binhu-development-eventbus_internal", "binhu-development_internal"})

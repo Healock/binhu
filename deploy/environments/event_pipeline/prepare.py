@@ -65,7 +65,7 @@ def compose(images):
             "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"},
                            "dev-derived-redis": {"condition": "service_started"}}}
     services["business-bridge"] = {**common, "image": images["worker"],
-        "networks": ["internal", "backend"], "env_file": ["runtime.env"],
+        "networks": ["internal", "backend"], "env_file": ["runtime.env", "backend-relay.env"],
         "mem_limit": "160m", "cpus": .25, "read_only": True,
         "tmpfs": ["/tmp:size=16m"],
         "command": ["python", "-m", "event_pipeline.runtime", "business-bridge"],
