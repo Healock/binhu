@@ -81,7 +81,7 @@ def _source_files(repository: Path) -> list[Path]:
 
 def _scan_source(files: list[Path]) -> None:
     for path in files:
-        if path.suffix not in {".py", ".java", ".md", ".json", ".txt", ".gitattributes", ""}:
+        if path.suffix not in {".py", ".java", ".md", ".json", ".txt", ".sh", ".gitattributes", ""}:
             raise ValueError("unsupported event pipeline source file")
         try:
             text = path.read_text(encoding="utf-8")
