@@ -18,12 +18,58 @@ import json
 from typing import Any, Iterable
 
 from config import settings
+from services.qmf_config import decrypt_secret
 from services.business_time import get_business_date
 from services.parsers import PARSER_REGISTRY, get_parser
 
 
 LOCK_NAME = "binhu:txdocs-statistics-monitor"
 USAGE_SOURCE = "statistics_monitor"
+
+
+async def ensure_txdocs_monitor_config_schema(cur) -> None:
+    """Create the isolated read-only monitor configuration store."""
+    await cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_config (
+            id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+            enabled TINYINT(1) NOT NULL DEFAULT 0,
+            spreadsheet_url TEXT NOT NULL,
+            file_id VARCHAR(200) NOT NULL DEFAULT '',
+            data_sheet_id VARCHAR(100) NOT NULL DEFAULT '',
+            header_row INT UNSIGNED NOT NULL DEFAULT 1,
+            parser_type VARCHAR(50) NOT NULL DEFAULT '',
+            client_id VARCHAR(200) NOT NULL DEFAULT '',
+            access_token TEXT NOT NULL,
+            open_id VARCHAR(200) NOT NULL DEFAULT '',
+            interval_seconds INT UNSIGNED NOT NULL DEFAULT 600,
+            updated_by INT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
+
+async def _load_monitor_config(cur) -> dict[str, Any] | None:
+    await cur.execute(
+        """SELECT id, enabled, spreadsheet_url, file_id, data_sheet_id,
+                  header_row, parser_type, client_id, access_token, open_id,
+                  interval_seconds, updated_at
+           FROM _txdocs_monitor_config WHERE id=1"""
+    )
+    row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]), "enabled": bool(row[1]),
+        "spreadsheet_url": str(row[2] or ""), "file_id": str(row[3] or ""),
+        "sheet_id": str(row[4] or ""), "header_row": int(row[5] or 1),
+        "parser_type": str(row[6] or ""), "client_id": str(row[7] or ""),
+        "access_token": decrypt_secret(row[8]), "open_id": str(row[9] or ""),
+        "interval_seconds": int(row[10] or 600), "updated_at": row[11],
+    }
 
 
 @dataclass(frozen=True)
@@ -278,13 +324,32 @@ async def _load_inputs() -> tuple[dict[str, str] | None, list[dict[str, Any]], A
     from database import db_manager
 
     allowlist = monitoring_spreadsheet_ids()
-    if not allowlist:
-        return None, [], None
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
             business_date = await get_business_date(cur)
+            monitor_config = await _load_monitor_config(cur)
+            if monitor_config is not None:
+                if not monitor_config["enabled"]:
+                    return None, [], business_date
+                credentials = None
+                if monitor_config["client_id"] and monitor_config["access_token"] and monitor_config["open_id"]:
+                    credentials = {
+                        "client_id": monitor_config["client_id"],
+                        "access_token": monitor_config["access_token"],
+                        "open_id": monitor_config["open_id"],
+                    }
+                if monitor_config["file_id"] and monitor_config["sheet_id"] and monitor_config["parser_type"] in PARSER_REGISTRY:
+                    return credentials, [{
+                        "id": 1,
+                        "file_id": monitor_config["file_id"],
+                        "sheet_id": monitor_config["sheet_id"],
+                        "header_row": monitor_config["header_row"],
+                        "parser_type": monitor_config["parser_type"],
+                    }], business_date
+            if not allowlist:
+                return None, [], business_date
             await cur.execute(
                 "SELECT client_id, access_token, open_id "
                 "FROM _config_oauth_tokens ORDER BY id DESC LIMIT 1"
@@ -326,6 +391,18 @@ async def _load_inputs() -> tuple[dict[str, str] | None, list[dict[str, Any]], A
 
 async def monitoring_configuration_ready(cur) -> bool:
     """Check the server-side allowlist and credentials without returning them."""
+    monitor_config = await _load_monitor_config(cur)
+    if monitor_config is not None:
+        return bool(
+            settings.TXDOCS_MONITORING_ENABLED
+            and monitor_config["enabled"]
+            and monitor_config["file_id"]
+            and monitor_config["sheet_id"]
+            and monitor_config["parser_type"] in PARSER_REGISTRY
+            and monitor_config["client_id"]
+            and monitor_config["access_token"]
+            and monitor_config["open_id"]
+        )
     allowlist = monitoring_spreadsheet_ids()
     if not settings.TXDOCS_MONITORING_ENABLED or not allowlist:
         return False
@@ -522,10 +599,6 @@ async def run_txdocs_statistics_once() -> int:
     """Run one read-only monitoring pass; return successful source count."""
     if not settings.TXDOCS_MONITORING_ENABLED:
         return 0
-    if not monitoring_spreadsheet_ids():
-        print("[TXDOCS_MONITOR] skipped code=allowlist_missing")
-        return 0
-
     from database import db_manager
     from services.txdocs_client import TxDocsClient
 
@@ -589,7 +662,6 @@ async def run_txdocs_statistics_monitor() -> None:
     """Run the bounded production scheduler when its separate switch is on."""
     if not settings.TXDOCS_MONITORING_ENABLED:
         return
-    interval = max(60, settings.TXDOCS_MONITORING_INTERVAL_SECONDS)
     while True:
         try:
             await run_txdocs_statistics_once()
@@ -597,6 +669,20 @@ async def run_txdocs_statistics_monitor() -> None:
             raise
         except Exception:
             print("[TXDOCS_MONITOR] status=failed code=scheduler_iteration_failed")
+        interval = max(60, settings.TXDOCS_MONITORING_INTERVAL_SECONDS)
+        try:
+            from database import db_manager
+            pool = db_manager.get_pool("online_data")
+            conn = await pool.acquire()
+            try:
+                async with conn.cursor() as cur:
+                    config = await _load_monitor_config(cur)
+                if config and config.get("interval_seconds"):
+                    interval = max(60, min(86400, int(config["interval_seconds"])))
+            finally:
+                pool.release(conn)
+        except Exception:
+            pass
         await asyncio.sleep(interval)
 
 
@@ -631,7 +717,7 @@ async def get_txdocs_statistics_overview(
     }
     if not settings.TXDOCS_MONITORING_ENABLED:
         return base
-    if not monitoring_spreadsheet_ids() or configuration_ready is False:
+    if configuration_ready is False:
         return {
             **base,
             "status": "misconfigured",
@@ -643,7 +729,6 @@ async def get_txdocs_statistics_overview(
 
     type_marks = ", ".join(["%s"] * len(valid_types))
     source_ids = monitoring_spreadsheet_ids()
-    source_marks = ", ".join(["%s"] * len(source_ids))
     community_clause = ""
     community_params: list[str] = []
     if communities is not None:
@@ -659,6 +744,14 @@ async def get_txdocs_statistics_overview(
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
+            if not source_ids:
+                await cur.execute(
+                    "SELECT DISTINCT spreadsheet_id FROM _txdocs_monitor_current"
+                )
+                source_ids = [int(row[0]) for row in await cur.fetchall()]
+            if not source_ids:
+                return {**base, "status": "healthy", "message": "尚未建立外部成功快照"}
+            source_marks = ", ".join(["%s"] * len(source_ids))
             await cur.execute(
                 f"""
                 SELECT COALESCE(SUM(row_count),0)

@@ -998,6 +998,48 @@ export interface TxDocsMonitoringOverview {
   message: string
 }
 
+export interface TxDocsMonitorConfig {
+  enabled: boolean
+  configured: boolean
+  spreadsheet_url_configured: boolean
+  spreadsheet_url: string
+  file_id: string
+  data_sheet_id: string
+  header_row: number
+  parser_type: string
+  interval_seconds: number
+  client_id_configured: boolean
+  access_token_configured: boolean
+  open_id_configured: boolean
+  status: string
+}
+
+export async function getTxDocsMonitorConfig(): Promise<TxDocsMonitorConfig> {
+  return (await api.get('/stats/txdocs-monitor/config')).data
+}
+
+export async function updateTxDocsMonitorConfig(payload: {
+  spreadsheet_url: string
+  data_sheet_id: string
+  parser_type: string
+  header_row: number
+  interval_seconds: number
+  client_id: string
+  access_token: string
+  open_id: string
+  enabled: boolean
+}): Promise<TxDocsMonitorConfig> {
+  return (await api.put('/stats/txdocs-monitor/config', payload)).data
+}
+
+export async function disableTxDocsMonitorConfig(): Promise<void> {
+  await api.post('/stats/txdocs-monitor/config/disable', {})
+}
+
+export async function runTxDocsMonitorNow(): Promise<{ successful_sources: number; message: string }> {
+  return (await api.post('/stats/txdocs-monitor/run', {})).data
+}
+
 export type OnlineOverviewCategory = 'carryover' | 'new' | 'changed' | 'pending' | 'completed'
 
 export interface OnlineOverviewDetailItem {
