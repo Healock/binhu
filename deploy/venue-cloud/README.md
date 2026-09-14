@@ -20,6 +20,8 @@
 ./validate-server.sh
 ```
 
+候选服务已经安装后，使用 `inspect-candidate.sh` 做第二次只读核对。它只检查固定场所码目录、专用容器前缀、回环 Ingress、Receiver 就绪接口、Nginx 语法和证书续签计时器，不写部署台账、不启动服务、不读取密钥内容，也不访问滨湖主平台目录。
+
 预检通过、完成磁盘和 MySQL 网络暴露评估后，再由管理员安装 Docker Compose，并将本目录文件安装到 `/etc/binhu-venue`。数据库 schema 可以重复执行：
 
 ```sh
@@ -29,6 +31,8 @@ docker compose -f /etc/binhu-venue/docker-compose.yml ps
 ```
 
 `migrate.sh` 默认读取 `/srv/binhu-venue/state/current.env` 中的不可变镜像标签，只启动 MySQL 并运行 `python -m app.migrate`，不会修改生产 Nginx，也不会启用场所码开关。首次候选验证也可通过 `BINHU_VENUE_COMPOSE_ENV` 指向经核验的候选标签文件。Receiver 的 `/health/ready` 会同时检查应用进程和 MySQL 连通性，发布网关也只以该就绪接口作为切换成功条件。
+
+每次候选核对和正式批次都必须留下部署台账。字段模板见 `deployment-ledger.example.json`，真实台账只能写入服务器受保护目录；模板中的提交号、镜像摘要、证书日期、队列数量和备份引用必须由实际只读核对或备份结果填写，不能使用示例值代替。
 
 首次生产切换仍需单独人工批准。发布前必须备份云端 MySQL 和 `/srv/binhu-venue/photos`，发布失败只回退接收服务镜像，不自动恢复数据库。
 
@@ -55,3 +59,5 @@ docker compose -f /etc/binhu-venue/docker-compose.yml ps
 - `/api/internal/` 同时要求 mTLS 和 Ed25519 签名；Nginx 只向上游传递验证结果。
 - 日志 URI 会把 `/venue/{token}` 记录为 `/venue/[redacted]`，应用关闭 Uvicorn access log。
 - 加密登记最长排队 7 天；成功确认的正文和照片默认 24 小时内清理，审计只保留安全原因码。
+
+候选服务器只读核对必须覆盖 `/srv/binhu-venue`、`/etc/binhu-venue`、`/etc/nginx`、场所码容器前缀、健康接口、证书续签计时器、日志脱敏和队列计数。不要从候选目标访问 `/srv/binhu`、主平台容器或主平台数据库。

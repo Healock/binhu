@@ -86,6 +86,28 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("wait_for_submissions", tool)
         self.assertNotIn("submissions/pull", tool)
 
+    def test_cutover_runbook_and_ledger_template_keep_production_gates_explicit(self):
+        runbook = (ROOT / "docs/venue-code-cloud-cutover-runbook.md").read_text(encoding="utf-8")
+        ledger = (ROOT / "deploy/venue-cloud/deployment-ledger.example.json").read_text(encoding="utf-8")
+        self.assertIn("VENUE_CLOUD_SYNC_ENABLED=false", runbook)
+        self.assertIn("VENUE_CLOUD_PULL_ENABLED=false", runbook)
+        self.assertIn("VENUE_LOCAL_PUBLIC_ENTRY_ENABLED=true", runbook)
+        self.assertIn("HTTP 410", runbook)
+        self.assertIn('"candidate_commit"', ledger)
+        self.assertIn('"uncertain_count"', ledger)
+        self.assertNotRegex(ledger, r"(?:\d{1,3}\.){3}\d{1,3}")
+
+    def test_candidate_inspection_is_read_only_and_scoped(self):
+        script = (ROOT / "deploy/venue-cloud/inspect-candidate.sh").read_text(encoding="utf-8")
+        self.assertIn("/etc/binhu-venue/docker-compose.yml", script)
+        self.assertIn("/srv/binhu-venue/state/current.env", script)
+        self.assertIn("--filter 'name=binhu-venue-'", script)
+        self.assertIn("/health/ready", script)
+        self.assertNotIn("docker compose up", script)
+        self.assertNotIn("docker compose run", script)
+        self.assertNotIn("systemctl enable", script)
+        self.assertNotIn("nginx -s reload", script)
+
     def test_nginx_activation_is_gated_and_reversible(self):
         activation = (ROOT / "deploy/venue-cloud/activate-nginx.sh").read_text(encoding="utf-8")
         self.assertIn("http://127.0.0.1:48727/health/ready", activation)

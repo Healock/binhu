@@ -1,0 +1,26 @@
+{
+  "candidate_commit": "<immutable-receiver-commit>",
+  "image_digest": "sha256:<image-digest>",
+  "compose_project": "<venue-compose-project>",
+  "deployed_at": "<UTC-ISO-8601>",
+  "receiver_ready": false,
+  "mysql_ready": false,
+  "nginx_route": "not_checked",
+  "certificate_expiry": "not_checked",
+  "pending_count": null,
+  "uncertain_count": null,
+  "expired_count": null,
+  "backup_reference": "<protected-backup-reference>",
+  "batch": {
+    "batch_id": "<batch-id>",
+    "venue_count": null,
+    "started_at": null,
+    "completed_at": null,
+    "cloud_sync_result": "not_started",
+    "pull_result": "not_started",
+    "accepted_count": null,
+    "rejected_count": null,
+    "rollback_status": "not_started",
+    "operator": "<operator-reference>"
+  }
+}
