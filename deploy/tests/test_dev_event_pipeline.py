@@ -479,6 +479,9 @@ volumes:
             self.assertEqual(set(service["networks"]), {"internal"})
             self.assertEqual(service["pids_limit"], 256)
             self.assertEqual(service["volumes"][0]["source"], "flink-checkpoints")
+        taskmanager = spec["services"]["taskmanager"]
+        self.assertEqual(taskmanager["environment"]["TASK_MANAGER_NUMBER_OF_TASK_SLOTS"], "3")
+        self.assertIn("taskmanager.numberOfTaskSlots: 3", taskmanager["environment"]["FLINK_PROPERTIES"])
         self.assertEqual(
             spec["volumes"]["flink-checkpoints"]["name"],
             "binhu-development_flink-checkpoints",

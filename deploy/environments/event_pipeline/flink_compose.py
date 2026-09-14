@@ -35,7 +35,7 @@ taskmanager.memory.jvm-overhead.max: 64m
 taskmanager.memory.network.min: 32m
 taskmanager.memory.network.max: 32m
 taskmanager.memory.managed.size: 64m
-taskmanager.numberOfTaskSlots: 1
+taskmanager.numberOfTaskSlots: 3
 """
 APPROVED_PIDS_LIMIT = 256
 
@@ -116,7 +116,7 @@ def specification(image: str, artifact_root: Path) -> dict:
                 "command": ["taskmanager"],
                 "environment": {
                     "JOB_MANAGER_RPC_ADDRESS": "jobmanager",
-                    "TASK_MANAGER_NUMBER_OF_TASK_SLOTS": "2",
+                    "TASK_MANAGER_NUMBER_OF_TASK_SLOTS": "3",
                     "APP_ENVIRONMENT": "development",
                     "FLINK_PROPERTIES": FLINK_PROPERTIES,
                 },
