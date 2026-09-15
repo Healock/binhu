@@ -110,8 +110,6 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         self.assertEqual(stale, [])
 
     def test_runtime_requires_exactly_two_matching_jobs_and_group(self):
-        second = job()
-        second["jid"] = "jid-second"
         report = flink_submission.validate_runtime(
             [job(RUN_ID + "-revisions"), job(RUN_ID + "-metadata", sinks=("dev_task_metadata",))],
             [f"{RUN_ID}-flink"], RUN_ID
