@@ -145,6 +145,14 @@ async def python_metadata_worker(config):
     await run(config)
 
 
+async def dual_track_monitor(config):
+    from .dual_track_monitor import run
+    evidence_dir = __import__("pathlib").Path(os.environ.get(
+        "DUAL_TRACK_EVIDENCE_DIR", "/var/lib/binhu-dev-event-pipeline/evidence")) / config["DEV_RUN_ID"]
+    evidence_id = os.environ.get("DUAL_TRACK_EVIDENCE_ID", "dual-track-" + config["DEV_RUN_ID"][4:])
+    await run(config, evidence_dir, evidence_id)
+
+
 def backend_relay_configuration(environ=None):
     """Validate the Dev-only Backend outbox relay targets.
 
@@ -210,10 +218,14 @@ async def main(mode):
         await backend_outbox_relay(backend_relay_configuration())
         return
     config = configuration()
-    from .schema_registry import verify
-    await asyncio.to_thread(verify)
+    if mode != "dual-track-monitor":
+        from .schema_registry import verify
+        await asyncio.to_thread(verify)
     if mode == "python-metadata-worker":
         await python_metadata_worker(config)
+        return
+    if mode == "dual-track-monitor":
+        await dual_track_monitor(config)
         return
     pool = await connect(config)
     try:
@@ -230,7 +242,7 @@ async def main(mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay", "python-metadata-worker"))
+    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay", "python-metadata-worker", "dual-track-monitor"))
     args = parser.parse_args()
     try:
         asyncio.run(main(args.mode))

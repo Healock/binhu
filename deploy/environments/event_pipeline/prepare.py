@@ -27,6 +27,7 @@ EXPECTED_SERVICES = frozenset(
         "business-bridge",
         "backend-outbox-relay",
         "python-metadata-worker",
+        "dual-track-monitor",
     }
 )
 # The relay was introduced after the first trusted Dev project was created.
@@ -85,10 +86,17 @@ def compose(images):
         "command": ["python", "-m", "event_pipeline.runtime", "python-metadata-worker"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
+    services["dual-track-monitor"] = {**common, "image": images["worker"],
+        "env_file": ["runtime.env"], "mem_limit": "128m", "cpus": .2,
+        "read_only": True, "tmpfs": ["/tmp:size=16m"],
+        "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence"],
+        "command": ["python", "-m", "event_pipeline.runtime", "dual-track-monitor"],
+        "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
     return {"name": PROJECT, "services": services,
             "networks": {"internal": {"external": True, "name": NETWORK},
                          "backend": {"external": True, "name": BACKEND_NETWORK}},
-            "volumes": {name: {"labels": {"binhu.environment": "development"}} for name in ("mysql", "redis")}}
+            "volumes": {name: {"labels": {"binhu.environment": "development"}} for name in ("mysql", "redis", "evidence")}}
 
 
 def checked(command):

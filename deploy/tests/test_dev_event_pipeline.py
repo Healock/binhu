@@ -23,6 +23,7 @@ from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline import kafka_compose
 from deploy.environments.event_pipeline import prepare as event_prepare
 from deploy.environments.event_pipeline import runtime as event_runtime
+from deploy.environments.event_pipeline.dual_track_monitor import build_report, write_cycle
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 from deploy.environments.event_pipeline.verify import fixture, acceptance_event_ids
 from deploy.environments.event_pipeline.services.backend_outbox_relay import BackendOutboxRelay
@@ -606,6 +607,34 @@ volumes:
         self.assertEqual(service["labels"]["binhu.environment"], "development")
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
+
+    def test_compose_includes_read_only_resident_dual_track_monitor(self):
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
+        service = spec["services"]["dual-track-monitor"]
+        self.assertEqual(service["command"], ["python", "-m", "event_pipeline.runtime", "dual-track-monitor"])
+        self.assertTrue(service["read_only"])
+        self.assertEqual(service["volumes"], ["evidence:/var/lib/binhu-dev-event-pipeline/evidence"])
+        self.assertEqual(service["mem_limit"], "128m")
+        self.assertEqual(service["pids_limit"], 128)
+        self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
+
+    def test_resident_monitor_report_is_redacted_and_pauses(self):
+        row = {"task_id": "t_fullchain:1", "source_id": 1,
+               "revision": 3, "event_count": 2, "changed_field_count": 2,
+               "created_count": 1, "saved_count": 1, "claimed_count": 0,
+               "assigned_count": 0, "reviewed_count": 0, "archived_count": 0,
+               "deleted_count": 0, "备注": "must not be emitted"}
+        report = build_report([row], [{**row, "revision": 4}], 2, 2,
+                              "dev-test-1", "dual-track-test-1")
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["unattributed_difference_count"], 1)
+        with tempfile.TemporaryDirectory() as root:
+            evidence = Path(root)
+            write_cycle(evidence, report, 0)
+            payload = (next(evidence.glob("comparison-*.json"))).read_text(encoding="utf-8")
+            self.assertNotIn("must not be emitted", payload)
+            self.assertTrue(next(evidence.glob("alert-*.json")).is_file())
+            self.assertIn('"status": "paused"', (evidence / "status.json").read_text(encoding="utf-8"))
 
     def test_text_and_external_events_cannot_enter_task_topic(self):
         for bad in ({**event(), "name": "synthetic-person"},

@@ -69,6 +69,19 @@ unattributed_difference_count=0 仅适用于这次 recovery16 子集；需要以
 `/var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery16/`；
 checkpoint_recovery_verified 仍为 false，不能以干净启动替代 savepoint 恢复门禁。
 
+## 2026-09-15：常驻比较器接入候选
+
+新增 Dev-only `dual-track-monitor` 服务候选实现。服务只读
+`Dev_EventPipeline` 中的 Python/Flink 投影和 Python 事件账本，使用独立
+`evidence` 命名卷保存脱敏、不可覆盖的比较报告；发现差异时写入告警并将状态
+持久化为 `paused`，容器重启不会自动清除暂停状态。Compose 合同包含开发环境标签、
+只读根文件系统、资源上限、pids 限制、日志轮换和 Dev 内网约束。
+
+本地 `deploy/tests` 全套 240 项通过（2 项按平台跳过）。候选尚未部署到服务器，
+因此常驻监控和 1,000/10,000/100,000 事件量级仍未验收；部署后必须以新的
+`dual-track-YYYYMMDD-<nonce>` 证据编号开始，保留现有 100 条证据和失败目录。
+`checkpoint_recovery_verified=false` 继续保持。
+
 ## 2026-09-15：双轨计时与自动监控启动
 
 旧的 `dev-20260915-metadata08` 作业已在保留作业计划、取消输出和前后作业列表后停止；
