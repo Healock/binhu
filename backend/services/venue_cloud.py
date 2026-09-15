@@ -39,6 +39,22 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _cloud_received_datetime(value: Any) -> datetime | None:
+    """Normalize the Receiver's UTC ISO timestamp for a MySQL DATETIME column."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def cloud_enabled() -> bool:
     return bool(settings.VENUE_CLOUD_SYNC_ENABLED or settings.VENUE_CLOUD_PULL_ENABLED)
 
@@ -293,7 +309,7 @@ async def _ingest_item(client: VenueCloudClient, lease_id: str, item: dict[str, 
                 (
                     venue_id, encrypt_secret(name), encrypt_secret(identity), identity_digest,
                     encrypt_secret(phone), phone_digest, encrypt_secret(address), submission_id,
-                    item.get("received_at"), key_id, retention,
+                    _cloud_received_datetime(item.get("received_at")), key_id, retention,
                 ),
             )
             visit_id = int(cur.lastrowid)
