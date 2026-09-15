@@ -155,7 +155,13 @@ async def run(args: argparse.Namespace) -> dict:
         raise
     finally:
         conn.close()
-        await conn.wait_closed()
+        # aiomysql.Connection.close() is synchronous on supported releases;
+        # older versions exposed wait_closed(), while newer ones do not.
+        wait_closed = getattr(conn, "wait_closed", None)
+        if wait_closed is not None:
+            result = wait_closed()
+            if hasattr(result, "__await__"):
+                await result
 
 
 def main() -> None:
