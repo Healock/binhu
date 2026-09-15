@@ -692,6 +692,11 @@ volumes:
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
 
+    def test_prepare_monitor_source_files_are_readable_by_worker_uid(self):
+        self.assertIn("runtime.py", event_prepare.PUBLIC_CANDIDATE_FILES)
+        self.assertIn("dual_track_monitor.py", event_prepare.PUBLIC_CANDIDATE_FILES)
+        self.assertNotIn("runtime.env", event_prepare.PUBLIC_CANDIDATE_FILES)
+
     def test_resident_monitor_report_is_redacted_and_pauses(self):
         row = {"task_id": "t_fullchain:1", "source_id": 1,
                "revision": 3, "event_count": 2, "changed_field_count": 2,
