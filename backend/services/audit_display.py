@@ -237,6 +237,7 @@ TARGET_TYPE_LABELS: dict[str, str] = {
     "qmf_self_owned_batch": "辖区自购自住人员资产资料",
     "venue": "场所码",
     "venue_visits": "场所登记记录",
+    "venue_visit": "场所登记记录",
     "external_session": "外部平台只读会话",
     "external_readonly_scan": "外部平台只读查询",
     "online_source_row": "腾讯原始行",
