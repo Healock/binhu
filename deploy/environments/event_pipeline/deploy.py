@@ -47,9 +47,9 @@ def _require_run_id(value: str) -> str:
     return value
 
 
-def _require_digest(value: str) -> str:
+def _require_digest(value: str, label: str = "image") -> str:
     if not SHA256_RE.fullmatch(value or ""):
-        raise ValueError("immutable image digest required")
+        raise ValueError(f"immutable {label} digest required (length={len(value or '')})")
     return value
 
 
@@ -142,10 +142,10 @@ def build(repository: Path, output: Path, *, commit: str, run_id: str,
     _require_commit(commit)
     _require_run_id(run_id)
     images = {
-        "mysql": _require_digest(mysql_image),
-        "redis": _require_digest(redis_image),
-        "worker": _require_digest(worker_image),
-        "flink": _require_digest(flink_image),
+        "mysql": _require_digest(mysql_image, "mysql"),
+        "redis": _require_digest(redis_image, "redis"),
+        "worker": _require_digest(worker_image, "worker"),
+        "flink": _require_digest(flink_image, "flink"),
     }
     files = _source_files(repository)
     _scan_source(files)
@@ -214,8 +214,8 @@ def verify(bundle: Path) -> dict:
     images = manifest.get("images", {})
     if set(images) != {"mysql", "redis", "worker", "flink"}:
         raise ValueError("candidate image set incomplete")
-    for image in images.values():
-        _require_digest(image)
+    for name, image in images.items():
+        _require_digest(image, name)
     source_hashes = manifest.get("source_files")
     if not isinstance(source_hashes, dict) or not source_hashes:
         raise ValueError("candidate source manifest missing")
