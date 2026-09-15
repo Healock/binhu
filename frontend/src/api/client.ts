@@ -171,8 +171,14 @@ export async function getVenueCloudStatus(): Promise<VenueCloudStatus> {
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
   return (await api.get('/venue-visits', { params })).data
 }
+export function getVenueVisitPhotoUrl(visitId: number): string {
+  return `/venue-visits/${visitId}/photo`
+}
 export async function exportVenueVisits(params: Record<string, unknown> = {}): Promise<Blob> {
   return (await api.get('/venue-visits/export', { params, responseType: 'blob' })).data
+}
+export async function exportVenueVisitsZip(params: Record<string, unknown> = {}): Promise<Blob> {
+  return (await api.get('/venue-visits/export-zip', { params, responseType: 'blob' })).data
 }
 export async function getPublicVenueInfo(token: string): Promise<{ venue_id: number; name: string; form_token: string }> {
   return (await api.get(`/public/venue-codes/${encodeURIComponent(token)}`)).data

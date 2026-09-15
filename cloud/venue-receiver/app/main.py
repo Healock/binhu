@@ -33,6 +33,7 @@ from .security import (
     response_signature_headers,
     verify_request_signature,
 )
+from .validation import ValidationError, validate_public_submission_fields
 
 
 class VenueUpdate(BaseModel):
@@ -168,27 +169,34 @@ def _normalize_photo(filename: str, content_type: str, data: bytes, config: Sett
 
 
 def _registration_page() -> str:
-    return """<!doctype html>
+    return r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><title>场所登记</title><style>
-:root{font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#17212b;background:#f3f6f8}*{box-sizing:border-box}
-body{margin:0;padding:max(24px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));min-height:100vh}
-main{max-width:560px;margin:auto;background:#fff;border:1px solid #dce4e8;border-radius:8px;padding:24px}h1{font-size:22px;margin:0 0 6px}
-p{color:#60717d;margin:0 0 20px}form{display:grid;gap:14px}label{display:grid;gap:6px;font-size:14px;font-weight:600}
-input{width:100%;min-height:44px;border:1px solid #b8c5cc;border-radius:6px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:6px;background:#176b5b;color:#fff;font:inherit;font-weight:700}
-#message{min-height:22px;color:#b42318}button:disabled{opacity:.6}</style></head><body><main><h1 id="venue">场所登记</h1>
-<p>请如实填写登记信息。</p><form id="form"><label>姓名<input name="name" maxlength="100" required autocomplete="name"></label>
-<label>公民身份号码<input name="identity_number" maxlength="18" required inputmode="text"></label>
-<label>手机号<input name="phone" maxlength="20" required inputmode="tel" autocomplete="tel"></label>
-<label>地址<input name="address" maxlength="500" required autocomplete="street-address"></label>
-<label>照片<input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required></label>
-<button type="submit">提交登记</button><div id="message" role="status"></div></form></main><script>
-const token=decodeURIComponent(location.pathname.split('/').pop()||'');const form=document.querySelector('#form');const message=document.querySelector('#message');let formToken='';
+:root{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#17212b;background:#f5f7fb;color-scheme:light}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:max(20px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));background:linear-gradient(180deg,#edf4ff 0,#f5f7fb 220px)}
+main{width:min(100%,560px);margin:clamp(12px,6vh,64px) auto 0;background:#fff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 12px 32px #1d4ed80f;padding:clamp(22px,5vw,36px)}
+.brand{display:inline-flex;align-items:center;gap:8px;color:#2563eb;font-weight:700;font-size:13px;letter-spacing:.04em}.brand i{display:block;width:9px;height:9px;border-radius:50%;background:#2563eb}
+h1{font-size:clamp(24px,5vw,30px);line-height:1.25;margin:14px 0 8px;color:#0f172a}p{color:#64748b;line-height:1.6;margin:0 0 26px}
+form{display:grid;gap:18px}label{display:grid;gap:7px;color:#334155;font-size:14px;font-weight:650}input{width:100%;min-height:46px;border:1px solid #cbd5e1;border-radius:10px;padding:11px 13px;background:#fff;color:#0f172a;font:inherit;transition:border-color .15s,box-shadow .15s}input:focus{outline:0;border-color:#2563eb;box-shadow:0 0 0 3px #2563eb1f}input[aria-invalid=true]{border-color:#dc2626;box-shadow:0 0 0 3px #dc26261a}
+input[type=file]{padding:9px;background:#f8fafc}.hint{font-size:12px;font-weight:400;color:#64748b}.field-error{min-height:16px;color:#dc2626;font-size:12px;font-weight:500}.actions{display:grid;gap:10px;margin-top:4px}button{min-height:48px;border:0;border-radius:10px;background:#2563eb;color:#fff;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 5px 12px #2563eb2b}button:hover{background:#1d4ed8}button:disabled{opacity:.6;cursor:wait}.message{min-height:22px;color:#b42318;font-size:14px}.message.success{color:#15803d}.required{color:#dc2626;margin-left:3px}@media(max-width:520px){body{padding-left:12px;padding-right:12px}main{margin-top:12px;padding:22px 18px;border-radius:14px}}
+</style></head><body><main><div class="brand"><i></i>滨湖智慧平台</div><h1 id="venue">场所登记</h1>
+<p>请填写真实、完整的信息。姓名、身份证号码、手机号、地址和照片均为必填项。</p><form id="form" novalidate>
+<label>姓名<span class="required">*</span><input name="name" maxlength="100" required autocomplete="name"><span class="field-error" data-error-for="name"></span></label>
+<label>公民身份号码<span class="required">*</span><input name="identity_number" maxlength="18" required inputmode="text" autocomplete="off"><span class="hint">请输入18位居民身份证号码</span><span class="field-error" data-error-for="identity_number"></span></label>
+<label>手机号<span class="required">*</span><input name="phone" maxlength="11" required inputmode="tel" autocomplete="tel"><span class="field-error" data-error-for="phone"></span></label>
+<label>地址<span class="required">*</span><input name="address" maxlength="500" required autocomplete="street-address"><span class="field-error" data-error-for="address"></span></label>
+<label>照片<span class="required">*</span><input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required><span class="hint">支持 JPG、PNG 或 WebP，单张不超过 5 MB</span><span class="field-error" data-error-for="photo"></span></label>
+<div class="actions"><button type="submit">提交登记</button><div id="message" class="message" role="status" aria-live="polite"></div></div></form></main><script>
+const token=decodeURIComponent(location.pathname.split('/').pop()||''),form=document.querySelector('#form'),message=document.querySelector('#message');let formToken='';
 const makeUuid=()=>{if(globalThis.crypto&&typeof globalThis.crypto.randomUUID==='function')return globalThis.crypto.randomUUID();const bytes=new Uint8Array(16);if(globalThis.crypto&&typeof globalThis.crypto.getRandomValues==='function')globalThis.crypto.getRandomValues(bytes);else for(let i=0;i<bytes.length;i++)bytes[i]=Math.floor(Math.random()*256);bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=[...bytes].map(value=>value.toString(16).padStart(2,'0')).join('');return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`};
-const submissionId=makeUuid();
+const submissionId=makeUuid();const identityWeights=[7,9,10,5,8,4,2,1,6,3,7,9,10,5,8,4,2],identityChecks='10X98765432';
+const normalizeText=value=>value.normalize('NFKC').trim().split(/\s+/u).join(' ');
+const identityValid=value=>{const v=normalizeText(value).replaceAll(' ','').toUpperCase();if(!/^[0-9]{17}[0-9X]$/.test(v))return false;const y=Number(v.slice(6,10)),m=Number(v.slice(10,12)),d=Number(v.slice(12,14)),dt=new Date(Date.UTC(y,m-1,d));if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==m-1||dt.getUTCDate()!==d)return false;return identityChecks[[...v.slice(0,17)].reduce((sum,digit,i)=>sum+Number(digit)*identityWeights[i],0)%11]===v[17]};
+const setError=(field,text)=>{const input=form.elements[field],target=document.querySelector(`[data-error-for="${field}"]`);if(target)target.textContent=text||'';if(input)input.setAttribute('aria-invalid',text?'true':'false')};
+const validate=()=>{const values=Object.fromEntries(new FormData(form).entries()),errors={};const name=normalizeText(String(values.name||'')),address=normalizeText(String(values.address||'')),phone=String(values.phone||'').trim().replace(/[ -]/g,'');if(!name)errors.name='请填写姓名';else if(/[\u0000-\u001f\u007f-\u009f]/u.test(name))errors.name='姓名不能包含控制字符';if(!identityValid(String(values.identity_number||'')))errors.identity_number='请输入有效的18位身份证号码';if(!/^1[3-9]\d{9}$/.test(phone))errors.phone='请输入有效的11位手机号';if(!address)errors.address='请填写地址';else if(/[\u0000-\u001f\u007f-\u009f]/u.test(address))errors.address='地址不能包含控制字符';if(!(values.photo instanceof File)||!values.photo.size)errors.photo='请选择照片';for(const field of ['name','identity_number','phone','address','photo'])setError(field,errors[field]);return {values:{...values,name,phone,address},errors};};
 fetch(`/api/public/venues/${encodeURIComponent(token)}`,{credentials:'omit'}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.detail||'二维码不可用');document.querySelector('#venue').textContent=d.name;formToken=d.form_token}).catch(e=>{message.textContent=e.message;form.hidden=true});
 let deviceId=localStorage.getItem('binhuVenueDeviceId');if(!deviceId){deviceId=makeUuid();localStorage.setItem('binhuVenueDeviceId',deviceId)}
-form.addEventListener('submit',async e=>{e.preventDefault();const button=form.querySelector('button');button.disabled=true;message.textContent='正在提交…';const body=new FormData(form);body.set('submission_id',submissionId);body.set('form_token',formToken);body.set('venue_token',token);body.set('device_id',deviceId);try{const r=await fetch('/api/public/submissions',{method:'POST',body,credentials:'omit'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'提交失败');message.textContent='提交成功';form.querySelectorAll('input,button').forEach(x=>x.disabled=true)}catch(err){message.textContent=err.message||'提交失败，请稍后重试';button.disabled=false}});
+form.addEventListener('submit',async e=>{e.preventDefault();message.textContent='';message.classList.remove('success');const checked=validate();if(Object.keys(checked.errors).length){message.textContent='请先修正标红字段';return}const button=form.querySelector('button');button.disabled=true;message.textContent='正在提交…';const body=new FormData(form);body.set('name',checked.values.name);body.set('phone',checked.values.phone);body.set('address',checked.values.address);body.set('submission_id',submissionId);body.set('form_token',formToken);body.set('venue_token',token);body.set('device_id',deviceId);try{const r=await fetch('/api/public/submissions',{method:'POST',body,credentials:'omit'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'提交失败');message.textContent='提交成功，工作人员将在平台内核验登记信息';message.classList.add('success');form.querySelectorAll('input,button').forEach(x=>x.disabled=true)}catch(err){message.textContent=err.message||'提交失败，请稍后重试';button.disabled=false}});
 </script></body></html>"""
 
 
@@ -368,16 +376,19 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
         if venue["status"] != "active":
             raise HTTPException(410, "二维码已更换，请联系工作人员获取新场所码")
         venue_id = int(venue["local_venue_id"])
-        name_value = name.strip()
-        identity = identity_number.strip().upper().replace(" ", "")
-        phone_value = phone.strip().replace(" ", "").replace("-", "")
-        address_value = address.strip()
-        if not name_value or len(name_value) > 100 or not address_value or len(address_value) > 500:
-            raise HTTPException(422, "姓名或地址格式无效")
-        if not (len(identity) == 18 and identity[:17].isdigit() and (identity[-1].isdigit() or identity[-1] == "X")):
-            raise HTTPException(422, "公民身份号码格式无效")
-        if not (len(phone_value) == 11 and phone_value.isdigit() and phone_value.startswith("1")):
-            raise HTTPException(422, "手机号格式无效")
+        try:
+            normalized_fields = validate_public_submission_fields(
+                name=name,
+                identity_number=identity_number,
+                phone=phone,
+                address=address,
+            )
+        except ValidationError as exc:
+            raise HTTPException(422, exc.message, headers={"X-Binhu-Validation-Field": exc.field}) from exc
+        name_value = normalized_fields["name"]
+        identity = normalized_fields["identity_number"]
+        phone_value = normalized_fields["phone"]
+        address_value = normalized_fields["address"]
         photo_data = await photo.read(app_config.PHOTO_MAX_BYTES + 1)
         mime, normalized_photo = _normalize_photo(photo.filename or "photo", photo.content_type or "", photo_data, app_config)
         payload = {"name": name_value, "identity_number": identity, "phone": phone_value, "address": address_value}

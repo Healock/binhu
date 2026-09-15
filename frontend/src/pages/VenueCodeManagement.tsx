@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message } from 'antd'
-import { DeleteOutlined, DownloadOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Alert, Button, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message } from 'antd'
+import { DeleteOutlined, DownloadOutlined, EyeOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   apiErrorMessage,
   createVenueCode,
   deleteVenueCode,
   exportVenueVisits,
+  exportVenueVisitsZip,
+  getVenueVisitPhotoUrl,
   getVenueCloudStatus,
   getVenueCodeQr,
   listVenueCodes,
@@ -61,6 +63,7 @@ export default function VenueCodeManagement() {
   const [loading, setLoading] = useState(false)
   const [qrLoadingId, setQrLoadingId] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [visitFilters, setVisitFilters] = useState<{ keyword?: string; start?: string; end?: string }>({})
 
   const load = async () => {
     setLoading(true)
@@ -111,6 +114,17 @@ export default function VenueCodeManagement() {
     } catch (reason: unknown) {
       message.error(apiErrorMessage(reason, '导出失败'))
     }
+  }
+  const exportZip = async () => {
+    try {
+      const blob = await exportVenueVisitsZip(visitFilters)
+      await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.zip`)
+    } catch (reason: unknown) { message.error(apiErrorMessage(reason, '压缩包导出失败')) }
+  }
+  const searchVisits = async (values: { keyword?: string; range?: [any, any] }) => {
+    const filters = { keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
+    setVisitFilters(filters)
+    try { const result = await listVenueVisits(filters); setVisits(result.data) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '登记查询失败')) }
   }
 
   const showVenueQr = async (row: VenueCodeItem) => {
@@ -243,6 +257,14 @@ export default function VenueCodeManagement() {
         <Table rowKey="id" loading={loading} columns={columns} dataSource={venues} pagination={{ pageSize: 20 }} scroll={{ x: 1120 }} />
       </Panel>
       <Panel title="最近登记记录" padded={false}>
+        <div className="p-4 flex flex-wrap items-center gap-3">
+          <Form layout="inline" onFinish={searchVisits}>
+            <Form.Item name="keyword"><Input allowClear placeholder="姓名、身份证号、手机号、地址" style={{ width: 260 }} /></Form.Item>
+            <Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item>
+            <Button type="primary" htmlType="submit">查询</Button>
+          </Form>
+          {canExport && <Button icon={<DownloadOutlined />} onClick={exportZip}>导出查询结果（ZIP）</Button>}
+        </div>
         <Table
           rowKey="id"
           loading={loading}
@@ -255,6 +277,29 @@ export default function VenueCodeManagement() {
             { title: '手机号', dataIndex: 'phone' },
             { title: '地址', dataIndex: 'address' },
             { title: '登记时间', dataIndex: 'submitted_at' },
+            {
+              title: '照片',
+              dataIndex: 'photo',
+              render: (photo: VenueVisitItem['photo'], row: VenueVisitItem) => photo
+                ? <Button
+                    type="link"
+                    icon={<EyeOutlined />}
+                    onClick={() => Modal.info({
+                      title: '登记照片',
+                      width: 560,
+                      content: (
+                        <div className="flex min-h-40 items-center justify-center py-2">
+                          <AuthenticatedImage
+                            alt="登记照片"
+                            src={getVenueVisitPhotoUrl(row.id)}
+                            style={{ maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain' }}
+                          />
+                        </div>
+                      ),
+                    })}
+                  >查看照片</Button>
+                : <span className="text-[var(--app-text-secondary)]">无</span>,
+            },
           ]}
           scroll={{ x: 900 }}
         />
@@ -284,6 +329,9 @@ export function PublicVenuePage() {
     import('../api/client').then(({ getPublicVenueInfo }) => getPublicVenueInfo(token).then(setInfo).catch((reason: unknown) => setError(apiErrorMessage(reason, '二维码无效'))))
   }, [token])
   const submit = async (values: Record<string, any>) => {
+    if (!info || !values.photo?.file) {
+      throw new Error('请选择照片')
+    }
     const body = new FormData()
     Object.entries({ ...values, venue_id: info?.venue_id, form_token: info?.form_token }).forEach(([key, value]) => {
       if (key !== 'photo' && value != null) body.append(key, String(value))
@@ -306,7 +354,7 @@ export function PublicVenuePage() {
         <Form.Item name="identity_number" label="公民身份号码" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="phone" label="手机号" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="address" label="地址" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item name="photo" label="照片" valuePropName="file" getValueFromEvent={event => event}>
+        <Form.Item name="photo" label="照片" valuePropName="file" getValueFromEvent={event => event} rules={[{ required: true, message: '请选择照片' }]}>
           <Upload beforeUpload={() => false} maxCount={1} accept="image/jpeg,image/png,image/webp"><Button>选择照片</Button></Upload>
         </Form.Item>
         <Button type="primary" htmlType="submit" disabled={!info}>提交登记</Button>
