@@ -462,6 +462,43 @@ volumes:
             self.assertEqual(len(evidence), 2)
             self.assertTrue(all((entry / "schema-check.log").exists() for entry in evidence))
 
+    def test_flink_compose_gate_requires_dev_identity_and_checkpoint_volume(self):
+        spec = flink_compose.specification(
+            "sha256:" + "a" * 64,
+            Path("/srv/binhu-environments/build-dev-pipeline-a9409fce"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "flink-pipeline-compose.json"
+            path.write_text(json.dumps(spec), encoding="utf-8")
+            with patch.object(control, "FLINK_COMPOSE", path):
+                control._validate_flink_compose()
+                broken = copy.deepcopy(spec)
+                broken["services"]["jobmanager"]["pids_limit"] = 128
+                path.write_text(json.dumps(broken), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "pids_limit"):
+                    control._validate_flink_compose()
+
+    def test_apply_does_not_report_pending_when_flink_gate_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "manifest.json").write_text(
+                json.dumps({"environment": "development", "project": control.PROJECT,
+                            "run_id": "dev-20260915-gate"}),
+                encoding="utf-8",
+            )
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stdout="started", stderr="")
+
+            with patch.object(control, "ROOT", root), patch.object(control, "measure", return_value={}), \
+                    patch.object(control.subprocess, "run", side_effect=run), \
+                    patch.object(control, "_submit_and_verify_flink", side_effect=ValueError("identity mismatch")):
+                with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                    control.apply()
+            self.assertTrue(any("up" in command for command in calls))
+
     def test_checkpoint_repair_rejects_shared_or_foreign_volume(self):
         items = [{"Name": name, "Config": {"Labels": {"com.docker.compose.project": "binhu-development-flink",
                   "binhu.environment": "development"}},

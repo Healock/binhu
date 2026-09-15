@@ -8,6 +8,12 @@ import subprocess
 import tempfile
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
+from . import flink_submission
+
+
+FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
+FLINK_JOBMANAGER = "binhu-development-flink-jobmanager-1"
+KAFKA_CONTAINER = "binhu-development-eventbus-kafka-1-1"
 
 
 def expected_networks(service):
@@ -58,6 +64,96 @@ def measure():
             "hashes_verified": True, "isolation_verified": True, "memory_available_kib": available}
 
 
+def _run_checked(command: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        raise ValueError("Dev Flink runtime command failed")
+    return result
+
+
+def _consumer_groups(expected_group: str) -> list[str]:
+    result = _run_checked([
+        "docker", "exec", KAFKA_CONTAINER,
+        "/opt/kafka/bin/kafka-consumer-groups.sh",
+        "--bootstrap-server", "kafka-1:9092",
+        "--describe", "--group", expected_group,
+    ])
+    if "dev.task.events.v1" not in result.stdout:
+        raise ValueError("Dev Flink consumer group has no task topic assignment")
+    return [expected_group]
+
+
+def _validate_flink_sql(manifest: dict) -> dict:
+    run_id = manifest["run_id"]
+    sql = (ROOT / "pipeline.sql").read_text(encoding="utf-8")
+    identity = flink_submission.validate_sql_identity(sql, run_id)
+    runtime = (ROOT / "runtime.env").read_text(encoding="utf-8")
+    if flink_submission.parse_runtime_identity(runtime) != run_id:
+        raise ValueError("Dev runtime.env run_id does not match manifest")
+    source = Path(__file__).with_name("PipelineJob.java")
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("current Dev PipelineJob.java is missing")
+    return identity
+
+
+def _validate_flink_compose() -> None:
+    """Check the fixed Flink Compose identity before touching containers."""
+    if FLINK_COMPOSE.is_symlink() or not FLINK_COMPOSE.is_file():
+        raise ValueError("Dev Flink Compose definition is missing")
+    try:
+        spec = json.loads(FLINK_COMPOSE.read_text(encoding="utf-8"))
+        services = spec["services"]
+        network = spec["networks"]["internal"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Dev Flink Compose definition is invalid") from exc
+    if spec.get("name") != "binhu-development-flink" or set(services) != {"jobmanager", "taskmanager"}:
+        raise ValueError("Dev Flink Compose project identity mismatch")
+    if network.get("name") != "binhu-development-eventbus_internal" or not network.get("external"):
+        raise ValueError("Dev Flink Compose network identity mismatch")
+    for name, service in services.items():
+        if service.get("labels", {}).get("binhu.environment") != "development":
+            raise ValueError(f"Dev Flink {name} environment label missing")
+        if service.get("pids_limit") != 256:
+            raise ValueError(f"Dev Flink {name} pids_limit missing")
+        mounts = service.get("volumes", [])
+        if not any(mount.get("target") == "/opt/flink/checkpoints" and mount.get("source") == "flink-checkpoints"
+                   for mount in mounts if isinstance(mount, dict)):
+            raise ValueError(f"Dev Flink {name} checkpoint volume missing")
+
+
+def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
+    """Submit the current Dev JobGraph and fence its run identity."""
+    identity = _validate_flink_sql(manifest)
+    _validate_flink_compose()
+    _run_checked(["docker", "compose", "-f", str(FLINK_COMPOSE), "up", "-d", "jobmanager", "taskmanager"], timeout=180)
+    client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
+    current, stale = flink_submission.partition_active_jobs(client.overview(), manifest["run_id"])
+    stale_summary = [{"jid": item.get("jid"), "name": item.get("name"), "state": item.get("state")}
+                     for item in stale]
+    stale_path = evidence / "flink-stale-jobs.json"
+    stale_path.write_text(json.dumps({"environment": "development", "run_id": manifest["run_id"],
+                                      "jobs": stale_summary}, indent=2) + "\n", encoding="utf-8")
+    stale_path.chmod(0o600)
+    for item in stale:
+        jid = str(item.get("jid", ""))
+        if jid:
+            client.cancel(jid)
+    if stale:
+        flink_submission.wait_for_stale_clear(client, manifest["run_id"])
+    if len(current) not in (0, 2):
+        raise ValueError("Dev Flink current run has an incomplete job set")
+    if len(current) == 0:
+        jar_id = client.upload_jar("/opt/flink/usrlib/dev-pipeline-job.jar")
+        client.run_jar(jar_id)
+    verified = flink_submission.wait_for_runtime(
+        client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_group"])
+    )
+    runtime_path = evidence / "flink-runtime.json"
+    runtime_path.write_text(json.dumps({**verified, "identity": identity}, indent=2) + "\n", encoding="utf-8")
+    runtime_path.chmod(0o600)
+    return verified
+
+
 def apply():
     report = measure()
     # Atomically allocate a private directory even if the clock repeats or
@@ -85,7 +181,9 @@ def apply():
     path.chmod(0o600)
     if result.returncode:
         raise ValueError("startup failed; preserve private diagnostics")
-    return {**report, "startup_requested": True, "acceptance": "pending"}
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    flink = _submit_and_verify_flink(manifest, evidence)
+    return {**report, "startup_requested": True, "flink": flink, "acceptance": "pending"}
 
 
 if __name__ == "__main__":
