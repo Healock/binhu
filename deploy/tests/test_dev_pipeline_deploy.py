@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from deploy.environments.event_pipeline import deploy
@@ -13,12 +14,19 @@ class DevPipelineCandidateTests(unittest.TestCase):
         return {name: "sha256:" + (letter * 64) for name, letter in (
             ("mysql", "a"), ("redis", "b"), ("worker", "c"), ("flink", "d"))}
 
+    def pipeline_jar(self, root):
+        path = root / "dev-pipeline-job.jar"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("PipelineJob.class", b"test-bytecode")
+        return path
+
     def test_build_and_verify_candidate_contains_only_fixed_entries(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "candidate.tar.gz"
+            pipeline_jar = self.pipeline_jar(Path(tmp))
             result = deploy.build(
                 Path(__file__).resolve().parents[2], output,
-                commit="a" * 40, run_id="dev-20260914-candidate1", **{
+                commit="a" * 40, run_id="dev-20260914-candidate1", pipeline_jar=pipeline_jar, **{
                     f"{name}_image": value for name, value in self.digests().items()
                 },
             )
@@ -32,20 +40,23 @@ class DevPipelineCandidateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "candidate.tar.gz"
             kwargs = {f"{name}_image": value for name, value in self.digests().items()}
+            pipeline_jar = self.pipeline_jar(Path(tmp))
             with self.assertRaises(ValueError):
                 deploy.build(Path(__file__).resolve().parents[2], output,
-                             commit="a" * 40, run_id="production-20260914", **kwargs)
+                             commit="a" * 40, run_id="production-20260914", pipeline_jar=pipeline_jar, **kwargs)
             with self.assertRaises(ValueError):
                 deploy.build(Path(__file__).resolve().parents[2], output,
                              commit="a" * 40, run_id="dev-20260914-candidate2",
+                             pipeline_jar=pipeline_jar,
                              **{**kwargs, "worker_image": "worker:latest"})
 
     def test_verify_rejects_tampered_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "candidate.tar.gz"
             kwargs = {f"{name}_image": value for name, value in self.digests().items()}
+            pipeline_jar = self.pipeline_jar(Path(tmp))
             deploy.build(Path(__file__).resolve().parents[2], output,
-                         commit="a" * 40, run_id="dev-20260914-candidate3", **kwargs)
+                         commit="a" * 40, run_id="dev-20260914-candidate3", pipeline_jar=pipeline_jar, **kwargs)
             import tarfile
             tampered = Path(tmp) / "tampered.tar.gz"
             with tarfile.open(output, "r:gz") as source, tarfile.open(tampered, "w:gz") as target:

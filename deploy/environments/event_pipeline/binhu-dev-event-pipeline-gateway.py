@@ -61,7 +61,7 @@ def bundle_manifest(bundle: Path) -> dict:
             # The Actions artifact contains the candidate bundle and checksum;
             # accepting a raw bundle keeps the gateway useful for controlled
             # replay while still requiring the inner deploy.py contract.
-            if {m.name for m in members} != {"event_pipeline-source.tar.gz", "manifest.json", "SHA256SUMS"}:
+            if {m.name for m in members} != {"event_pipeline-source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"}:
                 fail("candidate archive contents are not fixed")
             return _manifest_from_payload(archive, members)
         inner = archive.extractfile("binhu-dev-event-pipeline.tar.gz")
@@ -97,6 +97,26 @@ def _manifest_from_payload(archive: tarfile.TarFile, members: list[tarfile.TarIn
     images = payload.get("images")
     if not isinstance(images, dict) or set(images) != {"mysql", "redis", "worker", "flink"} or any(not SHA_RE.fullmatch(str(v).removeprefix("sha256:")) for v in images.values()):
         fail("candidate image identities incomplete")
+    pipeline_job = payload.get("pipeline_job")
+    if not isinstance(pipeline_job, dict) or pipeline_job.get("file") != "pipeline-job.jar":
+        fail("candidate Flink artifact identity missing")
+    jar = archive.extractfile("pipeline-job.jar")
+    source_archive = archive.extractfile("event_pipeline-source.tar.gz")
+    if jar is None or source_archive is None:
+        fail("candidate Flink artifact missing")
+    jar_bytes = jar.read()
+    if hashlib.sha256(jar_bytes).hexdigest() != str(pipeline_job.get("jar_sha256", "")):
+        fail("candidate Flink artifact hash mismatch")
+    with tempfile.NamedTemporaryFile(dir=STATE, delete=False) as source_tmp:
+        source_tmp.write(source_archive.read())
+        source_path = Path(source_tmp.name)
+    try:
+        with tarfile.open(source_path, "r:gz") as source:
+            item = source.extractfile("deploy/environments/event_pipeline/PipelineJob.java")
+            if item is None or hashlib.sha256(item.read()).hexdigest() != str(pipeline_job.get("source_sha256", "")):
+                fail("candidate PipelineJob source hash mismatch")
+    finally:
+        source_path.unlink(missing_ok=True)
     return payload
 
 
@@ -142,6 +162,27 @@ def run_module(run_id: str, module: str) -> None:
         if stream is None:
             fail("source archive missing")
         source_bytes = stream.read()
+        pipeline_jar_bytes = b""
+        if inner_name:
+            inner_bundle_bytes = source_bytes
+            with tempfile.NamedTemporaryFile(dir=STATE, delete=False) as inner_tmp:
+                inner_tmp.write(inner_bundle_bytes)
+                inner_bundle_path = Path(inner_tmp.name)
+            try:
+                with tarfile.open(inner_bundle_path, "r:gz") as inner_bundle:
+                    jar_stream = inner_bundle.extractfile("pipeline-job.jar")
+                    source_stream = inner_bundle.extractfile("event_pipeline-source.tar.gz")
+                    if jar_stream is None or source_stream is None:
+                        fail("candidate Flink artifact missing")
+                    pipeline_jar_bytes = jar_stream.read()
+                    source_bytes = source_stream.read()
+            finally:
+                inner_bundle_path.unlink(missing_ok=True)
+        else:
+            jar_stream = outer.extractfile("pipeline-job.jar")
+            if jar_stream is None:
+                fail("candidate Flink artifact missing")
+            pipeline_jar_bytes = jar_stream.read()
     SOURCE.mkdir(mode=0o700, parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=STATE, delete=False) as tmp:
         tmp.write(source_bytes)
@@ -152,6 +193,9 @@ def run_module(run_id: str, module: str) -> None:
             if any(not safe_member(m) or not m.name.startswith("deploy/environments/event_pipeline/") for m in source.getmembers()):
                 fail("unsafe source archive")
             source.extractall(SOURCE)
+        jar_path = SOURCE / "pipeline-job.jar"
+        jar_path.write_bytes(pipeline_jar_bytes)
+        os.chmod(jar_path, 0o600)
         env = os.environ.copy()
         env.update({"DEV_RUN_ID": run_id, "APP_ENVIRONMENT": "development"})
         config = Path("/etc/binhu-dev-event-pipeline.conf")

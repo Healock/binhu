@@ -83,10 +83,12 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          mvn -q -f deploy/environments/event_pipeline/pom.xml package
           mkdir -p dev-pipeline-candidate
           python -m deploy.environments.event_pipeline.deploy build \
             --repository . \
             --output dev-pipeline-candidate/binhu-dev-event-pipeline.tar.gz \
+            --pipeline-jar deploy/environments/event_pipeline/target/dev-pipeline-job.jar \
             --commit "$CANDIDATE_COMMIT" \
             --run-id "$RUN_ID" \
             --mysql-image "$MYSQL_IMAGE" \

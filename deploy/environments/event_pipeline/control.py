@@ -16,6 +16,7 @@ from . import flink_submission
 FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
 FLINK_JOBMANAGER = "binhu-development-flink-jobmanager-1"
 KAFKA_CONTAINER = "binhu-development-eventbus-kafka-1-1"
+FLINK_CANDIDATE_JAR = "/tmp/dev-pipeline-job.jar"
 _SAFE_CONTROL_FAILURES = frozenset(
     {
         "unexpected Dev root",
@@ -53,15 +54,14 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Flink JobGraph run_id filter does not match",
         "Flink JobGraph environment filter is missing",
         "Flink JobGraph topic is not the fixed Dev topic",
-        "Flink JobGraph must contain exactly one expected sink",
-        "Flink runtime must have exactly two matching jobs",
-        "Flink runtime contains duplicate job ids",
+        "Flink runtime must have exactly one matching job",
         "Flink consumer group does not match current run",
         "Flink REST request failed",
         "Flink JAR upload failed",
         "Flink JAR upload response invalid",
         "Flink JAR upload was not accepted",
         "Flink JAR submission returned no job id",
+        "current Dev PipelineJob compilation failed",
     }
 )
 
@@ -70,7 +70,7 @@ def safe_control_failure_detail(error: Exception) -> str:
     """Return only a fixed, non-sensitive Dev control gate reason."""
     detail = str(error)
     if detail in _SAFE_CONTROL_FAILURES or re.fullmatch(
-        r"Flink runtime missing INSERT sink: (?:dev_revisions|dev_task_metadata)", detail
+        r"Flink runtime missing INSERT sink: (?:dev_revisions(?:,dev_task_metadata)?|dev_task_metadata)", detail
     ):
         return detail
     return type(error).__name__
@@ -181,11 +181,33 @@ def _validate_flink_compose() -> None:
             raise ValueError(f"Dev Flink {name} checkpoint volume missing")
 
 
+def _build_candidate_flink_jar(source: Path) -> dict[str, str]:
+    """Copy the immutable JAR built from the checked candidate source."""
+    if source.is_symlink() or not source.is_file() or source.name != "PipelineJob.java":
+        raise ValueError("current Dev PipelineJob.java is missing")
+    jar_source = source.parents[3] / "pipeline-job.jar"
+    if jar_source.is_symlink() or not jar_source.is_file():
+        raise ValueError("current Dev PipelineJob compilation failed")
+    _run_checked(["docker", "cp", str(jar_source), f"{FLINK_JOBMANAGER}:{FLINK_CANDIDATE_JAR}"])
+    digest = _run_checked([
+        "docker", "exec", FLINK_JOBMANAGER, "sha256sum", FLINK_CANDIDATE_JAR
+    ]).stdout.split(maxsplit=1)[0]
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("current Dev PipelineJob compilation failed")
+    return {
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "jar_sha256": digest,
+        "container_path": FLINK_CANDIDATE_JAR,
+    }
+
+
 def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     """Submit the current Dev JobGraph and fence its run identity."""
     identity = _validate_flink_sql(manifest)
     _validate_flink_compose()
     _run_checked(["docker", "compose", "-f", str(FLINK_COMPOSE), "up", "-d", "jobmanager", "taskmanager"], timeout=180)
+    source = Path(__file__).with_name("PipelineJob.java")
+    candidate_jar = _build_candidate_flink_jar(source)
     client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
     current, stale = flink_submission.partition_active_jobs(client.overview(), manifest["run_id"])
     stale_summary = [{"jid": item.get("jid"), "name": item.get("name"), "state": item.get("state")}
@@ -200,16 +222,17 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
             client.cancel(jid)
     if stale:
         flink_submission.wait_for_stale_clear(client, manifest["run_id"])
-    if len(current) not in (0, 2):
+    if len(current) not in (0, 1):
         raise ValueError("Dev Flink current run has an incomplete job set")
     if len(current) == 0:
-        jar_id = client.upload_jar("/opt/flink/usrlib/dev-pipeline-job.jar")
+        jar_id = client.upload_jar(candidate_jar["container_path"])
         client.run_jar(jar_id)
     verified = flink_submission.wait_for_runtime(
         client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_group"])
     )
     runtime_path = evidence / "flink-runtime.json"
-    runtime_path.write_text(json.dumps({**verified, "identity": identity}, indent=2) + "\n", encoding="utf-8")
+    runtime_path.write_text(json.dumps({**verified, "identity": identity,
+                                        "candidate_jar": candidate_jar}, indent=2) + "\n", encoding="utf-8")
     runtime_path.chmod(0o600)
     return verified
 

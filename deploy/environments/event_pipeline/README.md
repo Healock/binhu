@@ -41,8 +41,11 @@ Environment 未配置完整，工作流必须在连接服务器前失败。
    不能把容器启动或只开放临时 Unix socket 当作数据库就绪。
 4. 为 Dev Flink 准备 Kafka 3.3.0-1.20、JDBC 3.3.0-1.20、MySQL Connector/J 8.4.0
    依赖，下载校验与许可证记录保留在外部证据目录。Flink 为 1.20.1、Java 17。
-   编译 `PipelineJob.java`，将私密 `pipeline.sql` 只读挂入
-   `/opt/flink/private/pipeline.sql`，设置 `APP_ENVIRONMENT=development`。
+   在候选构建阶段用 Java 17 编译 `PipelineJob.java`，并把源码 SHA 与编译出的
+   `pipeline-job.jar` SHA 一起写入候选清单。网关只接受这份固定 JAR，将其复制到
+   Dev JobManager 的临时上传路径；服务器原有旧 JAR 不作为本次运行制品。私密
+   `pipeline.sql` 仍只读挂入 `/opt/flink/private/pipeline.sql`，设置
+   `APP_ENVIRONMENT=development`。
    不使用会回显 SQL 和密码的交互 SQL Client；提交 Java 入口，并检查日志无凭据。
 
    JDBC sink 的 URL 固定启用受控的断线恢复参数（自动重连最多 3 次、TCP keepalive、
@@ -171,6 +174,16 @@ Backend、Production、Staging 或 Kafka/Flink 控制面，也不写业务表。
 `runtime.py` 和 `dual_track_monitor.py` 以只读文件挂入 monitor 容器。该挂载只
 覆盖 monitor 入口模块，不改变镜像、业务代码或其他服务；候选包清单和 Compose
 模型哈希会同时记录这两个文件。
+
+### Flink JobGraph identity
+
+`PipelineJob` 使用一个 `StatementSet` 把 `dev_revisions` 和
+`dev_task_metadata` 两个 INSERT 分支提交为一个 JobGraph。两个分支共享一个
+Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到当前运行编号的
+完整事件流。Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时
+包含两个受控 sink、运行编号和 development 过滤条件一致，并且 Kafka 消费组完全
+匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
+checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
 
 ### Workflow environment contract
 All install, prepare, and deploy workflows must run in the GitHub development Environment.

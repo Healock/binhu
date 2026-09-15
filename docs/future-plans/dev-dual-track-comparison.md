@@ -114,3 +114,23 @@ revision 均为 1099。该报告保存在起始证据目录的 `scale-100-report
 为 7 天自动比对已经运行。
 
 监控实现提交 d9e35e53；PR #665 的模板章节已补齐。
+
+## 2026-09-16：Flink 单 JobGraph 双分支合同
+
+`monitor08` 的事件已经进入 Kafka，但服务器仍运行旧 run_id 的 JobGraph；补齐运行编号
+提交门禁后，`monitor10` 又暴露出提交模型问题：同一个 REST 应用先启动
+`dev_revisions` 流式 INSERT 后，第二个 `dev_task_metadata` INSERT 无法继续提交。
+把两个 INSERT 拆成独立 JobGraph 并复用同一个 consumer group 会由 Kafka 分摊分区，
+两边无法同时获得完整事件流，因此不作为修复方案。
+
+经确认，合同调整为一个 RUNNING JobGraph，内部使用同一个 Kafka source 分出
+`dev_revisions` 与 `dev_task_metadata` 两个 sink 分支。consumer group 仍严格为
+`<run_id>-flink`；Flink REST 验收要求一个作业同时包含两个受控 sink，并继续校验
+run_id、development 环境过滤和固定 Dev topic。该选择只用于 Dev 双轨链路，保留现有
+checkpoint/savepoint 卷，不使用 `allowNonRestoredState`，也不改变 Kafka、Schema
+Registry、Redis、Production、Staging 或 Shadow。
+
+`monitor08`、`monitor09`、`monitor10` 的失败目录继续保留。完成代码 CI 和服务器部署后
+必须使用新的运行编号重新投递合成事件，并在 revision、event_count、
+changed_field_count、projection row 和 unique event count 全部一致后，才允许进入
+10,000 条事件阶段。
