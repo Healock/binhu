@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import date
-from typing import Mapping
+from datetime import date, datetime, timedelta, timezone
+from math import hypot
+from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class ValidationError(ValueError):
@@ -91,3 +93,84 @@ def validate_public_submission_fields(
         "phone": validate_phone_number(phone),
         "address": normalize_address(address),
     }
+
+
+_DRINKING_LIMITS = {
+    "name": ("姓名", 100),
+    "unit_position": ("单位职务", 200),
+    "drinking_place": ("饮酒地点", 500),
+    "reason": ("饮酒事由", 500),
+    "inviter": ("邀约人", 100),
+    "travel_method": ("出行方式", 100),
+    "responsible_leader_name": ("责任领导姓名", 100),
+}
+
+
+def validate_drinking_report_fields(payload: Mapping[str, Any], *, timezone_name: str) -> dict[str, str]:
+    """Normalize a drinking report and convert its local wall time to UTC."""
+
+    result = {
+        field: _normalize_text(str(payload.get(field) or ""), field=field, label=label, max_length=maximum)
+        for field, (label, maximum) in _DRINKING_LIMITS.items()
+    }
+    notes = str(payload.get("notes") or "")
+    notes = unicodedata.normalize("NFKC", notes).strip()
+    if _CONTROL_RE.search(notes):
+        raise ValidationError("notes", "备注说明不能包含控制字符")
+    notes = " ".join(notes.split())
+    if len(notes) > 2000:
+        raise ValidationError("notes", "备注说明长度不能超过2000个字符")
+    raw_time = unicodedata.normalize("NFKC", str(payload.get("drinking_at") or "")).strip()
+    try:
+        local_time = datetime.fromisoformat(raw_time)
+        if local_time.tzinfo is not None:
+            aware_time = local_time
+        else:
+            try:
+                aware_time = local_time.replace(tzinfo=ZoneInfo(timezone_name))
+            except ZoneInfoNotFoundError as exc:
+                raise ValidationError("drinking_at", "系统时区配置无效") from exc
+        utc_time = aware_time.astimezone(timezone.utc)
+    except ValueError as exc:
+        raise ValidationError("drinking_at", "饮酒时间格式无效") from exc
+    now = datetime.now(timezone.utc)
+    if utc_time < now - timedelta(days=366) or utc_time > now + timedelta(days=366):
+        raise ValidationError("drinking_at", "饮酒时间超出允许范围")
+    result["drinking_at"] = utc_time.isoformat().replace("+00:00", "Z")
+    result["notes"] = notes
+    return result
+
+
+def validate_signature_strokes(value: Any, *, field: str, label: str) -> list[list[dict[str, float]]]:
+    """Validate normalized signature coordinates and reject taps or tiny marks."""
+
+    if not isinstance(value, list) or not value or len(value) > 200:
+        raise ValidationError(field, f"{label}无效")
+    total_points = 0
+    total_distance = 0.0
+    normalized: list[list[dict[str, float]]] = []
+    for stroke in value:
+        if not isinstance(stroke, list) or not stroke or len(stroke) > 1000:
+            raise ValidationError(field, f"{label}笔画无效")
+        points: list[dict[str, float]] = []
+        previous: tuple[float, float] | None = None
+        for point in stroke:
+            if not isinstance(point, dict):
+                raise ValidationError(field, f"{label}坐标无效")
+            try:
+                x, y = float(point["x"]), float(point["y"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValidationError(field, f"{label}坐标无效") from exc
+            if not 0 <= x <= 1 or not 0 <= y <= 1:
+                raise ValidationError(field, f"{label}坐标无效")
+            if previous is not None:
+                total_distance += hypot(x - previous[0], y - previous[1])
+            previous = (x, y)
+            points.append({"x": round(x, 4), "y": round(y, 4)})
+        total_points += len(points)
+        normalized.append(points)
+    if total_points > 5000:
+        raise ValidationError(field, f"{label}点数过多")
+    if total_distance < 0.02:
+        raise ValidationError(field, f"请完整书写{label}")
+    return normalized

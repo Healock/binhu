@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message } from 'antd'
+import { Alert, Button, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message, Tabs } from 'antd'
 import { DeleteOutlined, DownloadOutlined, EyeOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   apiErrorMessage,
@@ -18,6 +18,16 @@ import {
   type VenueCodeInput,
   type VenueCodeItem,
   type VenueVisitItem,
+  createDrinkingFormCode,
+  exportDrinkingReportPdf,
+  getDrinkingFormCode,
+  getDrinkingFormQr,
+  listDrinkingReports,
+  rotateDrinkingFormCode,
+  updateDrinkingFormStatus,
+  type DrinkingReport,
+  type DrinkingFormCode,
+  getDrinkingReport,
 } from '../api/client'
 import { downloadBlob } from '../utils/fileDownload'
 import { PageHeader, Panel } from '../components/ui'
@@ -50,6 +60,21 @@ function formatTime(value: string | null | undefined) {
   return value ? new Date(value).toLocaleString() : '尚无'
 }
 
+function SignaturePreview({ strokes }: { strokes: unknown }) {
+  const paths = Array.isArray(strokes) ? strokes.filter(Array.isArray).map((stroke: unknown) => {
+    const points = (stroke as unknown[]).filter((point): point is { x: number; y: number } => Boolean(point && typeof point === 'object' && typeof (point as any).x === 'number' && typeof (point as any).y === 'number'))
+    if (!points.length) return null
+    const d = `M ${Math.max(0, Math.min(1, points[0].x)) * 240} ${Math.max(0, Math.min(1, points[0].y)) * 90}` + points.slice(1).map(point => ` L ${Math.max(0, Math.min(1, point.x)) * 240} ${Math.max(0, Math.min(1, point.y)) * 90}`).join('')
+    return <path key={d} d={d} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+  }) : []
+  return <svg viewBox="0 0 240 90" role="img" aria-label="手写签名" className="h-24 w-60 border border-dashed border-slate-300 bg-white">{paths}</svg>
+}
+
+function DrinkingReportDetail({ detail, onExport }: { detail: DrinkingReport & { notes: string; reporter_signature: unknown[]; leader_signature: unknown[] }; onExport: () => Promise<void> }) {
+  const fields: Array<[string, string]> = [['姓名', detail.name], ['单位职务', detail.unit_position], ['饮酒时间', formatTime(detail.drinking_at)], ['饮酒地点', detail.drinking_place], ['饮酒事由', detail.reason], ['邀约人', detail.inviter], ['出行方式', detail.travel_method], ['责任领导姓名', detail.responsible_leader_name], ['备注说明', detail.notes], ['服务器收到时间', formatTime(detail.submitted_at)]]
+  return <div className="grid gap-3"><div className="grid gap-2">{fields.map(([label, value]) => <div key={label}><b>{label}</b>：{value || '—'}</div>)}</div><div className="grid grid-cols-2 gap-3"><div><div className="mb-1">报备人签名</div><SignaturePreview strokes={detail.reporter_signature} /></div><div><div className="mb-1">责任领导签名</div><SignaturePreview strokes={detail.leader_signature} /></div></div><Button onClick={() => void onExport()}>导出 A4 PDF</Button></div>
+}
+
 export default function VenueCodeManagement() {
   const { user } = useAuth()
   const canManage = Boolean(user?.permissions.includes('venue.manage'))
@@ -64,21 +89,27 @@ export default function VenueCodeManagement() {
   const [qrLoadingId, setQrLoadingId] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [visitFilters, setVisitFilters] = useState<{ keyword?: string; start?: string; end?: string }>({})
+  const [drinkingForm, setDrinkingForm] = useState<DrinkingFormCode | null>(null)
+  const [drinkingReports, setDrinkingReports] = useState<DrinkingReport[]>([])
 
   const load = async () => {
     setLoading(true)
     setError('')
     try {
-      const [venueResult, visitResult, cloudResult] = await Promise.all([
+      const [venueResult, visitResult, cloudResult, drinkingResult, drinkingList] = await Promise.all([
         listVenueCodes(),
         listVenueVisits(),
         getVenueCloudStatus(),
+        getDrinkingFormCode(),
+        listDrinkingReports(),
       ])
       setVenues(venueResult.data)
       setVisits(visitResult.data)
       setCloud(cloudResult)
+      setDrinkingForm(drinkingResult)
+      setDrinkingReports(drinkingList.data)
     } catch (reason: unknown) {
-      setError(apiErrorMessage(reason, '场所码数据加载失败'))
+      setError(apiErrorMessage(reason, '二维码数据加载失败'))
     } finally {
       setLoading(false)
     }
@@ -138,6 +169,13 @@ export default function VenueCodeManagement() {
     } finally {
       setQrLoadingId(current => current === row.id ? null : current)
     }
+  }
+
+  const showDrinkingQr = async () => {
+    try {
+      const q = await getDrinkingFormQr()
+      Modal.info({ title: '饮酒报备二维码', content: <div className="grid justify-items-center gap-3"><AuthenticatedImage alt="饮酒报备二维码" src={q.image_url} style={{ width: 240, height: 240 }} /><p className="m-0 break-all">扫码地址：{q.url}</p></div> })
+    } catch (reason: unknown) { message.error(apiErrorMessage(reason, '二维码读取失败')) }
   }
 
   const columns = [
@@ -225,7 +263,7 @@ export default function VenueCodeManagement() {
 
   return (
     <div className="app-page min-w-0">
-      <PageHeader title="场所码管理" description="场所配置由本地服务器管理，公开登记由云端接收后主动拉回。" />
+      <PageHeader title="二维码管理" description="场所登记和饮酒报备均由云端接收、本地平台主动拉回。" />
       {error && <Alert type="error" showIcon message={error} />}
       {cloud && (
         <Alert
@@ -237,6 +275,7 @@ export default function VenueCodeManagement() {
             : '当前仍使用本地场所码入口。生产切换前应保持此状态，完成影子验收后再逐项启用开关。'}
         />
       )}
+      <Tabs defaultActiveKey="venue" items={[{ key: 'venue', label: '场所登记码', children: <>
       <Panel title="场所目录" padded={false}>
         <div className="p-4 flex flex-wrap items-center justify-between gap-3">
           <span>共 {venues.length} 个场所</span>
@@ -311,6 +350,24 @@ export default function VenueCodeManagement() {
           scroll={{ x: 900 }}
         />
       </Panel>
+      </> }, { key: 'drinking', label: '饮酒报备码', children: <>
+        <Panel title="全所饮酒报备二维码" padded={false}>
+          <div className="p-4 flex flex-wrap items-center gap-3">
+            <Tag color={drinkingForm?.status === 'active' ? 'success' : 'default'}>{drinkingForm?.status === 'active' ? '已启用' : '未启用'}</Tag>
+            <Tag>{drinkingForm?.cloud_sync_status === 'confirmed' ? '云端已确认' : drinkingForm?.cloud_sync_status === 'pending' ? '云端同步中' : '尚未创建'}</Tag>
+            <Space wrap>
+              {canManage && !drinkingForm?.exists && <Button type="primary" onClick={async () => { try { await createDrinkingFormCode(); message.success('饮酒报备二维码已创建'); await load() } catch (reason: unknown) { message.error(apiErrorMessage(reason, '创建失败')) } }}>创建二维码</Button>}
+              {canManage && drinkingForm?.exists && <Button onClick={async () => { try { await updateDrinkingFormStatus(drinkingForm.status === 'active' ? 'inactive' : 'active'); await load() } catch (reason: unknown) { message.error(apiErrorMessage(reason, '更新失败')) } }}>{drinkingForm.status === 'active' ? '停用' : '启用'}</Button>}
+              {canManage && drinkingForm?.exists && <Popconfirm title="轮换饮酒报备二维码？" onConfirm={async () => { try { await rotateDrinkingFormCode(); message.success('二维码轮换请求已提交'); await load() } catch (reason: unknown) { message.error(apiErrorMessage(reason, '轮换失败')) } }}><Button>轮换</Button></Popconfirm>}
+              {drinkingForm?.exists && drinkingForm.status === 'active' && (drinkingForm.cloud_sync_status === 'confirmed' || drinkingForm.cloud_sync_status === 'local_only') && <Button icon={<QrcodeOutlined />} onClick={() => void showDrinkingQr()}>查看二维码</Button>}
+            </Space>
+          </div>
+        </Panel>
+        <Panel title="饮酒报备记录" padded={false}>
+          <div className="p-4 flex flex-wrap items-center gap-3"><Form layout="inline" onFinish={async values => { const result = await listDrinkingReports({ keyword: values.keyword, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }); setDrinkingReports(result.data) }}><Form.Item name="keyword"><Input allowClear placeholder="姓名、单位、地点、事由、责任领导" style={{ width: 280 }} /></Form.Item><Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item><Button type="primary" htmlType="submit">查询</Button></Form></div>
+          <Table rowKey="id" dataSource={drinkingReports} scroll={{ x: 1100 }} columns={[{ title: '姓名', dataIndex: 'name' }, { title: '单位职务', dataIndex: 'unit_position' }, { title: '饮酒时间', dataIndex: 'drinking_at', render: formatTime }, { title: '饮酒地点', dataIndex: 'drinking_place' }, { title: '邀约人', dataIndex: 'inviter' }, { title: '责任领导', dataIndex: 'responsible_leader_name' }, { title: '操作', render: (_: unknown, row: DrinkingReport) => <Button type="link" onClick={async () => { try { const detail = await getDrinkingReport(row.id); Modal.info({ title: '饮酒报备详情', width: 760, content: <DrinkingReportDetail detail={detail} onExport={async () => { const blob = await exportDrinkingReportPdf(row.id); await downloadBlob(blob, `饮酒报备单-${row.name}.pdf`) }} /> }) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '详情读取失败')) } }}>查看详情</Button> }]} />
+        </Panel>
+      </> }]}/>
       <Modal title={editing ? '编辑场所' : '新增场所'} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={save}>
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="场所名称" rules={[{ required: true }]}><Input /></Form.Item>

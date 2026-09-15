@@ -116,3 +116,34 @@ def decrypt_submission(item: dict, encrypted_photo: bytes, private_key_dir: str)
     if not isinstance(payload, dict):
         raise VenueCloudSecurityError("场所码解密正文结构无效")
     return payload, photo
+
+
+def decrypt_payload_submission(item: dict, private_key_dir: str) -> dict:
+    if item.get("algorithm_version") != "rsa-oaep-sha256+aes-256-gcm-payload-v1":
+        raise VenueCloudSecurityError("不支持的公共表单加密版本")
+    key_id = str(item.get("key_id") or "")
+    if not key_id or any(part in key_id for part in ("/", "\\", "..")):
+        raise VenueCloudSecurityError("公共表单加密 key_id 无效")
+    root = Path(private_key_dir).resolve()
+    key_path = (root / f"{key_id}.pem").resolve()
+    if root not in key_path.parents or not key_path.is_file():
+        raise VenueCloudSecurityError("公共表单解密私钥不存在")
+    key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 3072:
+        raise VenueCloudSecurityError("公共表单解密私钥类型无效")
+    try:
+        data_key = key.decrypt(
+            _b64decode(str(item["wrapped_data_key"])),
+            padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+        )
+        payload_bytes = AESGCM(data_key).decrypt(
+            _b64decode(str(item["payload_nonce"])),
+            _b64decode(str(item["encrypted_payload"])),
+            b"binhu-public-form-payload-v1",
+        )
+        payload = json.loads(payload_bytes)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise VenueCloudSecurityError("公共表单密文无法解密或校验") from exc
+    if not isinstance(payload, dict):
+        raise VenueCloudSecurityError("公共表单解密正文结构无效")
+    return payload
