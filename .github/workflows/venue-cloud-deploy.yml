@@ -44,7 +44,7 @@ jobs:
         run: |
           # Starlette's TestClient imports httpx; keep it as a CI-only dependency
           # instead of adding the test client to the production receiver image.
-          python -m pip install --disable-pip-version-check -r cloud/venue-receiver/requirements.txt pytest httpx
+          python -m pip install --disable-pip-version-check -r cloud/venue-receiver/requirements.txt pytest httpx pytest-asyncio
           python -m pytest cloud/venue-receiver/tests -q
           python -m compileall -q cloud/venue-receiver/app deploy/venue-cloud
       - name: Build immutable image bundle
