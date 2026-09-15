@@ -48,3 +48,23 @@ Staging 晋级评估。任何真实组件行为偏离预期、数据一致性失
 后续迁移顺序暂定为：地址匹配只读派生 → 任务图 → 人员标签 → 日报/汇总。每个
 域都要建立独立事件字段、结果表、比对合同和退出门禁，不能把本域的通过结果
 直接当作其他域已验收。
+
+## 2026-09-15：Dev recovery16 实际双轨子验收
+
+recovery15 的 savepoint 恢复失败已完成根因诊断：第一次是恢复路径错误，改正路径后
+又确认旧匿名 source operator ID 与新 JobGraph 不兼容。未使用 allowNonRestoredState，
+旧 savepoint 与失败日志保留在服务器独立证据目录。recovery16 改为干净 Flink 状态，
+使用新的运行编号、nonce 和事件 revision。
+
+实际 Dev 结果：Flink 和 Python 都产生同一任务的
+revision=302、event_count=6、changed_field_count=6、saved_count=6，
+created/claimed/assigned/reviewed/archived/deleted_count 均为 0；Kafka 投递台账的
+六条事件均为 published。只重启 Python worker 后，持久事件 ledger 仍为六条，结果
+没有回退或重复，说明重启水合逻辑已生效。
+
+该结果是一次真实 Dev 双轨一致性和 worker 重启子验收，不是 7 天/10 万事件门禁。当前
+unattributed_difference_count=0 仅适用于这次 recovery16 子集；需要以新证据编号连续
+运行至少 7 天并达到 100,000 条唯一事件，随后才能评估 Staging 晋级。
+本轮服务器证据目录为
+`/var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery16/`；
+checkpoint_recovery_verified 仍为 false，不能以干净启动替代 savepoint 恢复门禁。

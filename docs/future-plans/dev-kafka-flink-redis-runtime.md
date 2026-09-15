@@ -56,3 +56,24 @@ Dev Backend outbox relay 已在服务器部署并验证一条合成业务事件�
 这次复核属于运行状态取证，不会把“容器为 running”当作业务验收；业务闭环仍必须以带验收编号的合成事件报告、恢复演练和后续派生域对账为准。
 
 当前可签署范围仍是 Backend outbox → Dev Redis → bridge → Kafka → Schema Registry/Flink → 派生 MySQL/Redis 的合成元数据事件闭环，以及重复/乱序 revision 保护。完整业务派生域尚未接入，仓库也没有可对齐 Python worker 与 Flink 真实业务输出的比较器，因此“7 天、至少 100,000 事件、零未归因差异”尚未开始计时。选择和实现第一个业务派生域会改变架构设计，需单独评审后再推进；在此之前不得把 Dev 标记为完整架构验收通过，也不得开展 Staging 晋级或 Production 切换。
+
+## 2026-09-15：Python/Flink 恢复修复与干净状态验证
+
+第一真实派生域仍为任务元数据投影/计数。PR #661 已将 Python worker 的持久投影水合、
+幂等事件账本和 Flink 稳定 UID 修复合入主线；PR #662/#663 为候选构建失败补充了
+安全诊断。Dev recovery15 候选部署后，Python worker 已正常运行并完成 schema repair。
+
+Flink savepoint 诊断发现两层问题：第一次提交使用了错误的 dev-flink-transition
+根路径，随后改用实际 dev-savepoints 路径后，旧 JAR 和新 UID JAR 都因旧匿名 source
+operator ID 无法映射而失败。没有使用 allowNonRestoredState。因此保留旧 savepoint
+和失败证据，按 Dev 处置规则建立 dev-20260915-recovery16，启动两个干净的 Flink 作业。
+
+recovery16 的实际结果：两个 Flink 作业为 RUNNING；用新 nonce 和 revision 300/301/302
+投递后，Flink 与 Python 的 revision、event_count、changed_field_count 和七类事件计数
+完全一致；随后重启一次 Python worker，持久 ledger 和两边结果仍一致。该证据只证明
+当前代码的干净启动、事件闭环和 Python 重启恢复，不代表旧 savepoint 兼容恢复已通过。
+7 天/10 万事件门禁从 recovery16 的下一轮新事件开始计时，当前状态仍为“待执行”。
+失败与恢复材料保存在服务器
+`/var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery16/`；
+旧 metadata08 作业虽仍运行，但按只读 JobGraph 核对仅消费旧 run_id，未与 recovery16
+投影键重叠。长跑前仍需再次核对输出命名空间并建立新的证据目录。
