@@ -39,6 +39,35 @@ def test_photo_magic_validation():
     assert mime == "image/jpeg" and size == 4 and len(digest) == 64
 
 
+def test_private_photo_response_disables_browser_caching(monkeypatch, tmp_path):
+    photo_dir = tmp_path / "photos"
+    photo_dir.mkdir()
+    photo_path = photo_dir / "photo.jpg"
+    photo_path.write_bytes(b"photo")
+    monkeypatch.setattr(settings, "VENUE_PHOTO_DIR", photo_dir)
+
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, _query, _params):
+            return None
+
+        async def fetchone(self):
+            return ("photo.jpg", "image/jpeg")
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    response = __import__("asyncio").run(venue_codes.venue_visit_photo(7, user={}, conn=FakeConnection()))
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
 def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch):
     monkeypatch.setattr(settings, "VENUE_CLOUD_SYNC_ENABLED", False)
     monkeypatch.setattr(settings, "PUBLIC_WEB_BASE_URL", "https://portal.example.test/")

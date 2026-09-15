@@ -486,4 +486,8 @@ async def venue_visit_photo(visit_id: int, user: dict = Depends(require_permissi
     if not row: raise HTTPException(404, "照片不存在或已过期")
     path = (Path(settings.VENUE_PHOTO_DIR).resolve() / str(row[0])).resolve()
     if Path(settings.VENUE_PHOTO_DIR).resolve() not in path.parents or not path.is_file(): raise HTTPException(404, "照片文件不存在")
-    return FileResponse(path, media_type=str(row[1]))
+    return FileResponse(
+        path,
+        media_type=str(row[1]),
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )

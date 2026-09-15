@@ -308,6 +308,9 @@ export function PublicVenuePage() {
     import('../api/client').then(({ getPublicVenueInfo }) => getPublicVenueInfo(token).then(setInfo).catch((reason: unknown) => setError(apiErrorMessage(reason, '二维码无效'))))
   }, [token])
   const submit = async (values: Record<string, any>) => {
+    if (!info || !values.photo?.file) {
+      throw new Error('请选择照片')
+    }
     const body = new FormData()
     Object.entries({ ...values, venue_id: info?.venue_id, form_token: info?.form_token }).forEach(([key, value]) => {
       if (key !== 'photo' && value != null) body.append(key, String(value))
@@ -330,7 +333,7 @@ export function PublicVenuePage() {
         <Form.Item name="identity_number" label="公民身份号码" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="phone" label="手机号" rules={[{ required: true }]}><Input /></Form.Item>
         <Form.Item name="address" label="地址" rules={[{ required: true }]}><Input /></Form.Item>
-        <Form.Item name="photo" label="照片" valuePropName="file" getValueFromEvent={event => event}>
+        <Form.Item name="photo" label="照片" valuePropName="file" getValueFromEvent={event => event} rules={[{ required: true, message: '请选择照片' }]}>
           <Upload beforeUpload={() => false} maxCount={1} accept="image/jpeg,image/png,image/webp"><Button>选择照片</Button></Upload>
         </Form.Item>
         <Button type="primary" htmlType="submit" disabled={!info}>提交登记</Button>

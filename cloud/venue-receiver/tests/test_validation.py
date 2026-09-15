@@ -17,7 +17,7 @@ def test_identity_number_requires_valid_checksum():
 
 def test_phone_requires_mainland_mobile_segment():
     assert validate_phone_number(" 138 0000 0000 ") == "13800000000"
-    for value in ("12800000000", "1380000000", "13800000000x"):
+    for value in ("12800000000", "1380000000", "13800000000x", "１３８００００００００"):
         try:
             validate_phone_number(value)
         except ValidationError as exc:
@@ -27,8 +27,8 @@ def test_phone_requires_mainland_mobile_segment():
 
 
 def test_name_and_address_are_normalized_without_rewriting_content():
-    assert normalize_person_name("  张  三\t") == "张 三"
-    assert normalize_address("  江苏 省\n滨湖区  ") == "江苏 省 滨湖区"
+    assert normalize_person_name("  张  三  ") == "张 三"
+    assert normalize_address("  江苏 省  滨湖区  ") == "江苏 省 滨湖区"
 
 
 def test_control_characters_and_empty_values_rejected():
@@ -39,6 +39,13 @@ def test_control_characters_and_empty_values_rejected():
             assert exc.field == field
         else:
             raise AssertionError("control character accepted")
+        for value in ("张\n三", "张\t三"):
+            try:
+                fn(value)
+            except ValidationError as exc:
+                assert exc.field == field
+            else:
+                raise AssertionError("whitespace control character accepted")
 
 
 def test_public_submission_validation_returns_normalized_values():

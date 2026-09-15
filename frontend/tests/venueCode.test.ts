@@ -53,3 +53,9 @@ test('场所登记列表提供照片查看入口', () => {
   assert.match(page, /查看照片/)
   assert.match(page, /AuthenticatedImage/)
 })
+
+test('遗留本地登记组件也把照片作为必填并防止空文件崩溃', () => {
+  const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  assert.match(page, /请选择照片/)
+  assert.match(page, /!values\.photo\?\.file/)
+})

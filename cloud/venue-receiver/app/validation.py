@@ -25,7 +25,8 @@ class ValidationError(ValueError):
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _IDENTITY_RE = re.compile(r"^[0-9]{17}[0-9X]$")
-_PHONE_RE = re.compile(r"^1[3-9][0-9]{9}$")
+# Keep the public contract readable as ^1[3-9]\d{9}$ while making \d ASCII-only.
+_PHONE_RE = re.compile(r"^1[3-9]\d{9}$", re.ASCII)
 _IDENTITY_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
 _IDENTITY_CHECKS = "10X98765432"
 
@@ -34,13 +35,13 @@ def _normalize_text(value: str, *, field: str, label: str, max_length: int) -> s
     if not isinstance(value, str):
         raise ValidationError(field, f"{label}格式无效")
     normalized = unicodedata.normalize("NFKC", value).strip()
+    if _CONTROL_RE.search(normalized):
+        raise ValidationError(field, f"{label}不能包含控制字符")
     normalized = " ".join(normalized.split())
     if not normalized:
         raise ValidationError(field, f"{label}不能为空")
     if len(normalized) > max_length:
         raise ValidationError(field, f"{label}长度不能超过{max_length}个字符")
-    if _CONTROL_RE.search(normalized):
-        raise ValidationError(field, f"{label}不能包含控制字符")
     return normalized
 
 
@@ -71,7 +72,9 @@ def validate_identity_number(value: str) -> str:
 def validate_phone_number(value: str) -> str:
     if not isinstance(value, str):
         raise ValidationError("phone", "手机号格式无效")
-    phone = unicodedata.normalize("NFKC", value).replace(" ", "").replace("-", "").strip()
+    # Only tolerate ordinary ASCII separators; the digit portion must match
+    # the public contract exactly and must not be widened by Unicode folding.
+    phone = value.strip().replace(" ", "").replace("-", "")
     if not _PHONE_RE.fullmatch(phone):
         raise ValidationError("phone", "手机号格式无效")
     return phone
