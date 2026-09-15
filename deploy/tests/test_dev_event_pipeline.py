@@ -46,6 +46,20 @@ def event():
 
 
 class FlinkStateContractTests(unittest.TestCase):
+    def test_control_failure_detail_is_safe_and_keeps_flink_gate_reason(self):
+        self.assertEqual(
+            control.safe_control_failure_detail(
+                ValueError("Flink runtime missing INSERT sink: dev_task_metadata")
+            ),
+            "Flink runtime missing INSERT sink: dev_task_metadata",
+        )
+        self.assertEqual(
+            control.safe_control_failure_detail(
+                ValueError("password=super-secret-value")
+            ),
+            "ValueError",
+        )
+
     def test_pipeline_job_declares_stable_operator_uids(self):
         source = Path("deploy/environments/event_pipeline/PipelineJob.java").read_text(encoding="utf-8")
         self.assertIn("UID_DEV_REVISIONS", source)
