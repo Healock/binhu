@@ -257,6 +257,8 @@ def test_registration_page_contains_client_side_format_checks_and_required_field
     assert "滨湖新城派出所" in page
     assert "滨湖智慧平台" not in page
     assert '<span class="label-text">姓名<span class="required"' in page
+    assert page.count('class="label-text"') == 5
+    assert page.count('class="required" aria-hidden="true"') == 5
     assert '.label-text{display:flex;align-items:baseline' in page
     assert "identityChecks" in page
     assert "^1[3-9]\\d{9}$" in page
