@@ -739,6 +739,80 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_venue_cloud_ingest_result_status (result_status,created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _public_form_codes (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            form_key VARCHAR(80) NOT NULL,
+            display_name VARCHAR(200) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'inactive',
+            token_hmac CHAR(64) NOT NULL,
+            encrypted_token TEXT NOT NULL,
+            config_revision BIGINT UNSIGNED NOT NULL DEFAULT 1,
+            token_version BIGINT UNSIGNED NOT NULL DEFAULT 1,
+            cloud_sync_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            cloud_synced_revision BIGINT UNSIGNED DEFAULT NULL,
+            cloud_synced_at DATETIME DEFAULT NULL,
+            cloud_sync_error_code VARCHAR(100) DEFAULT NULL,
+            pending_token_hmac CHAR(64) DEFAULT NULL,
+            pending_encrypted_token TEXT DEFAULT NULL,
+            pending_token_version BIGINT UNSIGNED DEFAULT NULL,
+            created_by BIGINT DEFAULT NULL,
+            updated_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_public_form_key (form_key),
+            UNIQUE KEY uk_public_form_token (token_hmac),
+            INDEX idx_public_form_status (status, cloud_sync_status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _public_form_cloud_outbox (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            form_key VARCHAR(80) NOT NULL,
+            config_revision BIGINT UNSIGNED NOT NULL,
+            action VARCHAR(20) NOT NULL,
+            request_id CHAR(36) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+            next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_error_code VARCHAR(100) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_public_form_outbox_request (request_id),
+            UNIQUE KEY uk_public_form_outbox_revision (form_key, config_revision),
+            INDEX idx_public_form_outbox_pending (status, next_attempt_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _drinking_reports (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            cloud_submission_id CHAR(36) NOT NULL,
+            form_key VARCHAR(80) NOT NULL,
+            encrypted_name TEXT NOT NULL,
+            name_hmac CHAR(64) NOT NULL,
+            encrypted_unit_position TEXT NOT NULL,
+            encrypted_drinking_at TEXT NOT NULL,
+            drinking_at DATETIME NOT NULL,
+            encrypted_drinking_place TEXT NOT NULL,
+            encrypted_reason TEXT NOT NULL,
+            encrypted_inviter TEXT NOT NULL,
+            encrypted_travel_method TEXT NOT NULL,
+            encrypted_notes TEXT NOT NULL,
+            encrypted_responsible_leader_name TEXT NOT NULL,
+            responsible_leader_hmac CHAR(64) NOT NULL,
+            encrypted_reporter_signature TEXT NOT NULL,
+            encrypted_leader_signature TEXT NOT NULL,
+            rules_version VARCHAR(40) NOT NULL,
+            rules_acknowledged_at DATETIME NOT NULL,
+            submitted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            cloud_received_at DATETIME DEFAULT NULL,
+            cloud_key_id VARCHAR(100) DEFAULT NULL,
+            INDEX idx_drinking_report_time (drinking_at, id),
+            INDEX idx_drinking_report_name (name_hmac),
+            INDEX idx_drinking_report_leader (responsible_leader_hmac),
+            UNIQUE KEY uk_drinking_report_submission (cloud_submission_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
 
 
 async def ensure_workflow_schema(cur) -> None:

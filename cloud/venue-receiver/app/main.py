@@ -9,6 +9,7 @@ import os
 import secrets
 import time
 import uuid
+import unicodedata
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,7 +34,13 @@ from .security import (
     response_signature_headers,
     verify_request_signature,
 )
-from .validation import ValidationError, validate_public_submission_fields
+from .validation import (
+    ValidationError,
+    validate_drinking_report_fields,
+    validate_public_submission_fields,
+    validate_signature_strokes,
+)
+from .drinking_page import render_drinking_report_page
 
 
 class VenueUpdate(BaseModel):
@@ -48,6 +55,16 @@ class VenueUpdate(BaseModel):
 class VenueSummary(BaseModel):
     local_venue_id: int = Field(gt=0)
     status: Literal["active", "inactive", "deleted"]
+    token: str = Field(min_length=32, max_length=200)
+    token_version: int = Field(ge=1)
+    config_revision: int = Field(ge=1)
+
+
+class PublicFormUpdate(BaseModel):
+    request_id: uuid.UUID
+    form_key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_-]+$")
+    display_name: str = Field(min_length=1, max_length=200)
+    status: Literal["active", "inactive"]
     token: str = Field(min_length=32, max_length=200)
     token_version: int = Field(ge=1)
     config_revision: int = Field(ge=1)
@@ -352,6 +369,98 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
 
+    @application.get("/drinking-report/{token}", response_class=HTMLResponse)
+    async def drinking_report_page(token: str, request: Request):
+        if not 32 <= len(token) <= 200:
+            raise HTTPException(404, "二维码不可用")
+        form = await request.app.state.repo.get_public_form_by_token(
+            keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", token)
+        )
+        if not form:
+            raise HTTPException(404, "二维码不可用")
+        if form["status"] != "active":
+            return HTMLResponse(_retired_registration_page(), status_code=410, headers={"Cache-Control": "no-store"})
+        return HTMLResponse(render_drinking_report_page(), headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'"})
+
+    @application.get("/api/public/forms/{token}")
+    async def public_form_info(token: str, request: Request):
+        form = await request.app.state.repo.get_public_form_by_token(
+            keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", token)
+        )
+        if not form or form["status"] != "active":
+            raise HTTPException(404, "二维码不存在或已停用")
+        form_token = secrets.token_urlsafe(32)
+        await request.app.state.repo.issue_public_form_token(
+            keyed_digest(app_config.FORM_TOKEN_HMAC_KEY, "public-form-token", form_token),
+            str(form["form_key"]),
+            _utcnow() + timedelta(seconds=3),
+            _utcnow() + timedelta(seconds=app_config.FORM_TOKEN_TTL_SECONDS),
+        )
+        return JSONResponse({"form_key": str(form["form_key"]), "display_name": str(form["display_name"]), "form_token": form_token}, headers={"Cache-Control": "no-store"})
+
+    @application.post("/api/public/drinking-reports", status_code=202)
+    async def public_drinking_report(payload: dict[str, Any], request: Request):
+        required = ("submission_id", "form_token", "form_token_value", "device_id", "name", "unit_position", "drinking_at", "drinking_place", "reason", "inviter", "travel_method", "responsible_leader_name", "reporter_signature", "leader_signature")
+        if any(not str(payload.get(k) or "").strip() for k in required):
+            raise HTTPException(422, "请完整填写必填字段并完成双方签名")
+        try:
+            submission_id = str(uuid.UUID(str(payload["submission_id"])))
+        except ValueError as exc:
+            raise HTTPException(422, "submission_id 无效") from exc
+        form = await request.app.state.repo.get_public_form_by_token(
+            keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", str(payload["form_token_value"]))
+        )
+        if not form or form["status"] != "active":
+            raise HTTPException(404, "二维码不存在或已停用")
+        if str(form["form_key"]) != "drinking_report":
+            raise HTTPException(422, "二维码类型无效")
+        device_id = str(payload["device_id"])
+        if not 16 <= len(device_id) <= 200:
+            raise HTTPException(422, "device_id 无效")
+        try:
+            normalized = validate_drinking_report_fields(payload, timezone_name=app_config.DRINKING_REPORT_TIMEZONE)
+            signatures = {
+                "reporter": validate_signature_strokes(payload["reporter_signature"], field="reporter_signature", label="报备人签名"),
+                "leader": validate_signature_strokes(payload["leader_signature"], field="leader_signature", label="责任领导签名"),
+            }
+        except ValidationError as exc:
+            raise HTTPException(422, exc.message, headers={"X-Binhu-Validation-Field": exc.field}) from exc
+        body = {**normalized, "rules_version": "2026-09-16", "rules_acknowledged_at": _iso(_utcnow()), "reporter_signature": signatures["reporter"], "leader_signature": signatures["leader"]}
+        fingerprint_fields = {k: str(v) for k, v in normalized.items()}
+        fingerprint_fields["reporter_signature"] = json.dumps(signatures["reporter"], sort_keys=True, separators=(",", ":"))
+        fingerprint_fields["leader_signature"] = json.dumps(signatures["leader"], sort_keys=True, separators=(",", ":"))
+        fingerprint = request_fingerprint(app_config.REQUEST_FINGERPRINT_KEY, fingerprint_fields, b"")
+        existing = await request.app.state.repo.get_submission(submission_id)
+        if existing:
+            if existing.get("public_form_key") == form["form_key"] and existing.get("request_fingerprint") == fingerprint:
+                return {"submission_id": submission_id, "status": existing["state"]}
+            raise HTTPException(409, "submission_id 已被其他内容使用")
+        client_host = request.client.host if request.client else "unknown"
+        rate_keys = [
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), 300),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-public-form", str(form["form_key"])), 60),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-device", device_id), 10),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-client", client_host), 30),
+        ]
+        if not await request.app.state.repo.check_rate_limits(rate_keys):
+            raise HTTPException(429, "提交过于频繁，请稍后再试")
+        if not await request.app.state.repo.consume_public_form_token(
+            keyed_digest(app_config.FORM_TOKEN_HMAC_KEY, "public-form-token", str(payload["form_token"])), str(form["form_key"])
+        ):
+            raise HTTPException(400, "报备页面已过期，请重新扫码")
+        encrypted = request.app.state.encryptor.encrypt_payload(canonical_json(body))
+        await request.app.state.repo.create_submission({"submission_id": submission_id, "submission_kind": "drinking_report", "public_form_key": str(form["form_key"]), "request_fingerprint": fingerprint, "encrypted_payload": encrypted.encrypted_payload, "wrapped_data_key": encrypted.wrapped_data_key, "key_id": encrypted.key_id, "algorithm_version": encrypted.algorithm_version, "payload_nonce": encrypted.payload_nonce, "ciphertext_sha256": encrypted.ciphertext_sha256})
+        with suppress(Exception):
+            await request.app.state.submission_notifier.notify()
+        return {"submission_id": submission_id, "status": "queued"}
+
+    @application.put("/api/internal/public-forms/{form_key}")
+    async def put_public_form(form_key: str, data: PublicFormUpdate, request: Request, _: str = Depends(internal_request)):
+        if form_key != data.form_key:
+            raise HTTPException(422, "form_key 不一致")
+        result = await request.app.state.repo.upsert_public_form({**data.model_dump(), "request_id": str(data.request_id), "token_hmac": keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", data.token)})
+        return signed_json(request, result)
+
     @application.post("/api/public/submissions", status_code=202)
     async def public_submission(
         request: Request,
@@ -475,8 +584,8 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
 
     @application.post("/api/internal/submissions/pull")
     async def pull(data: PullRequest, request: Request, _: str = Depends(internal_request)):
-        supported = "rsa-oaep-sha256+aes-256-gcm-v1"
-        if supported not in data.supported_encryption_versions:
+        supported = {"rsa-oaep-sha256+aes-256-gcm-v1", "rsa-oaep-sha256+aes-256-gcm-payload-v1"}
+        if not supported.intersection(data.supported_encryption_versions):
             raise HTTPException(409, "no_supported_encryption_version")
         lease_id, expires_at, rows = await request.app.state.repo.pull_submissions(data.worker_id, data.limit)
         items = []
@@ -484,12 +593,12 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             submission_id = str(row["submission_id"])
             items.append({
                 **{key: row[key] for key in (
-                    "submission_id", "local_venue_id", "encrypted_payload", "wrapped_data_key", "key_id",
+                    "submission_id", "submission_kind", "local_venue_id", "public_form_key", "encrypted_payload", "wrapped_data_key", "key_id",
                     "algorithm_version", "payload_nonce", "ciphertext_sha256", "photo_nonce",
                     "photo_ciphertext_sha256", "photo_size", "photo_mime_type",
                 )},
                 "received_at": _iso(row.get("received_at")),
-                "photo_download_path": f"/api/internal/submissions/{submission_id}/photo/{lease_id}",
+                "photo_download_path": f"/api/internal/submissions/{submission_id}/photo/{lease_id}" if row.get("photo_object_key") else None,
             })
         return signed_json(request, {"lease_id": lease_id, "lease_expires_at": _iso(expires_at), "items": items})
 

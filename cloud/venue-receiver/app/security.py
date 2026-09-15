@@ -77,10 +77,10 @@ class EncryptedSubmission:
     wrapped_data_key: str
     payload_nonce: str
     encrypted_payload: str
-    photo_nonce: str
-    encrypted_photo: bytes
+    photo_nonce: str | None
+    encrypted_photo: bytes | None
     ciphertext_sha256: str
-    photo_ciphertext_sha256: str
+    photo_ciphertext_sha256: str | None
 
 
 class EnvelopeEncryptor:
@@ -115,3 +115,23 @@ class EnvelopeEncryptor:
             photo_ciphertext_sha256=hashlib.sha256(encrypted_photo).hexdigest(),
         )
 
+    def encrypt_payload(self, payload: bytes) -> EncryptedSubmission:
+        data_key = AESGCM.generate_key(bit_length=256)
+        aes = AESGCM(data_key)
+        payload_nonce = __import__("os").urandom(12)
+        encrypted_payload = aes.encrypt(payload_nonce, payload, b"binhu-public-form-payload-v1")
+        wrapped = self._public_key.encrypt(
+            data_key,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+        )
+        return EncryptedSubmission(
+            algorithm_version="rsa-oaep-sha256+aes-256-gcm-payload-v1",
+            key_id=self._key_id,
+            wrapped_data_key=b64encode(wrapped),
+            payload_nonce=b64encode(payload_nonce),
+            encrypted_payload=b64encode(encrypted_payload),
+            photo_nonce=None,
+            encrypted_photo=None,
+            ciphertext_sha256=hashlib.sha256(encrypted_payload).hexdigest(),
+            photo_ciphertext_sha256=None,
+        )
