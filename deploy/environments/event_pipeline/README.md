@@ -154,5 +154,18 @@ Redis `binhu:events`。它使用单独的 `backend-relay.env`、`backend` 内部
 Production、Staging、Shadow 或任何外部平台。服务器部署时只新增该服务，不重建
 Kafka、Flink、Schema Registry 或既有数据卷。
 
+### Resident dual-track monitor
+
+`dual-track-monitor` 是 Dev 项目内的只读常驻服务。它连接独立的
+`Dev_EventPipeline` 派生库，按当前 `DEV_RUN_ID` 比较
+`dev_task_metadata_python`、`dev_task_metadata` 和 Python 事件账本，不连接
+Backend、Production、Staging 或 Kafka/Flink 控制面，也不写业务表。每轮检查在
+专用 `evidence` 命名卷中创建新的脱敏比较报告；任务 ID 只写 SHA-256，报告不含
+人员、地址、备注或事件正文。发现投影或事件计数差异时写入不可覆盖的告警，更新
+`status.json` 为 `paused` 并停止，防止容器重启后清除失败状态或继续计时。暂停后
+必须完成归因修复并使用新的双轨证据编号重新开始。服务使用只读根文件系统、
+`/tmp` tmpfs、128 MiB 内存、0.2 CPU、128 pids 上限和 5 MiB × 2 的 Docker
+日志轮换；证据卷不随 Compose 更新删除。
+
 ### Workflow environment contract
 All install, prepare, and deploy workflows must run in the GitHub development Environment.
