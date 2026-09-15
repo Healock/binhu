@@ -218,8 +218,9 @@ async def main(mode):
         await backend_outbox_relay(backend_relay_configuration())
         return
     config = configuration()
-    from .schema_registry import verify
-    await asyncio.to_thread(verify)
+    if mode != "dual-track-monitor":
+        from .schema_registry import verify
+        await asyncio.to_thread(verify)
     if mode == "python-metadata-worker":
         await python_metadata_worker(config)
         return
