@@ -15,6 +15,7 @@ import re
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 
@@ -29,7 +30,9 @@ SOURCE_ROOT = Path("deploy/environments/event_pipeline")
 SOURCE_ARCHIVE = "event_pipeline-source.tar.gz"
 MANIFEST = "manifest.json"
 CHECKSUMS = "SHA256SUMS"
-ALLOWED_TOP_LEVEL = {SOURCE_ARCHIVE, MANIFEST, CHECKSUMS}
+PIPELINE_JAR = "pipeline-job.jar"
+PIPELINE_SOURCE = "deploy/environments/event_pipeline/PipelineJob.java"
+ALLOWED_TOP_LEVEL = {SOURCE_ARCHIVE, PIPELINE_JAR, MANIFEST, CHECKSUMS}
 FORBIDDEN_TEXT = re.compile(
     r"(?i)(password|secret|token|cookie|authorization|bearer|private_key|mysql_pwd)"
 )
@@ -69,6 +72,8 @@ def _source_files(repository: Path) -> list[Path]:
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or not path.is_file():
             continue
+        if "target" in path.relative_to(root).parts:
+            continue
         relative = path.relative_to(repository).as_posix()
         if "/__pycache__/" in f"/{relative}/" or relative.endswith(".pyc"):
             continue
@@ -82,7 +87,7 @@ def _source_files(repository: Path) -> list[Path]:
 
 def _scan_source(files: list[Path]) -> None:
     for path in files:
-        if path.suffix not in {".py", ".java", ".md", ".json", ".txt", ".sh", ".gitattributes", ""}:
+        if path.suffix not in {".py", ".java", ".md", ".json", ".txt", ".sh", ".xml", ".gitattributes", ""}:
             raise ValueError("unsupported event pipeline source file")
         try:
             text = path.read_text(encoding="utf-8")
@@ -136,7 +141,19 @@ def _verify_archive(path: Path, expected_hashes: dict[str, str]) -> None:
         raise ValueError("candidate source hash manifest mismatch")
 
 
-def build(repository: Path, output: Path, *, commit: str, run_id: str,
+def _verify_pipeline_jar(path: Path) -> None:
+    if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_SOURCE_BYTES:
+        raise ValueError("compiled Dev PipelineJob JAR missing")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            if "PipelineJob.class" not in names or any(".." in Path(name).parts for name in names):
+                raise ValueError("compiled Dev PipelineJob class missing")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("compiled Dev PipelineJob JAR invalid") from exc
+
+
+def build(repository: Path, output: Path, *, commit: str, run_id: str, pipeline_jar: Path,
           mysql_image: str, redis_image: str, worker_image: str, flink_image: str) -> dict:
     repository = repository.resolve()
     _require_commit(commit)
@@ -157,6 +174,10 @@ def build(repository: Path, output: Path, *, commit: str, run_id: str,
         staging = Path(temporary)
         archive_path = staging / SOURCE_ARCHIVE
         source_hashes = _write_archive(repository, files, archive_path)
+        pipeline_jar = pipeline_jar.resolve()
+        _verify_pipeline_jar(pipeline_jar)
+        jar_path = staging / PIPELINE_JAR
+        jar_path.write_bytes(pipeline_jar.read_bytes())
         manifest = {
             "schema": 1,
             "environment": ENVIRONMENT,
@@ -166,17 +187,22 @@ def build(repository: Path, output: Path, *, commit: str, run_id: str,
             "images": images,
             "source_archive": SOURCE_ARCHIVE,
             "source_files": source_hashes,
+            "pipeline_job": {
+                "file": PIPELINE_JAR,
+                "jar_sha256": _sha256(jar_path),
+                "source_sha256": source_hashes[PIPELINE_SOURCE],
+            },
             "ready_for_dev_pipeline": True,
             "started": False,
             "acceptance": "pending",
         }
         (staging / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         checksums = "\n".join(
-            f"{_sha256(staging / name)}  {name}" for name in (SOURCE_ARCHIVE, MANIFEST)
+            f"{_sha256(staging / name)}  {name}" for name in (SOURCE_ARCHIVE, PIPELINE_JAR, MANIFEST)
         ) + "\n"
         (staging / CHECKSUMS).write_text(checksums, encoding="utf-8")
         with tarfile.open(output, "w:gz", format=tarfile.PAX_FORMAT) as bundle:
-            for name in (SOURCE_ARCHIVE, MANIFEST, CHECKSUMS):
+            for name in (SOURCE_ARCHIVE, PIPELINE_JAR, MANIFEST, CHECKSUMS):
                 path = staging / name
                 info = bundle.gettarinfo(str(path), arcname=name)
                 info.uid = info.gid = 0
@@ -220,9 +246,17 @@ def verify(bundle: Path) -> dict:
     if not isinstance(source_hashes, dict) or not source_hashes:
         raise ValueError("candidate source manifest missing")
     _verify_archive_bytes(payload[SOURCE_ARCHIVE], source_hashes)
+    pipeline_job = manifest.get("pipeline_job")
+    if not isinstance(pipeline_job, dict) or pipeline_job.get("file") != PIPELINE_JAR:
+        raise ValueError("candidate PipelineJob identity missing")
+    if pipeline_job.get("source_sha256") != source_hashes.get(PIPELINE_SOURCE):
+        raise ValueError("candidate PipelineJob source hash mismatch")
+    if pipeline_job.get("jar_sha256") != hashlib.sha256(payload[PIPELINE_JAR]).hexdigest():
+        raise ValueError("candidate PipelineJob JAR hash mismatch")
+    _verify_pipeline_jar_bytes(payload[PIPELINE_JAR])
     checksum_lines = payload[CHECKSUMS].decode("utf-8").splitlines()
     expected_checksums = {line.split("  ", 1)[1]: line.split("  ", 1)[0] for line in checksum_lines if "  " in line}
-    if expected_checksums != {SOURCE_ARCHIVE: hashlib.sha256(payload[SOURCE_ARCHIVE]).hexdigest(), MANIFEST: hashlib.sha256(payload[MANIFEST]).hexdigest()}:
+    if expected_checksums != {SOURCE_ARCHIVE: hashlib.sha256(payload[SOURCE_ARCHIVE]).hexdigest(), PIPELINE_JAR: hashlib.sha256(payload[PIPELINE_JAR]).hexdigest(), MANIFEST: hashlib.sha256(payload[MANIFEST]).hexdigest()}:
         raise ValueError("candidate bundle checksums mismatch")
     return {"verified": True, "sha256": _sha256(bundle), "bytes": bundle.stat().st_size,
             "environment": ENVIRONMENT, "project": PROJECT, "run_id": manifest["run_id"],
@@ -243,6 +277,16 @@ def _verify_archive_bytes(data: bytes, expected_hashes: dict[str, str]) -> None:
         Path(temporary.name).unlink(missing_ok=True)
 
 
+def _verify_pipeline_jar_bytes(data: bytes) -> None:
+    temporary = tempfile.NamedTemporaryFile(delete=False)
+    try:
+        temporary.write(data)
+        temporary.close()
+        _verify_pipeline_jar(Path(temporary.name))
+    finally:
+        Path(temporary.name).unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -251,6 +295,7 @@ def main() -> None:
     build_parser.add_argument("--output", type=Path, required=True)
     build_parser.add_argument("--commit", required=True)
     build_parser.add_argument("--run-id", required=True)
+    build_parser.add_argument("--pipeline-jar", type=Path, required=True)
     for name in ("mysql", "redis", "worker", "flink"):
         build_parser.add_argument(f"--{name}-image", required=True)
     verify_parser = subparsers.add_parser("verify")
@@ -259,6 +304,7 @@ def main() -> None:
     try:
         if args.action == "build":
             result = build(args.repository, args.output, commit=args.commit, run_id=args.run_id,
+                           pipeline_jar=args.pipeline_jar,
                            mysql_image=args.mysql_image, redis_image=args.redis_image,
                            worker_image=args.worker_image, flink_image=args.flink_image)
         else:

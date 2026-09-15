@@ -56,6 +56,12 @@ class DevGatewayContractTests(unittest.TestCase):
                 archive.addfile(info, __import__("io").BytesIO(data))
             self.assertTrue(path.is_file())
 
+    def test_candidate_gateway_requires_compiled_pipeline_artifact(self):
+        text = IMPLEMENTATION.read_text(encoding="utf-8")
+        self.assertIn('pipeline-job.jar', text)
+        self.assertIn('candidate Flink artifact hash mismatch', text)
+        self.assertIn('candidate PipelineJob source hash mismatch', text)
+
     def test_installer_is_dev_scoped(self):
         text = (ROOT / "deploy/environments/event_pipeline/install-dev-gateway.sh").read_text(encoding="utf-8")
         self.assertIn("binhu-dev-deploy", text)

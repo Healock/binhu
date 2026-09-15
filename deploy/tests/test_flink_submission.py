@@ -31,7 +31,7 @@ GROUP BY run_id, task_id, source_id;
 
 
 def job(name: str = RUN_ID, state: str = "RUNNING", sinks: tuple[str, ...] =
-        ("dev_revisions",)) -> dict:
+        ("dev_revisions", "dev_task_metadata")) -> dict:
     descriptions = [
         "Source: dev_events -> Calc where=[environment = 'development' and run_id = "
         f"'{name}'] topic=dev.task.events.v1",
@@ -46,6 +46,23 @@ def job(name: str = RUN_ID, state: str = "RUNNING", sinks: tuple[str, ...] =
 
 
 class FlinkSubmissionContractTests(unittest.TestCase):
+    def test_upload_jar_accepts_only_checked_dev_paths(self):
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = '{"status":"success","filename":"/tmp/dev-pipeline-job.jar"}'
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            return Result()
+
+        client = flink_submission.FlinkRest("dev-jobmanager", runner=runner)
+        self.assertEqual(client.upload_jar("/tmp/dev-pipeline-job.jar"), "dev-pipeline-job.jar")
+        with self.assertRaisesRegex(ValueError, "unexpected Dev Flink JAR path"):
+            client.upload_jar("/tmp/other.jar")
+        self.assertIn("path=@/tmp/dev-pipeline-job.jar", calls[0])
+
     def test_runtime_identity_is_parsed_as_exact_key_values(self):
         self.assertEqual(
             flink_submission.parse_runtime_identity(
@@ -88,14 +105,12 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             flink_submission.validate_job_graph(bad, RUN_ID)
 
     def test_job_graph_requires_both_insert_sinks(self):
-        with self.assertRaisesRegex(ValueError, "exactly one"):
+        with self.assertRaisesRegex(ValueError, "missing INSERT sink"):
             flink_submission.validate_job_graph(job(sinks=()), RUN_ID)
 
     def test_active_jobs_are_partitioned_without_touching_other_dev_jobs(self):
         current = job()
-        current["name"] = RUN_ID + " : dev_task_metadata"
         stale_monitor = job("dev-20260915-dualtrack-monitor")
-        stale_monitor["name"] = "dev-20260915-dualtrack-monitor : dev_revisions"
         other_dev_job = job("dev-20260915-metadata08")
         active, stale = flink_submission.partition_active_jobs(
             [current, stale_monitor, other_dev_job], RUN_ID
@@ -109,26 +124,21 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         self.assertEqual(active, [])
         self.assertEqual(stale, [])
 
-    def test_runtime_requires_exactly_two_matching_jobs_and_group(self):
+    def test_runtime_requires_one_matching_job_with_both_sinks_and_group(self):
         report = flink_submission.validate_runtime(
-            [job(RUN_ID + "-revisions"), job(RUN_ID + "-metadata", sinks=("dev_task_metadata",))],
+            [job(RUN_ID)],
             [f"{RUN_ID}-flink"], RUN_ID
         )
-        self.assertEqual(report["job_count"], 2)
-        with self.assertRaisesRegex(ValueError, "exactly two"):
-            flink_submission.validate_runtime([job()], [f"{RUN_ID}-flink"], RUN_ID)
+        self.assertEqual(report["job_count"], 1)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            flink_submission.validate_runtime([job(), job("second")], [f"{RUN_ID}-flink"], RUN_ID)
         with self.assertRaisesRegex(ValueError, "consumer group"):
-            mismatch_second = job(RUN_ID + "-metadata", sinks=("dev_task_metadata",))
-            mismatch_second["jid"] = "jid-mismatch-second"
             flink_submission.validate_runtime(
-                [job(RUN_ID + "-revisions"), mismatch_second], ["dev-stale-flink"], RUN_ID
+                [job(RUN_ID)], ["dev-stale-flink"], RUN_ID
             )
         with self.assertRaisesRegex(ValueError, "missing INSERT sink"):
-            only_revisions = job(RUN_ID + "-only-revisions", sinks=("dev_revisions",))
-            second_revisions = job(RUN_ID + "-second-revisions", sinks=("dev_revisions",))
-            second_revisions["jid"] = "jid-second-revisions"
             flink_submission.validate_runtime(
-                [only_revisions, second_revisions], [f"{RUN_ID}-flink"], RUN_ID
+                [job(RUN_ID, sinks=("dev_revisions",))], [f"{RUN_ID}-flink"], RUN_ID
             )
 
     def test_stale_job_clear_waits_before_new_submission(self):
@@ -144,7 +154,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
 
         with patch.object(flink_submission.time, "sleep"):
             flink_submission.wait_for_stale_clear(Client(), RUN_ID, timeout=2)
-        with self.assertRaisesRegex(ValueError, "duplicate"):
+        with self.assertRaisesRegex(ValueError, "exactly one"):
             duplicate = job()
             flink_submission.validate_runtime([duplicate, duplicate], [f"{RUN_ID}-flink"], RUN_ID)
 

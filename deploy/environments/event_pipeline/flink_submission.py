@@ -98,8 +98,9 @@ def validate_job_graph(job: dict[str, Any], expected_run_id: str) -> dict[str, A
     if topic_markers and topic_markers != {TOPIC}:
         raise ValueError("Flink JobGraph topic is not the fixed Dev topic")
     sinks = {sink for sink in EXPECTED_SINKS if sink in text}
-    if len(sinks) != 1:
-        raise ValueError("Flink JobGraph must contain exactly one expected sink")
+    if sinks != EXPECTED_SINKS:
+        missing = ",".join(sorted(EXPECTED_SINKS - sinks))
+        raise ValueError(f"Flink runtime missing INSERT sink: {missing}")
     return {"jid": job.get("jid"), "name": job.get("name"), "state": job["state"],
             "sinks": sorted(sinks)}
 
@@ -122,10 +123,8 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
 
 
 def validate_runtime(jobs: list[dict[str, Any]], consumer_groups: list[str], expected_run_id: str) -> dict[str, Any]:
-    if len(jobs) != 2:
-        raise ValueError("Flink runtime must have exactly two matching jobs")
-    if len({str(item.get("jid")) for item in jobs}) != 2:
-        raise ValueError("Flink runtime contains duplicate job ids")
+    if len(jobs) != 1:
+        raise ValueError("Flink runtime must have exactly one matching job")
     job_reports = [validate_job_graph(item, expected_run_id) for item in jobs]
     sinks = {sink for report in job_reports for sink in report["sinks"]}
     if sinks != EXPECTED_SINKS:
@@ -165,8 +164,8 @@ class FlinkRest:
         return list((self.request("/jobs/overview") or {}).get("jobs", []))
 
     def upload_jar(self, container_path: str) -> str:
-        """Upload the mounted, immutable candidate JAR to the Dev JM."""
-        if container_path != "/opt/flink/usrlib/dev-pipeline-job.jar":
+        """Upload the JAR compiled from the current candidate source."""
+        if container_path != "/tmp/dev-pipeline-job.jar":
             raise ValueError("unexpected Dev Flink JAR path")
         command = ["docker", "exec", self.container, "curl", "-fsS", "--max-time", "30",
                    "-X", "POST", "http://127.0.0.1:8081/jars/upload",
@@ -209,7 +208,7 @@ def wait_for_runtime(client: FlinkRest, expected_run_id: str, consumer_groups: C
     last_error = "Flink jobs not ready"
     while time.monotonic() < deadline:
         current, _ = partition_active_jobs(client.overview(), expected_run_id)
-        if len(current) == 2:
+        if len(current) == 1:
             try:
                 details = [client.details(str(item["jid"])) for item in current]
                 return validate_runtime(details, consumer_groups(), expected_run_id)

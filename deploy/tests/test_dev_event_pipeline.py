@@ -46,6 +46,13 @@ def event():
 
 
 class FlinkStateContractTests(unittest.TestCase):
+    def test_pipeline_job_builds_one_statement_set_with_two_insert_branches(self):
+        source = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "PipelineJob.java").read_text(encoding="utf-8")
+        self.assertIn("createStatementSet()", source)
+        self.assertIn("addInsertSql(command)", source)
+        self.assertIn("statementSet.execute()", source)
+        self.assertNotIn("statementSet.addInsertSql(command);\n                    }\n                    table.executeSql(command)", source)
+
     def test_control_failure_detail_is_safe_and_keeps_flink_gate_reason(self):
         self.assertEqual(
             control.safe_control_failure_detail(
@@ -64,8 +71,8 @@ class FlinkStateContractTests(unittest.TestCase):
         source = Path("deploy/environments/event_pipeline/PipelineJob.java").read_text(encoding="utf-8")
         self.assertIn("UID_DEV_REVISIONS", source)
         self.assertIn("UID_DEV_METADATA", source)
-        self.assertIn("uid(UID_DEV_REVISIONS)", source)
-        self.assertIn("uid(UID_DEV_METADATA)", source)
+        self.assertIn("uid(table,", source)
+        self.assertIn("dev-pipeline-<id>_<transformation>", source)
         self.assertNotIn("allowNonRestoredState", source)
 
 
