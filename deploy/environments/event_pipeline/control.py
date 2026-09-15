@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
+import sys
 import tempfile
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
@@ -14,6 +16,64 @@ from . import flink_submission
 FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
 FLINK_JOBMANAGER = "binhu-development-flink-jobmanager-1"
 KAFKA_CONTAINER = "binhu-development-eventbus-kafka-1-1"
+_SAFE_CONTROL_FAILURES = frozenset(
+    {
+        "unexpected Dev root",
+        "manifest identity mismatch",
+        "runtime file identity mismatch",
+        "runtime differs from closed Dev resource definition",
+        "Dev event network identity mismatch",
+        "foreign network dependency",
+        "Dev volume referenced by another project",
+        "pipeline container has unexpected network",
+        "insufficient memory reserve",
+        "Dev resource inspection failed",
+        "Dev Flink runtime command failed",
+        "Dev Flink consumer group has no task topic assignment",
+        "Dev runtime.env run_id does not match manifest",
+        "current Dev PipelineJob.java is missing",
+        "Dev Flink Compose definition is missing",
+        "Dev Flink Compose definition is invalid",
+        "Dev Flink Compose project identity mismatch",
+        "Dev Flink Compose network identity mismatch",
+        "Dev Flink jobmanager environment label missing",
+        "Dev Flink taskmanager environment label missing",
+        "Dev Flink jobmanager pids_limit missing",
+        "Dev Flink taskmanager pids_limit missing",
+        "Dev Flink jobmanager checkpoint volume missing",
+        "Dev Flink taskmanager checkpoint volume missing",
+        "Dev Flink current run has an incomplete job set",
+        "register the fixed Dev schema before starting workers",
+        "startup deadline reached; preserve resources and remeasure",
+        "startup failed; preserve private diagnostics",
+        "Flink jobs not ready",
+        "old Dev Flink dual-track jobs did not stop",
+        "Flink job is not RUNNING",
+        "Flink JobGraph run_id does not match",
+        "Flink JobGraph run_id filter does not match",
+        "Flink JobGraph environment filter is missing",
+        "Flink JobGraph topic is not the fixed Dev topic",
+        "Flink JobGraph must contain exactly one expected sink",
+        "Flink runtime must have exactly two matching jobs",
+        "Flink runtime contains duplicate job ids",
+        "Flink consumer group does not match current run",
+        "Flink REST request failed",
+        "Flink JAR upload failed",
+        "Flink JAR upload response invalid",
+        "Flink JAR upload was not accepted",
+        "Flink JAR submission returned no job id",
+    }
+)
+
+
+def safe_control_failure_detail(error: Exception) -> str:
+    """Return only a fixed, non-sensitive Dev control gate reason."""
+    detail = str(error)
+    if detail in _SAFE_CONTROL_FAILURES or re.fullmatch(
+        r"Flink runtime missing INSERT sink: (?:dev_revisions|dev_task_metadata)", detail
+    ):
+        return detail
+    return type(error).__name__
 
 
 def expected_networks(service):
@@ -192,5 +252,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         print(json.dumps(apply() if args.mode == "apply" else measure()))
-    except Exception:
+    except Exception as error:
+        print(json.dumps({
+            "error": "dev_control_failed",
+            "reason": safe_control_failure_detail(error),
+        }), file=sys.stderr)
         raise SystemExit("Dev pipeline control refused; inspect private evidence") from None
