@@ -188,7 +188,7 @@ def test_public_submission_is_encrypted_and_idempotent(tmp_path):
             "form_token": form_token,
             "device_id": "device-id-for-tests-0001",
             "name": "测试人员",
-            "identity_number": "32058419900101123X",
+            "identity_number": "11010519491231002X",
             "phone": "13800000000",
             "address": "测试地址",
         }
@@ -207,6 +207,55 @@ def test_public_submission_is_encrypted_and_idempotent(tmp_path):
     assert second.status_code == 202
     assert len(repo.submissions) == 1
     assert list(config.PHOTO_DIR.glob("*.bin"))
+
+
+def test_public_submission_rejects_bad_identity_checksum_before_consuming_token(tmp_path):
+    client, repo, config = make_client(tmp_path)
+    token = "venue-token-" + "v" * 32
+    repo.venue = {
+        "local_venue_id": 7,
+        "display_name": "测试场所",
+        "status": "active",
+        "token_hmac": keyed_digest(config.PUBLIC_TOKEN_HMAC_KEY, "venue-token", token),
+    }
+    with client:
+        form_token = client.get(f"/api/public/venues/{token}").json()["form_token"]
+        response = client.post(
+            "/api/public/submissions",
+            data={
+                "submission_id": str(uuid.uuid4()),
+                "venue_token": token,
+                "form_token": form_token,
+                "device_id": "device-id-for-validation",
+                "name": "测试人员",
+                "identity_number": "110105194912310020",
+                "phone": "13800000000",
+                "address": "测试 地址",
+            },
+            files={"photo": ("photo.jpg", jpeg_bytes(), "image/jpeg")},
+        )
+    assert response.status_code == 422
+    assert "校验码" in response.json()["detail"]
+    assert not repo.submissions
+    assert repo.form_tokens
+
+
+def test_registration_page_contains_client_side_format_checks_and_required_fields(tmp_path):
+    client, repo, config = make_client(tmp_path)
+    token = "validation-page-token-" + "p" * 32
+    repo.venue = {
+        "local_venue_id": 7,
+        "display_name": "测试场所",
+        "status": "active",
+        "token_hmac": keyed_digest(config.PUBLIC_TOKEN_HMAC_KEY, "venue-token", token),
+    }
+    with client:
+        response = client.get(f"/venue/{token}")
+    assert response.status_code == 200
+    page = response.content.decode("utf-8")
+    assert "required" in page
+    assert "identityChecks" in page
+    assert "1[3-9]" in page
 
 
 def test_internal_venue_update_never_stores_raw_token(tmp_path):
@@ -355,7 +404,7 @@ def test_new_submission_wakes_waiting_worker(tmp_path):
                 "form_token": form_token,
                 "device_id": "device-id-for-wait-tests",
                 "name": "测试人员",
-                "identity_number": "32058419900101123X",
+                "identity_number": "11010519491231002X",
                 "phone": "13800000000",
                 "address": "测试地址",
             },

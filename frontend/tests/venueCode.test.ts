@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { resolveVenueCodeQrImageUrl } from '../src/api/client.ts'
+import { getVenueVisitPhotoUrl, resolveVenueCodeQrImageUrl } from '../src/api/client.ts'
+
+test('场所登记照片使用受认证的访问路径', () => {
+  assert.equal(getVenueVisitPhotoUrl(42), '/venue-visits/42/photo')
+})
 
 test('场所码图片地址在未配置远程 API 时保持同源', () => {
   assert.equal(
@@ -41,4 +45,11 @@ test('场所管理提供带二次确认的软删除入口', () => {
   assert.match(page, /既有登记记录仍按原期限保留/)
   assert.match(page, /await deleteVenueCode\(row\.id\)/)
   assert.match(client, /api\.delete\(`\/venue-codes\/\$\{id\}`\)/)
+})
+
+test('场所登记列表提供照片查看入口', () => {
+  const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  assert.match(page, /getVenueVisitPhotoUrl\(row\.id\)/)
+  assert.match(page, /查看照片/)
+  assert.match(page, /AuthenticatedImage/)
 })

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message } from 'antd'
-import { DeleteOutlined, DownloadOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
+import { DeleteOutlined, DownloadOutlined, EyeOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   apiErrorMessage,
   createVenueCode,
   deleteVenueCode,
   exportVenueVisits,
+  getVenueVisitPhotoUrl,
   getVenueCloudStatus,
   getVenueCodeQr,
   listVenueCodes,
@@ -255,6 +256,29 @@ export default function VenueCodeManagement() {
             { title: '手机号', dataIndex: 'phone' },
             { title: '地址', dataIndex: 'address' },
             { title: '登记时间', dataIndex: 'submitted_at' },
+            {
+              title: '照片',
+              dataIndex: 'photo',
+              render: (photo: VenueVisitItem['photo'], row: VenueVisitItem) => photo
+                ? <Button
+                    type="link"
+                    icon={<EyeOutlined />}
+                    onClick={() => Modal.info({
+                      title: '登记照片',
+                      width: 560,
+                      content: (
+                        <div className="flex min-h-40 items-center justify-center py-2">
+                          <AuthenticatedImage
+                            alt="登记照片"
+                            src={getVenueVisitPhotoUrl(row.id)}
+                            style={{ maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain' }}
+                          />
+                        </div>
+                      ),
+                    })}
+                  >查看照片</Button>
+                : <span className="text-[var(--app-text-secondary)]">无</span>,
+            },
           ]}
           scroll={{ x: 900 }}
         />
