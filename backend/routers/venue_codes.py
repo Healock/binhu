@@ -541,3 +541,16 @@ async def venue_visit_photo(visit_id: int, user: dict = Depends(require_permissi
         media_type=str(row[1]),
         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
+
+
+@admin_router.delete("/venue-visits/{visit_id}")
+async def delete_venue_visit(visit_id: int, request: Request, user: dict = Depends(require_permission(VENUE_MANAGE)), conn=Depends(get_venue_db)):
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT id FROM _venue_visits WHERE id=%s AND deleted_at IS NULL", (visit_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, "登记记录不存在")
+        await cur.execute("UPDATE _venue_visits SET deleted_at=UTC_TIMESTAMP() WHERE id=%s AND deleted_at IS NULL", (visit_id,))
+        await cur.execute("UPDATE _venue_visit_photos SET deleted_at=UTC_TIMESTAMP() WHERE visit_id=%s AND deleted_at IS NULL", (visit_id,))
+    await conn.commit()
+    await record_admin_audit(user, "venue.visit.delete", target_type="venue_visit", target_name=str(visit_id), detail={"history_retained": True}, **request_audit_fields(request))
+    return {"message": "登记记录已删除"}

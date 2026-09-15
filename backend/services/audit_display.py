@@ -110,6 +110,7 @@ ACTION_LABELS: dict[str, str] = {
     "venue.rotate_token": "轮换场所码二维码",
     "venue.export": "导出场所登记记录",
     "venue.export_zip": "导出场所登记照片压缩包",
+    "venue.visit.delete": "删除场所登记记录",
     "work_log.create": "创建工作日志",
     "work_log.delete": "删除工作日志",
     "work_log.takeover": "接管工作日志",

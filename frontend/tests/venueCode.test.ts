@@ -54,6 +54,15 @@ test('场所登记列表提供照片查看入口', () => {
   assert.match(page, /AuthenticatedImage/)
 })
 
+test('场所登记管理支持删除确认且移除旧版单独 XLSX 导出入口', () => {
+  const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(page, /删除这条登记记录？/)
+  assert.match(page, /deleteVenueVisit\(row\.id\)/)
+  assert.doesNotMatch(page, /导出登记记录/)
+  assert.match(client, /api\.delete\(`\/venue-visits\/\$\{id\}`\)/)
+})
+
 test('场所登记支持按条件查询并导出包含照片的 ZIP', () => {
   const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
