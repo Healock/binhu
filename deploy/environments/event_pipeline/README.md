@@ -167,5 +167,10 @@ Backend、Production、Staging 或 Kafka/Flink 控制面，也不写业务表。
 `/tmp` tmpfs、128 MiB 内存、0.2 CPU、128 pids 上限和 5 MiB × 2 的 Docker
 日志轮换；证据卷不随 Compose 更新删除。
 
+当前 Dev worker 镜像可能早于该服务发布，因此 Compose 会把候选包中的
+`runtime.py` 和 `dual_track_monitor.py` 以只读文件挂入 monitor 容器。该挂载只
+覆盖 monitor 入口模块，不改变镜像、业务代码或其他服务；候选包清单和 Compose
+模型哈希会同时记录这两个文件。
+
 ### Workflow environment contract
 All install, prepare, and deploy workflows must run in the GitHub development Environment.
