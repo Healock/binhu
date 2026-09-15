@@ -177,6 +177,9 @@ export function getVenueVisitPhotoUrl(visitId: number): string {
 export async function exportVenueVisits(params: Record<string, unknown> = {}): Promise<Blob> {
   return (await api.get('/venue-visits/export', { params, responseType: 'blob' })).data
 }
+export async function exportVenueVisitsZip(params: Record<string, unknown> = {}): Promise<Blob> {
+  return (await api.get('/venue-visits/export-zip', { params, responseType: 'blob' })).data
+}
 export async function getPublicVenueInfo(token: string): Promise<{ venue_id: number; name: string; form_token: string }> {
   return (await api.get(`/public/venue-codes/${encodeURIComponent(token)}`)).data
 }

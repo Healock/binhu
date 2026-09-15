@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { getVenueVisitPhotoUrl, resolveVenueCodeQrImageUrl } from '../src/api/client.ts'
+import { exportVenueVisitsZip, getVenueVisitPhotoUrl, resolveVenueCodeQrImageUrl } from '../src/api/client.ts'
 
 test('场所登记照片使用受认证的访问路径', () => {
   assert.equal(getVenueVisitPhotoUrl(42), '/venue-visits/42/photo')
@@ -52,6 +52,17 @@ test('场所登记列表提供照片查看入口', () => {
   assert.match(page, /getVenueVisitPhotoUrl\(row\.id\)/)
   assert.match(page, /查看照片/)
   assert.match(page, /AuthenticatedImage/)
+})
+
+test('场所登记支持按条件查询并导出包含照片的 ZIP', () => {
+  const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(page, /姓名、身份证号、手机号、地址/)
+  assert.match(page, /DatePicker.RangePicker/)
+  assert.match(page, /exportVenueVisitsZip\(visitFilters\)/)
+  assert.match(page, /导出查询结果（ZIP）/)
+  assert.match(client, /api.get\('\/venue-visits\/export-zip'/)
+  assert.equal(typeof exportVenueVisitsZip, 'function')
 })
 
 test('遗留本地登记组件也把照片作为必填并防止空文件崩溃', () => {

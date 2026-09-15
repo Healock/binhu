@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message } from 'antd'
+import { Alert, Button, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message } from 'antd'
 import { DeleteOutlined, DownloadOutlined, EyeOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   apiErrorMessage,
   createVenueCode,
   deleteVenueCode,
   exportVenueVisits,
+  exportVenueVisitsZip,
   getVenueVisitPhotoUrl,
   getVenueCloudStatus,
   getVenueCodeQr,
@@ -62,6 +63,7 @@ export default function VenueCodeManagement() {
   const [loading, setLoading] = useState(false)
   const [qrLoadingId, setQrLoadingId] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [visitFilters, setVisitFilters] = useState<{ keyword?: string; start?: string; end?: string }>({})
 
   const load = async () => {
     setLoading(true)
@@ -112,6 +114,17 @@ export default function VenueCodeManagement() {
     } catch (reason: unknown) {
       message.error(apiErrorMessage(reason, '导出失败'))
     }
+  }
+  const exportZip = async () => {
+    try {
+      const blob = await exportVenueVisitsZip(visitFilters)
+      await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.zip`)
+    } catch (reason: unknown) { message.error(apiErrorMessage(reason, '压缩包导出失败')) }
+  }
+  const searchVisits = async (values: { keyword?: string; range?: [any, any] }) => {
+    const filters = { keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
+    setVisitFilters(filters)
+    try { const result = await listVenueVisits(filters); setVisits(result.data) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '登记查询失败')) }
   }
 
   const showVenueQr = async (row: VenueCodeItem) => {
@@ -244,6 +257,14 @@ export default function VenueCodeManagement() {
         <Table rowKey="id" loading={loading} columns={columns} dataSource={venues} pagination={{ pageSize: 20 }} scroll={{ x: 1120 }} />
       </Panel>
       <Panel title="最近登记记录" padded={false}>
+        <div className="p-4 flex flex-wrap items-center gap-3">
+          <Form layout="inline" onFinish={searchVisits}>
+            <Form.Item name="keyword"><Input allowClear placeholder="姓名、身份证号、手机号、地址" style={{ width: 260 }} /></Form.Item>
+            <Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item>
+            <Button type="primary" htmlType="submit">查询</Button>
+          </Form>
+          {canExport && <Button icon={<DownloadOutlined />} onClick={exportZip}>导出查询结果（ZIP）</Button>}
+        </div>
         <Table
           rowKey="id"
           loading={loading}

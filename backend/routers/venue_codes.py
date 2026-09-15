@@ -9,6 +9,8 @@ import html
 import io
 import secrets
 import time
+import zipfile
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -376,18 +378,66 @@ async def list_visits(user: dict = Depends(require_permission(VENUE_VIEW)), conn
         where.append("visit.submitted_at >= %s"); params.append(start)
     if end:
         where.append("visit.submitted_at < %s"); params.append(end)
-    if keyword.strip():
-        digest, _ = hmac_digest(keyword, kind="identity")
-        where.append("(visit.identity_hmac=%s OR venue.name LIKE %s)"); params.extend([digest, f"%{keyword.strip()}%"])
     where_sql = " AND ".join(where)
     offset = (page - 1) * page_size
     async with conn.cursor() as cur:
         await cur.execute(f"SELECT COUNT(*) FROM _venue_visits visit JOIN _venue_codes venue ON venue.id=visit.venue_id WHERE {where_sql}", tuple(params))
         total = int((await cur.fetchone())[0])
-        await cur.execute(f"SELECT visit.id,visit.venue_id,visit.encrypted_name,visit.encrypted_identity,visit.encrypted_phone,visit.encrypted_address,visit.submitted_at,venue.name,photo.mime_type,photo.size_bytes FROM _venue_visits visit JOIN _venue_codes venue ON venue.id=visit.venue_id LEFT JOIN _venue_visit_photos photo ON photo.visit_id=visit.id AND photo.deleted_at IS NULL WHERE {where_sql} ORDER BY visit.submitted_at DESC LIMIT %s OFFSET %s", tuple(params + [page_size, offset]))
+        visit_sql = f"SELECT visit.id,visit.venue_id,visit.encrypted_name,visit.encrypted_identity,visit.encrypted_phone,visit.encrypted_address,visit.submitted_at,venue.name,photo.mime_type,photo.size_bytes FROM _venue_visits visit JOIN _venue_codes venue ON venue.id=visit.venue_id LEFT JOIN _venue_visit_photos photo ON photo.visit_id=visit.id AND photo.deleted_at IS NULL WHERE {where_sql} ORDER BY visit.submitted_at DESC"
+        if keyword.strip():
+            await cur.execute(visit_sql, tuple(params))
+        else:
+            await cur.execute(visit_sql + " LIMIT %s OFFSET %s", tuple(params + [page_size, offset]))
         rows = await cur.fetchall()
     data = [{"id": int(r[0]), "venue_id": int(r[1]), "venue_name": str(r[7]), "name": decrypt_secret(r[2]), "identity_number": decrypt_secret(r[3]), "phone": decrypt_secret(r[4]), "address": decrypt_secret(r[5]), "submitted_at": r[6].isoformat() if r[6] else None, "photo": {"mime_type": r[8], "size_bytes": int(r[9])} if r[8] else None} for r in rows]
+    if keyword.strip():
+        needle = keyword.strip().casefold()
+        data = [item for item in data if any(needle in str(item[field]).casefold() for field in ("venue_name", "name", "identity_number", "phone", "address"))]
+        total = len(data)
+        data = data[(page - 1) * page_size: page * page_size]
     return {"data": data, "total": total, "page": page, "page_size": page_size}
+
+
+def _safe_export_filename(name: str, identity: str) -> str:
+    safe_name = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", name).strip(" ._") or "未知姓名"
+    safe_identity = re.sub(r"[^0-9Xx]", "_", identity).strip(" ._") or "未知证件"
+    return f"{safe_name}_{safe_identity}.jpg"
+
+
+@admin_router.get("/venue-visits/export-zip")
+async def export_visits_zip(request: Request, user: dict = Depends(require_permission(VENUE_EXPORT)), conn=Depends(get_venue_db), venue_id: int | None = None, keyword: str = Query(default="", max_length=100), start: datetime | None = None, end: datetime | None = None):
+    where = ["visit.deleted_at IS NULL"]; params: list[object] = []
+    if venue_id is not None: where.append("visit.venue_id=%s"); params.append(venue_id)
+    if start: where.append("visit.submitted_at >= %s"); params.append(start)
+    if end: where.append("visit.submitted_at < %s"); params.append(end)
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT visit.id,venue.name,visit.encrypted_name,visit.encrypted_identity,visit.encrypted_phone,visit.encrypted_address,visit.submitted_at,photo.storage_key,photo.mime_type FROM _venue_visits visit JOIN _venue_codes venue ON venue.id=visit.venue_id LEFT JOIN _venue_visit_photos photo ON photo.visit_id=visit.id AND photo.deleted_at IS NULL AND photo.retention_until>UTC_TIMESTAMP() WHERE " + " AND ".join(where) + " ORDER BY visit.submitted_at DESC", tuple(params))
+        rows = await cur.fetchall()
+    records = []
+    needle = keyword.strip().casefold()
+    for row in rows:
+        record = {"id": int(row[0]), "venue_name": str(row[1]), "name": decrypt_secret(row[2]), "identity_number": decrypt_secret(row[3]), "phone": decrypt_secret(row[4]), "address": decrypt_secret(row[5]), "submitted_at": row[6].isoformat() if row[6] else "", "storage_key": row[7], "mime_type": row[8]}
+        if not needle or any(needle in str(record[field]).casefold() for field in ("venue_name", "name", "identity_number", "phone", "address")):
+            records.append(record)
+    wb = Workbook(); ws = wb.active; ws.title = "场所登记"; ws.append(["编号", "场所", "姓名", "公民身份号码", "手机号", "地址", "登记时间", "照片文件"])
+    archive = io.BytesIO(); photo_dir = Path(settings.VENUE_PHOTO_DIR).resolve()
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+        used: set[str] = set()
+        for record in records:
+            filename = None
+            if record["storage_key"]:
+                candidate = _safe_export_filename(record["name"], record["identity_number"])
+                if candidate in used:
+                    candidate = candidate[:-4] + f"_{record['id']}.jpg"
+                used.add(candidate)
+                photo_path = (photo_dir / str(record["storage_key"])).resolve()
+                if photo_dir in photo_path.parents and photo_path.is_file():
+                    zf.write(photo_path, arcname=f"photos/{candidate}"); filename = f"photos/{candidate}"
+            ws.append([record["id"], record["venue_name"], record["name"], record["identity_number"], record["phone"], record["address"], record["submitted_at"], filename or ""])
+        xlsx = io.BytesIO(); wb.save(xlsx); zf.writestr("登记信息.xlsx", xlsx.getvalue())
+    archive.seek(0)
+    await record_admin_audit(user, "venue.export_zip", target_type="venue_visits", target_name="filtered", detail={"rows": len(records)}, **request_audit_fields(request))
+    return StreamingResponse(archive, media_type="application/zip", headers={"Content-Disposition": "attachment; filename=venue-visits.zip"})
 
 
 @admin_router.get("/venue-visits/export")
