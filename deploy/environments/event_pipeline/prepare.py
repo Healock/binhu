@@ -15,6 +15,7 @@ from .services.kafka_delivery_store import SCHEMA_SQL
 from .flink_sql import render
 
 PROJECT = "binhu-development-pipeline"
+PUBLIC_CANDIDATE_FILES = frozenset({"init.sql", "redis.conf", "pipeline.sql", "runtime.py", "dual_track_monitor.py"})
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
 BACKEND_NETWORK = "binhu-development_internal"
@@ -335,12 +336,10 @@ CREATE TABLE dev_task_metadata_python_events (
     for name, content in files.items():
         target = ROOT / name
         target.write_text(content, encoding="utf-8")
-        target.chmod(0o600)
-    # Parent directory stays 0700. Container service users need read permission
-    # on the explicitly mounted files; they cannot enumerate the host parent.
-    (ROOT / "init.sql").chmod(0o644)
-    (ROOT / "redis.conf").chmod(0o644)
-    (ROOT / "pipeline.sql").chmod(0o644)
+        # Parent directory stays private.  Files consumed by an unprivileged
+        # container user are explicitly readable; credentials and manifests
+        # remain owner-only.
+        target.chmod(0o644 if name in PUBLIC_CANDIDATE_FILES else 0o600)
     manifest = {"environment": "development", "project": PROJECT, "run_id": run_id,
                 "images": images, "started": False, "acceptance": "pending",
                 "hashes": {k: hashlib.sha256((ROOT / k).read_bytes()).hexdigest() for k in files}}
