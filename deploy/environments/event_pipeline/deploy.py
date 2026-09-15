@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -263,7 +264,14 @@ def main() -> None:
         else:
             result = verify(args.bundle)
         print(json.dumps(result, sort_keys=True))
-    except (OSError, ValueError, tarfile.TarError, json.JSONDecodeError):
+    except (OSError, ValueError, tarfile.TarError, json.JSONDecodeError) as failure:
+        # Keep the public error stable while exposing a short, non-sensitive
+        # diagnostic for CI.  The candidate contains no credentials, but an
+        # exception can still include paths or parser details; never print a
+        # full traceback or arbitrary exception text to the workflow log.
+        reason = type(failure).__name__
+        detail = re.sub(r"(?i)(password|secret|token|cookie|authorization|bearer)\s*[:=]\s*[^\s,;]+", r"\1=<redacted>", str(failure))
+        print(json.dumps({"error": "candidate_operation_failed", "reason": reason, "detail": detail[:160]}), file=sys.stderr)
         raise SystemExit("Dev pipeline candidate operation failed; preserve evidence") from None
 
 
