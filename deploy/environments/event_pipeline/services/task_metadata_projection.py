@@ -134,6 +134,36 @@ class IncrementalTaskMetadataProjector:
         row["event_counts"][event_name] += 1
         return row
 
+    def restore_snapshot(self, value: dict[str, Any]) -> None:
+        """Restore one aggregate from the durable Python projection table.
+
+        Kafka offsets are a delivery cursor, not a projection checkpoint.  A
+        worker restart must therefore hydrate its reducer before consuming new
+        records; otherwise the next event would overwrite a partial in-memory
+        count with a lower one.
+        """
+        required = {
+            "environment", "run_id", "task_id", "source_id", "revision",
+            "event_count", "changed_field_count", *[f"{name}_count" for name in EVENT_COUNTERS],
+        }
+        if set(value) != required or value.get("environment") != "development":
+            raise ValueError("invalid persisted projection identity")
+        key = (value["run_id"], value["task_id"], value["source_id"])
+        if not isinstance(value["run_id"], str) or not isinstance(value["task_id"], str):
+            raise ValueError("invalid persisted projection key")
+        if type(value["source_id"]) is not int or value["source_id"] <= 0:
+            raise ValueError("invalid persisted projection source")
+        numeric = ["revision", "event_count", "changed_field_count", *[f"{name}_count" for name in EVENT_COUNTERS]]
+        if any(type(value[name]) is not int or value[name] < 0 for name in numeric):
+            raise ValueError("invalid persisted projection counters")
+        self._rows[key] = {
+            "environment": "development", "run_id": key[0], "task_id": key[1],
+            "source_id": key[2], "revision": value["revision"],
+            "event_count": value["event_count"],
+            "changed_field_count": value["changed_field_count"],
+            "event_counts": {name: value[f"{name}_count"] for name in EVENT_COUNTERS},
+        }
+
     def snapshot(self, key: tuple[str, str, int]) -> dict[str, Any]:
         row = self._rows[key].copy()
         row.pop("_revision_signatures", None)

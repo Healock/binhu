@@ -45,6 +45,33 @@ class TaskMetadataProjectionTests(unittest.TestCase):
                 {**event("11111111-1111-4111-8111-111111111111", 1), "event_type": "task.deleted"},
             ])
 
+    def test_projector_restores_persisted_projection_after_worker_restart(self):
+        first = IncrementalTaskMetadataProjector()
+        first.apply(event("11111111-1111-4111-8111-111111111111", 1, "task.created"))
+        first.apply(event("22222222-2222-4222-8222-222222222222", 2, "task.saved"))
+        persisted = flatten_projection(first.snapshot(("dev-test-1", "t_fullchain:1", 1)))
+
+        restarted = IncrementalTaskMetadataProjector()
+        restarted.restore_snapshot(persisted)
+        restarted.apply(event("33333333-3333-4333-8333-333333333333", 3, "task.reviewed"))
+
+        restored = flatten_projection(restarted.snapshot(("dev-test-1", "t_fullchain:1", 1)))
+        self.assertEqual(restored["revision"], 3)
+        self.assertEqual(restored["event_count"], 3)
+        self.assertEqual(restored["created_count"], 1)
+        self.assertEqual(restored["saved_count"], 1)
+        self.assertEqual(restored["reviewed_count"], 1)
+
+    def test_python_worker_has_a_durable_event_ledger_contract(self):
+        from deploy.environments.event_pipeline.services.python_metadata_worker import (
+            event_ledger_sql,
+        )
+        sql, params = event_ledger_sql(event("11111111-1111-4111-8111-111111111111", 1))
+        self.assertIn("dev_task_metadata_python_events", sql)
+        self.assertIn("ON DUPLICATE KEY UPDATE", sql)
+        self.assertEqual(params[0], "dev-test-1")
+        self.assertEqual(params[1], "11111111-1111-4111-8111-111111111111")
+
     def test_python_worker_writes_only_the_isolated_projection_table(self):
         row = next(iter(project_events([
             event("11111111-1111-4111-8111-111111111111", 1),
