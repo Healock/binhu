@@ -48,3 +48,43 @@ Staging 晋级评估。任何真实组件行为偏离预期、数据一致性失
 后续迁移顺序暂定为：地址匹配只读派生 → 任务图 → 人员标签 → 日报/汇总。每个
 域都要建立独立事件字段、结果表、比对合同和退出门禁，不能把本域的通过结果
 直接当作其他域已验收。
+
+## 2026-09-15：Dev recovery16 实际双轨子验收
+
+recovery15 的 savepoint 恢复失败已完成根因诊断：第一次是恢复路径错误，改正路径后
+又确认旧匿名 source operator ID 与新 JobGraph 不兼容。未使用 allowNonRestoredState，
+旧 savepoint 与失败日志保留在服务器独立证据目录。recovery16 改为干净 Flink 状态，
+使用新的运行编号、nonce 和事件 revision。
+
+实际 Dev 结果：Flink 和 Python 都产生同一任务的
+revision=302、event_count=6、changed_field_count=6、saved_count=6，
+created/claimed/assigned/reviewed/archived/deleted_count 均为 0；Kafka 投递台账的
+六条事件均为 published。只重启 Python worker 后，持久事件 ledger 仍为六条，结果
+没有回退或重复，说明重启水合逻辑已生效。
+
+该结果是一次真实 Dev 双轨一致性和 worker 重启子验收，不是 7 天/10 万事件门禁。当前
+unattributed_difference_count=0 仅适用于这次 recovery16 子集；需要以新证据编号连续
+运行至少 7 天并达到 100,000 条唯一事件，随后才能评估 Staging 晋级。
+本轮服务器证据目录为
+`/var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery16/`；
+checkpoint_recovery_verified 仍为 false，不能以干净启动替代 savepoint 恢复门禁。
+
+## 2026-09-15：双轨计时与自动监控启动
+
+旧的 `dev-20260915-metadata08` 作业已在保留作业计划、取消输出和前后作业列表后停止；
+recovery16 的 revision 与 metadata 作业继续运行。双轨计时起点登记为
+`dev-20260915-recovery16`，起始证据目录为
+`/var/lib/binhu-dev-event-pipeline/evidence/dev-20260915-dualtrack-start/`。
+起始时两套投影各有 1 条任务投影，Python 事件账本和 Kafka 投递台账各有 6 条记录。
+
+事件口径固定为：在同一个 `run_id` 内按 `event_id` 去重；相同事件 ID 且 canonical
+payload 相同只计一次，相同事件 ID 内容冲突属于失败，不计为新增事件。双轨目标是连续
+7 天且达到 100,000 条唯一事件，计时期间不得出现未归因差异。
+
+比较器已增加周期监控入口。每次扫描写入新的脱敏报告，差异包含任务 ID 哈希、revision、
+字段和 UTC 检测时间；发现差异时写入不可覆盖的 `alert-*.json` 并将状态标记为
+`paused`。计时暂停后，必须完成差异归因和修复，并以新的证据编号重新开始，不能清除
+或覆盖失败报告。当前只完成起点登记和监控单元测试，100/1,000/10,000/100,000
+事件量级仍按顺序待执行。
+
+监控实现提交 d9e35e53；PR #665 的模板章节已补齐。

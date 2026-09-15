@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,7 @@ def compare(python_path: Path, flink_path: Path, run_id: str, evidence_id: str, 
             differences.append({
                 "task_id_sha256": hashlib.sha256(task_id.encode()).hexdigest(),
                 "revision": (actual or expected or {}).get("revision", 0),
+                "detected_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "fields": sorted(set((expected or {}) | (actual or {}))),
                 "expected": expected,
                 "actual": actual,
@@ -88,6 +90,49 @@ def compare(python_path: Path, flink_path: Path, run_id: str, evidence_id: str, 
     return report
 
 
+def monitor(
+    python_path: Path,
+    flink_path: Path,
+    run_id: str,
+    evidence_id: str,
+    evidence_dir: Path,
+    interval_seconds: float = 15.0,
+    cycles: int | None = None,
+) -> dict[str, Any]:
+    """Continuously compare redacted tracks and pause timing on a mismatch.
+
+    Every cycle writes a new report. A mismatch creates an immutable alert file;
+    the caller can stop the timer based on the returned ``paused`` status.
+    """
+    if interval_seconds <= 0 or (cycles is not None and cycles <= 0):
+        raise ValueError("monitor interval and cycles must be positive")
+    if evidence_dir.exists() and evidence_dir.is_symlink():
+        raise ValueError("evidence directory must not be a symlink")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    while True:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        output = evidence_dir / f"comparison-{stamp}-{count:06d}.json"
+        report = compare(python_path, flink_path, run_id, evidence_id, output)
+        count += 1
+        if not report["passed"]:
+            alert = evidence_dir / f"alert-{stamp}-{count:06d}.json"
+            alert.write_text(json.dumps({
+                "type": "dual_track_mismatch",
+                "status": "paused",
+                "detected_at": report["generated_at"],
+                "run_id": run_id,
+                "evidence_id": evidence_id,
+                "differences": report["differences"],
+            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            report["paused"] = True
+            return report
+        if cycles is not None and count >= cycles:
+            report["paused"] = False
+            return report
+        time.sleep(interval_seconds)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", dest="python_path", type=Path, required=True)
@@ -95,10 +140,21 @@ if __name__ == "__main__":
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--evidence-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--monitor", action="store_true")
+    parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--interval-seconds", type=float, default=15.0)
+    parser.add_argument("--cycles", type=int)
     args = parser.parse_args()
     try:
-        result = compare(args.python_path, args.flink_path, args.run_id, args.evidence_id, args.output)
-        print(json.dumps({"passed": result["passed"], "unattributed_difference_count": result["unattributed_difference_count"]}))
+        if args.monitor:
+            if args.evidence_dir is None:
+                raise ValueError("--evidence-dir is required with --monitor")
+            result = monitor(args.python_path, args.flink_path, args.run_id, args.evidence_id,
+                             args.evidence_dir, args.interval_seconds, args.cycles)
+        else:
+            result = compare(args.python_path, args.flink_path, args.run_id, args.evidence_id, args.output)
+        print(json.dumps({"passed": result["passed"], "paused": result.get("paused", False),
+                          "unattributed_difference_count": result["unattributed_difference_count"]}))
         if not result["passed"]:
             raise SystemExit(2)
     except (OSError, ValueError, json.JSONDecodeError):
