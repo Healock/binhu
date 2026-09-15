@@ -88,7 +88,10 @@ def compose(images):
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
     services["dual-track-monitor"] = {**common, "image": images["worker"],
         "env_file": ["runtime.env"], "mem_limit": "128m", "cpus": .2,
-        "read_only": True, "tmpfs": ["/tmp:size=16m"],
+        # The retained named evidence volume is created by Docker as root-owned.
+        # This Dev-only monitor is otherwise read-only, so run it as root solely
+        # to append redacted evidence without adding a mutable permission sidecar.
+        "user": "0:0", "read_only": True, "tmpfs": ["/tmp:size=16m"],
         "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence",
                     "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
                     "./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro"],
