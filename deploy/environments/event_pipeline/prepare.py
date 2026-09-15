@@ -311,8 +311,6 @@ CREATE TABLE dev_task_metadata_python_events (
     (ROOT / "init.sql").chmod(0o644)
     (ROOT / "redis.conf").chmod(0o644)
     (ROOT / "pipeline.sql").chmod(0o644)
-    (ROOT / "runtime.py").chmod(0o644)
-    (ROOT / "dual_track_monitor.py").chmod(0o644)
     manifest = {"environment": "development", "project": PROJECT, "run_id": run_id,
                 "images": images, "started": False, "acceptance": "pending",
                 "hashes": {k: hashlib.sha256((ROOT / k).read_bytes()).hexdigest() for k in files}}

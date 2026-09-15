@@ -620,11 +620,6 @@ volumes:
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
 
-    def test_resident_monitor_entrypoints_are_readable_by_worker_user(self):
-        source = Path("deploy/environments/event_pipeline/prepare.py").read_text(encoding="utf-8")
-        self.assertIn('(ROOT / "runtime.py").chmod(0o644)', source)
-        self.assertIn('(ROOT / "dual_track_monitor.py").chmod(0o644)', source)
-
     def test_resident_monitor_report_is_redacted_and_pauses(self):
         row = {"task_id": "t_fullchain:1", "source_id": 1,
                "revision": 3, "event_count": 2, "changed_field_count": 2,
