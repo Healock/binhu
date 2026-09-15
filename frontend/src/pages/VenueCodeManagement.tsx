@@ -5,7 +5,7 @@ import {
   apiErrorMessage,
   createVenueCode,
   deleteVenueCode,
-  exportVenueVisits,
+  deleteVenueVisit,
   exportVenueVisitsZip,
   getVenueVisitPhotoUrl,
   getVenueCloudStatus,
@@ -107,14 +107,6 @@ export default function VenueCodeManagement() {
     }
   }
 
-  const exportRows = async () => {
-    try {
-      const blob = await exportVenueVisits()
-      await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.xlsx`)
-    } catch (reason: unknown) {
-      message.error(apiErrorMessage(reason, '导出失败'))
-    }
-  }
   const exportZip = async () => {
     try {
       const blob = await exportVenueVisitsZip(visitFilters)
@@ -249,7 +241,6 @@ export default function VenueCodeManagement() {
         <div className="p-4 flex flex-wrap items-center justify-between gap-3">
           <span>共 {venues.length} 个场所</span>
           <Space wrap>
-            {canExport && <Button icon={<DownloadOutlined />} onClick={exportRows}>导出登记记录</Button>}
             {canManage && <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); form.setFieldsValue(emptyVenue); setModalOpen(true) }}>新增场所</Button>}
             <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
           </Space>
@@ -298,8 +289,24 @@ export default function VenueCodeManagement() {
                       ),
                     })}
                   >查看照片</Button>
-                : <span className="text-[var(--app-text-secondary)]">无</span>,
+                  : <span className="text-[var(--app-text-secondary)]">无</span>,
             },
+            ...(canManage ? [{
+              title: '操作',
+              render: (_: unknown, row: VenueVisitItem) => (
+                <Popconfirm
+                  title="删除这条登记记录？"
+                  description="删除后记录和照片将从当前查询中隐藏，历史审计仍会保留。"
+                  okText="删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={async () => {
+                    try { await deleteVenueVisit(row.id); message.success('登记记录已删除'); await load() }
+                    catch (reason: unknown) { message.error(apiErrorMessage(reason, '删除失败')) }
+                  }}
+                >删除</Popconfirm>
+              ),
+            }] : []),
           ]}
           scroll={{ x: 900 }}
         />
