@@ -613,7 +613,9 @@ volumes:
         service = spec["services"]["dual-track-monitor"]
         self.assertEqual(service["command"], ["python", "-m", "event_pipeline.runtime", "dual-track-monitor"])
         self.assertTrue(service["read_only"])
-        self.assertEqual(service["volumes"], ["evidence:/var/lib/binhu-dev-event-pipeline/evidence"])
+        self.assertIn("evidence:/var/lib/binhu-dev-event-pipeline/evidence", service["volumes"])
+        self.assertIn("./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro", service["volumes"])
+        self.assertIn("./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro", service["volumes"])
         self.assertEqual(service["mem_limit"], "128m")
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})

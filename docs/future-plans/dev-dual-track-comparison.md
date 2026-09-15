@@ -82,6 +82,12 @@ checkpoint_recovery_verified 仍为 false，不能以干净启动替代 savepoin
 `dual-track-YYYYMMDD-<nonce>` 证据编号开始，保留现有 100 条证据和失败目录。
 `checkpoint_recovery_verified=false` 继续保持。
 
+部署后诊断发现：旧 worker 镜像不包含新 `dual-track-monitor` 命令，容器因此退出；
+这属于候选源码与固定镜像入口不同步，不是双轨数据差异。修复方案是在 monitor
+容器中只读挂载候选包的 `runtime.py` 与 `dual_track_monitor.py`，其余服务继续使用
+原有不可变镜像和数据卷。首次部署失败容器日志已保留，未投递新的量级事件；修复
+候选需重新执行 CI、prepare、measure、apply 后才能继续验收。
+
 ## 2026-09-15：双轨计时与自动监控启动
 
 旧的 `dev-20260915-metadata08` 作业已在保留作业计划、取消输出和前后作业列表后停止；

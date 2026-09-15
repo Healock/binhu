@@ -89,7 +89,9 @@ def compose(images):
     services["dual-track-monitor"] = {**common, "image": images["worker"],
         "env_file": ["runtime.env"], "mem_limit": "128m", "cpus": .2,
         "read_only": True, "tmpfs": ["/tmp:size=16m"],
-        "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence"],
+        "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence",
+                    "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
+                    "./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro"],
         "command": ["python", "-m", "event_pipeline.runtime", "dual-track-monitor"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
@@ -294,6 +296,11 @@ CREATE TABLE dev_task_metadata_python_events (
         "mysql.env": f"MYSQL_ROOT_PASSWORD={root_password}\nMYSQL_DATABASE=Dev_EventPipeline\nMYSQL_USER=dev_pipeline\nMYSQL_PASSWORD={db_password}\n",
         "redis.conf": f"bind 0.0.0.0\nprotected-mode yes\nrequirepass {redis_password}\nmaxmemory 48mb\nmaxmemory-policy noeviction\nappendonly yes\nappendfsync everysec\nauto-aof-rewrite-percentage 100\nauto-aof-rewrite-min-size 16mb\n",
         "pipeline.sql": render(env),
+        # The existing worker digest predates the resident monitor.  Mount the
+        # two small dispatcher modules read-only so this service is bound to
+        # the candidate source without rebuilding or mutating the worker image.
+        "runtime.py": Path(__file__).read_text(encoding="utf-8"),
+        "dual_track_monitor.py": Path(__file__).with_name("dual_track_monitor.py").read_text(encoding="utf-8"),
     }
     for name, content in files.items():
         target = ROOT / name
