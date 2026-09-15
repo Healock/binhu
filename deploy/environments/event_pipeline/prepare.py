@@ -264,6 +264,15 @@ CREATE TABLE dev_task_metadata_python (
  deleted_count BIGINT NOT NULL,
  PRIMARY KEY (run_id,task_id,source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_task_metadata_python_events (
+ event_id CHAR(36) NOT NULL,
+ run_id VARCHAR(80) NOT NULL, task_id VARCHAR(96) NOT NULL,
+ source_id BIGINT NOT NULL, revision BIGINT NOT NULL,
+ canonical_sha256 CHAR(64) NOT NULL,
+ created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ PRIMARY KEY (run_id,event_id),
+ INDEX python_event_task (run_id,task_id,source_id,revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 """
     files = {
         "compose.json": json.dumps(spec, indent=2), "init.sql": sql,

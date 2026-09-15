@@ -44,6 +44,16 @@ def event():
             "timestamp": "2026-09-10T00:00:00Z", "environment": "development", "run_id": "dev-test-1"}
 
 
+class FlinkStateContractTests(unittest.TestCase):
+    def test_pipeline_job_declares_stable_operator_uids(self):
+        source = Path("deploy/environments/event_pipeline/PipelineJob.java").read_text(encoding="utf-8")
+        self.assertIn("UID_DEV_REVISIONS", source)
+        self.assertIn("UID_DEV_METADATA", source)
+        self.assertIn("uid(UID_DEV_REVISIONS)", source)
+        self.assertIn("uid(UID_DEV_METADATA)", source)
+        self.assertNotIn("allowNonRestoredState", source)
+
+
 class BusinessBridgeTests(unittest.TestCase):
     def test_business_bridge_strips_body_and_maps_stable_metadata(self):
         source = {"event_id": "11111111-1111-4111-8111-111111111111",
