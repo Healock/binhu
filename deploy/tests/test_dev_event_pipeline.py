@@ -617,6 +617,7 @@ volumes:
         self.assertIn("./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro", service["volumes"])
         self.assertIn("./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro", service["volumes"])
         self.assertEqual(service["mem_limit"], "128m")
+        self.assertEqual(service["user"], "0:0")
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
 
