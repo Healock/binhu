@@ -54,7 +54,7 @@ VENUE_CLOUD_PULL_ENABLED=false
 VENUE_LOCAL_PUBLIC_ENTRY_ENABLED=true
 ```
 
-生产容器中尚未挂载场所码 mTLS、签名、公钥或解密目录，`VENUE_CLOUD_BASE_URL` 和 `VENUE_PUBLIC_BASE_URL` 也未配置。生产版本为 `0.28.26`。因此生产正式域名、证书、密钥分发、正式场所清单、现场打印安排、RegistryData 备份和云端配置同步都仍属于上线前置项，不能进入二维码替换或开关切换。
+生产容器中尚未挂载场所码 mTLS、签名、公钥或解密目录，`VENUE_CLOUD_BASE_URL` 和 `VENUE_PUBLIC_BASE_URL` 也未配置。生产版本为 `0.28.26`。生产 Nginx 虽然存在 `/etc/nginx/ssl/binhu/fullchain.pem`，但只读核对显示证书主题为 `CN=binhu-staging`，到期时间为 `2026-09-05T20:44:33Z`，当前已过期且身份不匹配，不能作为场所码公开登记入口证书。正式证书或受信任的 IP 证书、密钥分发、正式场所清单、现场打印安排、RegistryData 备份和云端配置同步都仍属于上线前置项，不能进入二维码替换或开关切换。
 
 以上记录只说明候选闭环已用虚构数据验证，不能代表生产切换授权或生产上线完成。生产同步/主动拉取必须继续关闭，本地匿名入口继续开启。
 
