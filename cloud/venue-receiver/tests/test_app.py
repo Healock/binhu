@@ -255,7 +255,7 @@ def test_registration_page_contains_client_side_format_checks_and_required_field
     page = response.content.decode("utf-8")
     assert "required" in page
     assert "identityChecks" in page
-    assert "1[3-9]" in page
+    assert "^1[3-9]\\d{9}$" in page
 
 
 def test_internal_venue_update_never_stores_raw_token(tmp_path):
