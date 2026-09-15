@@ -629,6 +629,17 @@ volumes:
         source = Path("deploy/environments/event_pipeline/prepare.py").read_text(encoding="utf-8")
         self.assertIn('Path(__file__).with_name("runtime.py").read_text(encoding="utf-8")', source)
 
+    def test_runtime_configuration_preserves_development_identity_for_monitor(self):
+        config = event_runtime.configuration({
+            "APP_ENVIRONMENT": "development", "DEV_RUN_ID": "dev-test-1",
+            "MYSQL_PASSWORD": "a" * 48, "REDIS_PASSWORD": "b" * 48,
+            "BACKEND_REDIS_URL": "redis://dev-backend:6379/0",
+            "MYSQL_HOST": "dev-derived-mysql", "MYSQL_DATABASE": "Dev_EventPipeline",
+            "MYSQL_USER": "dev_pipeline", "REDIS_HOST": "dev-derived-redis",
+            "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
+        })
+        self.assertEqual(config["APP_ENVIRONMENT"], "development")
+
     def test_resident_monitor_report_is_redacted_and_pauses(self):
         row = {"task_id": "t_fullchain:1", "source_id": 1,
                "revision": 3, "event_count": 2, "changed_field_count": 2,
