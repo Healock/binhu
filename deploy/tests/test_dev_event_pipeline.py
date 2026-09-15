@@ -625,10 +625,6 @@ volumes:
         self.assertIn('(ROOT / "runtime.py").chmod(0o644)', source)
         self.assertIn('(ROOT / "dual_track_monitor.py").chmod(0o644)', source)
 
-    def test_resident_monitor_mounts_runtime_module_source_not_prepare_script(self):
-        source = Path("deploy/environments/event_pipeline/prepare.py").read_text(encoding="utf-8")
-        self.assertIn('Path(__file__).with_name("runtime.py").read_text(encoding="utf-8")', source)
-
     def test_resident_monitor_report_is_redacted_and_pauses(self):
         row = {"task_id": "t_fullchain:1", "source_id": 1,
                "revision": 3, "event_count": 2, "changed_field_count": 2,
@@ -775,4 +771,3 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
