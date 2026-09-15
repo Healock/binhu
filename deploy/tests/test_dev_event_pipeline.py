@@ -89,6 +89,20 @@ class BusinessBridgeTests(unittest.TestCase):
 
 
 class PersistentCredentialTests(unittest.TestCase):
+    def test_prepare_failure_detail_is_safe_and_keeps_gate_reason(self):
+        self.assertEqual(
+            event_prepare.safe_prepare_failure_detail(
+                ValueError("persistent Dev credential mismatch")
+            ),
+            "persistent Dev credential mismatch",
+        )
+        self.assertEqual(
+            event_prepare.safe_prepare_failure_detail(
+                ValueError("password=super-secret-value")
+            ),
+            "ValueError",
+        )
+
     def test_reuses_credentials_when_named_data_volumes_are_retained(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

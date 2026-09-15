@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import secrets
 import subprocess
+import sys
 
 from .runtime import configuration
 from .services.kafka_delivery_store import SCHEMA_SQL
@@ -34,6 +35,35 @@ EXPECTED_SERVICES = frozenset(
 # Its legacy container can therefore lack the environment label; Compose will
 # recreate it from the current definition, which carries the label.
 LEGACY_MISSING_ENV_LABEL_SERVICES = frozenset({"backend-outbox-relay"})
+_SAFE_PREPARE_FAILURES = frozenset(
+    {
+        "new absolute Dev output required",
+        "existing Dev root has no trusted manifest",
+        "existing Dev manifest is unreadable",
+        "existing root identity mismatch",
+        "existing Dev project identity mismatch",
+        "existing Dev volume identity mismatch",
+        "isolated Dev eventbus network required",
+        "foreign network dependency",
+        "insufficient memory reserve",
+        "insufficient disk reserve",
+        "persistent Dev credential files are incomplete",
+        "persistent Dev credential files are invalid",
+        "persistent Dev credential mismatch",
+        "Dev Backend relay credentials must be supplied out of band",
+        "Dev identity required",
+        "isolated Dev targets required",
+        "independent runtime credential required",
+        "external environment Redis is forbidden",
+        "image identity mismatch",
+    }
+)
+
+
+def safe_prepare_failure_detail(error: Exception) -> str:
+    """Return only an allow-listed prepare gate reason for CI diagnostics."""
+    detail = str(error)
+    return detail if detail in _SAFE_PREPARE_FAILURES else type(error).__name__
 
 
 def compose(images):
@@ -334,5 +364,9 @@ if __name__ == "__main__":
     try:
         result = prepare(args.run_id, {k: getattr(args, k + "_image") for k in ("mysql", "redis", "worker", "flink")})
         print(json.dumps(result))
-    except Exception:
+    except Exception as error:
+        print(json.dumps({
+            "error": "dev_prepare_failed",
+            "reason": safe_prepare_failure_detail(error),
+        }), file=sys.stderr)
         raise SystemExit("Dev pipeline preparation failed; preserve evidence and inspect private files") from None
