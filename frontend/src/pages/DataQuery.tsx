@@ -23,6 +23,7 @@ import {
   FullscreenOutlined,
   HistoryOutlined,
   PlusOutlined,
+  SearchOutlined,
 } from '@ant-design/icons'
 import {
   createQuerySourceRow,
