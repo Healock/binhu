@@ -1,6 +1,6 @@
 {
   "name": "@binhu/win10-tauri",
-  "version": "0.28.26",
+  "version": "0.28.27",
   "private": true,
   "scripts": {
     "dev": "tauri dev",
