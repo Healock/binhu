@@ -68,3 +68,21 @@ unattributed_difference_count=0 仅适用于这次 recovery16 子集；需要以
 本轮服务器证据目录为
 `/var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery16/`；
 checkpoint_recovery_verified 仍为 false，不能以干净启动替代 savepoint 恢复门禁。
+
+## 2026-09-15：双轨计时与自动监控启动
+
+旧的 `dev-20260915-metadata08` 作业已在保留作业计划、取消输出和前后作业列表后停止；
+recovery16 的 revision 与 metadata 作业继续运行。双轨计时起点登记为
+`dev-20260915-recovery16`，起始证据目录为
+`/var/lib/binhu-dev-event-pipeline/evidence/dev-20260915-dualtrack-start/`。
+起始时两套投影各有 1 条任务投影，Python 事件账本和 Kafka 投递台账各有 6 条记录。
+
+事件口径固定为：在同一个 `run_id` 内按 `event_id` 去重；相同事件 ID 且 canonical
+payload 相同只计一次，相同事件 ID 内容冲突属于失败，不计为新增事件。双轨目标是连续
+7 天且达到 100,000 条唯一事件，计时期间不得出现未归因差异。
+
+比较器已增加周期监控入口。每次扫描写入新的脱敏报告，差异包含任务 ID 哈希、revision、
+字段和 UTC 检测时间；发现差异时写入不可覆盖的 `alert-*.json` 并将状态标记为
+`paused`。计时暂停后，必须完成差异归因和修复，并以新的证据编号重新开始，不能清除
+或覆盖失败报告。当前只完成起点登记和监控单元测试，100/1,000/10,000/100,000
+事件量级仍按顺序待执行。

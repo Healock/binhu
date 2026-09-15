@@ -398,3 +398,9 @@ recovery16 的 Flink 失败/恢复证据目录为
 过滤旧 run_id；recovery16 的 revision 与 metadata 作业使用新的 run_id，三者当前
 没有写入同一组投影键。该隔离结论只适用于本轮已核对的 run_id 和表写入计划，后续
 双轨长跑必须使用新的唯一 run_id，并在启动前再次核对输出命名空间。
+
+双轨计时现已登记为 `dev-20260915-recovery16`。起始服务器证据目录为
+`/var/lib/binhu-dev-event-pipeline/evidence/dev-20260915-dualtrack-start/`，
+起始计数为 Python/Flink 各 1 条任务投影、Python 事件账本 6 条、Kafka 投递台账 6 条。
+事件按同一 `run_id` 内唯一 `event_id` 计数；重复且 canonical payload 相同只计一次，
+内容冲突立即失败。自动比较器差异会写入独立告警并暂停计时，不能人工清除后继续。

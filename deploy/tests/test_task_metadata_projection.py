@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deploy.environments.event_pipeline.dual_track import compare
+from deploy.environments.event_pipeline.dual_track import compare, monitor
 from deploy.environments.event_pipeline.services.task_metadata_projection import (
     IncrementalTaskMetadataProjector, ProjectionConflict, flatten_projection, project_events,
 )
@@ -119,6 +119,25 @@ class TaskMetadataProjectionTests(unittest.TestCase):
             self.assertNotIn("姓名", payload)
             self.assertNotIn("手机号", payload)
             self.assertIn("task_id_sha256", payload)
+            self.assertIn("detected_at", payload)
+
+    def test_dual_track_monitor_pauses_and_writes_alert(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            py = root / "python.jsonl"
+            fl = root / "flink.jsonl"
+            evidence = root / "evidence"
+            row = event("11111111-1111-4111-8111-111111111111", 1, "task.saved")
+            py.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            fl.write_text(json.dumps({**row, "revision": 2}) + "\n", encoding="utf-8")
+            with patch.dict("os.environ", {"APP_ENVIRONMENT": "development"}):
+                report = monitor(py, fl, "dev-test-1", "dual-track-20260914-alert", evidence,
+                                 interval_seconds=0.001, cycles=1)
+            self.assertTrue(report["paused"])
+            self.assertTrue(list(evidence.glob("alert-*.json")))
+            alert = next(evidence.glob("alert-*.json")).read_text(encoding="utf-8")
+            self.assertIn('"status": "paused"', alert)
+            self.assertIn("task_id_sha256", alert)
 
 
 if __name__ == "__main__":
