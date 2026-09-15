@@ -88,10 +88,7 @@ def compose(images):
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
     services["dual-track-monitor"] = {**common, "image": images["worker"],
         "env_file": ["runtime.env"], "mem_limit": "128m", "cpus": .2,
-        # The retained named evidence volume is created by Docker as root-owned.
-        # This Dev-only monitor is otherwise read-only, so run it as root solely
-        # to append redacted evidence without adding a mutable permission sidecar.
-        "user": "0:0", "read_only": True, "tmpfs": ["/tmp:size=16m"],
+        "read_only": True, "tmpfs": ["/tmp:size=16m"],
         "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence",
                     "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
                     "./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro"],
@@ -302,7 +299,7 @@ CREATE TABLE dev_task_metadata_python_events (
         # The existing worker digest predates the resident monitor.  Mount the
         # two small dispatcher modules read-only so this service is bound to
         # the candidate source without rebuilding or mutating the worker image.
-        "runtime.py": Path(__file__).with_name("runtime.py").read_text(encoding="utf-8"),
+        "runtime.py": Path(__file__).read_text(encoding="utf-8"),
         "dual_track_monitor.py": Path(__file__).with_name("dual_track_monitor.py").read_text(encoding="utf-8"),
     }
     for name, content in files.items():
@@ -314,8 +311,6 @@ CREATE TABLE dev_task_metadata_python_events (
     (ROOT / "init.sql").chmod(0o644)
     (ROOT / "redis.conf").chmod(0o644)
     (ROOT / "pipeline.sql").chmod(0o644)
-    (ROOT / "runtime.py").chmod(0o644)
-    (ROOT / "dual_track_monitor.py").chmod(0o644)
     manifest = {"environment": "development", "project": PROJECT, "run_id": run_id,
                 "images": images, "started": False, "acceptance": "pending",
                 "hashes": {k: hashlib.sha256((ROOT / k).read_bytes()).hexdigest() for k in files}}

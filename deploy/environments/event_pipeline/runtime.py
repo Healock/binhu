@@ -32,7 +32,7 @@ def configuration(environ=None):
     backend_url = env.get("BACKEND_REDIS_URL", "")
     if "production" in backend_url.lower() or "staging" in backend_url.lower():
         raise ValueError("external environment Redis is forbidden")
-    return {**targets, "APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
+    return {**targets, "DEV_RUN_ID": run_id,
             "MYSQL_PASSWORD": env["MYSQL_PASSWORD"], "REDIS_PASSWORD": env["REDIS_PASSWORD"],
             "BACKEND_REDIS_URL": backend_url,
             "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),

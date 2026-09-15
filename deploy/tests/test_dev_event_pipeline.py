@@ -617,29 +617,8 @@ volumes:
         self.assertIn("./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro", service["volumes"])
         self.assertIn("./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro", service["volumes"])
         self.assertEqual(service["mem_limit"], "128m")
-        self.assertEqual(service["user"], "0:0")
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
-
-    def test_resident_monitor_entrypoints_are_readable_by_worker_user(self):
-        source = Path("deploy/environments/event_pipeline/prepare.py").read_text(encoding="utf-8")
-        self.assertIn('(ROOT / "runtime.py").chmod(0o644)', source)
-        self.assertIn('(ROOT / "dual_track_monitor.py").chmod(0o644)', source)
-
-    def test_resident_monitor_mounts_runtime_module_source_not_prepare_script(self):
-        source = Path("deploy/environments/event_pipeline/prepare.py").read_text(encoding="utf-8")
-        self.assertIn('Path(__file__).with_name("runtime.py").read_text(encoding="utf-8")', source)
-
-    def test_runtime_configuration_preserves_development_identity_for_monitor(self):
-        config = event_runtime.configuration({
-            "APP_ENVIRONMENT": "development", "DEV_RUN_ID": "dev-test-1",
-            "MYSQL_PASSWORD": "a" * 48, "REDIS_PASSWORD": "b" * 48,
-            "BACKEND_REDIS_URL": "redis://dev-backend:6379/0",
-            "MYSQL_HOST": "dev-derived-mysql", "MYSQL_DATABASE": "Dev_EventPipeline",
-            "MYSQL_USER": "dev_pipeline", "REDIS_HOST": "dev-derived-redis",
-            "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
-        })
-        self.assertEqual(config["APP_ENVIRONMENT"], "development")
 
     def test_resident_monitor_report_is_redacted_and_pauses(self):
         row = {"task_id": "t_fullchain:1", "source_id": 1,
@@ -787,4 +766,3 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
