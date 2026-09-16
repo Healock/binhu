@@ -62,6 +62,10 @@ class FlinkStateContractTests(unittest.TestCase):
             "runtime_failure_type=PermissionError runtime_failure_stage=evidence_directory",
         )
         self.assertNotIn("must-not-leak", detail)
+        self.assertIn(
+            "runtime_failure_stage=monitor_loop",
+            runtime_failure_detail(RuntimeError("opaque"), "untrusted-stage"),
+        )
 
     def test_runtime_dispatcher_preserves_only_safe_monitor_failure_detail(self):
         error = RuntimeError("password=must-not-leak")
