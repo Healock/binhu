@@ -569,3 +569,12 @@ def test_internal_api_rejects_nonce_replay_and_signs_valid_response(tmp_path):
     assert first.headers.get("X-Binhu-Response-Timestamp")
     assert first.headers.get("X-Binhu-Response-Signature")
     assert replay.status_code == 409
+
+
+def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
+    client, _repo, _config = make_client(tmp_path)
+    page = client.get('/drinking-report/test-token').text
+    assert 'transform:translateX(var(--signature-viewport-width)) rotate(90deg)' in page
+    assert 'canvas.clientHeight||r.height' in page
+    assert 'editor.style.setProperty(\'--signature-viewport-height\',${window.innerHeight}px)' in page
+
