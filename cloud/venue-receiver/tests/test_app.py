@@ -327,6 +327,11 @@ def test_drinking_page_and_three_second_server_gate(tmp_path):
     assert page.status_code == 200
     assert "苏州市公安局非工作日饮酒报备单" in page.text
     assert "reporter_signature" in page.text
+    assert ".modal[hidden]{display:none}" in page.text
+    assert page.text.count('class="label-text"') == 11
+    assert page.text.count('class="required" aria-hidden="true"') == 10
+    assert '.label-text{display:flex;align-items:baseline' in page.text
+    assert '<span class="label-text">饮酒时间<span class="required"' in page.text
     assert response.status_code == 400
     assert "重新扫码" in response.json()["detail"]
     assert not repo.submissions
