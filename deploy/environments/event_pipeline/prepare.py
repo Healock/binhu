@@ -84,7 +84,8 @@ def compose(images):
     services = {
         "dev-derived-mysql": {**common, "image": images["mysql"], "env_file": ["mysql.env"],
             # Keep the Dev-only database cap high enough for the 100k controlled
-            # enqueue while remaining explicit and bounded for the shared host.
+            # enqueue while remaining explicit and bounded for the shared host;
+            # the swap cap prevents an unbounded host-level fallback.
             "mem_limit": "768m", "memswap_limit": "1536m", "cpus": .5,
             "healthcheck": {"test": ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "--silent"],
                             "interval": "5s", "timeout": "3s", "retries": 36, "start_period": "180s"},
