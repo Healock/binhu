@@ -91,6 +91,8 @@ test('二维码管理提供饮酒报备创建、查询、双签详情和单份 P
   assert.match(page, /!drinkingForm\?\.exists/)
   assert.match(page, /SignaturePreview/)
   assert.match(page, /导出 A4 PDF/)
+  assert.match(page, /formatUTCTime\(value, timezone\)/)
+  assert.match(page, /systemTimezone/)
   assert.match(client, /api\.get\('\/drinking-reports'/)
   assert.match(client, /drinking-reports\/\$\{id\}\/pdf/)
   assert.match(app, /path="\/qr-codes"/)

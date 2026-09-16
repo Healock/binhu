@@ -25,6 +25,7 @@ from config import settings
 from database import db_manager
 from deps import require_permission
 from services.audit import record_admin_audit, request_audit_fields
+from services.business_time import get_business_timezone_name, resolve_timezone
 from services.permissions import VENUE_EXPORT, VENUE_MANAGE, VENUE_VIEW
 from services.qmf_config import decrypt_secret, encrypt_secret
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
@@ -74,6 +75,21 @@ class PublicFormStatus(BaseModel):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _utc_iso(value: datetime | None) -> str | None:
+    """Serialize database UTC DATETIME values with an explicit UTC marker."""
+    if value is None:
+        return None
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return aware.isoformat().replace("+00:00", "Z")
+
+
+def _local_display(value: datetime | None, timezone_name: str) -> str:
+    if value is None:
+        return ""
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return aware.astimezone(resolve_timezone(timezone_name)).strftime("%Y年%m月%d日 %H:%M")
 
 
 def _token_digest(token: str) -> str:
@@ -551,7 +567,7 @@ async def list_drinking_reports(user: dict = Depends(require_permission(VENUE_VI
         else:
             await cur.execute(sql + " LIMIT %s OFFSET %s", tuple(params + [page_size, (page - 1) * page_size]))
         rows = await cur.fetchall()
-    data = [{"id": int(r[0]), "name": decrypt_secret(r[1]), "unit_position": decrypt_secret(r[2]), "drinking_at": r[3].isoformat() if r[3] else None, "drinking_place": decrypt_secret(r[4]), "reason": decrypt_secret(r[5]), "inviter": decrypt_secret(r[6]), "travel_method": decrypt_secret(r[7]), "responsible_leader_name": decrypt_secret(r[8]), "submitted_at": r[9].isoformat() if r[9] else None} for r in rows]
+    data = [{"id": int(r[0]), "name": decrypt_secret(r[1]), "unit_position": decrypt_secret(r[2]), "drinking_at": _utc_iso(r[3]), "drinking_place": decrypt_secret(r[4]), "reason": decrypt_secret(r[5]), "inviter": decrypt_secret(r[6]), "travel_method": decrypt_secret(r[7]), "responsible_leader_name": decrypt_secret(r[8]), "submitted_at": _utc_iso(r[9])} for r in rows]
     if needle:
         data = [item for item in data if any(needle in str(item[field]).casefold() for field in ("name", "unit_position", "drinking_place", "reason", "inviter", "travel_method", "responsible_leader_name"))]
         total = len(data)
@@ -567,7 +583,7 @@ async def get_drinking_report(report_id: int, user: dict = Depends(require_permi
         await cur.execute("SELECT id,encrypted_name,encrypted_unit_position,drinking_at,encrypted_drinking_place,encrypted_reason,encrypted_inviter,encrypted_travel_method,encrypted_notes,encrypted_responsible_leader_name,encrypted_reporter_signature,encrypted_leader_signature,rules_version,rules_acknowledged_at,submitted_at FROM _drinking_reports WHERE id=%s", (report_id,))
         row = await cur.fetchone()
     if not row: raise HTTPException(404, "饮酒报备不存在")
-    return {"id": int(row[0]), "name": decrypt_secret(row[1]), "unit_position": decrypt_secret(row[2]), "drinking_at": row[3].isoformat() if row[3] else None, "drinking_place": decrypt_secret(row[4]), "reason": decrypt_secret(row[5]), "inviter": decrypt_secret(row[6]), "travel_method": decrypt_secret(row[7]), "notes": decrypt_secret(row[8]), "responsible_leader_name": decrypt_secret(row[9]), "reporter_signature": json.loads(decrypt_secret(row[10])), "leader_signature": json.loads(decrypt_secret(row[11])), "rules_version": row[12], "rules_acknowledged_at": row[13].isoformat() if row[13] else None, "submitted_at": row[14].isoformat() if row[14] else None}
+    return {"id": int(row[0]), "name": decrypt_secret(row[1]), "unit_position": decrypt_secret(row[2]), "drinking_at": _utc_iso(row[3]), "drinking_place": decrypt_secret(row[4]), "reason": decrypt_secret(row[5]), "inviter": decrypt_secret(row[6]), "travel_method": decrypt_secret(row[7]), "notes": decrypt_secret(row[8]), "responsible_leader_name": decrypt_secret(row[9]), "reporter_signature": json.loads(decrypt_secret(row[10])), "leader_signature": json.loads(decrypt_secret(row[11])), "rules_version": row[12], "rules_acknowledged_at": _utc_iso(row[13]), "submitted_at": _utc_iso(row[14])}
 
 
 @admin_router.get("/drinking-reports/{report_id}/pdf")
@@ -575,9 +591,10 @@ async def export_drinking_report_pdf(report_id: int, request: Request, user: dic
     async with conn.cursor() as cur:
         await cur.execute("SELECT id,encrypted_name,encrypted_unit_position,drinking_at,encrypted_drinking_place,encrypted_reason,encrypted_inviter,encrypted_travel_method,encrypted_notes,encrypted_responsible_leader_name,encrypted_reporter_signature,encrypted_leader_signature,rules_version,submitted_at FROM _drinking_reports WHERE id=%s", (report_id,))
         row = await cur.fetchone()
+        timezone_name = await get_business_timezone_name(cur)
     if not row: raise HTTPException(404, "饮酒报备不存在")
-    values = {"name": decrypt_secret(row[1]), "unit_position": decrypt_secret(row[2]), "drinking_at": row[3].strftime("%Y年%m月%d日 %H:%M") if row[3] else "", "drinking_place": decrypt_secret(row[4]), "reason": decrypt_secret(row[5]), "inviter": decrypt_secret(row[6]), "travel_method": decrypt_secret(row[7]), "notes": decrypt_secret(row[8]), "responsible_leader_name": decrypt_secret(row[9])}
-    submitted_date = row[13].strftime("%Y年%m月%d日") if row[13] else ""
+    values = {"name": decrypt_secret(row[1]), "unit_position": decrypt_secret(row[2]), "drinking_at": _local_display(row[3], timezone_name), "drinking_place": decrypt_secret(row[4]), "reason": decrypt_secret(row[5]), "inviter": decrypt_secret(row[6]), "travel_method": decrypt_secret(row[7]), "notes": decrypt_secret(row[8]), "responsible_leader_name": decrypt_secret(row[9])}
+    submitted_date = _local_display(row[13], timezone_name).split(" ", 1)[0] if row[13] else ""
     try:
         from weasyprint import HTML
         pdf = HTML(string=f'''<html><head><meta charset="utf-8"><style>@page{{size:A4;margin:18mm}}body{{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;color:#111}}h1{{text-align:center;font-size:20pt}}table{{width:100%;border-collapse:collapse}}td{{border:1px solid #222;padding:9px;vertical-align:top;min-height:28px}}.label{{width:18%;font-weight:bold;background:#f7f7f7}}.rules{{line-height:1.7}}.sig{{height:100px}}</style></head><body><div>附件</div><h1>苏州市公安局非工作日饮酒报备单</h1><table><tr><td class="label">姓名</td><td>{html.escape(values["name"])}</td><td class="label">单位职务</td><td>{html.escape(values["unit_position"])}</td></tr><tr><td class="label">饮酒时间</td><td>{html.escape(values["drinking_at"])}</td><td class="label">饮酒地点</td><td>{html.escape(values["drinking_place"])}</td></tr><tr><td class="label">饮酒事由</td><td colspan="3">{html.escape(values["reason"])}</td></tr><tr><td class="label">邀约人</td><td colspan="3">{html.escape(values["inviter"])}</td></tr><tr><td class="label">出行方式</td><td colspan="3">{html.escape(values["travel_method"])}</td></tr><tr><td class="label">备注说明</td><td colspan="3">{html.escape(values["notes"])}</td></tr></table><div class="rules"><p>公安部关于严禁违规宴请饮酒的规定</p><ol><li>严禁在工作日、值班备勤、安保任务、公务出差、学习培训期间和其他工作时间饮酒。</li><li>严禁领导干部之间、单位之间相互宴请。</li><li>严禁接受下属或地方公安机关宴请。</li><li>严禁接受管理和服务对象宴请。</li><li>严禁出入私人会所或参与“一桌餐”。</li><li>严禁在任何时间、任何场合酗酒。</li></ol></div><p>我承诺本次饮酒不违反中央八项规定及其实施细则精神和公安部“六项规定”。</p><table><tr><td class="sig">报备人（签名）：{_signature_svg(row[10])}<br>日期：{html.escape(submitted_date)}</td><td class="sig">责任领导：{html.escape(values["responsible_leader_name"])}<br>责任领导（签名）：{_signature_svg(row[11])}<br>日期：{html.escape(submitted_date)}</td></tr></table></body></html>''').write_pdf()

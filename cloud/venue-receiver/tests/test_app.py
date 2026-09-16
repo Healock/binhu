@@ -337,6 +337,11 @@ def test_drinking_page_and_three_second_server_gate(tmp_path):
     assert 'data-signature-open="leader"' in page.text
     assert 'screen.orientation.lock' in page.text
     assert '保存签名' in page.text
+    assert '再次查看规定' not in page.text
+    assert 'signature-watermark' in page.text
+    assert 'requestFullscreen' in page.text
+    assert '请先填写姓名' in page.text
+    assert '请先填写责任领导姓名' in page.text
     assert '请补充${missing.length}项必填内容' in page.text
     assert 'contextmenu' in page.text
     assert response.status_code == 400
