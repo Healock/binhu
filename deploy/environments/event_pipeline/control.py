@@ -62,6 +62,7 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Flink JAR upload was not accepted",
         "Flink JAR submission returned no job id",
         "current Dev PipelineJob compilation failed",
+        "evidence directory initialization failed",
     }
 )
 
@@ -83,6 +84,36 @@ def expected_networks(service):
     if service == "backend-outbox-relay":
         return {"binhu-development_internal"}
     return {NETWORK}
+
+
+def evidence_initializer_command(run_id: str) -> list[str]:
+    """Build the one-shot command that grants the monitor its run directory.
+
+    The evidence volume is intentionally persistent and may have been created
+    by Docker as root.  Only the current run directory is created/chowned;
+    existing evidence and checkpoint volumes are never touched.
+    """
+    if not re.fullmatch(r"dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id or ""):
+        raise ValueError("evidence directory initialization failed")
+    script = (
+        "import os; from pathlib import Path; "
+        f"p=Path('/var/lib/binhu-dev-event-pipeline/evidence') / {run_id!r}; "
+        "p.mkdir(parents=True, exist_ok=True); os.chown(p, 10001, 10001); "
+        "os.chmod(p, 0o700)"
+    )
+    return [
+        "docker", "compose", "-f", (ROOT / "compose.json").as_posix(),
+        "run", "--rm", "--no-deps", "--user", "0:0", "dual-track-monitor",
+        "python", "-c", script,
+    ]
+
+
+def _prepare_evidence_directory(run_id: str) -> None:
+    result = subprocess.run(
+        evidence_initializer_command(run_id), capture_output=True, text=True, timeout=45
+    )
+    if result.returncode:
+        raise ValueError("evidence directory initialization failed")
 
 
 def measure():
@@ -242,6 +273,11 @@ def apply():
     # Atomically allocate a private directory even if the clock repeats or
     # concurrent attempts start within the same platform clock tick.
     evidence = Path(tempfile.mkdtemp(prefix="apply-evidence-", dir=ROOT))
+    # ``measure`` always returns run_id in production.  Keeping the guard
+    # makes the helper straightforward to exercise in isolated unit tests
+    # which stub measure() with an empty report.
+    if report.get("run_id"):
+        _prepare_evidence_directory(report["run_id"])
     schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
                              "run", "--rm", "--no-deps", "relay", "python", "-m",
                              "event_pipeline.schema_registry", "verify"],
