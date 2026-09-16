@@ -665,6 +665,7 @@ volumes:
     def test_every_target_is_fixed_and_environment_guarded(self):
         valid = settings()
         self.assertEqual(configuration(valid)["DEV_RUN_ID"], "dev-test-1")
+        self.assertEqual(configuration(valid)["APP_ENVIRONMENT"], "development")
         for key in valid:
             changed = {**valid, key: "production"}
             with self.subTest(key=key), self.assertRaises(ValueError):
