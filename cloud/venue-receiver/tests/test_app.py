@@ -14,6 +14,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings
+from app.drinking_page import render_drinking_report_page
 from app.main import create_app
 from app.security import b64encode, canonical_request, keyed_digest
 
@@ -336,6 +337,17 @@ def test_drinking_page_and_three_second_server_gate(tmp_path):
     assert 'data-signature-open="reporter"' in page.text
     assert 'data-signature-open="leader"' in page.text
     assert 'screen.orientation.lock' in page.text
+    assert '.signature-editor.force-landscape' in page.text
+    assert 'window.innerHeight>window.innerWidth' in page.text
+    assert "editor.classList.toggle('force-landscape',forceLandscape)" in page.text
+    assert "editor.classList.remove('force-landscape')" in page.text
+    assert "editor.classList.contains('force-landscape')" in page.text
+    assert '(e.clientY-r.top)/r.height' in page.text
+    assert '(r.right-e.clientX)/r.width' in page.text
+    assert 'canvas.clientWidth||r.width' in page.text
+    assert "window.addEventListener('resize',syncEditorOrientation)" in page.text
+    assert "screen.orientation?.addEventListener?.('change',syncEditorOrientation)" in page.text
+    assert "document.addEventListener('fullscreenchange',syncEditorOrientation)" in page.text
     assert '保存签名' in page.text
     assert '再次查看规定' not in page.text
     assert 'signature-watermark' in page.text
@@ -558,3 +570,13 @@ def test_internal_api_rejects_nonce_replay_and_signs_valid_response(tmp_path):
     assert first.headers.get("X-Binhu-Response-Timestamp")
     assert first.headers.get("X-Binhu-Response-Signature")
     assert replay.status_code == 409
+
+
+def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
+    client, _repo, _config = make_client(tmp_path)
+    page = render_drinking_report_page()
+    assert 'transform:translateX(var(--signature-viewport-width)) rotate(90deg)' in page
+    assert 'canvas.clientHeight||r.height' in page
+    assert "editor.style.setProperty('--signature-viewport-height',`${window.innerHeight}px`)" in page
+
+
