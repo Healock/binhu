@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import importlib.util
 import json
 import unittest
 import tempfile
@@ -736,6 +737,67 @@ volumes:
         self.assertEqual(service["mem_limit"], "128m")
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
+
+    def test_compose_includes_isolated_one_shot_scale_acceptance_runner(self):
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
+        service = spec["services"]["acceptance-runner"]
+        self.assertEqual(service["profiles"], ["acceptance"])
+        self.assertEqual(service["networks"], ["internal"])
+        self.assertEqual(service["env_file"], ["runtime.env"])
+        self.assertEqual(service["restart"], "no")
+        self.assertTrue(service["read_only"])
+        self.assertEqual(service["tmpfs"], ["/tmp:size=16m"])
+        self.assertEqual(service["pids_limit"], 128)
+        self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
+        self.assertIn("evidence:/var/lib/binhu-dev-event-pipeline/evidence", service["volumes"])
+        self.assertIn("./scale_acceptance.py:/opt/dev-pipeline/event_pipeline/scale_acceptance.py:ro", service["volumes"])
+        serialized = json.dumps(service).lower()
+        for forbidden in ("backend", "production", "staging", "shadow", "docker.sock"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_scale_acceptance_fixture_is_deterministic_and_metadata_only(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        self.assertTrue(module_path.is_file())
+        spec = importlib.util.spec_from_file_location("scale_acceptance", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        first = module.fixture("dev-20260916-monitor20", 0)
+        replay = module.fixture("dev-20260916-monitor20", 0)
+        other = module.fixture("dev-20260916-monitor21", 0)
+        self.assertEqual(first, replay)
+        self.assertNotEqual(first["event_id"], other["event_id"])
+        self.assertEqual(validate_event(first), first)
+        self.assertEqual(first["changed_fields"], ["task_state"])
+        self.assertGreaterEqual(first["source_id"], 8_000_000_000_000_000_000)
+        payload = json.dumps(first, ensure_ascii=False).lower()
+        for forbidden in ("name", "phone", "identity", "address", "remark", "password", "token"):
+            self.assertNotIn(forbidden, payload)
+
+    def test_scale_acceptance_allows_only_fixed_cumulative_targets(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        self.assertTrue(module_path.is_file())
+        spec = importlib.util.spec_from_file_location("scale_acceptance_limits", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for scale in (1002, 10000, 100000):
+            self.assertEqual(module.validate_scale(scale), scale)
+        for scale in (0, 1000, 1003, 100001, "1002"):
+            with self.subTest(scale=scale), self.assertRaises(ValueError):
+                module.validate_scale(scale)
+
+    def test_scale_acceptance_sources_are_bound_into_candidate_hashes(self):
+        self.assertIn("scale_acceptance.py", event_prepare.PUBLIC_CANDIDATE_FILES)
+        source = Path(event_prepare.__file__).read_text(encoding="utf-8")
+        self.assertIn('"scale_acceptance.py": Path(__file__).with_name("scale_acceptance.py")', source)
+        self.assertIn("acceptance-runner", event_prepare.EXPECTED_SERVICES)
+
+    def test_acceptance_controller_targets_only_fixed_dev_services(self):
+        source = Path(event_prepare.__file__).with_name("acceptance_control.py").read_text(encoding="utf-8")
+        self.assertIn('"stop", "dual-track-monitor"', source)
+        self.assertIn('"acceptance-runner", "python", "-m", "event_pipeline.scale_acceptance"', source)
+        self.assertIn('"up", "-d", "dual-track-monitor"', source)
+        for forbidden in ("down", "volume rm", "system prune", "production", "staging", "shadow"):
+            self.assertNotIn(forbidden, source.lower())
 
     def test_prepare_monitor_source_files_are_readable_by_worker_uid(self):
         self.assertIn("runtime.py", event_prepare.PUBLIC_CANDIDATE_FILES)
