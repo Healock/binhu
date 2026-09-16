@@ -55,6 +55,8 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertNotRegex(workflow, r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
         self.assertIn("git merge-base --is-ancestor", workflow)
         self.assertNotIn("BINHU_UPDATE_SSH_KEY", workflow)
+        self.assertIn("nginx-server-locations.conf", workflow)
+        self.assertIn("nginx_locations_sha256", workflow)
 
     def test_publish_gateway_parses_ssh_command_before_sudo(self):
         wrapper = (ROOT / "deploy/venue-cloud/binhu-venue-publish-gateway").read_text(encoding="utf-8")
@@ -63,6 +65,8 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("/usr/local/libexec/binhu-venue-publish-gateway.py", wrapper)
         self.assertIn("fcntl.flock", implementation)
         self.assertIn("STATE / \"publish.lock\"", implementation)
+        self.assertIn("nginx configuration test failed", implementation)
+        self.assertIn("systemctl", implementation)
 
     def test_migration_tool_is_read_only_by_default(self):
         tool = (ROOT / "backend/tools/venue_cloud_migration.py").read_text(encoding="utf-8")
