@@ -576,7 +576,10 @@ def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
     client, _repo, _config = make_client(tmp_path)
     page = render_drinking_report_page()
     assert 'transform:translateX(var(--signature-viewport-width)) rotate(90deg)' in page
+    assert '.signature-editor.force-landscape .editor-watermark{transform:translateY(-50%) rotate(-90deg)}' in page
+    assert 'function toCanonicalStrokes(strokes)' in page
+    assert 'x:+(1-point.y).toFixed(4),y:+point.x.toFixed(4)' in page
+    assert 'function fromCanonicalStrokes(strokes)' in page
+    assert 'state[editingKey]=editorForced?toCanonicalStrokes(editingDraft)' in page
     assert 'canvas.clientHeight||r.height' in page
     assert "editor.style.setProperty('--signature-viewport-height',`${window.innerHeight}px`)" in page
-
-
