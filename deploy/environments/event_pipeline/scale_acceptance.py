@@ -27,6 +27,22 @@ SAFE_FIELDS = (
     "archived_count", "deleted_count",
 )
 TIMEOUTS = {1002: 300, 10_000: 900, 100_000: 2400}
+SAFE_FAILURE_STAGES = frozenset({"configuration", "database_connect", "enqueue", "compare", "evidence", "runtime"})
+
+
+class ScaleAcceptanceFailure(Exception):
+    def __init__(self, error: BaseException, stage: str):
+        self.safe_detail = safe_failure_detail(error, stage)
+        super().__init__(self.safe_detail)
+
+
+def safe_failure_detail(error: BaseException, stage: str) -> str:
+    if stage not in SAFE_FAILURE_STAGES:
+        stage = "runtime"
+    error_type = type(error).__name__
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", error_type):
+        error_type = "RuntimeError"
+    return f"acceptance_failure_type={error_type} acceptance_failure_stage={stage}"
 
 
 def validate_scale(value: Any) -> int:
@@ -201,26 +217,37 @@ def _write_report(run_id: str, scale: int, report: Mapping[str, Any]) -> None:
 
 
 async def run(scale: int) -> dict[str, Any]:
-    from .runtime import configuration
-
-    scale = validate_scale(scale)
-    config = configuration()
-    if config["APP_ENVIRONMENT"] != "development":
-        raise ValueError("Dev acceptance identity required")
-    pool = await _pool(config)
+    stage = "configuration"
+    pool = None
     try:
+        from .runtime import configuration
+
+        scale = validate_scale(scale)
+        config = configuration()
+        if config["APP_ENVIRONMENT"] != "development":
+            raise ValueError("Dev acceptance identity required")
+        stage = "database_connect"
+        pool = await _pool(config)
+        stage = "enqueue"
         await enqueue(pool, config["DEV_RUN_ID"], scale)
         deadline = asyncio.get_running_loop().time() + TIMEOUTS[scale]
         while True:
+            stage = "compare"
             report = await snapshot(pool, config["DEV_RUN_ID"], scale)
             if report["passed"] or asyncio.get_running_loop().time() >= deadline:
                 report["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                stage = "evidence"
                 _write_report(config["DEV_RUN_ID"], scale, report)
                 return report
             await asyncio.sleep(2)
+    except ScaleAcceptanceFailure:
+        raise
+    except Exception as error:
+        raise ScaleAcceptanceFailure(error, stage) from None
     finally:
-        pool.close()
-        await pool.wait_closed()
+        if pool is not None:
+            pool.close()
+            await pool.wait_closed()
 
 
 def main() -> None:
@@ -232,8 +259,9 @@ def main() -> None:
         print(json.dumps(report, sort_keys=True))
         if not report["passed"]:
             raise SystemExit(2)
-    except Exception:
-        raise SystemExit("Dev scale acceptance failed; preserve private evidence") from None
+    except Exception as error:
+        detail = getattr(error, "safe_detail", safe_failure_detail(error, "runtime"))
+        raise SystemExit(detail) from None
 
 
 if __name__ == "__main__":

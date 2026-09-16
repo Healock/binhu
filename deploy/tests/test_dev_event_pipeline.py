@@ -751,6 +751,11 @@ volumes:
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
         self.assertIn("evidence:/var/lib/binhu-dev-event-pipeline/evidence", service["volumes"])
         self.assertIn("./scale_acceptance.py:/opt/dev-pipeline/event_pipeline/scale_acceptance.py:ro", service["volumes"])
+        self.assertIn("./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro", service["volumes"])
+        self.assertIn("./kafka_delivery_store.py:/opt/dev-pipeline/event_pipeline/services/kafka_delivery_store.py:ro", service["volumes"])
+        self.assertIn("./kafka_event_contract.py:/opt/dev-pipeline/event_pipeline/services/kafka_event_contract.py:ro", service["volumes"])
+        self.assertIn("./kafka_envelope.py:/opt/dev-pipeline/event_pipeline/services/kafka_envelope.py:ro", service["volumes"])
+        self.assertIn("./kafka_relay.py:/opt/dev-pipeline/event_pipeline/services/kafka_relay.py:ro", service["volumes"])
         serialized = json.dumps(service).lower()
         for forbidden in ("backend", "production", "staging", "shadow", "docker.sock"):
             self.assertNotIn(forbidden, serialized)
@@ -790,6 +795,19 @@ volumes:
         source = Path(event_prepare.__file__).read_text(encoding="utf-8")
         self.assertIn('"scale_acceptance.py": Path(__file__).with_name("scale_acceptance.py")', source)
         self.assertIn("acceptance-runner", event_prepare.EXPECTED_SERVICES)
+        for name in ("runtime.py", "kafka_delivery_store.py", "kafka_event_contract.py",
+                     "kafka_envelope.py", "kafka_relay.py"):
+            self.assertIn(name, event_prepare.PUBLIC_CANDIDATE_FILES)
+
+    def test_scale_acceptance_failure_detail_is_stage_only(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        spec = importlib.util.spec_from_file_location("scale_acceptance_failure", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        detail = module.safe_failure_detail(PermissionError("password=must-not-leak"), "enqueue")
+        self.assertEqual(detail, "acceptance_failure_type=PermissionError acceptance_failure_stage=enqueue")
+        self.assertNotIn("must-not-leak", detail)
+        self.assertIn("acceptance_failure_stage=runtime", module.safe_failure_detail(RuntimeError("x"), "unknown"))
 
     def test_acceptance_controller_targets_only_fixed_dev_services(self):
         source = Path(event_prepare.__file__).with_name("acceptance_control.py").read_text(encoding="utf-8")
@@ -798,6 +816,9 @@ volumes:
         self.assertIn('"up", "-d", "dual-track-monitor"', source)
         for forbidden in ("down", "volume rm", "system prune", "production", "staging", "shadow"):
             self.assertNotIn(forbidden, source.lower())
+        self.assertIn("acceptance-failure-", source)
+        self.assertIn("safe_detail", source)
+        self.assertIn("open(\"x\"", source)
 
     def test_prepare_monitor_source_files_are_readable_by_worker_uid(self):
         self.assertIn("runtime.py", event_prepare.PUBLIC_CANDIDATE_FILES)
