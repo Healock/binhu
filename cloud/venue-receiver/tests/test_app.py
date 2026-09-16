@@ -13,7 +13,9 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config import Settings\nfrom app.drinking_page import render_drinking_report_page\nfrom app.main import create_app
+from app.config import Settings
+from app.drinking_page import render_drinking_report_page
+from app.main import create_app
 from app.security import b64encode, canonical_request, keyed_digest
 
 
