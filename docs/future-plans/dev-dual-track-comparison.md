@@ -203,3 +203,19 @@ worker 暂停时等待其他 worker 收尾，再关闭 producer 和连接池，�
 Shadow、数据一致性和安全边界仍是独立停止条件。
 
 monitor23 的首轮证据必须同时记录 claim 重试次数与最终 relay 状态，避免把“已暂停”误判为规模通过。
+
+## 2026-09-17：monitor23 10000 运行时失败归因
+
+`dev-20260917-dualtrack-monitor23` 的 1002 条验收已通过：两边投影、revision、唯一
+事件和未归因差异均为 1002/0。随后 10000 条验收失败，但不是锁重试耗尽或双轨差异。
+服务器私有证据显示 relay 持续发布到两个 worker 各 5000 条；失败组件是常驻
+`dual-track-monitor`，其容器反复因
+`ImportError: cannot import name LockContentionExhausted` 退出。
+
+根因是候选只把新的 `runtime.py` 挂载进 monitor 容器，而 monitor 继续使用旧镜像内的
+`kafka_delivery_store.py`。`runtime.py` 顶层导入 relay 专用的新异常类，导致 monitor
+在比较前无法启动。该失败目录和 `scale-10000` 报告保留不覆盖。修补方案是把该异常
+改为 relay worker 内的延迟导入，使 monitor 启动不依赖 relay 新模块；下一轮使用
+全新的 `dev-20260917-dualtrack-monitor24` 从 1002、10000、100000 重新验收。
+
+monitor24 的部署摘要必须同时记录候选 runtime 与 monitor 所使用模块的兼容性检查结果。

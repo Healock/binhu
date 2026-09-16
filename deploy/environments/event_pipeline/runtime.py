@@ -9,7 +9,7 @@ import os
 import re
 from datetime import datetime, timezone
 
-from .services.kafka_delivery_store import LockContentionExhausted, MySQLDeliveryStore
+from .services.kafka_delivery_store import MySQLDeliveryStore
 from .services.kafka_relay import KafkaRelay
 from .services.derived_revision_cache import RevisionCache
 
@@ -133,6 +133,10 @@ async def relay_step(worker, worker_slot, published):
 
 
 async def relay_worker(worker, worker_slot, stop_event):
+    # The monitor image may provide an older delivery-store module; keep this
+    # relay-only exception out of runtime module import so monitor can start.
+    from .services.kafka_delivery_store import LockContentionExhausted
+
     published = 0
     while not stop_event.is_set():
         try:
