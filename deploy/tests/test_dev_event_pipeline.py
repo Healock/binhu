@@ -529,6 +529,18 @@ volumes:
             self.assertEqual(len(evidence), 2)
             self.assertTrue(all((entry / "schema-check.log").exists() for entry in evidence))
 
+    def test_evidence_initializer_targets_only_current_run_directory(self):
+        command = control.evidence_initializer_command("dev-20260916-dualtrack-monitor18")
+        self.assertEqual(command[:8], [
+            "docker", "compose", "-f", "/srv/binhu-environments/development-pipeline/compose.json",
+            "run", "--rm", "--no-deps", "--user",
+        ])
+        self.assertEqual(command[8], "0:0")
+        self.assertEqual(command[9], "dual-track-monitor")
+        self.assertIn("dev-20260916-dualtrack-monitor18", " ".join(command))
+        self.assertIn("10001", " ".join(command))
+        self.assertNotIn("rm -rf", " ".join(command))
+
     def test_flink_compose_gate_requires_dev_identity_and_checkpoint_volume(self):
         spec = flink_compose.specification(
             "sha256:" + "a" * 64,
