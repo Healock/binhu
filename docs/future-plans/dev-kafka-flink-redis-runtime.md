@@ -92,10 +92,13 @@ Dev 专属固定网关现已支持受控的 `accept <run_id> <scale>`，规模�
 吞吐，而不是全量后的数据一致性失败。失败证据继续保留。Production、Staging 和
 Shadow 未修改。
 
-为进入 100000 条阶段，下一候选只调整 Dev relay：固定 8 个并发 worker、10 条派生库
-连接、共享一个幂等 Kafka producer，保留 `SKIP LOCKED`、租约与完成栅栏；并发不能由
-环境变量放大，日志按 worker 每 1000 条输出安全计数。候选变化后必须建立新的运行编号，
-依次重跑 1002、10000 和 100000。
+为进入 100000 条阶段，下一候选将 Dev relay 固定为 2 个并发 worker、4 条派生库连接
+和一个共享的幂等 Kafka producer。每个 worker 使用独立 delivery store；claim/finish
+在 1213/1205 时把完整事务作为重试单元，最多 4 次，使用 `READ COMMITTED`、指数退避
+和随机抖动，超过上限暂停并保留安全诊断。并发不能由环境变量放大，日志按 worker 每
+1000 条输出安全计数。候选变化后必须建立新的运行编号，依次重跑 1002、10000 和
+100000；单个 worker 的最终失败不能取消其他 worker，producer 和连接池在 worker 收尾
+后才关闭。
 
 当前仅允许继续累计规模验收与连续观察。savepoint operator ID 兼容恢复仍未通过，不能
 以干净状态启动或 `allowNonRestoredState` 代替恢复门禁；在 100000 条与连续 7 天、
