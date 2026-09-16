@@ -198,8 +198,13 @@ source ID 和 UUIDv5，只包含任务元数据，不包含姓名、证件号、
 
 验收 runner 只连接 `binhu-development-eventbus_internal`，使用只读根文件系统、
 tmpfs、固定资源和日志上限，不加入 Backend 网络，不挂载 Docker socket，也不访问
-Production、Staging 或 Shadow。为避免两条消费者尚在收敛时常驻 monitor 把短暂
-先后顺序误报成最终差异，受控 controller 先停止当前 Dev `dual-track-monitor`，
+Production、Staging 或 Shadow。runner 会把候选包中的 runtime、投递台账、事件合同与
+relay 状态机模块一并只读挂载，不能混用旧 worker 镜像内的过期实现。启动、连接、
+入队、比较或证据写入失败时只输出异常类型和固定阶段，完整业务值不进入日志；
+controller 另写不可覆盖的私密失败证据。
+
+为避免两条消费者尚在收敛时常驻 monitor 把短暂先后顺序误报成最终差异，受控
+controller 先停止当前 Dev `dual-track-monitor`，
 由 runner 投递并有界等待 Kafka 台账、Python 投影、Flink 投影和 revision sink
 全部达到目标，再逐字段核对 revision、event count、changed field count 和各事件
 分类计数。零差异时写入不可覆盖的脱敏证据并恢复 monitor；超时或任何差异时写入

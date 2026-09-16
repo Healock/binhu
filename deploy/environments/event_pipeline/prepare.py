@@ -17,7 +17,8 @@ from .flink_sql import render
 PROJECT = "binhu-development-pipeline"
 PUBLIC_CANDIDATE_FILES = frozenset({
     "init.sql", "redis.conf", "pipeline.sql", "runtime.py",
-    "dual_track_monitor.py", "scale_acceptance.py",
+    "dual_track_monitor.py", "scale_acceptance.py", "kafka_delivery_store.py",
+    "kafka_event_contract.py", "kafka_envelope.py", "kafka_relay.py",
 })
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
@@ -135,7 +136,12 @@ def compose(images):
         "mem_limit": "192m", "cpus": .5, "read_only": True,
         "tmpfs": ["/tmp:size=16m"],
         "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence",
-                    "./scale_acceptance.py:/opt/dev-pipeline/event_pipeline/scale_acceptance.py:ro"],
+                    "./scale_acceptance.py:/opt/dev-pipeline/event_pipeline/scale_acceptance.py:ro",
+                    "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
+                    "./kafka_delivery_store.py:/opt/dev-pipeline/event_pipeline/services/kafka_delivery_store.py:ro",
+                    "./kafka_event_contract.py:/opt/dev-pipeline/event_pipeline/services/kafka_event_contract.py:ro",
+                    "./kafka_envelope.py:/opt/dev-pipeline/event_pipeline/services/kafka_envelope.py:ro",
+                    "./kafka_relay.py:/opt/dev-pipeline/event_pipeline/services/kafka_relay.py:ro"],
         "command": ["python", "-m", "event_pipeline.scale_acceptance"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
@@ -328,6 +334,7 @@ CREATE TABLE dev_task_metadata_python_events (
  INDEX python_event_task (run_id,task_id,source_id,revision)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 """
+    services_root = Path(__file__).with_name("services")
     files = {
         "compose.json": json.dumps(spec, indent=2), "init.sql": sql,
         "runtime.env": "\n".join(f"{k}={v}" for k, v in env.items()) + "\n",
@@ -349,6 +356,10 @@ CREATE TABLE dev_task_metadata_python_events (
         "runtime.py": Path(__file__).with_name("runtime.py").read_text(encoding="utf-8"),
         "dual_track_monitor.py": Path(__file__).with_name("dual_track_monitor.py").read_text(encoding="utf-8"),
         "scale_acceptance.py": Path(__file__).with_name("scale_acceptance.py").read_text(encoding="utf-8"),
+        "kafka_delivery_store.py": (services_root / "kafka_delivery_store.py").read_text(encoding="utf-8"),
+        "kafka_event_contract.py": (services_root / "kafka_event_contract.py").read_text(encoding="utf-8"),
+        "kafka_envelope.py": (services_root / "kafka_envelope.py").read_text(encoding="utf-8"),
+        "kafka_relay.py": (services_root / "kafka_relay.py").read_text(encoding="utf-8"),
     }
     for name, content in files.items():
         target = ROOT / name
