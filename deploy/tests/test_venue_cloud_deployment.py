@@ -33,6 +33,7 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
     def test_nginx_keeps_updates_out_of_venue_include(self):
         nginx = (ROOT / "deploy/venue-cloud/nginx-server-locations.conf").read_text(encoding="utf-8")
         self.assertIn("/venue/", nginx)
+        self.assertIn("location ^~ /drinking-report/", nginx)
         self.assertIn("/api/public/", nginx)
         self.assertIn("/api/internal/", nginx)
         self.assertIn("$ssl_client_verify", nginx)
