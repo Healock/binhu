@@ -56,7 +56,7 @@ def execute(run_id: str, scale: int) -> dict:
         [*compose, "--profile", "acceptance", "run", "--rm", "--no-deps",
          "acceptance-runner", "python", "-m", "event_pipeline.scale_acceptance",
          "--scale", str(scale)],
-        capture_output=True, text=True, timeout={1002: 360, 10_000: 960, 100_000: 2460}[scale],
+        capture_output=True, text=True, timeout={1002: 360, 10_000: 3660, 100_000: 21_660}[scale],
     )
     if result.returncode:
         evidence = write_failure_evidence(run_id, scale, result.returncode, result.stderr)

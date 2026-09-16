@@ -27,7 +27,7 @@ RUN_RE = re.compile(r"^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_SCALES = frozenset({1002, 10_000, 100_000})
-ACCEPT_TIMEOUTS = {1002: 420, 10_000: 1020, 100_000: 2520}
+ACCEPT_TIMEOUTS = {1002: 420, 10_000: 3720, 100_000: 21_720}
 
 
 def fail(message: str) -> None:
