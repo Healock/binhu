@@ -13,6 +13,19 @@ from .services.kafka_delivery_store import MySQLDeliveryStore
 from .services.kafka_relay import KafkaRelay
 from .services.derived_revision_cache import RevisionCache
 
+_SAFE_RUNTIME_DETAIL = re.compile(
+    r"^runtime_failure_type=[A-Za-z][A-Za-z0-9_]{0,63} "
+    r"runtime_failure_stage=[a-z_]{1,64}$"
+)
+
+
+def runtime_error_message(error: BaseException) -> str:
+    """Return a safe dispatcher error without exposing exception contents."""
+    detail = getattr(error, "safe_detail", "")
+    if isinstance(detail, str) and _SAFE_RUNTIME_DETAIL.fullmatch(detail):
+        return detail
+    return "Dev pipeline stopped; identity or runtime check failed"
+
 
 def configuration(environ=None):
     env = os.environ if environ is None else environ
@@ -246,6 +259,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         asyncio.run(main(args.mode))
-    except Exception:
+    except Exception as error:
         # Connector exception text can contain credentials and SQL values.
-        raise SystemExit("Dev pipeline stopped; identity or runtime check failed") from None
+        raise SystemExit(runtime_error_message(error)) from None
