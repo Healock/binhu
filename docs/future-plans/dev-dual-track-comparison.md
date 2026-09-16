@@ -254,3 +254,19 @@ monitor25 私有目录，未覆盖 monitor23/24。
 
 100000 条 workflow `35142991989` 已启动，当前仍在运行；只有该级别完成且零未归因差异，
 才可进入连续 7 天双轨计时和 Staging 晋级评估。
+
+## 2026-09-17：monitor25 100000 入队故障诊断
+
+`35142991989` 在入队阶段失败，安全分类为
+`acceptance_failure_type=InterfaceError acceptance_failure_stage=enqueue`。私有证据目录
+保留在服务器上的 `dev-20260917-dualtrack-monitor25` 下，未覆盖此前的 monitor23、
+monitor24 或 monitor25 的 1002/10000 证据。失败时派生 MySQL 容器发生 cgroup OOM：
+内核记录 `mysqld` 被 OOM killer 终止，容器以 137 退出后重新启动；relay 和 bridge
+随后因数据库连接中断退出。Kafka、Flink、Schema Registry 没有运行时异常，失败不是双轨
+结果差异。
+
+重启前该运行编号已经提交了部分 100000 入队事务，数据库中保留了部分 pending/published
+记录，因此该运行编号被标记为失败并永久停用，不能继续复用。修复仅限 Dev Compose 资源
+门禁：派生 MySQL 的内存上限从 512 MiB 调整为 768 MiB，并显式设置 1536 MiB 的内存加
+交换上限；生产、Staging、Shadow 和数据卷未修改。修复完成后必须使用新的运行编号，从
+1002 → 10000 → 100000 重新验收。
