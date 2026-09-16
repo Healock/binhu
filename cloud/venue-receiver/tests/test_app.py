@@ -336,6 +336,17 @@ def test_drinking_page_and_three_second_server_gate(tmp_path):
     assert 'data-signature-open="reporter"' in page.text
     assert 'data-signature-open="leader"' in page.text
     assert 'screen.orientation.lock' in page.text
+    assert '.signature-editor.force-landscape' in page.text
+    assert 'window.innerHeight>window.innerWidth' in page.text
+    assert "editor.classList.toggle('force-landscape',forceLandscape)" in page.text
+    assert "editor.classList.remove('force-landscape')" in page.text
+    assert "editor.classList.contains('force-landscape')" in page.text
+    assert '(e.clientY-r.top)/r.height' in page.text
+    assert '(r.right-e.clientX)/r.width' in page.text
+    assert 'canvas.clientWidth||r.width' in page.text
+    assert "window.addEventListener('resize',syncEditorOrientation)" in page.text
+    assert "screen.orientation?.addEventListener?.('change',syncEditorOrientation)" in page.text
+    assert "document.addEventListener('fullscreenchange',syncEditorOrientation)" in page.text
     assert '保存签名' in page.text
     assert '再次查看规定' not in page.text
     assert 'signature-watermark' in page.text
