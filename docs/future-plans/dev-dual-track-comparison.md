@@ -217,3 +217,5 @@ monitor23 的首轮证据必须同时记录 claim 重试次数与最终 relay �
 在比较前无法启动。该失败目录和 `scale-10000` 报告保留不覆盖。修补方案是把该异常
 改为 relay worker 内的延迟导入，使 monitor 启动不依赖 relay 新模块；下一轮使用
 全新的 `dev-20260917-dualtrack-monitor24` 从 1002、10000、100000 重新验收。
+
+monitor24 的部署摘要必须同时记录候选 runtime 与 monitor 所使用模块的兼容性检查结果。
