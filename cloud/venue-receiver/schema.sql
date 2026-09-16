@@ -12,6 +12,20 @@ CREATE TABLE IF NOT EXISTS venues (
     INDEX idx_cloud_venue_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS public_forms (
+    form_key VARCHAR(80) PRIMARY KEY,
+    display_name VARCHAR(200) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    token_hmac CHAR(64) NOT NULL,
+    token_version BIGINT NOT NULL,
+    config_revision BIGINT NOT NULL,
+    last_request_id CHAR(36) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_public_form_token (token_hmac),
+    INDEX idx_public_form_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS form_tokens (
     token_hmac CHAR(64) PRIMARY KEY,
     local_venue_id BIGINT NOT NULL,
@@ -19,6 +33,16 @@ CREATE TABLE IF NOT EXISTS form_tokens (
     consumed_at DATETIME DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_cloud_form_expiry (expires_at, consumed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS public_form_tokens (
+    token_hmac CHAR(64) PRIMARY KEY,
+    form_key VARCHAR(80) NOT NULL,
+    not_before DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    consumed_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_public_form_token_expiry (expires_at, consumed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS retired_venue_tokens (
@@ -39,7 +63,9 @@ CREATE TABLE IF NOT EXISTS rate_limit_buckets (
 
 CREATE TABLE IF NOT EXISTS submissions (
     submission_id CHAR(36) PRIMARY KEY,
-    local_venue_id BIGINT NOT NULL,
+    submission_kind VARCHAR(30) NOT NULL DEFAULT 'venue_visit',
+    local_venue_id BIGINT DEFAULT NULL,
+    public_form_key VARCHAR(80) DEFAULT NULL,
     request_fingerprint CHAR(64) NOT NULL,
     state VARCHAR(20) NOT NULL DEFAULT 'queued',
     encrypted_payload MEDIUMTEXT NOT NULL,
@@ -48,11 +74,11 @@ CREATE TABLE IF NOT EXISTS submissions (
     algorithm_version VARCHAR(100) NOT NULL,
     payload_nonce VARCHAR(100) NOT NULL,
     ciphertext_sha256 CHAR(64) NOT NULL,
-    photo_object_key VARCHAR(200) NOT NULL,
-    photo_nonce VARCHAR(100) NOT NULL,
-    photo_ciphertext_sha256 CHAR(64) NOT NULL,
-    photo_size BIGINT UNSIGNED NOT NULL,
-    photo_mime_type VARCHAR(100) NOT NULL,
+    photo_object_key VARCHAR(200) DEFAULT NULL,
+    photo_nonce VARCHAR(100) DEFAULT NULL,
+    photo_ciphertext_sha256 CHAR(64) DEFAULT NULL,
+    photo_size BIGINT UNSIGNED DEFAULT NULL,
+    photo_mime_type VARCHAR(100) DEFAULT NULL,
     lease_id CHAR(36) DEFAULT NULL,
     lease_owner VARCHAR(100) DEFAULT NULL,
     lease_expires_at DATETIME DEFAULT NULL,
@@ -63,7 +89,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     expires_at DATETIME NOT NULL,
     INDEX idx_cloud_submission_delivery (state, lease_expires_at, received_at),
     INDEX idx_cloud_submission_expiry (expires_at, state),
-    INDEX idx_cloud_submission_venue (local_venue_id, received_at)
+    INDEX idx_cloud_submission_venue (local_venue_id, received_at),
+    INDEX idx_cloud_submission_form (public_form_key, received_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS delivery_events (

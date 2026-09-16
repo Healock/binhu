@@ -67,6 +67,17 @@ components:
           required: [local_venue_id]
           properties:
             local_venue_id: { type: integer, minimum: 1 }
+    PublicFormUpdate:
+      type: object
+      required: [request_id, form_key, display_name, status, token, token_version, config_revision]
+      properties:
+        request_id: { type: string, format: uuid }
+        form_key: { type: string, pattern: '^[a-z0-9_-]+$' }
+        display_name: { type: string, maxLength: 200 }
+        status: { type: string, enum: [active, inactive] }
+        token: { type: string, minLength: 32, maxLength: 200 }
+        token_version: { type: integer, minimum: 1 }
+        config_revision: { type: integer, minimum: 1 }
     ReconcileRequest:
       type: object
       required: [request_id, venues]
@@ -104,22 +115,24 @@ components:
           items: { type: string }
     SubmissionEnvelope:
       type: object
-      required: [submission_id, local_venue_id, encrypted_payload, wrapped_data_key, key_id, algorithm_version, payload_nonce, ciphertext_sha256, photo_nonce, photo_ciphertext_sha256, photo_size, photo_mime_type, photo_download_path]
+      required: [submission_id, submission_kind, encrypted_payload, wrapped_data_key, key_id, algorithm_version, payload_nonce, ciphertext_sha256, received_at]
       properties:
         submission_id: { type: string, format: uuid }
-        local_venue_id: { type: integer, minimum: 1 }
+        submission_kind: { type: string, enum: [venue_visit, drinking_report] }
+        local_venue_id: { type: integer, minimum: 1, nullable: true }
+        public_form_key: { type: string, nullable: true }
         encrypted_payload: { type: string }
         wrapped_data_key: { type: string }
         key_id: { type: string }
         algorithm_version: { type: string }
         payload_nonce: { type: string }
         ciphertext_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
-        photo_nonce: { type: string }
-        photo_ciphertext_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
-        photo_size: { type: integer, minimum: 1 }
-        photo_mime_type: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        photo_nonce: { type: string, nullable: true }
+        photo_ciphertext_sha256: { type: string, pattern: '^[a-f0-9]{64}$', nullable: true }
+        photo_size: { type: integer, minimum: 1, nullable: true }
+        photo_mime_type: { type: string, enum: [image/jpeg, image/png, image/webp], nullable: true }
         received_at: { type: string, format: date-time }
-        photo_download_path: { type: string }
+        photo_download_path: { type: string, nullable: true }
     PullResponse:
       type: object
       required: [lease_id, lease_expires_at, items]
@@ -172,6 +185,76 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 paths:
+  /drinking-report/{token}:
+    get:
+      summary: 返回全所饮酒报备公开页面
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string, minLength: 32, maxLength: 200 }
+      responses:
+        "200": { description: HTML 饮酒报备页面 }
+        "404": { description: 二维码不存在 }
+        "410": { description: 二维码已停用 }
+  /api/public/forms/{token}:
+    get:
+      summary: 签发饮酒报备一次性表单令牌
+      parameters:
+        - in: path
+          name: token
+          required: true
+          schema: { type: string, minLength: 32, maxLength: 200 }
+      responses:
+        "200": { description: 表单令牌，签发后至少三秒才能提交 }
+        "404": { description: 二维码不存在或已停用 }
+  /api/public/drinking-reports:
+    post:
+      summary: 加密接收饮酒报备正文
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [submission_id, form_token, form_token_value, device_id, name, unit_position, drinking_at, drinking_place, reason, inviter, travel_method, responsible_leader_name, reporter_signature, leader_signature]
+              properties:
+                submission_id: { type: string, format: uuid }
+                form_token: { type: string }
+                form_token_value: { type: string }
+                device_id: { type: string, minLength: 16, maxLength: 200 }
+                name: { type: string, maxLength: 100 }
+                unit_position: { type: string, maxLength: 200 }
+                drinking_at: { type: string, format: date-time }
+                drinking_place: { type: string, maxLength: 500 }
+                reason: { type: string, maxLength: 500 }
+                inviter: { type: string, maxLength: 100 }
+                travel_method: { type: string, maxLength: 100 }
+                responsible_leader_name: { type: string, maxLength: 100 }
+                notes: { type: string, maxLength: 2000 }
+                reporter_signature: { type: array, maxItems: 200 }
+                leader_signature: { type: array, maxItems: 200 }
+      responses:
+        "202": { description: 已加密排队 }
+        "400": { description: 一次性令牌无效或尚未到可提交时间 }
+        "422": { description: 字段或签名校验失败 }
+        "429": { description: 提交频率超限 }
+  /api/internal/public-forms/{form_key}:
+    put:
+      summary: 同步公共表单配置
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      parameters:
+        - in: path
+          name: form_key
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublicFormUpdate' }
+      responses:
+        "200": { description: 配置已应用或已是最新版本 }
   /venue/{token}:
     get:
       summary: 返回同源移动登记页面

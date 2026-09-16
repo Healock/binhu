@@ -228,9 +228,9 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
       },
       {
         id: 'venue',
-        path: '/venue-codes',
-        label: '场所码管理',
-        shortLabel: '场所码',
+        path: '/qr-codes',
+        label: '二维码管理',
+        shortLabel: '二维码',
         icon: 'resources',
         permission: 'venue.view',
       },

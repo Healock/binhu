@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from datetime import datetime
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
@@ -21,6 +22,8 @@ class FakeRepository:
     def __init__(self):
         self.venue = None
         self.form_tokens = set()
+        self.public_form = None
+        self.public_form_tokens = {}
         self.submissions = {}
         self.nonces = set()
 
@@ -45,13 +48,36 @@ class FakeRepository:
         self.form_tokens.remove(key)
         return True
 
+    async def get_public_form_by_token(self, token_hmac):
+        if self.public_form and self.public_form["token_hmac"] == token_hmac:
+            return self.public_form
+        return None
+
+    async def issue_public_form_token(self, token_hmac, form_key, not_before, expires_at):
+        self.public_form_tokens[(token_hmac, form_key)] = (not_before, expires_at)
+
+    async def consume_public_form_token(self, token_hmac, form_key):
+        times = self.public_form_tokens.pop((token_hmac, form_key), None)
+        if not times:
+            return False
+        now = datetime.utcnow()
+        if not times[0] <= now <= times[1]:
+            self.public_form_tokens[(token_hmac, form_key)] = times
+            return False
+        return True
+
+    async def upsert_public_form(self, item):
+        self.public_form = {**item, "token_hmac": item["token_hmac"]}
+        return {"applied": True, "config_revision": item["config_revision"], "status": item["status"], "token_version": item["token_version"]}
+
     async def get_submission(self, submission_id):
         return self.submissions.get(submission_id)
 
     async def create_submission(self, item):
         self.submissions[item["submission_id"]] = {
             "submission_id": item["submission_id"],
-            "local_venue_id": item["local_venue_id"],
+            "local_venue_id": item.get("local_venue_id"),
+            "public_form_key": item.get("public_form_key"),
             "request_fingerprint": item["request_fingerprint"],
             "state": "queued",
         }
@@ -262,6 +288,69 @@ def test_registration_page_contains_client_side_format_checks_and_required_field
     assert '.label-text{display:flex;align-items:baseline' in page
     assert "identityChecks" in page
     assert "^1[3-9]\\d{9}$" in page
+
+
+def _drinking_payload(token, form_token, *, signature=None):
+    signature = signature or [[{"x": 0.1, "y": 0.1}, {"x": 0.5, "y": 0.5}]]
+    return {
+        "submission_id": str(uuid.uuid4()),
+        "form_token": form_token,
+        "form_token_value": token,
+        "device_id": "drinking-device-for-tests-0001",
+        "name": "测试人员",
+        "unit_position": "测试单位民警",
+        "drinking_at": "2026-09-16T20:30",
+        "drinking_place": "测试地点",
+        "reason": "家庭聚会",
+        "inviter": "测试邀约人",
+        "travel_method": "公共交通",
+        "responsible_leader_name": "测试领导",
+        "notes": "虚构资料",
+        "reporter_signature": signature,
+        "leader_signature": signature,
+    }
+
+
+def test_drinking_page_and_three_second_server_gate(tmp_path):
+    client, repo, config = make_client(tmp_path)
+    token = "drinking-token-" + "d" * 32
+    repo.public_form = {
+        "form_key": "drinking_report",
+        "display_name": "全所饮酒报备",
+        "status": "active",
+        "token_hmac": keyed_digest(config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", token),
+    }
+    with client:
+        page = client.get(f"/drinking-report/{token}")
+        info = client.get(f"/api/public/forms/{token}")
+        response = client.post("/api/public/drinking-reports", json=_drinking_payload(token, info.json()["form_token"]))
+    assert page.status_code == 200
+    assert "苏州市公安局非工作日饮酒报备单" in page.text
+    assert "reporter_signature" in page.text
+    assert response.status_code == 400
+    assert "重新扫码" in response.json()["detail"]
+    assert not repo.submissions
+
+
+def test_drinking_report_rejects_tap_only_signature_before_consuming_token(tmp_path):
+    client, repo, config = make_client(tmp_path)
+    token = "drinking-token-" + "s" * 32
+    repo.public_form = {
+        "form_key": "drinking_report",
+        "display_name": "全所饮酒报备",
+        "status": "active",
+        "token_hmac": keyed_digest(config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", token),
+    }
+    with client:
+        form_token = client.get(f"/api/public/forms/{token}").json()["form_token"]
+        response = client.post(
+            "/api/public/drinking-reports",
+            json=_drinking_payload(token, form_token, signature=[[{"x": 0.2, "y": 0.2}, {"x": 0.2, "y": 0.2}]]),
+        )
+    assert response.status_code == 422
+    assert "完整书写" in response.json()["detail"]
+    assert repo.public_form_tokens
+    assert not repo.submissions
 
 
 def test_internal_venue_update_never_stores_raw_token(tmp_path):
