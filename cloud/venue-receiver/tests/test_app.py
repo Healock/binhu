@@ -13,8 +13,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config import Settings
-from app.main import create_app
+from app.config import Settings\nfrom app.drinking_page import render_drinking_report_page\nfrom app.main import create_app
 from app.security import b64encode, canonical_request, keyed_digest
 
 
@@ -573,8 +572,9 @@ def test_internal_api_rejects_nonce_replay_and_signs_valid_response(tmp_path):
 
 def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
     client, _repo, _config = make_client(tmp_path)
-    page = client.get('/drinking-report/test-token').text
+    page = render_drinking_report_page()
     assert 'transform:translateX(var(--signature-viewport-width)) rotate(90deg)' in page
     assert 'canvas.clientHeight||r.height' in page
     assert 'editor.style.setProperty(\'--signature-viewport-height\',${window.innerHeight}px)' in page
+
 
