@@ -332,6 +332,13 @@ def test_drinking_page_and_three_second_server_gate(tmp_path):
     assert page.text.count('class="required" aria-hidden="true"') == 10
     assert '.label-text{display:flex;align-items:baseline' in page.text
     assert '<span class="label-text">饮酒时间<span class="required"' in page.text
+    assert 'class="signature-editor no-select"' in page.text
+    assert 'data-signature-open="reporter"' in page.text
+    assert 'data-signature-open="leader"' in page.text
+    assert 'screen.orientation.lock' in page.text
+    assert '保存签名' in page.text
+    assert '请补充${missing.length}项必填内容' in page.text
+    assert 'contextmenu' in page.text
     assert response.status_code == 400
     assert "重新扫码" in response.json()["detail"]
     assert not repo.submissions
