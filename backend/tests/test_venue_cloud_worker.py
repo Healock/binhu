@@ -42,6 +42,13 @@ def test_name_hmac_is_available_for_unicode_names():
     assert version == 1
 
 
+def test_hmac_digest_rejects_unknown_kind():
+    from services.registry_security import hmac_digest
+
+    with pytest.raises(ValueError, match="unsupported HMAC kind"):
+        hmac_digest("value", kind="unknown")
+
+
 class FakeClient:
     def __init__(self, signal):
         self.signal = signal
