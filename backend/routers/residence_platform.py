@@ -60,6 +60,16 @@ async def _public_config(conn) -> dict[str, Any]:
             "WHERE is_active=1 AND qmf_community_code REGEXP '^[0-9A-Z]{10}$'"
         )
         payload["community_account_count"] = int((await cur.fetchone())[0] or 0)
+        await cur.execute(
+            "SELECT qmf_community_code FROM _communities "
+            "WHERE is_active=1 AND qmf_community_code REGEXP '^[0-9A-Z]{10}$' "
+            "ORDER BY id"
+        )
+        payload["community_codes"] = [
+            str(row[0] or "").strip().upper()
+            for row in await cur.fetchall()
+            if str(row[0] or "").strip()
+        ]
         payload["session_ready"] = bool(
             payload["session_ready"] and payload["community_account_count"]
         )
