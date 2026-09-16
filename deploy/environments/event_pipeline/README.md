@@ -210,6 +210,14 @@ controller 先停止当前 Dev `dual-track-monitor`，
 分类计数。零差异时写入不可覆盖的脱敏证据并恢复 monitor；超时或任何差异时写入
 `paused` 状态、保留证据并保持 monitor 停止，禁止继续下一级规模。
 
+Dev relay 固定使用 8 个并发 worker、10 条派生库连接和一个共享的幂等 Kafka
+producer，以便 100000 条受控验收能在固定窗口内完成。每个 worker 使用独立的
+delivery store，并继续通过 `FOR UPDATE SKIP LOCKED`、lease token 和完成栅栏领取与
+完成事件；并发度和连接数是代码常量，不能由环境变量临时放大。该设置只属于 Dev
+event-pipeline，relay 仍只加入 internal 网络，不连接 Backend、Production、Staging
+或 Shadow。正常发布日志按每个 worker 每 1000 条输出一次安全计数，不记录 event ID、
+载荷或业务正文。
+
 1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。连续 7 天、
 至少 100000 条唯一事件、checkpoint/savepoint 恢复、完整第 6–11 项以及 Staging
 晋级仍须分别记录和签署，不能由该工作流自动标记完成。

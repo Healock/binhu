@@ -101,6 +101,16 @@ def compose(images):
             "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
             "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"},
                            "dev-derived-redis": {"condition": "service_started"}}}
+    services["relay"].update({
+        "mem_limit": "256m", "cpus": 1,
+        "volumes": [
+            "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
+            "./kafka_delivery_store.py:/opt/dev-pipeline/event_pipeline/services/kafka_delivery_store.py:ro",
+            "./kafka_event_contract.py:/opt/dev-pipeline/event_pipeline/services/kafka_event_contract.py:ro",
+            "./kafka_envelope.py:/opt/dev-pipeline/event_pipeline/services/kafka_envelope.py:ro",
+            "./kafka_relay.py:/opt/dev-pipeline/event_pipeline/services/kafka_relay.py:ro",
+        ],
+    })
     services["business-bridge"] = {**common, "image": images["worker"],
         "networks": ["internal", "backend"], "env_file": ["runtime.env", "backend-relay.env"],
         "mem_limit": "160m", "cpus": .25, "read_only": True,

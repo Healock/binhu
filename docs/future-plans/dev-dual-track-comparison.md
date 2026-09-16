@@ -1,6 +1,6 @@
 # Dev Python/Flink 双轨比对
 
-- 状态：第一真实派生域已实现，代码合同和本地测试通过；Dev 实际运行与 7 天门禁待执行
+- 状态：第一真实派生域已在 Dev 完成 1002 和 10000 条受控双轨验收；100000 条与连续 7 天观察待执行，checkpoint/savepoint 恢复门禁尚未通过
 - 派生域：任务元数据投影与计数
 - 选择原因：只使用 Kafka v1 的脱敏元数据，能够从事件日志重建；结果可用事件数、变化字段数、最高 revision 和按事件类型计数完整描述，避免把地址正文、人员资料或研判正文带入链路。
 
@@ -134,3 +134,49 @@ Registry、Redis、Production、Staging 或 Shadow。
 必须使用新的运行编号重新投递合成事件，并在 revision、event_count、
 changed_field_count、projection row 和 unique event count 全部一致后，才允许进入
 10,000 条事件阶段。
+
+## 2026-09-16：monitor21 受控 1002 条验收通过
+
+PR #692 增加只允许当前 development run 与固定规模的受控验收入口；PR #694 修复
+acceptance runner 只挂载新入口、却继续使用旧 worker 镜像内过期 runtime 和 Kafka
+依赖的问题。修复后候选包把 runtime、投递台账、事件合同、信封与 relay 状态机模块
+一并只读挂载。失败日志只允许输出异常类型和固定阶段，完整异常正文和业务值不会进入
+Actions 日志；controller 会另写不可覆盖的私密失败证据。
+
+本轮运行编号为 `dev-20260916-dualtrack-monitor21`，主线提交为
+`6f8acd62383edc1c024ff1da013bbe69e34a09b8`。候选生成 workflow run 为
+`35067807997`，部署 workflow run 为 `35067926982`，候选包 SHA-256 为
+`f0bb9a6258f192d773f89708d09e88b83e5c4b1a88428b11f6c1c3552a7821c9`。
+固定网关完成 `prepare → measure → apply` 后，持久 SSH MCP 只读复核确认
+`current.json` 绑定相同 run、提交和四个不可变镜像摘要，且
+`started=true`、`acceptance=pending`；Production 核心容器没有因本轮 Dev 部署重启。
+
+1002 条受控验收 workflow run `35068247809` 通过，报告时间为
+`2026-09-16T07:26:13Z`。投递台账为 1002/1002 published，Python 与 Flink 投影各
+1002 行，Flink revision sink 为 1002 行，两边唯一事件均为 1002；
+`revision_mismatch_count=0`、`projection_mismatch_count=0`、
+`unattributed_difference_count=0`。受控成功报告保存在 Dev evidence 命名卷的
+`/var/lib/binhu-dev-event-pipeline/evidence/scale-1002-*.json`，旧 monitor20 失败证据
+继续保留，不覆盖。
+
+随后第一次 10000 条 workflow run `35068567460` 在 15 分钟窗口结束时，投递台账已有
+10000 条，但 relay 只发布 5351 条；Python 已处理 5351 条，Flink 暂时处理 5346 条，
+`revision_mismatch_count=0`。这说明比较发生在消费者尚未全量收敛时，不能把窗口内的
+5 条暂时落后写成最终计算语义差异。失败报告和暂停状态继续保存在 monitor21 的独立
+evidence 目录，不覆盖。
+
+relay 后续继续处理积压。同一 run 使用相同确定性 event ID 的幂等复核 workflow run
+`35089738316` 在 24 秒内确认台账、Python 投影、Flink 投影、revision sink 和两边唯一
+事件均为 10000；`projection_mismatch_count=0`、`revision_mismatch_count=0`、
+`unattributed_difference_count=0`。因此 10000 条累计门禁已通过。首次超时的根因是
+Dev relay 串行执行 claim、Kafka ACK、finish 和逐条日志，实测吞吐不足以支持后续
+100000 条固定窗口；它不是最终双轨数据差异。
+
+下一候选将 Dev relay 改为固定 8 个并发 worker、10 条派生库连接和共享的幂等 producer，
+继续保留 `FOR UPDATE SKIP LOCKED`、lease token 与完成栅栏。并发度不能通过环境变量
+任意放大，relay 仍只连接 Dev internal 网络，正常发布日志只写每 worker 每 1000 条的
+安全计数。该变更必须使用新的不可变运行编号，从 1002、10000 再到 100000 逐级验证。
+
+当前结果不表示连续 7 天/100000 条门禁、完整 Dev 第 6–11 项、checkpoint/savepoint
+恢复或 Staging 晋级已经通过。旧 savepoint 的 operator ID 兼容恢复仍失败，当前继续
+采用已记录的干净状态重建，不使用 `allowNonRestoredState`。

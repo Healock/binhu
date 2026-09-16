@@ -1,6 +1,6 @@
 # Dev Kafka、Flink 与 Redis 架构升级
 
-- 当前状态：Dev 元数据事件链路已合入主线；任务元数据投影/计数双轨合同已实现，7 天/10 万事件运行门禁待执行；未切换 Production
+- 当前状态：Dev 元数据事件链路已合入主线；任务元数据投影/计数已完成 1002 与 10000 条零未归因差异验收，100000 条和连续 7 天观察待执行；恢复门禁待完成，未切换 Production
 - 目标：把容易与业务写入抢锁的可重建派生计算逐步移到 Dev 的 Kafka/Flink/Redis 链路，先验证事件合同、版本栅栏、恢复和回放，再决定是否进入 Staging
 - 边界：MySQL 继续是业务真相；Dev 只使用虚构或已脱敏数据；不复用 Shadow 数据目录、checkpoint、Redis/Kafka 卷、数据库卷或运行编号
 
@@ -77,3 +77,27 @@ recovery16 的实际结果：两个 Flink 作业为 RUNNING；用新 nonce 和 r
 `/var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery16/`；
 旧 metadata08 作业虽仍运行，但按只读 JobGraph 核对仅消费旧 run_id，未与 recovery16
 投影键重叠。长跑前仍需再次核对输出命名空间并建立新的证据目录。
+
+## 2026-09-16：monitor21 规模门禁进展
+
+Dev 专属固定网关现已支持受控的 `accept <run_id> <scale>`，规模只允许 1002、10000
+和 100000，不接受任意脚本、SQL、路径或 stdin。`monitor21` 使用主线提交
+`6f8acd62383edc1c024ff1da013bbe69e34a09b8` 和候选包摘要
+`f0bb9a6258f192d773f89708d09e88b83e5c4b1a88428b11f6c1c3552a7821c9` 完成部署。
+1002 条验收中 Kafka 投递、Python/Flink 投影、revision 与唯一事件计数全部为 1002，
+两类 mismatch 与未归因差异均为 0。第一次 10000 条 run `35068567460` 在 15 分钟时
+只发布 5351 条，Python 为 5351、Flink 为 5346，revision mismatch 为 0；同一 run 的
+确定性事件随后全部收敛，幂等复核 run `35089738316` 在 24 秒内确认两端与台账均为
+10000，projection/revision mismatch 和未归因差异全部为 0。首次超时归因于串行 relay
+吞吐，而不是全量后的数据一致性失败。失败证据继续保留。Production、Staging 和
+Shadow 未修改。
+
+为进入 100000 条阶段，下一候选只调整 Dev relay：固定 8 个并发 worker、10 条派生库
+连接、共享一个幂等 Kafka producer，保留 `SKIP LOCKED`、租约与完成栅栏；并发不能由
+环境变量放大，日志按 worker 每 1000 条输出安全计数。候选变化后必须建立新的运行编号，
+依次重跑 1002、10000 和 100000。
+
+当前仅允许继续累计规模验收与连续观察。savepoint operator ID 兼容恢复仍未通过，不能
+以干净状态启动或 `allowNonRestoredState` 代替恢复门禁；在 100000 条与连续 7 天、
+资源/lag/checkpoint 观察及恢复演练全部完成前，不提交 Staging 晋级或 Production
+切换结论。
