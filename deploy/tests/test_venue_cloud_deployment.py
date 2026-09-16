@@ -43,6 +43,10 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("proxy_read_timeout 40s", nginx)
         self.assertNotIn("/var/log/nginx", nginx)
         self.assertNotIn("location /updates", nginx)
+        drinking_location = nginx.split("location ^~ /drinking-report/", 1)[1].split("}", 1)[0]
+        self.assertIn("access_log off;", drinking_location)
+        public_forms_location = nginx.split("location ^~ /api/public/forms/", 1)[1].split("}", 1)[0]
+        self.assertIn("access_log off;", public_forms_location)
         log_format = (ROOT / "deploy/venue-cloud/nginx-http-context.conf").read_text(encoding="utf-8")
         self.assertNotIn("$http_referer", log_format)
 
