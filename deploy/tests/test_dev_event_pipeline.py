@@ -904,6 +904,8 @@ volumes:
             self.assertIn("cpus", service)
         self.assertFalse(any(v.get("external") for v in spec["volumes"].values()))
         self.assertIn("max:1024M", " ".join(spec["services"]["dev-derived-mysql"]["command"]))
+        self.assertEqual(spec["services"]["dev-derived-mysql"]["mem_limit"], "768m")
+        self.assertEqual(spec["services"]["dev-derived-mysql"]["memswap_limit"], "1536m")
         self.assertEqual(spec["services"]["relay"]["depends_on"]["dev-derived-mysql"]["condition"], "service_healthy")
         self.assertIn("-h127.0.0.1", spec["services"]["dev-derived-mysql"]["healthcheck"]["test"])
         with self.assertRaises(ValueError):

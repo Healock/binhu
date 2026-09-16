@@ -83,7 +83,9 @@ def compose(images):
               "security_opt": ["no-new-privileges:true"]}
     services = {
         "dev-derived-mysql": {**common, "image": images["mysql"], "env_file": ["mysql.env"],
-            "mem_limit": "512m", "cpus": .5,
+            # Keep the Dev-only database cap high enough for the 100k controlled
+            # enqueue while remaining explicit and bounded for the shared host.
+            "mem_limit": "768m", "memswap_limit": "1536m", "cpus": .5,
             "healthcheck": {"test": ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "--silent"],
                             "interval": "5s", "timeout": "3s", "retries": 36, "start_period": "180s"},
             "command": ["--innodb-buffer-pool-size=128M", "--max-connections=20",
