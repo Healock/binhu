@@ -224,3 +224,15 @@ event-pipeline，relay 仍只加入 internal 网络，不连接 Backend、Produc
 
 ### Workflow environment contract
 All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.
+
+### Relay lock-contention contract
+
+The Dev delivery relay starts with two workers and a four-connection derived-MySQL pool.
+Relay connections use `READ COMMITTED` only for relay mode. `claim` and `finish` retry the
+complete transaction for MySQL 1213/1205, with at most four attempts and bounded exponential
+jitter. Exhaustion pauses the relay and emits a fixed, redacted diagnostic; it never increases
+`innodb_lock_wait_timeout`, loops forever, or logs SQL parameters and business payloads. Each
+worker has an independent retry context. Shutdown waits for all workers before stopping Kafka
+and closing the pool. The next acceptance run is
+`dev-20260917-dualtrack-monitor23` and must restart at scale 1002 without reusing monitor22
+evidence.

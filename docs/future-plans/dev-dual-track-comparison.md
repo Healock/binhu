@@ -180,3 +180,24 @@ Dev relay 串行执行 claim、Kafka ACK、finish 和逐条日志，实测吞吐
 当前结果不表示连续 7 天/100000 条门禁、完整 Dev 第 6–11 项、checkpoint/savepoint
 恢复或 Staging 晋级已经通过。旧 savepoint 的 operator ID 兼容恢复仍失败，当前继续
 采用已记录的干净状态重建，不使用 `allowNonRestoredState`。
+
+## 2026-09-17：monitor22 低并发锁竞争修复
+
+`dev-20260916-dualtrack-monitor22` 的 1002 条验收在 relay claim 阶段触发真实 MySQL
+1213 死锁。冲突对象为 `_kafka_event_delivery`，事务使用 `SELECT ... FOR UPDATE
+SKIP LOCKED`；当时 relay 并发为 8，首批只有 7 条投递成功，relay 退出，剩余事件未
+进入 Kafka。已处理的 7 条事件中 Python/Flink 的 revision、投影和计数完全一致，因而
+本次失败归因于 relay 抢锁，而不是双轨计算语义差异。失败证据保留在：
+`/data/docker/volumes/binhu-development-pipeline_evidence/_data/dev-20260916-dualtrack-monitor22/`。
+
+修补合同固定为：relay 并发先降至 2、派生库连接池为 4；claim 和 finish 都把完整
+事务作为重试单元，1213/1205 最多 4 次尝试，使用指数退避和随机抖动，超过上限进入
+暂停状态并写入不含 SQL 参数、事件 ID 或业务正文的安全诊断；连接初始化使用
+`READ COMMITTED`，不增大锁等待超时。每个 worker 保持独立 store 和重试上下文；一个
+worker 暂停时等待其他 worker 收尾，再关闭 producer 和连接池，不能由单个异常取消
+全部 worker。幂等 event ID、lease token 和 revision fence 保持不变。
+
+下一轮必须使用全新的 `dev-20260917-dualtrack-monitor23`，从 1002 重新验收；只有
+1002 零未归因差异后才进入 10000，随后才允许 100000。后续若 Dev relay 再次出现已
+有幂等保护的瞬时锁竞争，可按同一边界降并发并新建运行编号；Production、Staging、
+Shadow、数据一致性和安全边界仍是独立停止条件。
