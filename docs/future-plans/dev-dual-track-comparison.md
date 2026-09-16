@@ -237,3 +237,20 @@ revision 差异来自 Flink 比 relay/Python 暂时落后，并非最终结果�
 逐级验收。
 
 验收器改动随 PR #704 提交，必须在主线 CI 通过后再部署。
+
+## 2026-09-17：monitor25 逐级验收
+
+由于 monitor24 的 10000 条失败证据必须保留，修补后使用新的运行编号
+`dev-20260917-dualtrack-monitor25`。候选来自主线提交
+`20ee8da047eaf3c2029e8141c303d8d665a38121`，固定网关更新 workflow 为
+`35139743077`，候选部署 workflow 为 `35139922419`。
+
+1002 条 workflow `35140088127` 已通过：delivery、Python/Flink projection、revision
+和 unique event 均为 1002，`convergence_pending_count=0`，所有 mismatch 与未归因差异为 0。
+10000 条 workflow `35140410050` 已通过：上述五类计数均为 10000，
+`convergence_pending_count=0`、`projection_mismatch_count=0`、
+`revision_mismatch_count=0`、`unattributed_difference_count=0`。两次证据均写入
+monitor25 私有目录，未覆盖 monitor23/24。
+
+100000 条 workflow `35142991989` 已启动，当前仍在运行；只有该级别完成且零未归因差异，
+才可进入连续 7 天双轨计时和 Staging 晋级评估。
