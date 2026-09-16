@@ -219,3 +219,21 @@ monitor23 的首轮证据必须同时记录 claim 重试次数与最终 relay �
 全新的 `dev-20260917-dualtrack-monitor24` 从 1002、10000、100000 重新验收。
 
 monitor24 的部署摘要必须同时记录候选 runtime 与 monitor 所使用模块的兼容性检查结果。
+
+## 2026-09-17：monitor24 高量级收敛窗口归因
+
+`dev-20260917-dualtrack-monitor24` 已验证 monitor 模块兼容修复：1002 条验收中投递、
+Python/Flink 投影、revision sink 和两边唯一事件均为 1002，差异计数为 0。10000 条
+验收在旧 900 秒收敛窗口结束时只完成 4139 条发布，报告中的 3 条 projection 和 3 条
+revision 差异来自 Flink 比 relay/Python 暂时落后，并非最终结果。验收结束后同一运行
+编号继续收敛到投递、Python、Flink 和 revision 全部 10000，未发现 relay 退出、锁重试
+耗尽或 Flink checkpoint 失败。
+
+根因是固定验收窗口小于低并发 Dev relay 的实际高量级收敛时间，且旧报告把尚未完成的
+计数缺口错误归入 `unattributed_difference_count`。验收合同现将“处理中”单独记录为
+`convergence_pending_count`；只有全部计数达到目标后才判定投影或 revision 差异。
+10000 和 100000 的等待窗口同时扩展，以覆盖受控低并发吞吐，仍保留固定上限，不无限
+等待。monitor24 的失败目录保留不覆盖；修补部署必须使用新的运行编号，从 1002 重新
+逐级验收。
+
+验收器改动随 PR #704 提交，必须在主线 CI 通过后再部署。

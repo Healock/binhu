@@ -791,6 +791,29 @@ volumes:
             with self.subTest(scale=scale), self.assertRaises(ValueError):
                 module.validate_scale(scale)
 
+    def test_scale_acceptance_allows_high_volume_pipeline_to_converge(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        spec = importlib.util.spec_from_file_location("scale_acceptance_convergence", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertGreaterEqual(module.TIMEOUTS[10_000], 1_800)
+        self.assertGreaterEqual(module.TIMEOUTS[100_000], 10_800)
+
+    def test_scale_acceptance_does_not_call_inflight_lag_a_difference(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        spec = importlib.util.spec_from_file_location("scale_acceptance_outcome", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        outcome = module.acceptance_outcome(
+            scale=10_000,
+            counts=(4_139, 10_000, 4_139, 4_139, 4_136, 4_136, 4_139),
+            projection_mismatches=3,
+            revision_mismatches=3,
+        )
+        self.assertFalse(outcome["complete"])
+        self.assertEqual(outcome["convergence_pending_count"], 5_861)
+        self.assertEqual(outcome["unattributed_difference_count"], 0)
+
     def test_scale_acceptance_sources_are_bound_into_candidate_hashes(self):
         self.assertIn("scale_acceptance.py", event_prepare.PUBLIC_CANDIDATE_FILES)
         source = Path(event_prepare.__file__).read_text(encoding="utf-8")

@@ -26,7 +26,10 @@ SAFE_FIELDS = (
     "saved_count", "claimed_count", "assigned_count", "reviewed_count",
     "archived_count", "deleted_count",
 )
-TIMEOUTS = {1002: 300, 10_000: 900, 100_000: 2400}
+# Cover the complete relay-to-projection convergence path.  Without a
+# sufficient window, an in-flight but healthy high-volume run is recorded as
+# a false consistency failure while its queue is still draining.
+TIMEOUTS = {1002: 300, 10_000: 3600, 100_000: 21_600}
 SAFE_FAILURE_STAGES = frozenset({"configuration", "database_connect", "enqueue", "compare", "evidence", "runtime"})
 
 
@@ -126,6 +129,21 @@ async def _scalar(cur, sql: str, params: tuple[Any, ...]) -> int:
     return int(row[0])
 
 
+def acceptance_outcome(
+    *, scale: int, counts: tuple[int, ...], projection_mismatches: int,
+    revision_mismatches: int,
+) -> dict[str, Any]:
+    """Separate an unfinished pipeline from a converged data difference."""
+    complete = all(value == scale for value in counts)
+    difference_count = projection_mismatches + revision_mismatches if complete else 0
+    return {
+        "complete": complete,
+        "convergence_pending_count": max(0, scale - counts[0]),
+        "unattributed_difference_count": difference_count,
+        "passed": complete and difference_count == 0,
+    }
+
+
 async def snapshot(pool, run_id: str, scale: int) -> dict[str, Any]:
     """Read aggregate identities without exposing synthetic task identifiers."""
     columns = " AND ".join(f"p.{name}<=>f.{name}" for name in SAFE_FIELDS)
@@ -177,10 +195,11 @@ async def snapshot(pool, run_id: str, scale: int) -> dict[str, Any]:
     delivery_total = sum(delivery.values())
     counts = (published, delivery_total, python_events, python_rows, flink_rows,
               flink_events, revision_rows)
-    complete = all(value == scale for value in counts)
-    difference_count = projection_mismatches + revision_mismatches
-    if not complete:
-        difference_count += sum(value != scale for value in counts)
+    outcome = acceptance_outcome(
+        scale=scale, counts=counts,
+        projection_mismatches=projection_mismatches,
+        revision_mismatches=revision_mismatches,
+    )
     return {
         "environment": "development", "run_id": run_id, "scale": scale,
         "delivery_published": published, "delivery_total": delivery_total,
@@ -189,8 +208,7 @@ async def snapshot(pool, run_id: str, scale: int) -> dict[str, Any]:
         "unique_events_python": python_events, "unique_events_flink": flink_events,
         "projection_mismatch_count": projection_mismatches,
         "revision_mismatch_count": revision_mismatches,
-        "unattributed_difference_count": difference_count,
-        "passed": complete and difference_count == 0,
+        **outcome,
     }
 
 
