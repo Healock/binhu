@@ -14,8 +14,9 @@
 
 ### GitHub Actions 隔离环境
 
-`Install Dev event-pipeline gateway`、`Prepare Dev event pipeline` 和
-`Deploy Dev event pipeline` 三个工作流都绑定 GitHub `development` Environment。
+`Install Dev event-pipeline gateway`、`Prepare Dev event pipeline`、
+`Deploy Dev event pipeline` 和 `Accept Dev event pipeline` 四个工作流都绑定
+GitHub `development` Environment。
 Dev 主机、部署密钥和已知主机指纹只能从该环境读取；生产发布工作流的
 `production` Environment 与密钥不会被这些工作流引用。若 `development`
 Environment 未配置完整，工作流必须在连接服务器前失败。
@@ -185,5 +186,28 @@ Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到�
 匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
 checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
 
+### 固定规模双轨验收
+
+候选完成 `prepare → measure → apply` 且 `current.json` 仍绑定当前运行编号后，
+使用 `Accept Dev event pipeline` 执行受控规模验收。部署账号只接受
+`accept <run_id> <scale>`，其中 `scale` 只能是 `1002`、`10000` 或 `100000`；
+入口不接受脚本、SQL、文件路径、stdin 载荷或任意数量。事件使用保留的高位虚构
+source ID 和 UUIDv5，只包含任务元数据，不包含姓名、证件号、手机号、地址、备注、
+密码或令牌。同一运行编号的较大规模复用前序确定性事件 ID，因此重复执行和从
+1002 递增至 10000 时不会生成重复业务含义。
+
+验收 runner 只连接 `binhu-development-eventbus_internal`，使用只读根文件系统、
+tmpfs、固定资源和日志上限，不加入 Backend 网络，不挂载 Docker socket，也不访问
+Production、Staging 或 Shadow。为避免两条消费者尚在收敛时常驻 monitor 把短暂
+先后顺序误报成最终差异，受控 controller 先停止当前 Dev `dual-track-monitor`，
+由 runner 投递并有界等待 Kafka 台账、Python 投影、Flink 投影和 revision sink
+全部达到目标，再逐字段核对 revision、event count、changed field count 和各事件
+分类计数。零差异时写入不可覆盖的脱敏证据并恢复 monitor；超时或任何差异时写入
+`paused` 状态、保留证据并保持 monitor 停止，禁止继续下一级规模。
+
+1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。连续 7 天、
+至少 100000 条唯一事件、checkpoint/savepoint 恢复、完整第 6–11 项以及 Staging
+晋级仍须分别记录和签署，不能由该工作流自动标记完成。
+
 ### Workflow environment contract
-All install, prepare, and deploy workflows must run in the GitHub development Environment.
+All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.

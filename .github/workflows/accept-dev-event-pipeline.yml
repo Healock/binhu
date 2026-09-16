@@ -1,0 +1,53 @@
+name: Accept Dev event pipeline
+run-name: Accept Dev event pipeline ${{ inputs.run_id }} at ${{ inputs.scale }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Current applied Dev run ID
+        required: true
+        type: string
+      scale:
+        description: Fixed cumulative fictional event target
+        required: true
+        type: choice
+        options:
+          - '1002'
+          - '10000'
+          - '100000'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: accept-dev-event-pipeline
+  cancel-in-progress: false
+
+jobs:
+  accept:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: development
+    steps:
+      - name: Run fixed Dev scale acceptance
+        shell: bash
+        env:
+          DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          DEV_PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
+          DEV_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_SSH_KEY }}
+          DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
+          RUN_ID: ${{ inputs.run_id }}
+          SCALE: ${{ inputs.scale }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$DEV_HOST" && "$DEV_PORT" =~ ^[0-9]+$ && -n "$DEV_KEY" && -n "$DEV_KNOWN_HOSTS" ]]
+          [[ "$RUN_ID" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]]
+          [[ "$SCALE" =~ ^(1002|10000|100000)$ ]]
+          install -d -m 700 "$RUNNER_TEMP/dev-ssh"
+          printf '%s\n' "$DEV_KEY" > "$RUNNER_TEMP/dev-ssh/key"
+          printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
+          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
+            "binhu-dev-deploy@$DEV_HOST" "accept $RUN_ID $SCALE"
+          rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"

@@ -15,7 +15,10 @@ from .services.kafka_delivery_store import SCHEMA_SQL
 from .flink_sql import render
 
 PROJECT = "binhu-development-pipeline"
-PUBLIC_CANDIDATE_FILES = frozenset({"init.sql", "redis.conf", "pipeline.sql", "runtime.py", "dual_track_monitor.py"})
+PUBLIC_CANDIDATE_FILES = frozenset({
+    "init.sql", "redis.conf", "pipeline.sql", "runtime.py",
+    "dual_track_monitor.py", "scale_acceptance.py",
+})
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
 BACKEND_NETWORK = "binhu-development_internal"
@@ -30,6 +33,7 @@ EXPECTED_SERVICES = frozenset(
         "backend-outbox-relay",
         "python-metadata-worker",
         "dual-track-monitor",
+        "acceptance-runner",
     }
 )
 # The relay was introduced after the first trusted Dev project was created.
@@ -124,6 +128,15 @@ def compose(images):
                     "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
                     "./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro"],
         "command": ["python", "-m", "event_pipeline.runtime", "dual-track-monitor"],
+        "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
+    services["acceptance-runner"] = {**common, "image": images["worker"],
+        "profiles": ["acceptance"], "restart": "no", "env_file": ["runtime.env"],
+        "mem_limit": "192m", "cpus": .5, "read_only": True,
+        "tmpfs": ["/tmp:size=16m"],
+        "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence",
+                    "./scale_acceptance.py:/opt/dev-pipeline/event_pipeline/scale_acceptance.py:ro"],
+        "command": ["python", "-m", "event_pipeline.scale_acceptance"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
     return {"name": PROJECT, "services": services,
@@ -335,6 +348,7 @@ CREATE TABLE dev_task_metadata_python_events (
         # runtime module self-import and fail with a circular import.
         "runtime.py": Path(__file__).with_name("runtime.py").read_text(encoding="utf-8"),
         "dual_track_monitor.py": Path(__file__).with_name("dual_track_monitor.py").read_text(encoding="utf-8"),
+        "scale_acceptance.py": Path(__file__).with_name("scale_acceptance.py").read_text(encoding="utf-8"),
     }
     for name, content in files.items():
         target = ROOT / name

@@ -26,10 +26,29 @@ MAX_BYTES = 128 * 1024 * 1024
 RUN_RE = re.compile(r"^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+ALLOWED_SCALES = frozenset({1002, 10_000, 100_000})
+ACCEPT_TIMEOUTS = {1002: 420, 10_000: 1020, 100_000: 2520}
 
 
 def fail(message: str) -> None:
     raise SystemExit(f"Dev event-pipeline gateway refused: {message}")
+
+
+def validate_scale(value: str) -> int:
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+        fail("fixed acceptance scale required")
+    scale = int(value)
+    if scale not in ALLOWED_SCALES:
+        fail("fixed acceptance scale required")
+    return scale
+
+
+def module_timeout(module: str, scale: int | None = None) -> int:
+    if module == "accept":
+        if scale not in ACCEPT_TIMEOUTS:
+            fail("fixed acceptance scale required")
+        return ACCEPT_TIMEOUTS[scale]
+    return 600
 
 
 def safe_member(member: tarfile.TarInfo) -> bool:
@@ -152,7 +171,7 @@ def prepare(run_id: str, commit: str, size: str, digest: str) -> None:
         raise
 
 
-def run_module(run_id: str, module: str) -> None:
+def run_module(run_id: str, module: str, scale: int | None = None) -> None:
     candidate = STATE / "candidates" / run_id
     manifest = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
     with tarfile.open(candidate / "candidate.tar.gz", "r:gz") as outer:
@@ -210,9 +229,15 @@ def run_module(run_id: str, module: str) -> None:
             args = [sys.executable, "-m", "event_pipeline.prepare", "--run-id", run_id]
             for key in ("mysql", "redis", "worker", "flink"):
                 args += [f"--{key}-image", manifest["images"][key]]
+        elif module == "accept":
+            if scale not in ALLOWED_SCALES:
+                fail("fixed acceptance scale required")
+            args = [sys.executable, "-m", "event_pipeline.acceptance_control",
+                    "--run-id", run_id, "--scale", str(scale)]
         else:
             args = [sys.executable, "-m", "event_pipeline.control", module]
-        subprocess.run(args, cwd=SOURCE, env=env, check=True, timeout=600)
+        subprocess.run(args, cwd=SOURCE, env=env, check=True,
+                       timeout=module_timeout(module, scale))
     finally:
         source_archive.unlink(missing_ok=True)
 
@@ -237,6 +262,25 @@ def apply(run_id: str) -> None:
     print(json.dumps({"environment": "development", "project": PROJECT, "run_id": run_id, "applied": True, "acceptance": "pending"}))
 
 
+def accept(run_id: str, value: str) -> None:
+    scale = validate_scale(value)
+    current_path = STATE / "current.json"
+    if not current_path.is_file() or current_path.is_symlink():
+        fail("current Dev run missing")
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    if (
+        current.get("run_id") != run_id
+        or current.get("environment") != "development"
+        or current.get("project") != PROJECT
+        or current.get("acceptance") != "pending"
+        or current.get("started") is not True
+    ):
+        fail("current Dev acceptance identity mismatch")
+    run_module(run_id, "accept", scale)
+    print(json.dumps({"environment": "development", "project": PROJECT,
+                      "run_id": run_id, "scale": scale, "accepted": True}))
+
+
 def main() -> None:
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     action = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -246,8 +290,10 @@ def main() -> None:
         prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
     elif action in {"measure", "apply"} and len(sys.argv) == 3:
         (measure if action == "measure" else apply)(sys.argv[2])
+    elif action == "accept" and len(sys.argv) == 4:
+        accept(sys.argv[2], sys.argv[3])
     else:
-        fail("fixed prepare/measure/apply contract required")
+        fail("fixed prepare/measure/apply/accept contract required")
 
 
 if __name__ == "__main__":
