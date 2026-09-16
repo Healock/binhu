@@ -32,6 +32,16 @@ def test_cloud_received_datetime_preserves_naive_utc_and_empty_values():
     assert venue_cloud._cloud_received_datetime(None) is None
 
 
+def test_name_hmac_is_available_for_unicode_names():
+    from services.registry_security import hmac_digest
+
+    digest, version = hmac_digest(" 测试 用户 ", kind="name")
+
+    assert digest is not None
+    assert len(digest) == 64
+    assert version == 1
+
+
 class FakeClient:
     def __init__(self, signal):
         self.signal = signal
