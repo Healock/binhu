@@ -697,6 +697,13 @@ volumes:
         self.assertIn("dual_track_monitor.py", event_prepare.PUBLIC_CANDIDATE_FILES)
         self.assertNotIn("runtime.env", event_prepare.PUBLIC_CANDIDATE_FILES)
 
+    def test_monitor_runtime_mount_contains_dispatcher_not_prepare_generator(self):
+        runtime_source = (Path(event_prepare.__file__).with_name("runtime.py")).read_text(encoding="utf-8")
+        prepare_source = Path(event_prepare.__file__).read_text(encoding="utf-8")
+        self.assertIn("async def main(mode)", runtime_source)
+        self.assertNotIn("def prepare(run_id, images)", runtime_source)
+        self.assertNotEqual(runtime_source, prepare_source)
+
     def test_resident_monitor_report_is_redacted_and_pauses(self):
         row = {"task_id": "t_fullchain:1", "source_id": 1,
                "revision": 3, "event_count": 2, "changed_field_count": 2,

@@ -330,7 +330,10 @@ CREATE TABLE dev_task_metadata_python_events (
         # The existing worker digest predates the resident monitor.  Mount the
         # two small dispatcher modules read-only so this service is bound to
         # the candidate source without rebuilding or mutating the worker image.
-        "runtime.py": Path(__file__).read_text(encoding="utf-8"),
+        # Mount the actual runtime dispatcher into the legacy worker image.
+        # ``__file__`` is prepare.py here; reading it would make the mounted
+        # runtime module self-import and fail with a circular import.
+        "runtime.py": Path(__file__).with_name("runtime.py").read_text(encoding="utf-8"),
         "dual_track_monitor.py": Path(__file__).with_name("dual_track_monitor.py").read_text(encoding="utf-8"),
     }
     for name, content in files.items():
