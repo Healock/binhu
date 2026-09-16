@@ -28,7 +28,8 @@ SAFE_FIELDS = (
 RUN_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 EVIDENCE_RE = re.compile(r"^dual-track-[0-9A-Za-z][A-Za-z0-9_-]{3,63}$")
 _SAFE_FAILURE_STAGES = frozenset({
-    "identity", "evidence_directory", "evidence_read", "database_connect",
+    "identity", "identity_environment", "identity_run_id", "identity_options",
+    "evidence_directory", "evidence_read", "database_connect",
     "database_identity", "projection_query", "evidence_write", "monitor_loop",
 })
 
@@ -147,10 +148,12 @@ async def run(config: Mapping[str, str], evidence_dir: Path, evidence_id: str,
     """Run the resident monitor until a mismatch or an optional test limit."""
     stage = "identity"
     try:
+        if config.get("APP_ENVIRONMENT") != "development":
+            raise MonitorRuntimeFailure(ValueError("environment identity"), "identity_environment")
+        if not RUN_RE.fullmatch(config.get("DEV_RUN_ID", "")):
+            raise MonitorRuntimeFailure(ValueError("run identity"), "identity_run_id")
         if interval_seconds <= 0 or (cycles is not None and cycles <= 0):
-            raise ValueError("monitor interval and cycles must be positive")
-        if config.get("APP_ENVIRONMENT") != "development" or not RUN_RE.fullmatch(config.get("DEV_RUN_ID", "")):
-            raise ValueError("development identity required")
+            raise MonitorRuntimeFailure(ValueError("monitor options"), "identity_options")
         stage = "evidence_directory"
         evidence_dir.mkdir(parents=True, exist_ok=True)
         status_path = evidence_dir / "status.json"
