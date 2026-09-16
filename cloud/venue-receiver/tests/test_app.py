@@ -580,6 +580,7 @@ def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
     assert 'function toCanonicalStrokes(strokes)' in page
     assert 'x:+(1-point.y).toFixed(4),y:+point.x.toFixed(4)' in page
     assert 'function fromCanonicalStrokes(strokes)' in page
+    assert 'x:+point.y.toFixed(4),y:+(1-point.x).toFixed(4)' in page
     assert 'state[editingKey]=editorForced?toCanonicalStrokes(editingDraft)' in page
     assert 'canvas.clientHeight||r.height' in page
     assert "editor.style.setProperty('--signature-viewport-height',`${window.innerHeight}px`)" in page
