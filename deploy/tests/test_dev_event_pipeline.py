@@ -7,7 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from deploy.environments.event_pipeline.runtime import configuration, cache_result, backend_relay_configuration
+from deploy.environments.event_pipeline.runtime import (
+    configuration,
+    cache_result,
+    backend_relay_configuration,
+    runtime_error_message,
+)
 from deploy.environments.event_pipeline.prepare import compose, validate_existing_container_identity
 from deploy.environments.event_pipeline.flink_sql import render
 from deploy.environments.event_pipeline.services.kafka_envelope import delivery_topic
@@ -23,7 +28,11 @@ from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline import kafka_compose
 from deploy.environments.event_pipeline import prepare as event_prepare
 from deploy.environments.event_pipeline import runtime as event_runtime
-from deploy.environments.event_pipeline.dual_track_monitor import build_report, write_cycle
+from deploy.environments.event_pipeline.dual_track_monitor import (
+    build_report,
+    runtime_failure_detail,
+    write_cycle,
+)
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 from deploy.environments.event_pipeline.verify import fixture, acceptance_event_ids
 from deploy.environments.event_pipeline.services.backend_outbox_relay import BackendOutboxRelay
@@ -46,6 +55,25 @@ def event():
 
 
 class FlinkStateContractTests(unittest.TestCase):
+    def test_monitor_runtime_failure_detail_exposes_only_type_and_stage(self):
+        detail = runtime_failure_detail(PermissionError("password=must-not-leak"), "evidence_directory")
+        self.assertEqual(
+            detail,
+            "runtime_failure_type=PermissionError runtime_failure_stage=evidence_directory",
+        )
+        self.assertNotIn("must-not-leak", detail)
+
+    def test_runtime_dispatcher_preserves_only_safe_monitor_failure_detail(self):
+        error = RuntimeError("password=must-not-leak")
+        error.safe_detail = "runtime_failure_type=PermissionError runtime_failure_stage=evidence_write"
+        detail = runtime_error_message(error)
+        self.assertEqual(
+            detail,
+            "runtime_failure_type=PermissionError runtime_failure_stage=evidence_write",
+        )
+        self.assertEqual(runtime_error_message(ValueError("password=must-not-leak")),
+                         "Dev pipeline stopped; identity or runtime check failed")
+
     def test_pipeline_job_builds_one_statement_set_with_two_insert_branches(self):
         source = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "PipelineJob.java").read_text(encoding="utf-8")
         self.assertIn("createStatementSet()", source)
