@@ -577,6 +577,6 @@ def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
     page = render_drinking_report_page()
     assert 'transform:translateX(var(--signature-viewport-width)) rotate(90deg)' in page
     assert 'canvas.clientHeight||r.height' in page
-    assert 'editor.style.setProperty(\'--signature-viewport-height\',${window.innerHeight}px)' in page
+    assert "editor.style.setProperty('--signature-viewport-height',`${window.innerHeight}px`)" in page
 
 
