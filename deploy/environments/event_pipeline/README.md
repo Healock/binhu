@@ -235,3 +235,9 @@ worker has an independent retry context. Shutdown waits for all workers before s
 and closing the pool. The next acceptance run is
 `dev-20260917-dualtrack-monitor23` and must restart at scale 1002 without reusing monitor22
 evidence.
+
+The monitor23 10000 failure was traced to the monitor image retaining an older
+`kafka_delivery_store.py` while the candidate mounted a newer `runtime.py`. The relay-only
+`LockContentionExhausted` import is now lazy inside the relay worker, so the monitor entry
+does not require the new relay module. Monitor23 evidence remains immutable; monitor24 must
+restart at scale 1002.

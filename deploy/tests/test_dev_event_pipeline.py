@@ -904,6 +904,21 @@ volumes:
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    def test_monitor_runtime_does_not_require_relay_only_exception_at_import(self):
+        source = Path(event_runtime.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "from .services.kafka_delivery_store import MySQLDeliveryStore",
+            source,
+        )
+        self.assertIn(
+            "from .services.kafka_delivery_store import LockContentionExhausted",
+            source,
+        )
+        self.assertNotIn(
+            "from .services.kafka_delivery_store import LockContentionExhausted, MySQLDeliveryStore",
+            source,
+        )
+
     async def test_lock_contention_retries_the_complete_transaction(self):
         class OperationalError(Exception):
             pass
