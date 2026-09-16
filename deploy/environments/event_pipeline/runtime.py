@@ -13,6 +13,9 @@ from .services.kafka_delivery_store import MySQLDeliveryStore
 from .services.kafka_relay import KafkaRelay
 from .services.derived_revision_cache import RevisionCache
 
+DEV_RELAY_CONCURRENCY = 8
+DEV_RELAY_DB_CONNECTIONS = 10
+
 _SAFE_RUNTIME_DETAIL = re.compile(
     r"^runtime_failure_type=[A-Za-z][A-Za-z0-9_]{0,63} "
     r"runtime_failure_stage=[a-z_]{1,64}$"
@@ -52,12 +55,12 @@ def configuration(environ=None):
             "BACKEND_REDIS_START_ID": env.get("BACKEND_REDIS_START_ID", "$")}
 
 
-async def connect(config):
+async def connect(config, *, maxsize=2):
     import aiomysql
     pool = await aiomysql.create_pool(
         host=config["MYSQL_HOST"], port=3306, user=config["MYSQL_USER"],
         password=config["MYSQL_PASSWORD"], db=config["MYSQL_DATABASE"],
-        minsize=1, maxsize=2, connect_timeout=5, autocommit=True,
+        minsize=1, maxsize=maxsize, connect_timeout=5, autocommit=True,
         charset="utf8mb4", init_command="SET time_zone='+00:00'",
     )
     try:
@@ -89,6 +92,38 @@ async def ensure_database_identity(pool, config):
                 )
 
 
+def database_pool_size(mode):
+    return DEV_RELAY_DB_CONNECTIONS if mode == "relay" else 2
+
+
+def build_relay_workers(pool, producer, run_id):
+    return [
+        KafkaRelay(MySQLDeliveryStore(pool, run_id=run_id), producer)
+        for _ in range(DEV_RELAY_CONCURRENCY)
+    ]
+
+
+async def relay_step(worker, worker_slot, published):
+    state = await worker.run_once()
+    if state == "published":
+        published += 1
+        if published % 1000 == 0:
+            print(json.dumps({"component": "dev-relay", "state": "published",
+                              "worker_slot": worker_slot,
+                              "published_count": published}), flush=True)
+    elif state != "idle":
+        print(json.dumps({"component": "dev-relay", "state": state,
+                          "worker_slot": worker_slot}), flush=True)
+    return published, .5 if state == "idle" else 0
+
+
+async def relay_worker(worker, worker_slot):
+    published = 0
+    while True:
+        published, delay = await relay_step(worker, worker_slot, published)
+        await asyncio.sleep(delay)
+
+
 async def relay(config, pool):
     from aiokafka import AIOKafkaProducer
     producer = AIOKafkaProducer(
@@ -97,12 +132,10 @@ async def relay(config, pool):
     )
     try:
         await asyncio.wait_for(producer.start(), 30)
-        worker = KafkaRelay(MySQLDeliveryStore(pool, run_id=config["DEV_RUN_ID"]), producer)
-        while True:
-            state = await worker.run_once()
-            if state != "idle":
-                print(json.dumps({"component": "dev-relay", "state": state}), flush=True)
-            await asyncio.sleep(.5 if state == "idle" else .01)
+        workers = build_relay_workers(pool, producer, config["DEV_RUN_ID"])
+        await asyncio.gather(*(
+            relay_worker(worker, slot) for slot, worker in enumerate(workers, start=1)
+        ))
     finally:
         await asyncio.wait_for(producer.stop(), 30)
 
@@ -240,7 +273,10 @@ async def main(mode):
     if mode == "dual-track-monitor":
         await dual_track_monitor(config)
         return
-    pool = await connect(config)
+    pool = await connect(
+        config,
+        maxsize=database_pool_size(mode),
+    )
     try:
         if mode == "relay":
             await relay(config, pool)

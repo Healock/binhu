@@ -903,6 +903,74 @@ volumes:
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    def test_dev_relay_uses_fixed_bounded_parallelism(self):
+        self.assertEqual(event_runtime.DEV_RELAY_CONCURRENCY, 8)
+        source = Path(event_runtime.__file__).read_text(encoding="utf-8")
+        self.assertIn("asyncio.gather", source)
+        self.assertIn("relay_worker", source)
+        self.assertNotIn("DEV_RELAY_CONCURRENCY\"", source)
+
+    def test_relay_compose_mounts_current_candidate_modules(self):
+        images = {name: "sha256:" + char * 64 for name, char in
+                  (("mysql", "1"), ("redis", "2"), ("worker", "3"), ("flink", "4"))}
+        service = compose(images)["services"]["relay"]
+        self.assertEqual(service["cpus"], 1)
+        self.assertEqual(service["mem_limit"], "256m")
+        for mount in (
+            "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
+            "./kafka_delivery_store.py:/opt/dev-pipeline/event_pipeline/services/kafka_delivery_store.py:ro",
+            "./kafka_event_contract.py:/opt/dev-pipeline/event_pipeline/services/kafka_event_contract.py:ro",
+            "./kafka_envelope.py:/opt/dev-pipeline/event_pipeline/services/kafka_envelope.py:ro",
+            "./kafka_relay.py:/opt/dev-pipeline/event_pipeline/services/kafka_relay.py:ro",
+        ):
+            self.assertIn(mount, service["volumes"])
+
+        self.assertEqual(service["networks"], ["internal"])
+        self.assertNotIn("backend", service["networks"])
+
+    def test_parallel_relay_workers_share_producer_but_not_delivery_store(self):
+        pool, producer = object(), object()
+        workers = event_runtime.build_relay_workers(pool, producer, "dev-test-1")
+
+        self.assertEqual(len(workers), 8)
+        self.assertTrue(all(worker.producer is producer for worker in workers))
+        self.assertTrue(all(worker.store.pool is pool for worker in workers))
+        self.assertEqual(len({id(worker.store) for worker in workers}), 8)
+        self.assertTrue(all(worker.store.run_id == "dev-test-1" for worker in workers))
+
+    async def test_relay_step_logs_only_bounded_progress_fields(self):
+        worker = AsyncMock()
+        worker.run_once.return_value = "published"
+
+        with patch("builtins.print") as safe_print:
+            published, delay = await event_runtime.relay_step(worker, 3, 999)
+
+        self.assertEqual((published, delay), (1000, 0))
+        payload = json.loads(safe_print.call_args.args[0])
+        self.assertEqual(payload, {
+            "component": "dev-relay",
+            "state": "published",
+            "worker_slot": 3,
+            "published_count": 1000,
+        })
+        self.assertNotIn("event_id", payload)
+        self.assertNotIn("payload", payload)
+
+    async def test_relay_step_does_not_log_each_published_event(self):
+        worker = AsyncMock()
+        worker.run_once.return_value = "published"
+
+        with patch("builtins.print") as safe_print:
+            published, delay = await event_runtime.relay_step(worker, 2, 0)
+
+        self.assertEqual((published, delay), (1, 0))
+        safe_print.assert_not_called()
+
+    def test_only_relay_receives_expanded_database_pool(self):
+        self.assertEqual(event_runtime.database_pool_size("relay"), 10)
+        for mode in ("bridge", "business-bridge"):
+            self.assertEqual(event_runtime.database_pool_size(mode), 2)
+
     async def test_backend_outbox_relay_publishes_bounded_metadata(self):
         class Cursor:
             async def execute(self, *args): self.args = args
