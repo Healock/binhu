@@ -1969,6 +1969,7 @@ export interface ResidencePlatformConfig {
   login_mode: 'automatic_hidden_challenge'
   community_account_count: number
   active_session_count: number
+  community_codes: string[]
 }
 
 export interface ResidencePlatformConfigUpdate {
