@@ -1356,6 +1356,37 @@ export async function createQuerySourceRow(
   return data
 }
 
+export interface QuerySourceRowBulkItem {
+  draft_id: string
+  values: Record<string, string>
+}
+
+export interface QuerySourceRowBulkError {
+  index: number
+  draft_id: string
+  code: string
+  message: string
+}
+
+export async function createQuerySourceRowsBulk(
+  type: string,
+  rows: QuerySourceRowBulkItem[],
+): Promise<{
+  message: string
+  rows: Array<{
+    draft_id: string
+    source_id: number
+    physical_row: number
+    row_key: string
+    revision: number
+    values: Record<string, string>
+  }>
+  pending_sync: boolean
+}> {
+  const { data } = await api.post(`/query/${type}/source-rows/bulk`, { rows })
+  return data
+}
+
 export async function deleteQuerySourceRow(
   type: string,
   sourceId: number,

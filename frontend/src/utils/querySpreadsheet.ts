@@ -506,6 +506,34 @@ export function isQuerySheetRangeEditable(
   return true
 }
 
+/**
+ * Extend the editable tail before a paste reaches beyond the descriptors that
+ * were initially rendered.  Existing business rows are never converted into
+ * drafts; only the blank/draft tail may be extended.
+ */
+export function ensureQuerySheetRowsForPaste(
+  sheetRows: QuerySheetRow[],
+  columns: string[],
+  startRow: number,
+  rowCount: number,
+  canAdd: boolean,
+  createDraftId: (rowOffset: number) => string,
+): boolean {
+  if (!canAdd || startRow < 1 || startRow > sheetRows.length + 1 || rowCount < 1) return false
+  const endRow = startRow + rowCount - 1
+  for (let row = startRow; row <= Math.min(endRow, sheetRows.length); row += 1) {
+    if (sheetRows[row - 1]?.kind === 'data') return false
+  }
+  while (sheetRows.length < endRow) {
+    const index = sheetRows.length
+    sheetRows.push({
+      kind: 'blank',
+      data: createQueryDraftRow(columns, createDraftId(index)),
+    })
+  }
+  return true
+}
+
 export function applyQuerySheetValues(
   sheetRows: QuerySheetRow[],
   columns: string[],
@@ -546,4 +574,34 @@ export function selectedQuerySheetRow(
 ): QueryDisplayRow | null {
   if (worksheetRow < 1) return null
   return sheetRows[worksheetRow - 1]?.data || null
+}
+
+export interface QuerySheetSelection {
+  startRow: number
+  endRow: number
+  rows: QueryDisplayRow[]
+  rowNumbers: number[]
+  primary: QueryDisplayRow | null
+  fullRows: boolean
+}
+
+export function describeQuerySheetSelection(
+  sheetRows: QuerySheetRow[],
+  columns: string[],
+  selection: { startRow: number; endRow: number; startColumn: number; endColumn: number } | undefined,
+): QuerySheetSelection | null {
+  if (!selection || selection.startRow < 1 || selection.endRow < selection.startRow) return null
+  const rowNumbers = Array.from({ length: selection.endRow - selection.startRow + 1 }, (_, offset) => (
+    selection.startRow + offset
+  ))
+  const rows = rowNumbers.map(rowNumber => sheetRows[rowNumber - 1]?.data)
+  if (rows.some(row => !row)) return null
+  return {
+    startRow: selection.startRow,
+    endRow: selection.endRow,
+    rows: rows as QueryDisplayRow[],
+    rowNumbers,
+    primary: rows[0] || null,
+    fullRows: selection.startColumn === 0 && selection.endColumn >= columns.length - 1,
+  }
 }
