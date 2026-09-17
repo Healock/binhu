@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Security Boundary Check"
+  short_description: "Audit Binhu security boundaries"

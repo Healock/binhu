@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Sync Main"
+  short_description: "Safely sync Binhu workspaces"

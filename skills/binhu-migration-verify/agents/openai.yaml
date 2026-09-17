@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Migration Verify"
+  short_description: "Run guarded Binhu migrations"
