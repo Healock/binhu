@@ -99,3 +99,12 @@ test('二维码管理提供饮酒报备创建、查询、双签详情和单份 P
   assert.match(app, /path="\/venue-codes" element=\{<Navigate to="\/qr-codes" replace/)
   assert.match(navigation, /label: '二维码管理'/)
 })
+
+test('登记记录支持按场所筛选，饮酒报备提供云端拉取刷新', () => {
+  const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(page, /name="venue_id" label="场所"/)
+  assert.match(page, /pullVenueCloudNow\(\)/)
+  assert.match(page, /饮酒报备记录已刷新|云端暂无待处理登记/)
+  assert.match(client, /api\.post\('\/venue-cloud\/pull'/)
+})

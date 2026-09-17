@@ -594,7 +594,7 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             items.append({
                 **{key: row[key] for key in (
                     "submission_id", "submission_kind", "local_venue_id", "public_form_key", "encrypted_payload", "wrapped_data_key", "key_id",
-                    "algorithm_version", "payload_nonce", "ciphertext_sha256", "photo_nonce",
+                    "algorithm_version", "payload_nonce", "ciphertext_sha256", "photo_object_key", "photo_nonce",
                     "photo_ciphertext_sha256", "photo_size", "photo_mime_type",
                 )},
                 "received_at": _iso(row.get("received_at")),

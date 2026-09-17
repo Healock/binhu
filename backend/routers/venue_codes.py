@@ -29,7 +29,7 @@ from services.business_time import get_business_timezone_name, resolve_timezone
 from services.permissions import VENUE_EXPORT, VENUE_MANAGE, VENUE_VIEW
 from services.qmf_config import decrypt_secret, encrypt_secret
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
-from services.venue_cloud import enqueue_public_form_outbox, enqueue_venue_cloud_outbox, get_venue_cloud_status
+from services.venue_cloud import enqueue_public_form_outbox, enqueue_venue_cloud_outbox, get_venue_cloud_status, pull_venue_cloud_now
 
 
 router = APIRouter(tags=["场所码"])
@@ -398,6 +398,17 @@ async def venue_qrcode(venue_id: int, format: str = Query(default="json", patter
 @admin_router.get("/venue-cloud/status")
 async def venue_cloud_status(user: dict = Depends(require_permission(VENUE_VIEW))):
     return await get_venue_cloud_status()
+
+
+@admin_router.post("/venue-cloud/pull")
+async def venue_cloud_pull(user: dict = Depends(require_permission(VENUE_VIEW))):
+    """Immediately drain cloud submissions for the refresh action in QR management."""
+    try:
+        pulled = await pull_venue_cloud_now()
+    except Exception as exc:
+        reason = getattr(exc, "reason_code", "cloud_pull_failed")
+        raise HTTPException(503, f"云端拉取失败：{reason}") from exc
+    return {"pulled": pulled}
 
 
 @admin_router.get("/public-forms/drinking-report")

@@ -10,6 +10,7 @@ import {
   exportVenueVisitsZip,
   getVenueVisitPhotoUrl,
   getVenueCloudStatus,
+  pullVenueCloudNow,
   getVenueCodeQr,
   listVenueCodes,
   listVenueVisits,
@@ -89,20 +90,22 @@ export default function VenueCodeManagement() {
   const [loading, setLoading] = useState(false)
   const [qrLoadingId, setQrLoadingId] = useState<number | null>(null)
   const [error, setError] = useState('')
-  const [visitFilters, setVisitFilters] = useState<{ keyword?: string; start?: string; end?: string }>({})
+  const [visitFilters, setVisitFilters] = useState<{ venue_id?: number; keyword?: string; start?: string; end?: string }>({})
   const [drinkingForm, setDrinkingForm] = useState<DrinkingFormCode | null>(null)
   const [drinkingReports, setDrinkingReports] = useState<DrinkingReport[]>([])
+  const [pullingCloud, setPullingCloud] = useState(false)
+  const [drinkingFilters, setDrinkingFilters] = useState<{ keyword?: string; start?: string; end?: string }>({})
 
-  const load = async () => {
+  const load = async (queries = { visits: visitFilters, drinking: drinkingFilters }) => {
     setLoading(true)
     setError('')
     try {
       const [venueResult, visitResult, cloudResult, drinkingResult, drinkingList] = await Promise.all([
         listVenueCodes(),
-        listVenueVisits(),
+        listVenueVisits(queries.visits),
         getVenueCloudStatus(),
         getDrinkingFormCode(),
-        listDrinkingReports(),
+        listDrinkingReports(queries.drinking),
       ])
       setVenues(venueResult.data)
       setVisits(visitResult.data)
@@ -145,8 +148,8 @@ export default function VenueCodeManagement() {
       await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.zip`)
     } catch (reason: unknown) { message.error(apiErrorMessage(reason, '压缩包导出失败')) }
   }
-  const searchVisits = async (values: { keyword?: string; range?: [any, any] }) => {
-    const filters = { keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
+  const searchVisits = async (values: { venue_id?: number; keyword?: string; range?: [any, any] }) => {
+    const filters = { venue_id: values.venue_id || undefined, keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
     setVisitFilters(filters)
     try { const result = await listVenueVisits(filters); setVisits(result.data) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '登记查询失败')) }
   }
@@ -290,6 +293,7 @@ export default function VenueCodeManagement() {
       <Panel title="最近登记记录" padded={false}>
         <div className="p-4 flex flex-wrap items-center gap-3">
           <Form layout="inline" onFinish={searchVisits}>
+            <Form.Item name="venue_id" label="场所"><Select allowClear placeholder="全部场所" style={{ width: 180 }} options={venues.filter(item => item.status !== 'deleted').map(item => ({ label: item.name, value: item.id }))} /></Form.Item>
             <Form.Item name="keyword"><Input allowClear placeholder="姓名、身份证号、手机号、地址" style={{ width: 260 }} /></Form.Item>
             <Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item>
             <Button type="primary" htmlType="submit">查询</Button>
@@ -365,7 +369,7 @@ export default function VenueCodeManagement() {
           </div>
         </Panel>
         <Panel title="饮酒报备记录" padded={false}>
-          <div className="p-4 flex flex-wrap items-center gap-3"><Form layout="inline" onFinish={async values => { const result = await listDrinkingReports({ keyword: values.keyword, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }); setDrinkingReports(result.data) }}><Form.Item name="keyword"><Input allowClear placeholder="姓名、单位、地点、事由、责任领导" style={{ width: 280 }} /></Form.Item><Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item><Button type="primary" htmlType="submit">查询</Button></Form></div>
+          <div className="p-4 flex flex-wrap items-center gap-3"><Form layout="inline" onFinish={async values => { const filters = { keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }; setDrinkingFilters(filters); try { const result = await listDrinkingReports(filters); setDrinkingReports(result.data) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '饮酒报备查询失败')) } }}><Form.Item name="keyword"><Input allowClear placeholder="姓名、单位、地点、事由、责任领导" style={{ width: 280 }} /></Form.Item><Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item><Button type="primary" htmlType="submit">查询</Button></Form><Button icon={<ReloadOutlined />} loading={pullingCloud} onClick={async () => { setPullingCloud(true); try { const result = await pullVenueCloudNow(); message.success(result.pulled ? `已拉取 ${result.pulled} 条新登记` : '云端暂无待处理登记'); await load() } catch (reason: unknown) { message.error(apiErrorMessage(reason, '云端拉取失败')) } finally { setPullingCloud(false) } }}>刷新</Button></div>
           <Table rowKey="id" dataSource={drinkingReports} scroll={{ x: 1100 }} columns={[{ title: '姓名', dataIndex: 'name' }, { title: '单位职务', dataIndex: 'unit_position' }, { title: '饮酒时间', dataIndex: 'drinking_at', render: (value: string | null) => formatTime(value, systemTimezone) }, { title: '饮酒地点', dataIndex: 'drinking_place' }, { title: '邀约人', dataIndex: 'inviter' }, { title: '责任领导', dataIndex: 'responsible_leader_name' }, { title: '操作', render: (_: unknown, row: DrinkingReport) => <Button type="link" onClick={async () => { try { const detail = await getDrinkingReport(row.id); Modal.info({ title: '饮酒报备详情', width: 760, content: <DrinkingReportDetail detail={detail} timezone={systemTimezone} onExport={async () => { const blob = await exportDrinkingReportPdf(row.id); await downloadBlob(blob, `饮酒报备单-${row.name}.pdf`) }} /> }) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '详情读取失败')) } }}>查看详情</Button> }]} />
         </Panel>
       </> }]}/>
