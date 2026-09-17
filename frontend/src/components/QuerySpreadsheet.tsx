@@ -60,12 +60,14 @@ import {
   resolveQuerySheetPasteValues,
   resolveQuerySheetSortRequest,
   resolveQuerySheetThinBorderStyle,
-  selectedQuerySheetRow,
+  describeQuerySheetSelection,
+  ensureQuerySheetRowsForPaste,
   updateQuerySheetDrafts,
   type QuerySheetCellChange,
   type QuerySheetClipboardSnapshot,
   type QuerySheetFilterCriteria,
   type QuerySheetRow,
+  type QuerySheetSelection,
 } from '../utils/querySpreadsheet'
 
 export interface QuerySpreadsheetProps {
@@ -83,7 +85,7 @@ export interface QuerySpreadsheetProps {
   onSortChange: (column: string, order: 'asc' | 'desc') => void
   onDraftsChange: (drafts: QueryDisplayRow[]) => void
   onFilterCriteriaChange: (criteria: Record<string, QuerySheetFilterCriteria>) => void
-  onSelectionChange: (row: QueryDisplayRow | null) => void
+  onSelectionChange: (selection: QuerySheetSelection | null) => void
   onCommit: (changes: QuerySheetCellChange[]) => Promise<void>
   onCommitFailure?: (
     changes: QuerySheetCellChange[],
@@ -631,6 +633,7 @@ export function QuerySpreadsheet({
     let saving = false
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined
     let selectedWorksheetRow = -1
+    let selectedRange: IRange | undefined
     const pendingEditedCells = new Set<string>()
     const explicitEditedValues = new Map<string, string>()
     const editingValues = new Map<string, string>()
@@ -695,9 +698,11 @@ export function QuerySpreadsheet({
     }
 
     const reportSelection = () => {
-      callbacksRef.current.onSelectionChange(
-        selectedQuerySheetRow(sheetRows, selectedWorksheetRow),
-      )
+      callbacksRef.current.onSelectionChange(describeQuerySheetSelection(
+        sheetRows,
+        columns,
+        selectedRange,
+      ))
     }
 
     const changeKey = (change: QuerySheetCellChange): string | null => {
@@ -896,15 +901,49 @@ export function QuerySpreadsheet({
       )
     })
 
+    const initializeAppendedRows = (previousLength: number) => {
+      const added = sheetRows.length - previousLength
+      if (added <= 0) return
+      worksheet.setRowCount(sheetRows.length + 1)
+      worksheet.setRowHeights(previousLength + 1, added, 32)
+      const appendedRange = worksheet.getRange(previousLength + 1, 0, added, columns.length)
+      appendedRange.setWrap(true)
+      if (thinBorderStyle !== null) {
+        appendedRange.setBorder(
+          univerAPI.Enum.BorderType.ALL,
+          thinBorderStyle,
+          querySheetPalette(themeModeRef.current === 'dark').border,
+        )
+      }
+      for (let rowIndex = previousLength; rowIndex < sheetRows.length; rowIndex += 1) {
+        columns.forEach((column, columnIndex) => {
+          const meta = metaByColumn[column]
+          if (dependentOptions && column === dependentOptions.inspector_column) return
+          const options = meta?.type === 'select'
+            ? (meta.options || []).map(option => option.text).filter(Boolean)
+            : []
+          if (options.length) {
+            worksheet.getRange(rowIndex + 1, columnIndex).setDataValidation(
+              buildValidationRule(options, Boolean(meta?.multiple)),
+            )
+          }
+        })
+        applyInspectorValidation(rowIndex)
+        applyRowAppearance(rowIndex, themeModeRef.current === 'dark')
+      }
+    }
+
     const disposables = [
       univerAPI.addEvent(univerAPI.Event.SelectionChanged, params => {
-        const selection = params.selections[0]
+        const selected = params.selections[0] as (IRange & { range?: IRange }) | undefined
+        const selection = selected?.range || selected
         selectedWorksheetRow = selection?.startRow ?? -1
+        selectedRange = selection
         reportSelection()
-        const selected = selectedQuerySheetRow(sheetRows, selectedWorksheetRow)
-        if (selected && selection) {
+        const selectedRow = selectedQuerySheetRow(sheetRows, selectedWorksheetRow)
+        if (selectedRow && selection) {
           callbacksRef.current.onPresence?.({
-            rowKey: String(selected.__row_key || ''),
+            rowKey: String(selectedRow.__row_key || ''),
             startRow: selection.startRow,
             startColumn: selection.startColumn,
             endRow: selection.endRow,
@@ -986,6 +1025,31 @@ export function QuerySpreadsheet({
         if (
           saving
           || !active
+          || active.startRow < 1
+          || active.startColumn < 0
+          || columnCount < 1
+          || active.startColumn + columnCount > columns.length
+        ) {
+          params.cancel = true
+          callbacksRef.current.onBlocked(saving
+            ? '上一项修改仍在写回，请稍候'
+            : '粘贴区域包含只读单元格，本次粘贴已取消')
+          return
+        }
+        const previousLength = sheetRows.length
+        const endRow = active.startRow + rowCount - 1
+        const needsExtension = endRow > sheetRows.length
+        const mayExtend = !needsExtension || Boolean(active && ensureQuerySheetRowsForPaste(
+          sheetRows,
+          columns,
+          active.startRow,
+          rowCount,
+          source === 'online' && canAdd,
+          index => `draft-${generation}-paste-${index}`,
+        ))
+        if (mayExtend && sheetRows.length > previousLength) initializeAppendedRows(previousLength)
+        if (
+          !mayExtend
           || !isQuerySheetRangeEditable(
             source,
             sheetRows,
