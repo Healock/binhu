@@ -70,3 +70,4 @@ jobs:
           trap 'cleanup EXIT' EXIT
           ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
             "binhu-dev-deploy@$DEV_HOST" "accept $RUN_ID $SCALE"
+# Keep successful cumulative acceptance runs alive for the next scale.
