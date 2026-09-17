@@ -69,8 +69,8 @@ CREATE TABLE IF NOT EXISTS _kafka_event_delivery (
  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
  published_at DATETIME(6) NULL,
  last_error_code VARCHAR(48) NOT NULL DEFAULT '',
- INDEX pending_delivery (run_id, status, available_at, created_at),
- INDEX expired_delivery (run_id, status, locked_until)
+ INDEX pending_delivery (run_id, status, available_at, created_at, event_id),
+ INDEX expired_delivery (run_id, status, locked_until, created_at, event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
 """
 
@@ -138,20 +138,35 @@ class MySQLDeliveryStore:
     async def claim(self) -> Delivery | None:
         async def transaction(conn):
             async with conn.cursor() as cur:
+                    # Keep the two lease paths as separate indexed lookups.
+                    # Combining them with OR makes MySQL abandon the
+                    # (run_id,status,available_at/locked_until) indexes and
+                    # filesort the entire delivery ledger at high volume.
                     await cur.execute(
                         """SELECT event_id,event_json,payload_sha256,status,
                                   event_attempts,dlq_attempts
                            FROM _kafka_event_delivery
-                           WHERE run_id=%s AND (
-                             (status IN ('pending','retry','dlq_pending')
-                              AND available_at<=UTC_TIMESTAMP(6)) OR
-                             (status IN ('publishing','dlq_publishing')
-                              AND locked_until<UTC_TIMESTAMP(6)))
+                           WHERE run_id=%s
+                             AND status IN ('pending','retry','dlq_pending')
+                             AND available_at<=UTC_TIMESTAMP(6)
                            ORDER BY created_at,event_id LIMIT 1
                            FOR UPDATE SKIP LOCKED""",
                         (self.run_id,),
                     )
                     row = await cur.fetchone()
+                    if not row:
+                        await cur.execute(
+                            """SELECT event_id,event_json,payload_sha256,status,
+                                      event_attempts,dlq_attempts
+                               FROM _kafka_event_delivery
+                               WHERE run_id=%s
+                                 AND status IN ('publishing','dlq_publishing')
+                                 AND locked_until<UTC_TIMESTAMP(6)
+                               ORDER BY created_at,event_id LIMIT 1
+                               FOR UPDATE SKIP LOCKED""",
+                            (self.run_id,),
+                        )
+                        row = await cur.fetchone()
                     if not row:
                         return None
                     event_id, raw, digest, status, attempts, dlq_attempts = row

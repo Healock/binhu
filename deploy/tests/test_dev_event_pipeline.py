@@ -979,6 +979,51 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         second.rollback.assert_not_awaited()
         sleep.assert_awaited_once()
 
+    async def test_claim_uses_indexable_pending_then_expired_queries(self):
+        class Cursor:
+            def __init__(self):
+                self.statements = []
+                self.rows = []
+            async def execute(self, statement, params=()):
+                self.statements.append((statement, params))
+            async def fetchone(self):
+                return self.rows.pop(0) if self.rows else None
+
+        class CursorContext:
+            def __init__(self, cursor): self.cursor = cursor
+            async def __aenter__(self): return self.cursor
+            async def __aexit__(self, *args): return None
+
+        class Connection:
+            def __init__(self, cursor): self.cursor_value = cursor
+            async def begin(self): pass
+            async def commit(self): pass
+            async def rollback(self): pass
+            def cursor(self): return CursorContext(self.cursor_value)
+
+        class Pool:
+            def __init__(self, connection): self.connection = connection
+            async def acquire(self): return self.connection
+            def release(self, connection): pass
+
+        cursor = Cursor()
+        connection = Connection(cursor)
+        store = MySQLDeliveryStore(Pool(connection), run_id="dev-test-1")
+        async def run_transaction(operation, transaction):
+            return await transaction(connection)
+
+        with patch.object(store, "_run_transaction", side_effect=run_transaction):
+            self.assertIsNone(await store.claim())
+
+        self.assertEqual(len(cursor.statements), 2)
+        pending_sql, expired_sql = [statement for statement, _ in cursor.statements]
+        self.assertIn("status IN ('pending','retry','dlq_pending')", pending_sql)
+        self.assertIn("available_at<=UTC_TIMESTAMP(6)", pending_sql)
+        self.assertNotIn(" OR ", pending_sql)
+        self.assertIn("status IN ('publishing','dlq_publishing')", expired_sql)
+        self.assertIn("locked_until<UTC_TIMESTAMP(6)", expired_sql)
+        self.assertNotIn(" OR ", expired_sql)
+
     async def test_lock_contention_retry_is_bounded_and_safe(self):
         class OperationalError(Exception):
             pass
