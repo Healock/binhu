@@ -86,6 +86,11 @@ services:
       TXDOCS_ENABLED: ${BINHU_TXDOCS_ENABLED:-false}
       TXDOCS_MIGRATION_MODE: ${BINHU_TXDOCS_MIGRATION_MODE:-readonly}
       TXDOCS_CUTOFF_AT: ${BINHU_TXDOCS_CUTOFF_AT:-}
+      TXDOCS_MONITORING_ENABLED: ${BINHU_TXDOCS_MONITORING_ENABLED:-false}
+      TXDOCS_MONITORING_SPREADSHEET_IDS: ${BINHU_TXDOCS_MONITORING_SPREADSHEET_IDS:-}
+      TXDOCS_MONITORING_INTERVAL_SECONDS: ${BINHU_TXDOCS_MONITORING_INTERVAL_SECONDS:-600}
+      TXDOCS_MONITORING_SHEET_TIMEOUT_SECONDS: ${BINHU_TXDOCS_MONITORING_SHEET_TIMEOUT_SECONDS:-120}
+      TXDOCS_MONITORING_MAX_ROWS_PER_SHEET: ${BINHU_TXDOCS_MONITORING_MAX_ROWS_PER_SHEET:-100000}
       ENCRYPTION_KEY: ${BINHU_ENCRYPTION_KEY:?Set BINHU_ENCRYPTION_KEY in .env}
       REGISTRY_HMAC_KEY: ${BINHU_REGISTRY_HMAC_KEY:-}
       SESSION_COOKIE_SECURE: ${BINHU_SESSION_COOKIE_SECURE:-true}
@@ -156,6 +161,15 @@ services:
       - ./frontend/dist:/app/static:ro
       - ./VERSION:/app/VERSION:ro
       - ${BINHU_BACKUP_DIR:-./backups}:/app/backups
+      # Deployment manifests are checked by the fixed maintenance contract (read-only).
+      # Expose the host's immutable automated backups read-only so the
+      # container cannot mistake its application backup mount for the
+      # deployment backup store (or write into it).
+      - ${BINHU_DEPLOY_BACKUP_DIR:-./deploy-backups/automated}:/root/binhu/deploy-backups/automated:ro
+      # Maintenance evidence must survive backend container recreation. Keep
+      # this directory separate from application data and expose it only to
+      # the backend maintenance contract.
+      - ${BINHU_CLEANUP_EVIDENCE_DIR:-./deploy-evidence/current-flow-cleanup}:/srv/binhu-release-evidence-current-flow-cleanup
       - ${BINHU_WORKFLOW_ATTACHMENT_DIR:-/data/binhu/workflow-attachments}:/app/workflow-attachments
       - ${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:-/data/binhu/workflow-photo-imports}:/app/workflow-photo-imports
       - ${BINHU_USER_AVATAR_DIR:-/data/binhu/user-avatars}:/app/user-avatars

@@ -17,8 +17,10 @@ def inspect_holders(items):
         for mount in item.get("Mounts", []):
             if mount.get("Name") != VOLUME:
                 continue
+            labels = item.get("Config", {}).get("Labels", {})
             if (item["Name"].lstrip("/") not in {JM, TM}
-                or item.get("Config", {}).get("Labels", {}).get("com.docker.compose.project") != "binhu-development-flink"
+                or labels.get("com.docker.compose.project") != "binhu-development-flink"
+                or labels.get("binhu.environment") != "development"
                 or mount.get("Destination") != TARGET or not mount.get("RW")
                 or set(item["NetworkSettings"]["Networks"]) != {"binhu-development-eventbus_internal"}):
                 raise ValueError("checkpoint volume has foreign dependency")

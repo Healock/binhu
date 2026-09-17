@@ -12,6 +12,22 @@
 
 ## 操作顺序
 
+### GitHub Actions 隔离环境
+
+`Install Dev event-pipeline gateway`、`Prepare Dev event pipeline`、
+`Deploy Dev event pipeline` 和 `Accept Dev event pipeline` 四个工作流都绑定
+GitHub `development` Environment。
+Dev 主机、部署密钥和已知主机指纹只能从该环境读取；生产发布工作流的
+`production` Environment 与密钥不会被这些工作流引用。若 `development`
+Environment 未配置完整，工作流必须在连接服务器前失败。
+
+0. 从已经合并到 `main` 的提交触发 `Prepare Dev event pipeline` 工作流，传入新的
+   `dev-YYYYMMDD-...` 运行编号和四个不可变镜像摘要。工作流只生成并上传候选包，
+   包含提交 SHA、镜像摘要、源码清单和 SHA-256；它不会连接服务器、启动容器或
+   修改任何环境。服务器端安装固定 Dev 网关后，才允许把这个候选包送入下面的
+   `prepare → measure → apply` 流程。候选包不能从开发电脑工作树生成，也不能复用
+   旧运行编号、旧卷或 checkpoint。
+
 1. 合并与主线 CI 通过后，从已核对含 aiomysql、aiokafka、redis 的本地镜像
    构建本目录 Dockerfile，记录基底与结果镜像 ID。镜像安装依赖需另外固定版本，
    不允许运行时从互联网安装。
@@ -26,13 +42,54 @@
    不能把容器启动或只开放临时 Unix socket 当作数据库就绪。
 4. 为 Dev Flink 准备 Kafka 3.3.0-1.20、JDBC 3.3.0-1.20、MySQL Connector/J 8.4.0
    依赖，下载校验与许可证记录保留在外部证据目录。Flink 为 1.20.1、Java 17。
-   编译 `PipelineJob.java`，将私密 `pipeline.sql` 只读挂入
-   `/opt/flink/private/pipeline.sql`，设置 `APP_ENVIRONMENT=development`。
+   在候选构建阶段用 Java 17 编译 `PipelineJob.java`，并把源码 SHA 与编译出的
+   `pipeline-job.jar` SHA 一起写入候选清单。网关只接受这份固定 JAR，将其复制到
+   Dev JobManager 的临时上传路径；服务器原有旧 JAR 不作为本次运行制品。私密
+   `pipeline.sql` 仍只读挂入 `/opt/flink/private/pipeline.sql`，设置
+   `APP_ENVIRONMENT=development`。
    不使用会回显 SQL 和密码的交互 SQL Client；提交 Java 入口，并检查日志无凭据。
+
+   JDBC sink 的 URL 固定启用受控的断线恢复参数（自动重连最多 3 次、TCP keepalive、
+   5 秒连接超时和 15 秒读写超时）。这是为了处理 Dev MySQL `wait_timeout` 关闭长期空闲
+   连接后首个事件写入失败的情况；Flink 的批次重试仍保留。该设置只用于独立 Dev 派生库，
+   不改变业务数据模型、topic 或 Production/Staging 连接配置。
 5. JobManager 与 TaskManager 使用 Dev 自己的 checkpoint 卷和内部网络。
+   两个服务还必须由 `event_pipeline.flink_compose` 生成，并显式携带
+   `binhu.environment=development` 标签；只设置容器环境变量不能代替 Docker
+   资源身份标签。修补既有 Compose 时，工具只允许增加这两个标签，发现其他
+   配置差异立即拒绝。
    提交前执行 `python -m event_pipeline.checkpoint measure`，如新卷根目录属主
    不匹配，再 `apply`；工具核对全部运行/停止容器的卷引用，只调整卷根目录，
    不递归改写旧检查点。新 Docker 卷默认属于 root，不能假定 Flink 用户可写。
+   早期 Dev eventbus 的 Kafka 基础 Compose 来自服务器外部留存模板，未由当前
+   `development_eventbus.py` 生成；该模块只产生不可执行的迁移提案。三个 broker
+   和基础 Compose 中的 Schema Registry 定义必须先由
+   `event_pipeline.kafka_compose measure` 证明除身份标签和已批准的临时挂载外
+   没有任何差异，再执行 `apply`：移除旧 `binhu.shadow` 标签、写入
+   `binhu.environment=development`，并把上游 Kafka 镜像声明但未由 Compose
+   覆盖的空目录 `/etc/kafka/secrets`、`/mnt/shared/config` 分别挂载为每个 broker
+   独立的具名 tmpfs-backed volume，避免 Docker 先按镜像 `VOLUME` 声明创建匿名卷。
+   不得只使用 Compose 的 service-level `tmpfs:`：这种写法虽然会把容器内实际文件
+   系统覆盖为 tmpfs，Docker 仍会保留镜像声明生成的匿名 volume。每个具名卷必须
+   使用 local driver 的 `type=tmpfs`、固定 uid/gid、权限和容量。
+   `/var/lib/kafka/data` 继续使用
+   原有三个 Dev 命名卷。Kafka 只允许按 1、2、3 逐个使用
+   `--no-deps --force-recreate` 滚动重建，每个 broker 都要等 ISR 完整后再处理
+   下一个；不得执行 `down`、`down -v`，也不得重建网络或数据卷。完成后执行
+   `event_pipeline.kafka_compose verify` 核对容器、项目、网络和原数据卷身份。
+   三个 broker 的 Compose 还必须显式设置 Docker `json-file` 日志轮换
+   `max-size=5m`、`max-file=2`；该限制由生成/修补工具和运行时 verify 同时核对，
+   防止 broker 日志无限增长。Flink JobManager 与 TaskManager 必须显式设置
+   `pids_limit=256`，并保留既有 CPU、内存和日志限制；这些资源门禁缺失时不得进入
+   后续事件验收。
+   2026-09-12 对当前 14 个 Dev 容器和 7 个唯一镜像的 `VOLUME` 声明再次完成核对：
+   MySQL 的 `/var/lib/mysql` 与 Redis 的 `/data` 均由 Dev 命名卷覆盖，三个
+   pipeline worker 的 `/tmp` 已使用 tmpfs，Backend、Flink 和 Schema Registry
+   当前镜像没有未覆盖声明；只有 Kafka 的上述两个空目录会产生匿名卷。刷新审计
+   证据保存在服务器 `dev-volume-audit-20260912-0ec4f48b43d44ce0` 目录，报告哈希为
+   `c6441d5c910c9e74a220e2c16c24b54438a704f265b5f8576354f1023291317b`。以后更换
+   任一基础镜像时必须重复核对镜像 `Config.Volumes`、Compose 显式挂载和实际
+   容器 Mounts，发现匿名卷时不得进入验收。
    注册 schema、确认作业为 RUNNING 后执行 `event_pipeline.verify seed`，
    再执行 `event_pipeline.verify verify`。首次验收包含重复入队、乱序 revision、
    Kafka ACK 后台账完成及 MySQL/Redis 最终 revision 一致。
@@ -91,3 +148,96 @@ Redis 内存 48 MiB，禁止自动淘汰，AOF 有重写阈值。Docker 日志�
 不执行 `down -v`，不删除 shadow，不重启生产。Schema Registry、业务派生计算、
 Backend 读取与 WebSocket 的完整验收需单独证据；此元数据 MAX(revision)
 作业只能证明传输、聚合和版本保护基础能力，不能冒充业务架构已经全部迁移。
+
+### Dev Backend outbox relay
+
+`backend-outbox-relay` 是独立的 Dev 服务，读取 `environment-mysql` 中的
+`Dev_OnlineData._domain_event_outbox`，只把经过白名单过滤的事件元数据写入 Dev
+Redis `binhu:events`。它使用单独的 `backend-relay.env`、`backend` 内部网络、只读
+根文件系统、tmpfs 临时目录、CPU/内存/pids 限制和 Docker 日志轮换；禁止连接
+Production、Staging、Shadow 或任何外部平台。服务器部署时只新增该服务，不重建
+Kafka、Flink、Schema Registry 或既有数据卷。
+
+### Resident dual-track monitor
+
+`dual-track-monitor` 是 Dev 项目内的只读常驻服务。它连接独立的
+`Dev_EventPipeline` 派生库，按当前 `DEV_RUN_ID` 比较
+`dev_task_metadata_python`、`dev_task_metadata` 和 Python 事件账本，不连接
+Backend、Production、Staging 或 Kafka/Flink 控制面，也不写业务表。每轮检查在
+专用 `evidence` 命名卷中创建新的脱敏比较报告；任务 ID 只写 SHA-256，报告不含
+人员、地址、备注或事件正文。发现投影或事件计数差异时写入不可覆盖的告警，更新
+`status.json` 为 `paused` 并停止，防止容器重启后清除失败状态或继续计时。暂停后
+必须完成归因修复并使用新的双轨证据编号重新开始。服务使用只读根文件系统、
+`/tmp` tmpfs、128 MiB 内存、0.2 CPU、128 pids 上限和 5 MiB × 2 的 Docker
+日志轮换；证据卷不随 Compose 更新删除。
+
+当前 Dev worker 镜像可能早于该服务发布，因此 Compose 会把候选包中的
+`runtime.py` 和 `dual_track_monitor.py` 以只读文件挂入 monitor 容器。该挂载只
+覆盖 monitor 入口模块，不改变镜像、业务代码或其他服务；候选包清单和 Compose
+模型哈希会同时记录这两个文件。
+
+### Flink JobGraph identity
+
+`PipelineJob` 使用一个 `StatementSet` 把 `dev_revisions` 和
+`dev_task_metadata` 两个 INSERT 分支提交为一个 JobGraph。两个分支共享一个
+Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到当前运行编号的
+完整事件流。Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时
+包含两个受控 sink、运行编号和 development 过滤条件一致，并且 Kafka 消费组完全
+匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
+checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
+
+### 固定规模双轨验收
+
+候选完成 `prepare → measure → apply` 且 `current.json` 仍绑定当前运行编号后，
+使用 `Accept Dev event pipeline` 执行受控规模验收。部署账号只接受
+`accept <run_id> <scale>`，其中 `scale` 只能是 `1002`、`10000` 或 `100000`；
+入口不接受脚本、SQL、文件路径、stdin 载荷或任意数量。事件使用保留的高位虚构
+source ID 和 UUIDv5，只包含任务元数据，不包含姓名、证件号、手机号、地址、备注、
+密码或令牌。同一运行编号的较大规模复用前序确定性事件 ID，因此重复执行和从
+1002 递增至 10000 时不会生成重复业务含义。
+
+验收 runner 只连接 `binhu-development-eventbus_internal`，使用只读根文件系统、
+tmpfs、固定资源和日志上限，不加入 Backend 网络，不挂载 Docker socket，也不访问
+Production、Staging 或 Shadow。runner 会把候选包中的 runtime、投递台账、事件合同与
+relay 状态机模块一并只读挂载，不能混用旧 worker 镜像内的过期实现。启动、连接、
+入队、比较或证据写入失败时只输出异常类型和固定阶段，完整业务值不进入日志；
+controller 另写不可覆盖的私密失败证据。
+
+为避免两条消费者尚在收敛时常驻 monitor 把短暂先后顺序误报成最终差异，受控
+controller 先停止当前 Dev `dual-track-monitor`，
+由 runner 投递并有界等待 Kafka 台账、Python 投影、Flink 投影和 revision sink
+全部达到目标，再逐字段核对 revision、event count、changed field count 和各事件
+分类计数。零差异时写入不可覆盖的脱敏证据并恢复 monitor；超时或任何差异时写入
+`paused` 状态、保留证据并保持 monitor 停止，禁止继续下一级规模。
+
+Dev relay 当前固定使用 2 个并发 worker、4 条派生库连接和一个共享的幂等 Kafka
+producer。每个 worker 使用独立的 delivery store，并继续通过 `FOR UPDATE SKIP LOCKED`、
+lease token 和完成栅栏领取与完成事件；并发度和连接数是代码常量，不能由环境变量临时
+放大。该设置只属于 Dev event-pipeline，relay 仍只加入 internal 网络，不连接 Backend、
+Production、Staging 或 Shadow。正常发布日志按每个 worker 每 1000 条输出一次安全计数，
+不记录 event ID、载荷或业务正文。
+
+1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。连续 7 天、
+至少 100000 条唯一事件、checkpoint/savepoint 恢复、完整第 6–11 项以及 Staging
+晋级仍须分别记录和签署，不能由该工作流自动标记完成。
+
+### Workflow environment contract
+All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.
+
+### Relay lock-contention contract
+
+The Dev delivery relay starts with two workers and a four-connection derived-MySQL pool.
+Relay connections use `READ COMMITTED` only for relay mode. `claim` and `finish` retry the
+complete transaction for MySQL 1213/1205, with at most four attempts and bounded exponential
+jitter. Exhaustion pauses the relay and emits a fixed, redacted diagnostic; it never increases
+`innodb_lock_wait_timeout`, loops forever, or logs SQL parameters and business payloads. Each
+worker has an independent retry context. Shutdown waits for all workers before stopping Kafka
+and closing the pool. The next acceptance run is
+`dev-20260917-dualtrack-monitor23` and must restart at scale 1002 without reusing monitor22
+evidence.
+
+The monitor23 10000 failure was traced to the monitor image retaining an older
+`kafka_delivery_store.py` while the candidate mounted a newer `runtime.py`. The relay-only
+`LockContentionExhausted` import is now lazy inside the relay worker, so the monitor entry
+does not require the new relay module. Monitor23 evidence remains immutable; monitor24 must
+restart at scale 1002.

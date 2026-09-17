@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     ACCEPTED_RETENTION_HOURS: int = 24
     AUDIT_RETENTION_DAYS: int = 7
     FORM_TOKEN_TTL_SECONDS: int = 15 * 60
+    DRINKING_REPORT_TIMEZONE: str = "Asia/Shanghai"
     LEASE_SECONDS: int = 5 * 60
 
     PUBLIC_TOKEN_HMAC_KEY: str = ""

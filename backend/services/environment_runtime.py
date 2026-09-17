@@ -17,7 +17,11 @@ def validate_target(config):
         raise ValueError("isolated database names required")
     if config.MYSQL_HOST != "environment-mysql" or config.MYSQL_USER != "environment_app":
         raise ValueError("isolated database endpoint required")
-    if config.TXDOCS_ENABLED or not config.LOCAL_DATA_SOURCE_ENABLED:
+    if (
+        config.TXDOCS_ENABLED
+        or config.TXDOCS_MONITORING_ENABLED
+        or not config.LOCAL_DATA_SOURCE_ENABLED
+    ):
         raise ValueError("local-only data required")
     if config.QMF_SOURCE_ACQUISITION_ENABLED or config.QMF_REGISTRATION_ENABLED or config.VENUE_CLOUD_SYNC_ENABLED or config.VENUE_CLOUD_PULL_ENABLED:
         raise ValueError("external acquisition must be disabled")

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Forced-command wrapper for the Dev event-pipeline only.  It intentionally
+# has no shell escape and accepts only the fixed operations below.
+parts=()
+read -r -a parts <<< "${SSH_ORIGINAL_COMMAND:-}"
+case "${parts[0]:-}" in
+  status)
+    [[ "${#parts[@]}" -eq 1 ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py status
+    ;;
+  prepare)
+    [[ "${#parts[@]}" -eq 5 ]] || exit 64
+    [[ "${parts[1]}" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]] || exit 64
+    [[ "${parts[2]}" =~ ^[0-9a-f]{40}$ ]] || exit 64
+    [[ "${parts[3]}" =~ ^[1-9][0-9]{0,8}$ ]] || exit 64
+    [[ "${parts[4]}" =~ ^[0-9a-f]{64}$ ]] || exit 64
+    (( parts[3] <= 134217728 )) || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py \
+      prepare "${parts[1]}" "${parts[2]}" "${parts[3]}" "${parts[4]}"
+    ;;
+  measure|apply)
+    [[ "${#parts[@]}" -eq 2 ]] || exit 64
+    [[ "${parts[1]}" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py \
+      "${parts[0]}" "${parts[1]}"
+    ;;
+  accept)
+    [[ "${#parts[@]}" -eq 3 ]] || exit 64
+    [[ "${parts[1]}" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]] || exit 64
+    [[ "${parts[2]}" =~ ^(1002|10000|100000)$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py \
+      accept "${parts[1]}" "${parts[2]}"
+    ;;
+  *)
+    echo 'Only fixed Dev event-pipeline commands are allowed.' >&2
+    exit 64
+    ;;
+esac

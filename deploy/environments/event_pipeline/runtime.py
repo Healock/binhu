@@ -13,6 +13,31 @@ from .services.kafka_delivery_store import MySQLDeliveryStore
 from .services.kafka_relay import KafkaRelay
 from .services.derived_revision_cache import RevisionCache
 
+DEV_RELAY_CONCURRENCY = 2
+DEV_RELAY_DB_CONNECTIONS = 4
+
+_SAFE_RUNTIME_DETAIL = re.compile(
+    r"^runtime_failure_type=[A-Za-z][A-Za-z0-9_]{0,63} "
+    r"runtime_failure_stage=[a-z_]{1,64}$"
+)
+
+
+class RelayPaused(RuntimeError):
+    def __init__(self):
+        super().__init__("relay_paused_after_lock_contention")
+        self.safe_detail = (
+            "runtime_failure_type=RelayPaused "
+            "runtime_failure_stage=relay_lock_contention"
+        )
+
+
+def runtime_error_message(error: BaseException) -> str:
+    """Return a safe dispatcher error without exposing exception contents."""
+    detail = getattr(error, "safe_detail", "")
+    if isinstance(detail, str) and _SAFE_RUNTIME_DETAIL.fullmatch(detail):
+        return detail
+    return "Dev pipeline stopped; identity or runtime check failed"
+
 
 def configuration(environ=None):
     env = os.environ if environ is None else environ
@@ -32,20 +57,26 @@ def configuration(environ=None):
     backend_url = env.get("BACKEND_REDIS_URL", "")
     if "production" in backend_url.lower() or "staging" in backend_url.lower():
         raise ValueError("external environment Redis is forbidden")
-    return {**targets, "DEV_RUN_ID": run_id,
+    return {**targets, "APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
             "MYSQL_PASSWORD": env["MYSQL_PASSWORD"], "REDIS_PASSWORD": env["REDIS_PASSWORD"],
             "BACKEND_REDIS_URL": backend_url,
             "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),
             "BACKEND_REDIS_START_ID": env.get("BACKEND_REDIS_START_ID", "$")}
 
 
-async def connect(config):
+def database_init_command(mode):
+    if mode == "relay":
+        return "SET SESSION time_zone='+00:00', SESSION transaction_isolation='READ-COMMITTED'"
+    return "SET time_zone='+00:00'"
+
+
+async def connect(config, *, maxsize=2, init_command="SET time_zone='+00:00'"):
     import aiomysql
     pool = await aiomysql.create_pool(
         host=config["MYSQL_HOST"], port=3306, user=config["MYSQL_USER"],
         password=config["MYSQL_PASSWORD"], db=config["MYSQL_DATABASE"],
-        minsize=1, maxsize=2, connect_timeout=5, autocommit=True,
-        charset="utf8mb4", init_command="SET time_zone='+00:00'",
+        minsize=1, maxsize=maxsize, connect_timeout=5, autocommit=True,
+        charset="utf8mb4", init_command=init_command,
     )
     try:
         async with pool.acquire() as conn:
@@ -53,14 +84,97 @@ async def connect(config):
                 await cur.execute("SELECT DATABASE()")
                 if await cur.fetchone() != (config["MYSQL_DATABASE"],):
                     raise ValueError("database target mismatch")
-                await cur.execute("SELECT environment,run_id,database_name FROM _pipeline_identity")
-                if list(await cur.fetchall()) != [("development", config["DEV_RUN_ID"], config["MYSQL_DATABASE"])]:
-                    raise ValueError("database identity mismatch")
+        await ensure_database_identity(pool, config)
         return pool
     except BaseException:
         pool.close()
         await pool.wait_closed()
         raise
+
+
+async def ensure_database_identity(pool, config):
+    """Verify and rebind the retained Dev database to the current run ID."""
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT environment,run_id,database_name FROM _pipeline_identity WHERE id=1")
+            row = await cur.fetchone()
+            if row is None or row[0] != "development" or row[2] != config["MYSQL_DATABASE"]:
+                raise ValueError("database identity mismatch")
+            if row[1] != config["DEV_RUN_ID"]:
+                await cur.execute(
+                    "UPDATE _pipeline_identity SET run_id=%s WHERE id=1 AND environment=%s AND database_name=%s",
+                    (config["DEV_RUN_ID"], "development", config["MYSQL_DATABASE"]),
+                )
+
+
+def database_pool_size(mode):
+    return DEV_RELAY_DB_CONNECTIONS if mode == "relay" else 2
+
+
+def build_relay_workers(pool, producer, run_id):
+    return [
+        KafkaRelay(MySQLDeliveryStore(pool, run_id=run_id), producer)
+        for _ in range(DEV_RELAY_CONCURRENCY)
+    ]
+
+
+async def relay_step(worker, worker_slot, published):
+    state = await worker.run_once()
+    if state == "published":
+        published += 1
+        if published % 1000 == 0:
+            print(json.dumps({"component": "dev-relay", "state": "published",
+                              "worker_slot": worker_slot,
+                              "published_count": published}), flush=True)
+    elif state != "idle":
+        print(json.dumps({"component": "dev-relay", "state": state,
+                          "worker_slot": worker_slot}), flush=True)
+    return published, .5 if state == "idle" else 0
+
+
+async def relay_worker(worker, worker_slot, stop_event):
+    # The monitor image may provide an older delivery-store module; keep this
+    # relay-only exception out of runtime module import so monitor can start.
+    from .services.kafka_delivery_store import LockContentionExhausted
+
+    published = 0
+    while not stop_event.is_set():
+        try:
+            published, delay = await relay_step(worker, worker_slot, published)
+        except LockContentionExhausted as error:
+            print(json.dumps({
+                "component": "dev-relay",
+                "state": "lock_contention_exhausted",
+                "stage": error.operation,
+                "mysql_error_code": error.mysql_error_code,
+                "lock_retry_attempt": error.attempt_limit,
+                "lock_retry_limit": error.attempt_limit,
+                "worker_concurrency": DEV_RELAY_CONCURRENCY,
+                "transaction_isolation": "READ-COMMITTED",
+                "operation": error.operation,
+                "result": "paused",
+                "worker_slot": worker_slot,
+            }), flush=True)
+            stop_event.set()
+            return "paused"
+        except Exception:
+            stop_event.set()
+            raise
+        await asyncio.sleep(delay)
+    return "stopped"
+
+
+async def run_relay_workers(workers):
+    stop_event = asyncio.Event()
+    results = await asyncio.gather(*(
+        relay_worker(worker, slot, stop_event)
+        for slot, worker in enumerate(workers, start=1)
+    ), return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            raise result
+    if "paused" in results:
+        raise RelayPaused()
 
 
 async def relay(config, pool):
@@ -71,12 +185,8 @@ async def relay(config, pool):
     )
     try:
         await asyncio.wait_for(producer.start(), 30)
-        worker = KafkaRelay(MySQLDeliveryStore(pool, run_id=config["DEV_RUN_ID"]), producer)
-        while True:
-            state = await worker.run_once()
-            if state != "idle":
-                print(json.dumps({"component": "dev-relay", "state": state}), flush=True)
-            await asyncio.sleep(.5 if state == "idle" else .01)
+        workers = build_relay_workers(pool, producer, config["DEV_RUN_ID"])
+        await run_relay_workers(workers)
     finally:
         await asyncio.wait_for(producer.stop(), 30)
 
@@ -127,11 +237,98 @@ async def business_bridge(config, pool):
     await run(config, pool)
 
 
+async def python_metadata_worker(config):
+    from .services.python_metadata_worker import run
+    await run(config)
+
+
+async def dual_track_monitor(config):
+    from .dual_track_monitor import run
+    evidence_dir = __import__("pathlib").Path(os.environ.get(
+        "DUAL_TRACK_EVIDENCE_DIR", "/var/lib/binhu-dev-event-pipeline/evidence")) / config["DEV_RUN_ID"]
+    evidence_id = os.environ.get("DUAL_TRACK_EVIDENCE_ID", "dual-track-" + config["DEV_RUN_ID"][4:])
+    await run(config, evidence_dir, evidence_id)
+
+
+def backend_relay_configuration(environ=None):
+    """Validate the Dev-only Backend outbox relay targets.
+
+    This relay deliberately uses the Dev Backend database and Redis stream;
+    it never shares the pipeline database credentials or Production relay.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("APP_ENVIRONMENT") != "development":
+        raise ValueError("development identity required")
+    run_id = env.get("DEV_RUN_ID", "")
+    if not re.fullmatch(r"dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
+        raise ValueError("Dev run ID required")
+    host = env.get("BACKEND_MYSQL_HOST", "")
+    database = env.get("BACKEND_MYSQL_DATABASE", "")
+    user = env.get("BACKEND_MYSQL_USER", "")
+    password = env.get("BACKEND_MYSQL_PASSWORD", "")
+    redis_url = env.get("BACKEND_REDIS_URL", "")
+    if host != "environment-mysql" or not re.fullmatch(r"Dev_[A-Za-z0-9_]+", database):
+        raise ValueError("isolated Dev Backend database required")
+    if user != "environment_app" or not password or len(password) < 32:
+        raise ValueError("independent Backend credential required")
+    if not redis_url or any(value in redis_url.lower() for value in ("production", "staging", "shadow")):
+        raise ValueError("isolated Dev Backend Redis required")
+    return {
+        "APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
+        "BACKEND_MYSQL_HOST": host, "BACKEND_MYSQL_DATABASE": database,
+        "BACKEND_MYSQL_USER": user, "BACKEND_MYSQL_PASSWORD": password,
+        "BACKEND_REDIS_URL": redis_url,
+        "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),
+    }
+
+
+async def backend_outbox_relay(config):
+    from .services.backend_outbox_relay import BackendOutboxRelay
+    import aiomysql
+    from redis.asyncio import Redis
+
+    pool = await aiomysql.create_pool(
+        host=config["BACKEND_MYSQL_HOST"], port=3306,
+        user=config["BACKEND_MYSQL_USER"], password=config["BACKEND_MYSQL_PASSWORD"],
+        db=config["BACKEND_MYSQL_DATABASE"], minsize=1, maxsize=2,
+        connect_timeout=5, autocommit=True, charset="utf8mb4",
+        init_command="SET time_zone='+00:00'",
+    )
+    client = Redis.from_url(config["BACKEND_REDIS_URL"], decode_responses=True,
+                            socket_timeout=10, socket_connect_timeout=5)
+    try:
+        await client.ping()
+        worker = BackendOutboxRelay(pool, client, config)
+        while True:
+            state = await worker.run_once()
+            if state != "idle":
+                print(json.dumps({"component": "dev-backend-outbox-relay", "state": state}), flush=True)
+            await asyncio.sleep(.5 if state == "idle" else .01)
+    finally:
+        await client.aclose()
+        pool.close()
+        await pool.wait_closed()
+
+
 async def main(mode):
+    if mode == "backend-outbox-relay":
+        await backend_outbox_relay(backend_relay_configuration())
+        return
     config = configuration()
-    from .schema_registry import verify
-    await asyncio.to_thread(verify)
-    pool = await connect(config)
+    if mode != "dual-track-monitor":
+        from .schema_registry import verify
+        await asyncio.to_thread(verify)
+    if mode == "python-metadata-worker":
+        await python_metadata_worker(config)
+        return
+    if mode == "dual-track-monitor":
+        await dual_track_monitor(config)
+        return
+    pool = await connect(
+        config,
+        maxsize=database_pool_size(mode),
+        init_command=database_init_command(mode),
+    )
     try:
         if mode == "relay":
             await relay(config, pool)
@@ -146,10 +343,10 @@ async def main(mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge"))
+    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay", "python-metadata-worker", "dual-track-monitor"))
     args = parser.parse_args()
     try:
         asyncio.run(main(args.mode))
-    except Exception:
+    except Exception as error:
         # Connector exception text can contain credentials and SQL values.
-        raise SystemExit("Dev pipeline stopped; identity or runtime check failed") from None
+        raise SystemExit(runtime_error_message(error)) from None

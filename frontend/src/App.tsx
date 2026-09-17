@@ -15,6 +15,7 @@ import WeekendDuty from './pages/WeekendDuty'
 import Communities from './pages/Communities'
 import UserManagement from './pages/UserManagement'
 import SystemSettings from './pages/SystemSettings'
+import TxDocsMonitorSettings from './pages/TxDocsMonitorSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
 import AccountSecuritySettings from './pages/AccountSecuritySettings'
 import UpdateSettings from './pages/UpdateSettings'
@@ -142,6 +143,7 @@ function App() {
               <Route path="/people/:userId" element={<PublicProfile />} />
               <Route path="/" element={<RoleDashboard />} />
               <Route element={<ProtectedRoute requireRole="super_admin" />}>
+                <Route path="/settings/txdocs-monitor" element={<TxDocsMonitorSettings />} />
                 <Route path="/task-flow-lab" element={<LazyPage><TaskFlowLab /></LazyPage>} />
                 <Route path="/task-flow-rete-lab" element={<LazyPage><ReteTaskFlowLab /></LazyPage>} />
               </Route>
@@ -190,7 +192,8 @@ function App() {
                 <Route path="/police-addresses" element={<PoliceAddressManagement />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="venue.view" />}>
-                <Route path="/venue-codes" element={<VenueCodeManagement />} />
+                <Route path="/qr-codes" element={<VenueCodeManagement />} />
+                <Route path="/venue-codes" element={<Navigate to="/qr-codes" replace />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="registry.property.view" />}>
                 <Route path="/registry" element={<RegistryManagement />} />

@@ -44,6 +44,22 @@ XLSX 清理和导入不包含在程序发布中，必须另有文件、影子核
 
 阶段二、阶段三必须分别使用独立 PR；任何新功能不得新增腾讯来源字段、OAuth 凭据、外部物理行号或腾讯写回依赖。
 
+## 腾讯表只读统计监控
+
+腾讯业务数据源仍保持下线，`LOCAL_DATA_SOURCE_ENABLED=true` 与 `TXDOCS_ENABLED=false` 不变。确需在在线汇总中观察外部腾讯表变化时，使用独立配置：
+
+```text
+BINHU_TXDOCS_MONITORING_ENABLED=true
+BINHU_TXDOCS_MONITORING_SPREADSHEET_IDS=1,2
+BINHU_TXDOCS_MONITORING_INTERVAL_SECONDS=600
+```
+
+白名单值是生产 `_config_spreadsheets` 中已经登记的固定编号，不能由网页或请求参数覆盖。启用前只读核对 OAuth 令牌有效期、表格编号、业务类型和腾讯接口额度；不要把文件编号、令牌或表格正文写入部署台账。`TXDOCS_MONITORING_MAX_ROWS_PER_SHEET` 与单表超时必须保持有限值。
+
+新部署可由超级管理员在“在线数据汇总 → 配置外部监控”维护独立目标。页面保存的表格链接、子表、解析类型和读取间隔写入 `_txdocs_monitor_config`，Access Token 加密保存且不回显；“立即读取一次”只触发一次受限只读读取。该配置优先于环境变量白名单，禁用配置后不会继续使用旧白名单。页面不提供同步、写回、删除或通用 OAuth 管理。
+
+监控结果写入 `daily_report` 的 `_txdocs_monitor_*` 独立表，只包含 HMAC 摘要、社区级计数和安全错误码。它不更新 `OnlineData` 业务表、`_online_source_*`、任务流水或本地日报。回退时先关闭监控开关；兼容新增表可以保留，不应删除历史统计来模拟回退。Dev、Staging 和 Shadow 必须保持该开关关闭。
+
 ## 全链条已登记归档改用居住证自动确认（待合并）
 
 - 数据上传中心不再提供公安网原始数据上传。旧预览和确认接口返回 HTTP 410；历史上传列表、受控文件下载、历史表和 HMAC 摘要继续只读保留，不能在本次发布中删除。
@@ -1595,3 +1611,6 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 
 预发布账号使用 `@staging` 后缀，Dev 账号使用 `@dev` 后缀；这些账号不能跨环境使用。
 旧 `@shadow` 仅用于历史迁移和证据核对，停用前必须先完成新环境验收和影子资源证据留存。
+## 生产当前任务按日期归档
+
+“流口指令核查”当前任务清理必须使用固定网关的 `current-flow-cleanup` 五阶段命令，不能通过只读 SSH、临时 SQL 或浏览器接口批量删除。2026-09-14 本次运行只允许 `全链条` 和该业务日期；先执行 `measure`、`backup-check`、`prepare`，确认证据目录与八库备份后才能执行 `apply`，最后必须执行 `verify`。完整范围、证据和回退要求见 `docs/plans/current-flow-cleanup-20260914.md`。

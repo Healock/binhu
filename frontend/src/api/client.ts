@@ -168,15 +168,49 @@ export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem
 export async function getVenueCloudStatus(): Promise<VenueCloudStatus> {
   return (await api.get('/venue-cloud/status', passiveRequest)).data
 }
+export async function pullVenueCloudNow(): Promise<{ pulled: number }> {
+  return (await api.post('/venue-cloud/pull', {})).data
+}
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
   return (await api.get('/venue-visits', { params })).data
+}
+export function getVenueVisitPhotoUrl(visitId: number): string {
+  return `/venue-visits/${visitId}/photo`
 }
 export async function exportVenueVisits(params: Record<string, unknown> = {}): Promise<Blob> {
   return (await api.get('/venue-visits/export', { params, responseType: 'blob' })).data
 }
+export async function exportVenueVisitsZip(params: Record<string, unknown> = {}): Promise<Blob> {
+  return (await api.get('/venue-visits/export-zip', { params, responseType: 'blob' })).data
+}
+export async function deleteVenueVisit(id: number): Promise<void> {
+  await api.delete(`/venue-visits/${id}`)
+}
 export async function getPublicVenueInfo(token: string): Promise<{ venue_id: number; name: string; form_token: string }> {
   return (await api.get(`/public/venue-codes/${encodeURIComponent(token)}`)).data
 }
+
+export interface DrinkingReport {
+  id: number
+  name: string
+  unit_position: string
+  drinking_at: string | null
+  drinking_place: string
+  reason: string
+  inviter: string
+  travel_method: string
+  responsible_leader_name: string
+  submitted_at: string | null
+}
+export interface DrinkingFormCode { exists: boolean; form_key: string; display_name: string; status: 'active' | 'inactive'; cloud_sync_status: string; cloud_synced_revision?: number | null; config_revision?: number; token_version?: number; pending_token_version?: number | null; cloud_sync_error_code?: string | null }
+export async function getDrinkingFormCode(): Promise<DrinkingFormCode> { return (await api.get('/public-forms/drinking-report')).data }
+export async function createDrinkingFormCode(): Promise<Record<string, unknown>> { return (await api.post('/public-forms/drinking-report', {})).data }
+export async function updateDrinkingFormStatus(status: 'active' | 'inactive'): Promise<Record<string, unknown>> { return (await api.patch('/public-forms/drinking-report/status', { status })).data }
+export async function rotateDrinkingFormCode(): Promise<Record<string, unknown>> { return (await api.post('/public-forms/drinking-report/rotate', {})).data }
+export async function getDrinkingFormQr(): Promise<{ url: string; image_url?: string; display_name: string }> { const data = (await api.get('/public-forms/drinking-report/qrcode')).data; return { ...data, image_url: resolveVenueCodeQrImageUrl(data.image_url) } }
+export async function listDrinkingReports(params: Record<string, unknown> = {}): Promise<{ data: DrinkingReport[]; total: number; page: number; page_size: number }> { return (await api.get('/drinking-reports', { params })).data }
+export async function getDrinkingReport(id: number): Promise<DrinkingReport & { notes: string; reporter_signature: unknown[]; leader_signature: unknown[] }> { return (await api.get(`/drinking-reports/${id}`)).data }
+export async function exportDrinkingReportPdf(id: number): Promise<Blob> { return (await api.get(`/drinking-reports/${id}/pdf`, { responseType: 'blob' })).data }
 
 export interface MaintenanceStatus {
   enabled: boolean
@@ -981,6 +1015,65 @@ export interface OnlineDataOverview {
   completion_rate: number
 }
 
+export interface TxDocsMonitoringOverview {
+  enabled: boolean
+  configured: boolean
+  status: 'disabled' | 'misconfigured' | 'awaiting_first_snapshot' | 'healthy' | 'stale' | 'error' | 'unavailable'
+  start_date: string
+  end_date: string
+  current_rows: number
+  added_rows: number
+  changed_rows: number
+  removed_rows: number
+  successful_reads: number
+  failed_sources: number
+  last_success_at: string | null
+  is_stale: boolean
+  message: string
+}
+
+export interface TxDocsMonitorConfig {
+  enabled: boolean
+  configured: boolean
+  spreadsheet_url_configured: boolean
+  spreadsheet_url: string
+  file_id: string
+  data_sheet_id: string
+  header_row: number
+  parser_type: string
+  interval_seconds: number
+  client_id_configured: boolean
+  access_token_configured: boolean
+  open_id_configured: boolean
+  status: string
+}
+
+export async function getTxDocsMonitorConfig(): Promise<TxDocsMonitorConfig> {
+  return (await api.get('/stats/txdocs-monitor/config')).data
+}
+
+export async function updateTxDocsMonitorConfig(payload: {
+  spreadsheet_url: string
+  data_sheet_id: string
+  parser_type: string
+  header_row: number
+  interval_seconds: number
+  client_id: string
+  access_token: string
+  open_id: string
+  enabled: boolean
+}): Promise<TxDocsMonitorConfig> {
+  return (await api.put('/stats/txdocs-monitor/config', payload)).data
+}
+
+export async function disableTxDocsMonitorConfig(): Promise<void> {
+  await api.post('/stats/txdocs-monitor/config/disable', {})
+}
+
+export async function runTxDocsMonitorNow(): Promise<{ successful_sources: number; message: string }> {
+  return (await api.post('/stats/txdocs-monitor/run', {})).data
+}
+
 export type OnlineOverviewCategory = 'carryover' | 'new' | 'changed' | 'pending' | 'completed'
 
 export interface OnlineOverviewDetailItem {
@@ -1021,6 +1114,23 @@ export async function getOnlineDataOverview(
   filters?: { scope?: 'permission' | 'responsibility'; community?: string },
 ): Promise<OnlineDataOverview> {
   const { data } = await api.get('/stats/overview', {
+    params: {
+      start_date: startDate,
+      end_date: endDate,
+      parser_type: parserType,
+      ...filters,
+    },
+  })
+  return data
+}
+
+export async function getTxDocsMonitoringOverview(
+  startDate: string,
+  endDate: string,
+  parserType: string,
+  filters?: { scope?: 'permission' | 'responsibility'; community?: string },
+): Promise<TxDocsMonitoringOverview> {
+  const { data } = await api.get('/stats/txdocs-monitor', {
     params: {
       start_date: startDate,
       end_date: endDate,
@@ -1864,6 +1974,7 @@ export interface ResidencePlatformConfig {
   login_mode: 'automatic_hidden_challenge'
   community_account_count: number
   active_session_count: number
+  community_codes: string[]
 }
 
 export interface ResidencePlatformConfigUpdate {

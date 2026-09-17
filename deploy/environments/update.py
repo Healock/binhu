@@ -48,7 +48,8 @@ def candidate_configuration(environment, root, manifest, compose, env_text, imag
             or values.get('MYSQL_PORT', '3306') != '3306'
             or values.get('LOCAL_DATA_SOURCE_ENABLED') != 'true'):
         raise ValueError('environment_identity_mismatch')
-    for key in ('TXDOCS_ENABLED', 'QMF_SOURCE_ACQUISITION_ENABLED', 'QMF_REGISTRATION_ENABLED',
+    for key in ('TXDOCS_ENABLED', 'TXDOCS_MONITORING_ENABLED',
+                'QMF_SOURCE_ACQUISITION_ENABLED', 'QMF_REGISTRATION_ENABLED',
                 'VENUE_CLOUD_SYNC_ENABLED', 'VENUE_CLOUD_PULL_ENABLED',
                 'CERTIFICATE_SOURCE_DAILY_ENABLED', 'LOCAL_REPORT_SCHEDULER_ENABLED'):
         if values.get(key) != 'false':

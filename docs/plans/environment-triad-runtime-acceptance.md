@@ -294,3 +294,119 @@ Dev 的业务事件桥、Kafka→Schema Registry→Flink→Redis/派生库闭环
 在连接器恢复并完成一次已登录页面检查前，签署状态为“接口与运行门禁通过，视觉验收待补”，
 不能退役 Shadow，也不能删除其证据、卷、网络或回滚材料。
 
+
+## 2026-09-13：Dev savepoint 重跑失败诊断与验收工具修复
+
+验收编号：dev-accept-20260913-9260b881bc5c4c24。
+
+Kafka 三 broker 日志轮换、Flink pids_limit=256 资源修补已完成；Kafka 按
+1→2→3 滚动重建后 ISR、topic、数据卷、网络和 Schema Registry 均保持正常；
+Flink 作业从新 savepoint 恢复成功，第 2–5 项资源、身份、Schema Registry 和
+checkpoint/savepoint 门禁通过。
+
+第 9 项最小事件流第一次重跑失败，失败证据保留在
+/srv/deploy-backups/environment-triad/dev-accept-20260913-9260b881bc5c4c24/09-revision-flow-failure.txt。
+只读诊断确认这是实际验收 fixture 与恢复状态不兼容，不是验收器字段合同或入口问题：
+
+- savepoint 恢复后的 Flink/派生状态和 Redis 已有该合成任务 revision=3；
+- relay delivery ledger 仍保留旧验收的固定 event_id，重跑 seed 会命中历史投递记录；
+- 旧 seed 的 revision 1/2/3 不高于 savepoint 高水位，会被 Flink revision fence 跳过；
+- bridge/relay 容器本身没有新的运行异常，Production 基线未变化。
+
+修复已合并于 PR #622（主线提交 10550374b380c1ce86962d863a3adf320dbbaa83），
+主线 CI 34739128268（Backend、Frontend、Desktop clients）全部成功。修复内容是：
+
+- 每轮验收使用 DEV_ACCEPT_NONCE 生成隔离的 event ID，避免复用历史 ledger；
+- 使用 DEV_ACCEPT_BASE_REVISION 选择高于 savepoint 的 seed 起始 revision；
+- 保留乱序和重复事件覆盖，继续验证 revision fence 与投递幂等；
+- 验收脚本不删除旧 ledger、checkpoint 或失败证据。
+
+本次失败说明已知流程约束：从 savepoint 恢复后的状态与重新 seed 事件不匹配
+时，必须为新验收使用新的 nonce，并将 seed revision 提升到状态高水位之上；
+不能通过重复固定事件编号或低 revision 伪造验收通过。
+
+当前状态：第 9 项待使用合并后的工具、DEV_ACCEPT_NONCE=accept-20260913-9260、
+DEV_ACCEPT_BASE_REVISION=4 重跑；成功后继续第 6–11 项。即使元数据事件链路
+通过，也只签署 Dev 元数据事件和 revision 高水位一致性，不能替代完整业务双轨、
+Staging 脱敏副本或生产架构切换验收。
+
+### 2026-09-14：Dev Backend outbox relay 接入与业务事件闭环
+
+- PR #628 已合并到 `main`，合并提交为 `ef5ddb80ca2ab267dff3447c8a85bc66d5d8cc32`；PR CI 与主线 CI（run `34772014150`）均通过。
+- 从合并提交构建 Dev worker 镜像，摘要为 `sha256:a416630d98496bc54822052adf843409102eea34f88671f9e90968aa081c379d`；服务器 Dev Compose 哈希为 `b09600eab249082d0bbcbdc6dea14ab89f4aea4584ca686da05186dab83e12b9`。
+- 新证据目录为 `/srv/deploy-backups/environment-triad/dev-backend-outbox-relay-20260914-ef5ddb80/`，保留 Compose 变更前副本、运行时文件哈希、镜像上下文哈希、容器检查结果和验收摘要，未覆盖历史失败目录。
+- 新增 `backend-outbox-relay`，仅连接 Dev Backend `Dev_OnlineData`、Dev Redis `binhu:events` 和 `binhu-development_internal`，具备 development 标签、独立运行编号、只读根文件系统、tmpfs、CPU/内存/pids 限制和 json-file 日志轮换；未重建 Kafka/Flink/Schema Registry，未删除或替换任何数据卷。
+- 使用虚构 aggregate `全链条:dev-outbox-20260914-ef5ddb80`、revision 101 生成 Backend outbox 事件。relay 发布到 Dev Redis，business-bridge 写入 Dev `_kafka_event_delivery`，Flink 将 `t_fullchain:1970109204584868461` 的派生 revision 更新为 101。
+- `event_pipeline.verify business` 结果为 `delivery_published=true`、`mysql_revision_correct=true`、`redis_revision_correct=true`、`business_integration_verified=true`。重复/乱序最小事件验收使用新 nonce `accept-20260914-outbox`、base revision 110，三条事件均 published 且 revision fence 通过。
+- 验收中发现合成 SQL 未显式使用 UTF-8 时中文 aggregate 会乱码并被 bridge 拒绝；该问题属于 fixture 编码，已改用 utf8mb4/十六进制字面量重跑通过。后续 seed 必须显式使用 UTF-8。
+- Production 与 Staging 只读基线未改变，没有生产数据、生产网络、外部平台或 Shadow 资源操作。
+
+本次只签署 Backend outbox → Dev Redis → business-bridge → Dev Kafka 投递台账 → Schema Registry/Flink → 派生 MySQL/Redis 的业务事件证据，以及重复/乱序最小事件结果。checkpoint/savepoint 恢复、完整第 6–11 项故障演练、7 天/10 万事件双轨比对、Staging 脱敏副本和 75 人压测仍未签署。
+
+### 2026-09-14：Dev relay 接入后的持久会话只读复核
+
+使用 `E:\\bhzh-ssh-mcp` 的持久 stdio MCP，在同一 SSH 会话内完成 Dev 资源和日志只读核验；会话已主动关闭，未执行写入、重启、数据库命令或容器变更。核验对象包括：
+
+- `binhu-development-pipeline-backend-outbox-relay-1`、`business-bridge`、旧 relay/bridge、三 Kafka broker、Schema Registry、Flink JobManager/TaskManager、派生 MySQL/Redis 和 Dev Backend；均处于运行状态，relay/bridge 未出现新的错误输出。
+- Backend outbox relay 容器具备 `APP_ENVIRONMENT=development`、`binhu-development_internal` 网络、只读根文件系统、`/tmp` tmpfs、`pids_limit=128`、CPU/内存限制和 `json-file` `5m×2` 日志轮换；未挂载匿名卷。
+- 派生 Redis 使用 `binhu-development-pipeline_redis` 具名卷、派生 MySQL 使用 `binhu-development-pipeline_mysql` 具名卷；两者均位于 `binhu-development-eventbus_internal`，没有发现 Production/Staging 网络混入。
+- Flink TaskManager 日志显示从 `dev-jdbc-reconnect-20260913-e8d2a878` savepoint 恢复并进入 `RUNNING`，JobManager 日志持续记录 checkpoint 完成；本次只读复核未重新触碰 checkpoint/savepoint。
+- 主机资源快照为约 3.4 GiB 可用内存、975 MiB Swap 已满、`/data` 约 245 GiB 可用空间；资源数值已记录为当前基线，未因本次检查改变任何容器。
+
+本轮证据只能确认 Dev 运行资源、身份和元数据事件链路仍健康；`event_pipeline.verify business` 的合成事件结果、重复/乱序结果和 relay 部署证据仍以 `dev-backend-outbox-relay-20260914-ef5ddb80` 目录为准。完整第 6–11 项中的业务派生、桥/relay 故障重启幂等、checkpoint/savepoint 独立恢复报告尚未形成新的通过证据。仓库当前没有等价 Python worker 与 Flink 的真实业务输出比较器，因而不能开始或宣称已开始“连续 7 天、至少 100,000 事件、零未归因差异”双轨门槛；实现第一个业务派生域会改变架构设计，必须另行评审后再继续。Production、Staging 和 Shadow 本轮均未操作。
+
+### 2026-09-15：recovery15 savepoint 诊断与 recovery16 干净状态重建
+
+本轮验收编号为 dev-20260915-recovery15。候选包来自提交
+9a960958ff622d746ef20641def29c4255ec57d7，Python worker 镜像摘要为
+sha256:47be89385c74b0c3b6e4e78575a4f41c3916bb9465f8d5ea0810a317706a23cd。
+候选包通过 Actions run 34920107762、网关 prepare → measure → apply 和 Dev
+隔离门禁；Python durable event ledger 表已在 Dev Dev_EventPipeline 中幂等补齐。
+
+savepoint 诊断结论：
+
+- savepoint 实际存在于 /opt/flink/checkpoints/dev-savepoints/，目录包含
+  _metadata 和状态文件，JobManager 与 TaskManager 均可读；JDBC connector、MySQL
+  driver、pipeline.sql 和 Dev 数据库表均存在，未发现驱动或表结构缺失。
+- 第一次失败使用了错误的恢复路径
+  /opt/flink/checkpoints/dev-flink-transition-20260915-recovery15/...，JobManager
+  明确返回 FileNotFoundException；原 savepoint 并未损坏。
+- 改用正确路径后，旧 JAR 和带稳定 UID 的新 JAR 都返回明确的 operator 映射失败：
+  旧 source operator cbc357ccb763df2852fee8c4fc7d55f2 不存在于新 JobGraph。
+  未使用 allowNonRestoredState，失败日志和新旧 JAR 均保留在
+  /var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery15/。
+
+按 Dev 处置规则未强行跳过状态，改用新验收编号 dev-20260915-recovery16，从干净
+状态启动。新的候选包通过 Actions run 34923957503，网关 measure 隔离通过；Flink
+revision 与 metadata 两个作业均为 RUNNING，无 savepoint 参数。最小事件流使用
+新 nonce 和 revision 300/301/302，投递台账六条事件（包括历史 1/2/3）均为
+published，Flink 与 Python 投影相同：revision=302、event_count=6、
+changed_field_count=6、saved_count=6，其他事件计数为 0。
+
+随后只重启 Dev python-metadata-worker，保留 Kafka、Flink、Redis、MySQL 卷和网络；
+重启后重新投递 300/301/302，Python ledger 仍为 6 条，Flink/Python 结果保持完全一致。
+这证明 Python worker 已从持久投影恢复；本轮通过的是干净状态重建与 worker 重启恢复，
+旧 savepoint 的兼容恢复仍标记为失败，不能把它写成 savepoint 恢复通过。
+
+本轮没有操作 Production、Staging 或 Shadow。recovery16 只完成真实双轨的一次 Dev
+一致性和重启子验收；连续 7 天、至少 100,000 条唯一事件、完整第 6–11 项及 Staging
+晋级仍未签署。
+
+recovery16 的 Flink 失败/恢复证据目录为
+`/var/lib/binhu-dev-event-pipeline/dev-flink-transition-20260915-recovery16/`。
+服务器只读复核显示旧的 `dev-20260915-metadata08` revision 作业仍在运行，但它只
+过滤旧 run_id；recovery16 的 revision 与 metadata 作业使用新的 run_id，三者当前
+没有写入同一组投影键。该隔离结论只适用于本轮已核对的 run_id 和表写入计划，后续
+双轨长跑必须使用新的唯一 run_id，并在启动前再次核对输出命名空间。
+
+双轨计时现已登记为 `dev-20260915-recovery16`。起始服务器证据目录为
+`/var/lib/binhu-dev-event-pipeline/evidence/dev-20260915-dualtrack-start/`，
+起始计数为 Python/Flink 各 1 条任务投影、Python 事件账本 6 条、Kafka 投递台账 6 条。
+事件按同一 `run_id` 内唯一 `event_id` 计数；重复且 canonical payload 相同只计一次，
+内容冲突立即失败。自动比较器差异会写入独立告警并暂停计时，不能人工清除后继续。
+
+双轨监控候选已按合并后的主线提交 `0bdc7c2b2b653597448929f249e74733df8eb5ff` 部署到
+Dev。100 条分级报告显示 Python/Flink 任务投影各 100 条、Python 事件账本 100 条、
+Kafka 台账 100 条且全部 published，最大 revision=1099。比较器代码已通过 46 个本地
+测试并能生成暂停告警；服务器实时投影导出尚未接入常驻调度器，故 7 天计时暂不把此
+计数结果视为完整自动双轨通过。

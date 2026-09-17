@@ -14,6 +14,37 @@
 4. `docs/archive/` 是历史记录，只能参考，不能照着执行。
 5. `AGENTS.local.md` 可能包含本机运维信息。只有用户明确要求处理服务器、凭据或故障恢复时才能读取，不能提交或公开其中的内容。
 
+## 项目 Skill
+
+本项目维护了一组项目专属 Codex Skill，源文件位于 `skills/`。Skill 只是把既有项目规则整理成可执行流程，不是新的授权来源；Skill、当前代码和文档发生冲突时，以本文件、实际代码和检查结果为准。当前交付环境统一称为 Production、Staging、Development；本项目不创建 `shadow-load-test` Skill，Shadow 清理和将压测迁移到 Staging 属于后续独立工作。
+
+符合以下事务时，应优先使用对应 Skill（可使用 `$binhu-<name>` 明确调用）：
+
+| 事务 | Skill |
+| --- | --- |
+| 提交、准备或更新 Pull Request | `binhu-submit-pr` |
+| 同步 `main` 或创建隔离工作区 | `binhu-sync-main` |
+| 提交前测试和验证 | `binhu-verify-change` |
+| 敏感信息、外部接口和数据源边界检查 | `binhu-security-boundary-check` |
+| 新增或更新帮助中心文档 | `binhu-help-doc-update` |
+| 版本号、发布说明和版本标签 | `binhu-release-version` |
+| Pull Request 代码审查 | `binhu-review-pr` |
+| 前端桌面、窄屏、主题和高密度布局验收 | `binhu-frontend-responsive-check` |
+| 数据迁移和 `measure → migrate --apply → verify` | `binhu-migration-verify` |
+| Production 只读排查 | `binhu-readonly-production-diagnosis` |
+| 经授权的后端紧急热修 | `binhu-hotfix-deployment` |
+| 经授权的 Production 发布 | `binhu-production-deployment` |
+| Windows/Android 客户端构建和验收 | `binhu-desktop-client-release` |
+| 事故回滚 | `binhu-incident-rollback` |
+| Agent 初次进入项目或工作区不明确 | `binhu-project-onboarding` |
+| 测试夹具、验收样例和压测数据 | `binhu-test-fixture-safety` |
+| XLSX、XLS、CSV 导入导出功能 | `binhu-spreadsheet-feature` |
+| 居住证、全民防等外部只读查询 | `binhu-external-readonly-integration` |
+
+推荐日常链路为：`binhu-project-onboarding` → `binhu-sync-main` → 开发和测试 → `binhu-verify-change` → `binhu-security-boundary-check` → 按需使用 `binhu-help-doc-update` / `binhu-frontend-responsive-check` → `binhu-review-pr` → `binhu-submit-pr`。
+
+`binhu-production-deployment`、`binhu-hotfix-deployment`、`binhu-migration-verify` 和 `binhu-incident-rollback` 只提供门禁和执行流程，不授予生产、数据库、服务器或外部平台操作权限；执行实际变更前仍需用户明确授权。`binhu-readonly-production-diagnosis` 只能执行受控只读检查，不得借此重启、部署、清理、导入或修改生产。Skill 尚未注册到当前 Codex 时，可在仓库根目录执行 `scripts\install-binhu-skills.ps1`，再执行 `scripts\validate-binhu-skills.ps1`；注册脚本拒绝覆盖已有同名 Skill。
+
 ## 这个项目是做什么的
 
 滨湖智慧平台以本地 MySQL 业务表作为在线任务唯一主数据源，也支持管理员上传走访明细 XLSX。全民防和居住证平台仅作为外部只读来源；腾讯文档已完成迁移并正式下线，当前只保留受限的历史快照、备份和审计材料，正常业务不得读取、写回、删除或依赖其物理行号。数据按人员、社区和日期整理并显示在网页上，管理员还可以把系统统计和人工表单合并，导出社区警务工作日志 PDF。
@@ -45,6 +76,7 @@
 ## 本地数据源切换约束
 
 - 生产环境必须显式使用 `LOCAL_DATA_SOURCE_ENABLED=true` 和 `TXDOCS_ENABLED=false`；`TXDOCS_MIGRATION_MODE=readonly` 只代表历史迁移兼容状态，不得开启腾讯业务访问。
+- 腾讯表如需重新用于在线统计，只能启用独立的 `TXDOCS_MONITORING_ENABLED` 只读监控通道，并通过 `TXDOCS_MONITORING_SPREADSHEET_IDS` 固定白名单限制目标。该通道只保存 HMAC 摘要、社区计数和读取状态，不得写入本地任务表、来源投影或日报任务流水，也不得调用腾讯写接口。
 - 新任务、批量导入、快捷下发、编辑、研判、登记、导出和归档必须写本地业务表及本地来源记录；不得新增腾讯来源字段、OAuth 凭据或物理行号主键。
 - 本地来源使用 `spreadsheet_id=0`、`sheet_id=local:<parser_type>` 和本地业务表 `id` 作为兼容定位信息。版本并发控制使用本地 `revision` 与内容哈希。
 - 腾讯同步、写回、删除行和调照片腾讯名单调度器在本地模式必须不启动；旧接口只能返回明确的“腾讯数据源已下线”状态，不得发起外部请求。
@@ -91,11 +123,11 @@
 ### 当前生产事实：腾讯表已正式下线（2026-08-29）
 
 - 腾讯文档已经完成只读迁移和核对，当前生产环境不再把腾讯表作为业务数据源；本地 MySQL 业务表、本地来源记录和本地归档是唯一业务主数据源。
-- 正常业务路径禁止访问腾讯文档 API，禁止 OAuth 登录、读取腾讯表、写回核查结果、删除腾讯行、等待腾讯回读或依赖腾讯物理行号。新功能、修复和重构都不得重新引入这些调用。
+- 正常业务路径禁止访问腾讯文档 API，禁止 OAuth 登录、读取腾讯表、写回核查结果、删除腾讯行、等待腾讯回读或依赖腾讯物理行号。唯一例外是显式启用的独立统计监控器，它可按固定白名单只读腾讯表并生成去正文的变化汇总；该例外不能被业务查询、任务、研判、归档或写回代码调用。
 - 五类业务导入、快捷下发、编辑、分配、研判、待登记房屋关联、居住证自动确认、任务队列、导出和归档全部以本地事务为准；本地版本号、内容哈希和本地任务 ID 替代腾讯 `revision`、`row_hash` 和物理行号。
 - 全民防和居住证平台只保留外部只读查询。全民防真实登记、模型三结果写入、照片上传、人员保存和完成反馈入口均已停用；不得恢复准备、执行、重试或后台写入链路。“只读”不等于可以把其数据写入腾讯表，也不允许把外部物理编号当作本地业务主键。
 - `/api/query` 查询本地在线数据和本地归档；旧 `/api/sync/*`、`/api/spreadsheets/*` 及腾讯写回接口只能返回“腾讯数据源已下线”或迁移状态，不得发起外部请求。前端不得再提供腾讯配置、OAuth、同步、写回、删除行或腾讯额度页面。
-- `TXDOCS_ENABLED=false` 必须保持；`TXDOCS_MIGRATION_MODE=readonly`、腾讯快照、旧 `_online_source_*` / `_online_writeback_*` 表和迁移脚本仅作为审计、回滚和历史只读材料保留，不得参与正常业务流程，也不得被新代码依赖。
+- `TXDOCS_ENABLED=false` 必须保持；独立统计监控不能以打开该旧开关为前提。`TXDOCS_MIGRATION_MODE=readonly`、腾讯快照、旧 `_online_source_*` / `_online_writeback_*` 表和迁移脚本仅作为审计、回滚和历史只读材料保留，不得参与正常业务流程，也不得被新代码依赖。
 - 代码审查发现腾讯相关调用时，先确认是否属于迁移脚本、历史只读备份或明确的兼容接口；除此之外应拒绝合并，并补充“本地数据源已是唯一业务数据源”的测试和说明。
 
 ### 迁移期间规则（历史兼容说明）

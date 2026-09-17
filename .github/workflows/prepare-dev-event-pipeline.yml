@@ -1,0 +1,108 @@
+name: Prepare Dev event pipeline
+run-name: Prepare Dev event pipeline ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Merged commit or main ref used to build the candidate
+        required: true
+        default: main
+        type: string
+      run_id:
+        description: New isolated Dev run ID (dev-YYYYMMDD-...)
+        required: true
+        type: string
+      mysql_image:
+        description: Immutable MySQL image digest already approved for Dev
+        required: true
+        type: string
+      redis_image:
+        description: Immutable Redis image digest already approved for Dev
+        required: true
+        type: string
+      worker_image:
+        description: Immutable event-pipeline worker image digest already approved for Dev
+        required: true
+        type: string
+      flink_image:
+        description: Immutable Flink image digest already approved for Dev
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-dev-event-pipeline
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Build and verify immutable Dev candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: development
+    env:
+      RUN_ID: ${{ inputs.run_id }}
+      MYSQL_IMAGE: ${{ inputs.mysql_image }}
+      REDIS_IMAGE: ${{ inputs.redis_image }}
+      WORKER_IMAGE: ${{ inputs.worker_image }}
+      FLINK_IMAGE: ${{ inputs.flink_image }}
+    steps:
+      - name: Check out selected merged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Verify selected ref is on main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags origin main
+          commit="$(git rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$commit" origin/main
+          printf 'Candidate commit: %s\n' "$commit"
+          printf 'CANDIDATE_COMMIT=%s\n' "$commit" >> "$GITHUB_ENV"
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install backend test dependencies
+        shell: bash
+        run: python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
+      - name: Run event-pipeline tests and compile checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m unittest discover -s deploy/tests
+          python -m compileall -q deploy/environments/event_pipeline
+          git diff --check
+      - name: Build candidate bundle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mvn -q -f deploy/environments/event_pipeline/pom.xml package
+          mkdir -p dev-pipeline-candidate
+          python -m deploy.environments.event_pipeline.deploy build \
+            --repository . \
+            --output dev-pipeline-candidate/binhu-dev-event-pipeline.tar.gz \
+            --pipeline-jar deploy/environments/event_pipeline/target/dev-pipeline-job.jar \
+            --commit "$CANDIDATE_COMMIT" \
+            --run-id "$RUN_ID" \
+            --mysql-image "$MYSQL_IMAGE" \
+            --redis-image "$REDIS_IMAGE" \
+            --worker-image "$WORKER_IMAGE" \
+            --flink-image "$FLINK_IMAGE"
+          python -m deploy.environments.event_pipeline.deploy verify \
+            --bundle dev-pipeline-candidate/binhu-dev-event-pipeline.tar.gz
+          sha256sum dev-pipeline-candidate/binhu-dev-event-pipeline.tar.gz \
+            > dev-pipeline-candidate/SHA256SUMS
+      - name: Upload Dev candidate for controlled gateway review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binhu-dev-event-pipeline-${{ inputs.run_id }}-${{ github.run_id }}
+          path: dev-pipeline-candidate
+          if-no-files-found: error
+          retention-days: 14

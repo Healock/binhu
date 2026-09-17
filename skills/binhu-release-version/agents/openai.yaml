@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Release Version"
+  short_description: "Prepare Binhu SemVer releases"

@@ -33,6 +33,7 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
     def test_nginx_keeps_updates_out_of_venue_include(self):
         nginx = (ROOT / "deploy/venue-cloud/nginx-server-locations.conf").read_text(encoding="utf-8")
         self.assertIn("/venue/", nginx)
+        self.assertIn("location ^~ /drinking-report/", nginx)
         self.assertIn("/api/public/", nginx)
         self.assertIn("/api/internal/", nginx)
         self.assertIn("$ssl_client_verify", nginx)
@@ -42,6 +43,10 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("proxy_read_timeout 40s", nginx)
         self.assertNotIn("/var/log/nginx", nginx)
         self.assertNotIn("location /updates", nginx)
+        drinking_location = nginx.split("location ^~ /drinking-report/", 1)[1].split("}", 1)[0]
+        self.assertIn("access_log off;", drinking_location)
+        public_forms_location = nginx.split("location ^~ /api/public/forms/", 1)[1].split("}", 1)[0]
+        self.assertIn("access_log off;", public_forms_location)
         log_format = (ROOT / "deploy/venue-cloud/nginx-http-context.conf").read_text(encoding="utf-8")
         self.assertNotIn("$http_referer", log_format)
 
@@ -54,6 +59,8 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertNotRegex(workflow, r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
         self.assertIn("git merge-base --is-ancestor", workflow)
         self.assertNotIn("BINHU_UPDATE_SSH_KEY", workflow)
+        self.assertIn("nginx-server-locations.conf", workflow)
+        self.assertIn("nginx_locations_sha256", workflow)
 
     def test_publish_gateway_parses_ssh_command_before_sudo(self):
         wrapper = (ROOT / "deploy/venue-cloud/binhu-venue-publish-gateway").read_text(encoding="utf-8")
@@ -62,6 +69,8 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("/usr/local/libexec/binhu-venue-publish-gateway.py", wrapper)
         self.assertIn("fcntl.flock", implementation)
         self.assertIn("STATE / \"publish.lock\"", implementation)
+        self.assertIn("nginx configuration test failed", implementation)
+        self.assertIn("systemctl", implementation)
 
     def test_migration_tool_is_read_only_by_default(self):
         tool = (ROOT / "backend/tools/venue_cloud_migration.py").read_text(encoding="utf-8")
@@ -85,6 +94,28 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("/api/internal/status", tool)
         self.assertIn("wait_for_submissions", tool)
         self.assertNotIn("submissions/pull", tool)
+
+    def test_cutover_runbook_and_ledger_template_keep_production_gates_explicit(self):
+        runbook = (ROOT / "docs/venue-code-cloud-cutover-runbook.md").read_text(encoding="utf-8")
+        ledger = (ROOT / "deploy/venue-cloud/deployment-ledger.example.json").read_text(encoding="utf-8")
+        self.assertIn("VENUE_CLOUD_SYNC_ENABLED=false", runbook)
+        self.assertIn("VENUE_CLOUD_PULL_ENABLED=false", runbook)
+        self.assertIn("VENUE_LOCAL_PUBLIC_ENTRY_ENABLED=true", runbook)
+        self.assertIn("HTTP 410", runbook)
+        self.assertIn('"candidate_commit"', ledger)
+        self.assertIn('"uncertain_count"', ledger)
+        self.assertNotRegex(ledger, r"(?:\d{1,3}\.){3}\d{1,3}")
+
+    def test_candidate_inspection_is_read_only_and_scoped(self):
+        script = (ROOT / "deploy/venue-cloud/inspect-candidate.sh").read_text(encoding="utf-8")
+        self.assertIn("/etc/binhu-venue/docker-compose.yml", script)
+        self.assertIn("/srv/binhu-venue/state/current.env", script)
+        self.assertIn("--filter 'name=binhu-venue-'", script)
+        self.assertIn("/health/ready", script)
+        self.assertNotIn("docker compose up", script)
+        self.assertNotIn("docker compose run", script)
+        self.assertNotIn("systemctl enable", script)
+        self.assertNotIn("nginx -s reload", script)
 
     def test_nginx_activation_is_gated_and_reversible(self):
         activation = (ROOT / "deploy/venue-cloud/activate-nginx.sh").read_text(encoding="utf-8")

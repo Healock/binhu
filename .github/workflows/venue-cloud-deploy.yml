@@ -42,7 +42,9 @@ jobs:
           cache-dependency-path: cloud/venue-receiver/requirements.txt
       - name: Test receiver
         run: |
-          python -m pip install --disable-pip-version-check -r cloud/venue-receiver/requirements.txt pytest
+          # Starlette's TestClient imports httpx; keep it as a CI-only dependency
+          # instead of adding the test client to the production receiver image.
+          python -m pip install --disable-pip-version-check -r cloud/venue-receiver/requirements.txt pytest httpx pytest-asyncio
           python -m pytest cloud/venue-receiver/tests -q
           python -m compileall -q cloud/venue-receiver/app deploy/venue-cloud
       - name: Build immutable image bundle
@@ -54,12 +56,14 @@ jobs:
           mkdir -p release-output
           docker save "$image" --output release-output/image.tar
           image_sha="$(sha256sum release-output/image.tar | awk '{print $1}')"
-          python - "$RELEASE_COMMIT" "$image_sha" > release-output/manifest.json <<'PY'
+          nginx_sha="$(sha256sum deploy/venue-cloud/nginx-server-locations.conf | awk '{print $1}')"
+          python - "$RELEASE_COMMIT" "$image_sha" "$nginx_sha" > release-output/manifest.json <<'PY'
           import json, sys
-          commit, image_sha = sys.argv[1:]
-          print(json.dumps({"commit": commit, "image": f"binhu-venue-receiver:{commit}", "image_sha256": image_sha}, separators=(",", ":")))
+          commit, image_sha, nginx_sha = sys.argv[1:]
+          print(json.dumps({"commit": commit, "image": f"binhu-venue-receiver:{commit}", "image_sha256": image_sha, "nginx_locations_sha256": nginx_sha}, separators=(",", ":")))
           PY
-          tar -C release-output -cf release-output/venue-cloud.tar manifest.json image.tar
+          cp deploy/venue-cloud/nginx-server-locations.conf release-output/nginx-server-locations.conf
+          tar -C release-output -cf release-output/venue-cloud.tar manifest.json image.tar nginx-server-locations.conf
       - name: Prepare restricted SSH identity
         shell: bash
         env:

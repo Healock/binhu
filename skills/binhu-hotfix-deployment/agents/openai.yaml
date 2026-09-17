@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Hotfix Deployment"
+  short_description: "Gate authorized backend hotfixes"

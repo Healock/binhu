@@ -17,6 +17,9 @@ from pathlib import Path
 ROOT = Path("/srv/binhu-venue")
 COMPOSE = Path("/etc/binhu-venue/docker-compose.yml")
 STATE = ROOT / "state"
+NGINX_SOURCE = Path("/etc/binhu-venue/nginx-server-locations.conf")
+NGINX_ACTIVE = Path("/www/server/panel/vhost/nginx/binhu-updates.conf")
+NGINX_BACKUPS = STATE / "nginx-backups"
 
 
 def fail(message: str) -> None:
@@ -46,6 +49,52 @@ def wait_for_health() -> None:
     fail("receiver health check failed")
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def apply_nginx_config(unpacked: Path, expected_sha: str) -> Path:
+    source = unpacked / "nginx-server-locations.conf"
+    if not source.is_file() or sha256_file(source) != expected_sha:
+        fail("nginx include hash mismatch")
+    if not NGINX_SOURCE.is_file() or not NGINX_ACTIVE.is_file():
+        fail("required Nginx configuration is missing")
+    backup = NGINX_BACKUPS / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    backup.mkdir(mode=0o700, parents=True, exist_ok=False)
+    shutil.copy2(NGINX_SOURCE, backup / "nginx-server-locations.conf")
+    shutil.copy2(NGINX_ACTIVE, backup / "binhu-updates.conf")
+    try:
+        staged = NGINX_SOURCE.with_name(NGINX_SOURCE.name + ".new")
+        shutil.copy2(source, staged)
+        os.replace(staged, NGINX_SOURCE)
+        text = NGINX_ACTIVE.read_text(encoding="utf-8")
+        include = f"    include {NGINX_SOURCE};"
+        if include not in text:
+            marker = "    location / { return 404; }"
+            if text.count(marker) != 1:
+                fail("existing Nginx server block marker not found exactly once")
+            text = text.replace(marker, f"{include}\n\n{marker}", 1)
+            staged_active = NGINX_ACTIVE.with_name(NGINX_ACTIVE.name + ".new")
+            staged_active.write_text(text, encoding="utf-8")
+            os.chmod(staged_active, NGINX_ACTIVE.stat().st_mode & 0o777)
+            os.replace(staged_active, NGINX_ACTIVE)
+        result = subprocess.run(("nginx", "-t"), capture_output=True, text=True, check=False)
+        if result.returncode:
+            fail("nginx configuration test failed")
+        run("systemctl", "reload", "nginx")
+        return backup
+    except BaseException:
+        shutil.copy2(backup / "nginx-server-locations.conf", NGINX_SOURCE)
+        shutil.copy2(backup / "binhu-updates.conf", NGINX_ACTIVE)
+        subprocess.run(("nginx", "-t"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        subprocess.run(("systemctl", "reload", "nginx"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        raise
+
+
 def publish(commit: str, size: int, expected_sha: str) -> None:
     previous = STATE / "current.json"
     previous_data = json.loads(previous.read_text(encoding="utf-8")) if previous.is_file() else None
@@ -72,7 +121,7 @@ def publish(commit: str, size: int, expected_sha: str) -> None:
         unpacked.mkdir()
         with tarfile.open(bundle, "r:") as archive:
             members = archive.getmembers()
-            if {member.name for member in members} != {"manifest.json", "image.tar"}:
+            if {member.name for member in members} != {"manifest.json", "image.tar", "nginx-server-locations.conf"}:
                 fail("unexpected bundle contents")
             if any(not member.isfile() or Path(member.name).is_absolute() or ".." in Path(member.name).parts for member in members):
                 fail("unsafe bundle member")
@@ -83,15 +132,18 @@ def publish(commit: str, size: int, expected_sha: str) -> None:
         with image.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 image_digest.update(chunk)
-        if manifest != {"commit": commit, "image": f"binhu-venue-receiver:{commit}", "image_sha256": image_digest.hexdigest()}:
+        expected_nginx_sha = manifest.get("nginx_locations_sha256")
+        if manifest != {"commit": commit, "image": f"binhu-venue-receiver:{commit}", "image_sha256": image_digest.hexdigest(), "nginx_locations_sha256": expected_nginx_sha} or not re.fullmatch(r"[0-9a-f]{64}", str(expected_nginx_sha or "")):
             fail("manifest mismatch")
         run("docker", "load", "--input", str(image))
         candidate_env = STATE / f"candidate-{commit}.env"
         candidate_env.write_text(f"BINHU_VENUE_IMAGE_TAG={commit}\n", encoding="ascii")
         current_env = STATE / "current.env"
+        nginx_backup = None
         try:
             compose(candidate_env, "up", "-d", "--remove-orphans")
             wait_for_health()
+            nginx_backup = apply_nginx_config(unpacked, expected_nginx_sha)
         except BaseException:
             try:
                 if previous_data:
@@ -112,7 +164,7 @@ def publish(commit: str, size: int, expected_sha: str) -> None:
         archive_dir = ROOT / "archive" / commit
         archive_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(unpacked / "manifest.json", archive_dir / "manifest.json")
-        print(json.dumps({"status": "published", "commit": commit}))
+        print(json.dumps({"status": "published", "commit": commit, "nginx_config_backup": str(nginx_backup) if nginx_backup else None}))
 
 
 def main() -> None:

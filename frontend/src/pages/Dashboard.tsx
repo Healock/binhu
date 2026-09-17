@@ -15,15 +15,17 @@ import {
 import type { TableColumnsType } from 'antd'
 import { DownloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
 import SummaryReportConfigButton from '../components/SummaryReportConfigButton'
 import { EmptyState, PageHeader, Panel } from '../components/ui'
 import {
   formatDateInTimezone,
+  formatUTCTime,
   getOnlineDataOverview,
   getOnlineDataOverviewDetails,
+  getTxDocsMonitoringOverview,
   getReport,
   getReportRange,
   getReportTypes,
@@ -31,6 +33,7 @@ import {
   type OnlineDataOverview,
   type OnlineOverviewCategory,
   type OnlineOverviewDetailItem,
+  type TxDocsMonitoringOverview,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { exportSummaryWorkbook } from '../utils/summaryXlsx'
@@ -129,6 +132,7 @@ const reportTableSummary = (
 
 export default function Dashboard() {
   const { user, recordActivity, systemTimezone } = useAuth()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const reportColumnMode = user?.report_column_mode || 'three'
   const browserToday = formatDateInTimezone()
@@ -144,6 +148,8 @@ export default function Dashboard() {
   const [overview, setOverview] = useState<OnlineDataOverview | null>(null)
   const [overviewLoading, setOverviewLoading] = useState(false)
   const [overviewError, setOverviewError] = useState('')
+  const [txdocsOverview, setTxdocsOverview] = useState<TxDocsMonitoringOverview | null>(null)
+  const [txdocsOverviewError, setTxdocsOverviewError] = useState('')
   const [msg, setMsg] = useState('')
   const [visibleInspectorRows, setVisibleInspectorRows] = useState<Record<string, any>[]>([])
   const [visibleCommunityRows, setVisibleCommunityRows] = useState<Record<string, any>[]>([])
@@ -167,14 +173,16 @@ export default function Dashboard() {
     if (startDate > endDate) return
     setOverviewLoading(true)
     setOverviewError('')
+    setTxdocsOverviewError('')
     try {
       // 同一天走单日查询（查日报表，工作量口径）；不同天走区间查询（查快照存量）
       const reportRequest = startDate === endDate
         ? getReport(startDate, reportType, reportColumnMode, { scope: responsibilityScope, community: requestedCommunity || undefined })
         : getReportRange(startDate, endDate, reportType, reportColumnMode, { scope: responsibilityScope, community: requestedCommunity || undefined })
-      const [reportResult, overviewResult] = await Promise.allSettled([
+      const [reportResult, overviewResult, txdocsResult] = await Promise.allSettled([
         reportRequest,
         getOnlineDataOverview(startDate, endDate, reportType, { scope: responsibilityScope, community: requestedCommunity || undefined }),
+        getTxDocsMonitoringOverview(startDate, endDate, reportType, { scope: responsibilityScope, community: requestedCommunity || undefined }),
       ])
       if (reportResult.status === 'rejected') {
         throw reportResult.reason
@@ -188,6 +196,12 @@ export default function Dashboard() {
         setOverview(null)
         setOverviewError('数据概览读取失败，汇总表仍可正常查看')
       }
+      if (txdocsResult.status === 'fulfilled') {
+        setTxdocsOverview(txdocsResult.value)
+      } else {
+        setTxdocsOverview(null)
+        setTxdocsOverviewError('腾讯表只读监控汇总读取失败；平台本地统计不受影响')
+      }
     } catch (e: any) {
       const status = e?.response?.status
       const detail = e?.response?.data?.detail || e?.message
@@ -195,6 +209,8 @@ export default function Dashboard() {
       setReport({ exists: false })
       setOverview(null)
       setOverviewError('数据概览读取失败，请稍后重试')
+      setTxdocsOverview(null)
+      setTxdocsOverviewError('腾讯表只读监控汇总读取失败；平台本地统计不受影响')
     } finally {
       setOverviewLoading(false)
     }
@@ -445,6 +461,40 @@ export default function Dashboard() {
               { key: 'completed', title: '已完成', value: overview?.completed_tasks || 0, suffix: '条', help: `完成率 ${((overview?.completion_rate || 0) * 100).toFixed(1)}%；点击查看明细`, valueStyle: { color: '#047857' }, onClick: () => void loadOverviewDetails('completed') },
             ]}
           />
+        </Panel>
+      )}
+
+      {isImplemented && (txdocsOverview?.enabled || txdocsOverviewError || user?.role === 'super_admin') && (
+        <Panel
+          title="外部腾讯表监控"
+          description="独立只读统计；不导入平台任务，不参与核查完成率，也不向腾讯表回写"
+          extra={user?.role === 'super_admin' ? <Button size="small" onClick={() => navigate('/settings/txdocs-monitor')}>配置外部监控</Button> : undefined}
+        >
+          <div className="grid gap-3">
+            {(txdocsOverviewError || (txdocsOverview && txdocsOverview.status !== 'healthy')) && (
+              <Alert
+                type={txdocsOverview?.status === 'error' ? 'warning' : 'info'}
+                showIcon
+                message={txdocsOverviewError || txdocsOverview?.message}
+              />
+            )}
+            {txdocsOverview && (
+              <DataOverview
+                loading={overviewLoading}
+                rangeTitle="外部数据截至"
+                rangeValue={txdocsOverview.last_success_at
+                  ? formatUTCTime(txdocsOverview.last_success_at, systemTimezone)
+                  : '尚未建立成功快照'}
+                rangeDescription={`${startDate} 至 ${endDate} 共完成 ${txdocsOverview.successful_reads} 次有效读取；首轮只建立基线`}
+                metrics={[
+                  { key: 'txdocs-current', title: '当前外部行数', value: txdocsOverview.current_rows, suffix: '条', help: '最近一次成功读取中的外部行数，仅作监控统计' },
+                  { key: 'txdocs-added', title: '外部新增', value: txdocsOverview.added_rows, suffix: '次', help: '所选日期内，各轮读取相对上一成功快照累计的新出现次数' },
+                  { key: 'txdocs-changed', title: '外部内容变化', value: txdocsOverview.changed_rows, suffix: '次', help: '所选日期内业务键不变但内容改变的累计次数；单纯排序不计变化' },
+                  { key: 'txdocs-removed', title: '外部移除', value: txdocsOverview.removed_rows, suffix: '次', help: '所选日期内，各轮读取相对上一成功快照累计的不再出现次数' },
+                ]}
+              />
+            )}
+          </div>
         </Panel>
       )}
 
