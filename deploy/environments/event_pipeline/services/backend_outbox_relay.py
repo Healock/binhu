@@ -52,10 +52,17 @@ class BackendOutboxRelay:
                         f"SELECT event_id,schema_version,domain,event_type,aggregate_type,aggregate_id,"
                         f"aggregate_revision,audiences_json,status,attempt_count,available_at,locked_by,"
                         f"locked_until,last_error_code,last_error_summary,occurred_at,published_at FROM `{OUTBOX}` "
-                        "WHERE (status IN ('pending','retry') AND available_at<=UTC_TIMESTAMP()) "
-                        "OR (status='publishing' AND locked_until<UTC_TIMESTAMP()) "
+                        "WHERE status IN ('pending','retry') AND available_at<=UTC_TIMESTAMP() "
                         "ORDER BY occurred_at,event_id LIMIT %s FOR UPDATE SKIP LOCKED", (BATCH_SIZE,))
                     rows = await cur.fetchall()
+                    if not rows:
+                        await cur.execute(
+                            f"SELECT event_id,schema_version,domain,event_type,aggregate_type,aggregate_id,"
+                            f"aggregate_revision,audiences_json,status,attempt_count,available_at,locked_by,"
+                            f"locked_until,last_error_code,last_error_summary,occurred_at,published_at FROM `{OUTBOX}` "
+                            "WHERE status='publishing' AND locked_until<UTC_TIMESTAMP() "
+                            "ORDER BY occurred_at,event_id LIMIT %s FOR UPDATE SKIP LOCKED", (BATCH_SIZE,))
+                        rows = await cur.fetchall()
                     if rows:
                         ids = [row[0] for row in rows]
                         marks = ",".join(["%s"] * len(ids))
