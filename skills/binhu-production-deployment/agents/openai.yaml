@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Production Deployment"
+  short_description: "Gate authorized production deploys"

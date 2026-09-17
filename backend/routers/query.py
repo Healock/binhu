@@ -1145,6 +1145,11 @@ async def _update_local_source_fields_once(
             str(new_key),
             str((user.get("member") or {}).get("name") or ""),
         )
+        # Read the post-write version while this transaction still owns the
+        # authoritative row.  A concurrent commit after this point will be
+        # observed by the next heartbeat rather than accidentally folded into
+        # this save acknowledgement.
+        data_version = await _source_data_version(cur, parser_type)
         await conn.commit()
         launch_online_summary_update_processing()
         # These secondary platform ledgers use separate database domains.  A
@@ -1191,12 +1196,17 @@ async def _update_local_source_fields_once(
         return {
             "message": "已保存到本地业务数据",
             "values": after,
+            "changed_values": {
+                column: after[column]
+                for column in ordered_columns
+            },
             "row_key": new_key,
             "row_hash": local_row_hash(after),
             "revision": locked_revision + 1,
             "operation_id": operation_id,
             "derived_status": "queued",
             "pending_sync": False,
+            "data_version": data_version,
             "warnings": warnings,
             "inspector_mismatch": bool(warnings),
         }
@@ -1534,6 +1544,10 @@ async def update_source_fields(
     return {
         "message": "已保存，滨湖平台数据已同步更新并写回腾讯表格",
         "values": verified_values,
+        "changed_values": {
+            column: verified_values[column]
+            for column in ordered_columns
+        },
         "row_key": new_key,
         "revision": revision,
         "pending_sync": True,

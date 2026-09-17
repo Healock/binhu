@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Test Fixture Safety"
+  short_description: "Create safe synthetic fixtures"
