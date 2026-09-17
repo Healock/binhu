@@ -50,14 +50,24 @@ jobs:
           printf '%s\n' "$DEV_KEY" > "$RUNNER_TEMP/dev-ssh/key"
           printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
+          cleanup_done=0
           cleanup() {
+            local reason="${1:-EXIT}"
+            (( cleanup_done == 0 )) || return 0
+            cleanup_done=1
             # A cancelled runner must not leave the run-scoped Dev relay
-            # publishing after the acceptance job has ended. The gateway is
-            # restricted to this Dev Compose project and never deletes data.
-            ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
-              "binhu-dev-deploy@$DEV_HOST" "stop $RUN_ID" >/dev/null 2>&1 || true
+            # publishing after the acceptance job has ended. On a normal
+            # success or ordinary failure the relay remains available for the
+            # next cumulative scale; only INT/TERM invokes the fixed stop.
+            if [[ "$reason" != EXIT ]]; then
+              ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
+                "binhu-dev-deploy@$DEV_HOST" "stop $RUN_ID" >/dev/null 2>&1 || true
+            fi
             rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
           }
-          trap cleanup EXIT INT TERM
+          trap 'cleanup INT; exit 130' INT
+          trap 'cleanup TERM; exit 143' TERM
+          trap 'cleanup EXIT' EXIT
           ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
             "binhu-dev-deploy@$DEV_HOST" "accept $RUN_ID $SCALE"
+# Keep successful cumulative acceptance runs alive for the next scale.
