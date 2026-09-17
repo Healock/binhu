@@ -3,12 +3,14 @@ import { Alert, Button, DatePicker, Form, Input, Modal, Popconfirm, Select, Spac
 import { DeleteOutlined, DownloadOutlined, EyeOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   apiErrorMessage,
+  formatUTCTime,
   createVenueCode,
   deleteVenueCode,
   deleteVenueVisit,
   exportVenueVisitsZip,
   getVenueVisitPhotoUrl,
   getVenueCloudStatus,
+  pullVenueCloudNow,
   getVenueCodeQr,
   listVenueCodes,
   listVenueVisits,
@@ -56,8 +58,8 @@ function cloudState(row: VenueCodeItem) {
   return <Tag>仅本地</Tag>
 }
 
-function formatTime(value: string | null | undefined) {
-  return value ? new Date(value).toLocaleString() : '尚无'
+function formatTime(value: string | null | undefined, timezone = 'Asia/Shanghai') {
+  return value ? formatUTCTime(value, timezone) : '尚无'
 }
 
 function SignaturePreview({ strokes }: { strokes: unknown }) {
@@ -70,13 +72,13 @@ function SignaturePreview({ strokes }: { strokes: unknown }) {
   return <svg viewBox="0 0 240 90" role="img" aria-label="手写签名" className="h-24 w-60 border border-dashed border-slate-300 bg-white">{paths}</svg>
 }
 
-function DrinkingReportDetail({ detail, onExport }: { detail: DrinkingReport & { notes: string; reporter_signature: unknown[]; leader_signature: unknown[] }; onExport: () => Promise<void> }) {
-  const fields: Array<[string, string]> = [['姓名', detail.name], ['单位职务', detail.unit_position], ['饮酒时间', formatTime(detail.drinking_at)], ['饮酒地点', detail.drinking_place], ['饮酒事由', detail.reason], ['邀约人', detail.inviter], ['出行方式', detail.travel_method], ['责任领导姓名', detail.responsible_leader_name], ['备注说明', detail.notes], ['服务器收到时间', formatTime(detail.submitted_at)]]
+function DrinkingReportDetail({ detail, timezone, onExport }: { detail: DrinkingReport & { notes: string; reporter_signature: unknown[]; leader_signature: unknown[] }; timezone: string; onExport: () => Promise<void> }) {
+  const fields: Array<[string, string]> = [['姓名', detail.name], ['单位职务', detail.unit_position], ['饮酒时间', formatTime(detail.drinking_at, timezone)], ['饮酒地点', detail.drinking_place], ['饮酒事由', detail.reason], ['邀约人', detail.inviter], ['出行方式', detail.travel_method], ['责任领导姓名', detail.responsible_leader_name], ['备注说明', detail.notes], ['服务器收到时间', formatTime(detail.submitted_at, timezone)]]
   return <div className="grid gap-3"><div className="grid gap-2">{fields.map(([label, value]) => <div key={label}><b>{label}</b>：{value || '—'}</div>)}</div><div className="grid grid-cols-2 gap-3"><div><div className="mb-1">报备人签名</div><SignaturePreview strokes={detail.reporter_signature} /></div><div><div className="mb-1">责任领导签名</div><SignaturePreview strokes={detail.leader_signature} /></div></div><Button onClick={() => void onExport()}>导出 A4 PDF</Button></div>
 }
 
 export default function VenueCodeManagement() {
-  const { user } = useAuth()
+  const { user, systemTimezone } = useAuth()
   const canManage = Boolean(user?.permissions.includes('venue.manage'))
   const canExport = Boolean(user?.permissions.includes('venue.export'))
   const [venues, setVenues] = useState<VenueCodeItem[]>([])
@@ -88,20 +90,22 @@ export default function VenueCodeManagement() {
   const [loading, setLoading] = useState(false)
   const [qrLoadingId, setQrLoadingId] = useState<number | null>(null)
   const [error, setError] = useState('')
-  const [visitFilters, setVisitFilters] = useState<{ keyword?: string; start?: string; end?: string }>({})
+  const [visitFilters, setVisitFilters] = useState<{ venue_id?: number; keyword?: string; start?: string; end?: string }>({})
   const [drinkingForm, setDrinkingForm] = useState<DrinkingFormCode | null>(null)
   const [drinkingReports, setDrinkingReports] = useState<DrinkingReport[]>([])
+  const [pullingCloud, setPullingCloud] = useState(false)
+  const [drinkingFilters, setDrinkingFilters] = useState<{ keyword?: string; start?: string; end?: string }>({})
 
-  const load = async () => {
+  const load = async (queries = { visits: visitFilters, drinking: drinkingFilters }) => {
     setLoading(true)
     setError('')
     try {
       const [venueResult, visitResult, cloudResult, drinkingResult, drinkingList] = await Promise.all([
         listVenueCodes(),
-        listVenueVisits(),
+        listVenueVisits(queries.visits),
         getVenueCloudStatus(),
         getDrinkingFormCode(),
-        listDrinkingReports(),
+        listDrinkingReports(queries.drinking),
       ])
       setVenues(venueResult.data)
       setVisits(visitResult.data)
@@ -144,8 +148,8 @@ export default function VenueCodeManagement() {
       await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.zip`)
     } catch (reason: unknown) { message.error(apiErrorMessage(reason, '压缩包导出失败')) }
   }
-  const searchVisits = async (values: { keyword?: string; range?: [any, any] }) => {
-    const filters = { keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
+  const searchVisits = async (values: { venue_id?: number; keyword?: string; range?: [any, any] }) => {
+    const filters = { venue_id: values.venue_id || undefined, keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
     setVisitFilters(filters)
     try { const result = await listVenueVisits(filters); setVisits(result.data) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '登记查询失败')) }
   }
@@ -271,7 +275,7 @@ export default function VenueCodeManagement() {
           showIcon
           message={cloud.enabled ? '场所码云端链路' : '场所码云端链路未启用'}
           description={cloud.enabled
-            ? `待同步 ${cloud.outbox_pending} 项，失败 ${cloud.outbox_failed} 项，待人工对账 ${cloud.uncertain_count} 项；最近成功：${formatTime(cloud.last_success_at)}`
+            ? `待同步 ${cloud.outbox_pending} 项，失败 ${cloud.outbox_failed} 项，待人工对账 ${cloud.uncertain_count} 项；最近拉取 ${cloud.last_pull_count} 条（入库 ${cloud.last_pull_accepted}、拒绝 ${cloud.last_pull_rejected}、稍后重试 ${cloud.last_pull_retry_later}、不确定 ${cloud.last_pull_uncertain}）；最近成功：${formatTime(cloud.last_success_at, systemTimezone)}`
             : '当前仍使用本地场所码入口。生产切换前应保持此状态，完成影子验收后再逐项启用开关。'}
         />
       )}
@@ -289,6 +293,7 @@ export default function VenueCodeManagement() {
       <Panel title="最近登记记录" padded={false}>
         <div className="p-4 flex flex-wrap items-center gap-3">
           <Form layout="inline" onFinish={searchVisits}>
+            <Form.Item name="venue_id" label="场所"><Select allowClear placeholder="全部场所" style={{ width: 180 }} options={venues.filter(item => item.status !== 'deleted').map(item => ({ label: item.name, value: item.id }))} /></Form.Item>
             <Form.Item name="keyword"><Input allowClear placeholder="姓名、身份证号、手机号、地址" style={{ width: 260 }} /></Form.Item>
             <Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item>
             <Button type="primary" htmlType="submit">查询</Button>
@@ -364,8 +369,8 @@ export default function VenueCodeManagement() {
           </div>
         </Panel>
         <Panel title="饮酒报备记录" padded={false}>
-          <div className="p-4 flex flex-wrap items-center gap-3"><Form layout="inline" onFinish={async values => { const result = await listDrinkingReports({ keyword: values.keyword, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }); setDrinkingReports(result.data) }}><Form.Item name="keyword"><Input allowClear placeholder="姓名、单位、地点、事由、责任领导" style={{ width: 280 }} /></Form.Item><Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item><Button type="primary" htmlType="submit">查询</Button></Form></div>
-          <Table rowKey="id" dataSource={drinkingReports} scroll={{ x: 1100 }} columns={[{ title: '姓名', dataIndex: 'name' }, { title: '单位职务', dataIndex: 'unit_position' }, { title: '饮酒时间', dataIndex: 'drinking_at', render: formatTime }, { title: '饮酒地点', dataIndex: 'drinking_place' }, { title: '邀约人', dataIndex: 'inviter' }, { title: '责任领导', dataIndex: 'responsible_leader_name' }, { title: '操作', render: (_: unknown, row: DrinkingReport) => <Button type="link" onClick={async () => { try { const detail = await getDrinkingReport(row.id); Modal.info({ title: '饮酒报备详情', width: 760, content: <DrinkingReportDetail detail={detail} onExport={async () => { const blob = await exportDrinkingReportPdf(row.id); await downloadBlob(blob, `饮酒报备单-${row.name}.pdf`) }} /> }) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '详情读取失败')) } }}>查看详情</Button> }]} />
+          <div className="p-4 flex flex-wrap items-center gap-3"><Form layout="inline" onFinish={async values => { const filters = { keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }; setDrinkingFilters(filters); try { const result = await listDrinkingReports(filters); setDrinkingReports(result.data) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '饮酒报备查询失败')) } }}><Form.Item name="keyword"><Input allowClear placeholder="姓名、单位、地点、事由、责任领导" style={{ width: 280 }} /></Form.Item><Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item><Button type="primary" htmlType="submit">查询</Button></Form><Button icon={<ReloadOutlined />} loading={pullingCloud} onClick={async () => { setPullingCloud(true); try { const result = await pullVenueCloudNow(); if (result.accepted > 0) message.success(`已拉取 ${result.accepted} 条饮酒报备并入库`); else if (result.rejected > 0) message.warning(`云端有 ${result.rejected} 条登记被本地校验拒绝，请检查云端状态`); else if (result.retry_later > 0) message.warning(`云端有 ${result.retry_later} 条登记暂时未入库，将自动重试${result.reason_codes?.length ? `（${result.reason_codes.join('、')}）` : ''}`); else if (result.uncertain > 0) message.warning(`有 ${result.uncertain} 条登记处于不确定状态，请人工对账`); else message.info('当前没有可处理的云端登记'); await load() } catch (reason: unknown) { message.error(apiErrorMessage(reason, '云端拉取失败')) } finally { setPullingCloud(false) } }}>刷新</Button></div>
+          <Table rowKey="id" dataSource={drinkingReports} scroll={{ x: 1100 }} columns={[{ title: '姓名', dataIndex: 'name' }, { title: '单位职务', dataIndex: 'unit_position' }, { title: '饮酒时间', dataIndex: 'drinking_at', render: (value: string | null) => formatTime(value, systemTimezone) }, { title: '饮酒地点', dataIndex: 'drinking_place' }, { title: '邀约人', dataIndex: 'inviter' }, { title: '责任领导', dataIndex: 'responsible_leader_name' }, { title: '操作', render: (_: unknown, row: DrinkingReport) => <Button type="link" onClick={async () => { try { const detail = await getDrinkingReport(row.id); Modal.info({ title: '饮酒报备详情', width: 760, content: <DrinkingReportDetail detail={detail} timezone={systemTimezone} onExport={async () => { const blob = await exportDrinkingReportPdf(row.id); await downloadBlob(blob, `饮酒报备单-${row.name}.pdf`) }} /> }) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '详情读取失败')) } }}>查看详情</Button> }]} />
         </Panel>
       </> }]}/>
       <Modal title={editing ? '编辑场所' : '新增场所'} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={save}>

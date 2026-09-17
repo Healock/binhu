@@ -180,3 +180,93 @@ Dev relay 串行执行 claim、Kafka ACK、finish 和逐条日志，实测吞吐
 当前结果不表示连续 7 天/100000 条门禁、完整 Dev 第 6–11 项、checkpoint/savepoint
 恢复或 Staging 晋级已经通过。旧 savepoint 的 operator ID 兼容恢复仍失败，当前继续
 采用已记录的干净状态重建，不使用 `allowNonRestoredState`。
+
+## 2026-09-17：monitor22 低并发锁竞争修复
+
+`dev-20260916-dualtrack-monitor22` 的 1002 条验收在 relay claim 阶段触发真实 MySQL
+1213 死锁。冲突对象为 `_kafka_event_delivery`，事务使用 `SELECT ... FOR UPDATE
+SKIP LOCKED`；当时 relay 并发为 8，首批只有 7 条投递成功，relay 退出，剩余事件未
+进入 Kafka。已处理的 7 条事件中 Python/Flink 的 revision、投影和计数完全一致，因而
+本次失败归因于 relay 抢锁，而不是双轨计算语义差异。失败证据保留在：
+`/data/docker/volumes/binhu-development-pipeline_evidence/_data/dev-20260916-dualtrack-monitor22/`。
+
+修补合同固定为：relay 并发先降至 2、派生库连接池为 4；claim 和 finish 都把完整
+事务作为重试单元，1213/1205 最多 4 次尝试，使用指数退避和随机抖动，超过上限进入
+暂停状态并写入不含 SQL 参数、事件 ID 或业务正文的安全诊断；连接初始化使用
+`READ COMMITTED`，不增大锁等待超时。每个 worker 保持独立 store 和重试上下文；一个
+worker 暂停时等待其他 worker 收尾，再关闭 producer 和连接池，不能由单个异常取消
+全部 worker。幂等 event ID、lease token 和 revision fence 保持不变。
+
+下一轮必须使用全新的 `dev-20260917-dualtrack-monitor23`，从 1002 重新验收；只有
+1002 零未归因差异后才进入 10000，随后才允许 100000。后续若 Dev relay 再次出现已
+有幂等保护的瞬时锁竞争，可按同一边界降并发并新建运行编号；Production、Staging、
+Shadow、数据一致性和安全边界仍是独立停止条件。
+
+monitor23 的首轮证据必须同时记录 claim 重试次数与最终 relay 状态，避免把“已暂停”误判为规模通过。
+
+## 2026-09-17：monitor23 10000 运行时失败归因
+
+`dev-20260917-dualtrack-monitor23` 的 1002 条验收已通过：两边投影、revision、唯一
+事件和未归因差异均为 1002/0。随后 10000 条验收失败，但不是锁重试耗尽或双轨差异。
+服务器私有证据显示 relay 持续发布到两个 worker 各 5000 条；失败组件是常驻
+`dual-track-monitor`，其容器反复因
+`ImportError: cannot import name LockContentionExhausted` 退出。
+
+根因是候选只把新的 `runtime.py` 挂载进 monitor 容器，而 monitor 继续使用旧镜像内的
+`kafka_delivery_store.py`。`runtime.py` 顶层导入 relay 专用的新异常类，导致 monitor
+在比较前无法启动。该失败目录和 `scale-10000` 报告保留不覆盖。修补方案是把该异常
+改为 relay worker 内的延迟导入，使 monitor 启动不依赖 relay 新模块；下一轮使用
+全新的 `dev-20260917-dualtrack-monitor24` 从 1002、10000、100000 重新验收。
+
+monitor24 的部署摘要必须同时记录候选 runtime 与 monitor 所使用模块的兼容性检查结果。
+
+## 2026-09-17：monitor24 高量级收敛窗口归因
+
+`dev-20260917-dualtrack-monitor24` 已验证 monitor 模块兼容修复：1002 条验收中投递、
+Python/Flink 投影、revision sink 和两边唯一事件均为 1002，差异计数为 0。10000 条
+验收在旧 900 秒收敛窗口结束时只完成 4139 条发布，报告中的 3 条 projection 和 3 条
+revision 差异来自 Flink 比 relay/Python 暂时落后，并非最终结果。验收结束后同一运行
+编号继续收敛到投递、Python、Flink 和 revision 全部 10000，未发现 relay 退出、锁重试
+耗尽或 Flink checkpoint 失败。
+
+根因是固定验收窗口小于低并发 Dev relay 的实际高量级收敛时间，且旧报告把尚未完成的
+计数缺口错误归入 `unattributed_difference_count`。验收合同现将“处理中”单独记录为
+`convergence_pending_count`；只有全部计数达到目标后才判定投影或 revision 差异。
+10000 和 100000 的等待窗口同时扩展，以覆盖受控低并发吞吐，仍保留固定上限，不无限
+等待。monitor24 的失败目录保留不覆盖；修补部署必须使用新的运行编号，从 1002 重新
+逐级验收。
+
+验收器改动随 PR #704 提交，必须在主线 CI 通过后再部署。
+
+## 2026-09-17：monitor25 逐级验收
+
+由于 monitor24 的 10000 条失败证据必须保留，修补后使用新的运行编号
+`dev-20260917-dualtrack-monitor25`。候选来自主线提交
+`20ee8da047eaf3c2029e8141c303d8d665a38121`，固定网关更新 workflow 为
+`35139743077`，候选部署 workflow 为 `35139922419`。
+
+1002 条 workflow `35140088127` 已通过：delivery、Python/Flink projection、revision
+和 unique event 均为 1002，`convergence_pending_count=0`，所有 mismatch 与未归因差异为 0。
+10000 条 workflow `35140410050` 已通过：上述五类计数均为 10000，
+`convergence_pending_count=0`、`projection_mismatch_count=0`、
+`revision_mismatch_count=0`、`unattributed_difference_count=0`。两次证据均写入
+monitor25 私有目录，未覆盖 monitor23/24。
+
+100000 条 workflow `35142991989` 已启动，当前仍在运行；只有该级别完成且零未归因差异，
+才可进入连续 7 天双轨计时和 Staging 晋级评估。
+
+## 2026-09-17：monitor25 100000 入队故障诊断
+
+`35142991989` 在入队阶段失败，安全分类为
+`acceptance_failure_type=InterfaceError acceptance_failure_stage=enqueue`。私有证据目录
+保留在服务器上的 `dev-20260917-dualtrack-monitor25` 下，未覆盖此前的 monitor23、
+monitor24 或 monitor25 的 1002/10000 证据。失败时派生 MySQL 容器发生 cgroup OOM：
+内核记录 `mysqld` 被 OOM killer 终止，容器以 137 退出后重新启动；relay 和 bridge
+随后因数据库连接中断退出。Kafka、Flink、Schema Registry 没有运行时异常，失败不是双轨
+结果差异。
+
+重启前该运行编号已经提交了部分 100000 入队事务，数据库中保留了部分 pending/published
+记录，因此该运行编号被标记为失败并永久停用，不能继续复用。修复仅限 Dev Compose 资源
+门禁：派生 MySQL 的内存上限从 512 MiB 调整为 768 MiB，并显式设置 1536 MiB 的内存加
+交换上限；生产、Staging、Shadow 和数据卷未修改。修复完成后必须使用新的运行编号，从
+1002 → 10000 → 100000 重新验收。

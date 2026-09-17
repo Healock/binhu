@@ -27,7 +27,9 @@ concurrency:
 jobs:
   accept:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Keep the runner alive for the full high-volume convergence window.
+    # The fixed gateway still enforces the per-scale deadline.
+    timeout-minutes: 360
     environment: development
     steps:
       - name: Run fixed Dev scale acceptance

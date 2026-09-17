@@ -13,13 +13,22 @@ from .services.kafka_delivery_store import MySQLDeliveryStore
 from .services.kafka_relay import KafkaRelay
 from .services.derived_revision_cache import RevisionCache
 
-DEV_RELAY_CONCURRENCY = 8
-DEV_RELAY_DB_CONNECTIONS = 10
+DEV_RELAY_CONCURRENCY = 2
+DEV_RELAY_DB_CONNECTIONS = 4
 
 _SAFE_RUNTIME_DETAIL = re.compile(
     r"^runtime_failure_type=[A-Za-z][A-Za-z0-9_]{0,63} "
     r"runtime_failure_stage=[a-z_]{1,64}$"
 )
+
+
+class RelayPaused(RuntimeError):
+    def __init__(self):
+        super().__init__("relay_paused_after_lock_contention")
+        self.safe_detail = (
+            "runtime_failure_type=RelayPaused "
+            "runtime_failure_stage=relay_lock_contention"
+        )
 
 
 def runtime_error_message(error: BaseException) -> str:
@@ -55,13 +64,19 @@ def configuration(environ=None):
             "BACKEND_REDIS_START_ID": env.get("BACKEND_REDIS_START_ID", "$")}
 
 
-async def connect(config, *, maxsize=2):
+def database_init_command(mode):
+    if mode == "relay":
+        return "SET SESSION time_zone='+00:00', SESSION transaction_isolation='READ-COMMITTED'"
+    return "SET time_zone='+00:00'"
+
+
+async def connect(config, *, maxsize=2, init_command="SET time_zone='+00:00'"):
     import aiomysql
     pool = await aiomysql.create_pool(
         host=config["MYSQL_HOST"], port=3306, user=config["MYSQL_USER"],
         password=config["MYSQL_PASSWORD"], db=config["MYSQL_DATABASE"],
         minsize=1, maxsize=maxsize, connect_timeout=5, autocommit=True,
-        charset="utf8mb4", init_command="SET time_zone='+00:00'",
+        charset="utf8mb4", init_command=init_command,
     )
     try:
         async with pool.acquire() as conn:
@@ -117,11 +132,49 @@ async def relay_step(worker, worker_slot, published):
     return published, .5 if state == "idle" else 0
 
 
-async def relay_worker(worker, worker_slot):
+async def relay_worker(worker, worker_slot, stop_event):
+    # The monitor image may provide an older delivery-store module; keep this
+    # relay-only exception out of runtime module import so monitor can start.
+    from .services.kafka_delivery_store import LockContentionExhausted
+
     published = 0
-    while True:
-        published, delay = await relay_step(worker, worker_slot, published)
+    while not stop_event.is_set():
+        try:
+            published, delay = await relay_step(worker, worker_slot, published)
+        except LockContentionExhausted as error:
+            print(json.dumps({
+                "component": "dev-relay",
+                "state": "lock_contention_exhausted",
+                "stage": error.operation,
+                "mysql_error_code": error.mysql_error_code,
+                "lock_retry_attempt": error.attempt_limit,
+                "lock_retry_limit": error.attempt_limit,
+                "worker_concurrency": DEV_RELAY_CONCURRENCY,
+                "transaction_isolation": "READ-COMMITTED",
+                "operation": error.operation,
+                "result": "paused",
+                "worker_slot": worker_slot,
+            }), flush=True)
+            stop_event.set()
+            return "paused"
+        except Exception:
+            stop_event.set()
+            raise
         await asyncio.sleep(delay)
+    return "stopped"
+
+
+async def run_relay_workers(workers):
+    stop_event = asyncio.Event()
+    results = await asyncio.gather(*(
+        relay_worker(worker, slot, stop_event)
+        for slot, worker in enumerate(workers, start=1)
+    ), return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            raise result
+    if "paused" in results:
+        raise RelayPaused()
 
 
 async def relay(config, pool):
@@ -133,9 +186,7 @@ async def relay(config, pool):
     try:
         await asyncio.wait_for(producer.start(), 30)
         workers = build_relay_workers(pool, producer, config["DEV_RUN_ID"])
-        await asyncio.gather(*(
-            relay_worker(worker, slot) for slot, worker in enumerate(workers, start=1)
-        ))
+        await run_relay_workers(workers)
     finally:
         await asyncio.wait_for(producer.stop(), 30)
 
@@ -276,6 +327,7 @@ async def main(mode):
     pool = await connect(
         config,
         maxsize=database_pool_size(mode),
+        init_command=database_init_command(mode),
     )
     try:
         if mode == "relay":

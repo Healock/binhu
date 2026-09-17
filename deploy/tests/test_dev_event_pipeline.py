@@ -20,6 +20,7 @@ from deploy.environments.event_pipeline.services.kafka_envelope import delivery_
 from deploy.environments.event_pipeline.services.kafka_event_contract import validate_event, EventContractError
 from deploy.environments.event_pipeline.services.kafka_relay import KafkaRelay, Delivery
 from deploy.environments.event_pipeline.services.kafka_delivery_store import MySQLDeliveryStore
+from deploy.environments.event_pipeline.services import kafka_delivery_store
 from deploy.environments.event_pipeline.services.derived_revision_cache import RevisionCache, CacheContractError
 from deploy.environments.event_pipeline import schema_registry
 from deploy.environments.event_pipeline import registry_runtime
@@ -790,6 +791,29 @@ volumes:
             with self.subTest(scale=scale), self.assertRaises(ValueError):
                 module.validate_scale(scale)
 
+    def test_scale_acceptance_allows_high_volume_pipeline_to_converge(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        spec = importlib.util.spec_from_file_location("scale_acceptance_convergence", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertGreaterEqual(module.TIMEOUTS[10_000], 1_800)
+        self.assertGreaterEqual(module.TIMEOUTS[100_000], 10_800)
+
+    def test_scale_acceptance_does_not_call_inflight_lag_a_difference(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        spec = importlib.util.spec_from_file_location("scale_acceptance_outcome", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        outcome = module.acceptance_outcome(
+            scale=10_000,
+            counts=(4_139, 10_000, 4_139, 4_139, 4_136, 4_136, 4_139),
+            projection_mismatches=3,
+            revision_mismatches=3,
+        )
+        self.assertFalse(outcome["complete"])
+        self.assertEqual(outcome["convergence_pending_count"], 5_861)
+        self.assertEqual(outcome["unattributed_difference_count"], 0)
+
     def test_scale_acceptance_sources_are_bound_into_candidate_hashes(self):
         self.assertIn("scale_acceptance.py", event_prepare.PUBLIC_CANDIDATE_FILES)
         source = Path(event_prepare.__file__).read_text(encoding="utf-8")
@@ -880,6 +904,8 @@ volumes:
             self.assertIn("cpus", service)
         self.assertFalse(any(v.get("external") for v in spec["volumes"].values()))
         self.assertIn("max:1024M", " ".join(spec["services"]["dev-derived-mysql"]["command"]))
+        self.assertEqual(spec["services"]["dev-derived-mysql"]["mem_limit"], "768m")
+        self.assertEqual(spec["services"]["dev-derived-mysql"]["memswap_limit"], "1536m")
         self.assertEqual(spec["services"]["relay"]["depends_on"]["dev-derived-mysql"]["condition"], "service_healthy")
         self.assertIn("-h127.0.0.1", spec["services"]["dev-derived-mysql"]["healthcheck"]["test"])
         with self.assertRaises(ValueError):
@@ -903,8 +929,155 @@ volumes:
 
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
+    def test_monitor_runtime_does_not_require_relay_only_exception_at_import(self):
+        source = Path(event_runtime.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "from .services.kafka_delivery_store import MySQLDeliveryStore",
+            source,
+        )
+        self.assertIn(
+            "from .services.kafka_delivery_store import LockContentionExhausted",
+            source,
+        )
+        self.assertNotIn(
+            "from .services.kafka_delivery_store import LockContentionExhausted, MySQLDeliveryStore",
+            source,
+        )
+
+    async def test_lock_contention_retries_the_complete_transaction(self):
+        class OperationalError(Exception):
+            pass
+
+        class Connection:
+            def __init__(self):
+                self.begin = AsyncMock()
+                self.commit = AsyncMock()
+                self.rollback = AsyncMock()
+
+        class Pool:
+            def __init__(self, connections):
+                self.connections = list(connections)
+                self.release = unittest.mock.Mock()
+
+            async def acquire(self):
+                return self.connections.pop(0)
+
+        first, second = Connection(), Connection()
+        store = MySQLDeliveryStore(Pool([first, second]), run_id="dev-test-1")
+        transaction = AsyncMock(side_effect=[OperationalError(1213, "sensitive"), "ok"])
+
+        with patch.object(kafka_delivery_store.asyncio, "sleep", new=AsyncMock()) as sleep:
+            result = await store._run_transaction("claim", transaction)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(transaction.await_count, 2)
+        first.begin.assert_awaited_once()
+        first.rollback.assert_awaited_once()
+        first.commit.assert_not_awaited()
+        second.begin.assert_awaited_once()
+        second.commit.assert_awaited_once()
+        second.rollback.assert_not_awaited()
+        sleep.assert_awaited_once()
+
+    async def test_lock_contention_retry_is_bounded_and_safe(self):
+        class OperationalError(Exception):
+            pass
+
+        class Connection:
+            def __init__(self):
+                self.begin = AsyncMock()
+                self.commit = AsyncMock()
+                self.rollback = AsyncMock()
+
+        class Pool:
+            def __init__(self):
+                self.connections = [Connection() for _ in range(4)]
+                self.release = unittest.mock.Mock()
+
+            async def acquire(self):
+                return self.connections.pop(0)
+
+        store = MySQLDeliveryStore(Pool(), run_id="dev-test-1")
+        transaction = AsyncMock(side_effect=OperationalError(1205, "password=must-not-leak"))
+
+        with patch.object(kafka_delivery_store.asyncio, "sleep", new=AsyncMock()) as sleep:
+            with self.assertRaises(kafka_delivery_store.LockContentionExhausted) as caught:
+                await store._run_transaction("finish", transaction)
+
+        self.assertEqual(transaction.await_count, 4)
+        self.assertEqual(sleep.await_count, 3)
+        self.assertEqual(caught.exception.mysql_error_code, 1205)
+        self.assertEqual(caught.exception.operation, "finish")
+        self.assertEqual(caught.exception.attempt_limit, 4)
+        self.assertNotIn("password", str(caught.exception))
+
+    def test_lock_retry_backoff_is_exponential_with_bounded_jitter(self):
+        with patch.object(kafka_delivery_store.random, "uniform", return_value=1.2):
+            delays = [kafka_delivery_store.lock_retry_delay(attempt) for attempt in (1, 2, 3)]
+        self.assertEqual(delays, [0.06, 0.12, 0.24])
+
+    async def test_exhausted_worker_pauses_relay_without_cancelling_peer(self):
+        peer_finished = asyncio.Event()
+        peer_cancelled = False
+
+        async def peer_run_once():
+            nonlocal peer_cancelled
+            try:
+                await asyncio.sleep(0)
+                peer_finished.set()
+                return "published"
+            except asyncio.CancelledError:
+                peer_cancelled = True
+                raise
+
+        peer = AsyncMock()
+        peer.run_once.side_effect = peer_run_once
+        exhausted = AsyncMock()
+        exhausted.run_once.side_effect = kafka_delivery_store.LockContentionExhausted(
+            "claim", 1213, 4,
+        )
+
+        with patch("builtins.print") as safe_print:
+            with self.assertRaises(event_runtime.RelayPaused):
+                await event_runtime.run_relay_workers([peer, exhausted])
+
+        self.assertTrue(peer_finished.is_set())
+        self.assertFalse(peer_cancelled)
+        diagnostic = json.loads(safe_print.call_args.args[0])
+        self.assertEqual(diagnostic["mysql_error_code"], 1213)
+        self.assertEqual(diagnostic["worker_concurrency"], 2)
+        self.assertEqual(diagnostic["transaction_isolation"], "READ-COMMITTED")
+        self.assertEqual(diagnostic["result"], "paused")
+        for forbidden in ("event_id", "payload", "sql", "password", "connection"):
+            self.assertNotIn(forbidden, diagnostic)
+
+    async def test_relay_waits_for_workers_before_stopping_producer(self):
+        lifecycle = []
+
+        class Producer:
+            async def start(self): lifecycle.append("producer_started")
+            async def stop(self): lifecycle.append("producer_stopped")
+
+        class ProducerFactory:
+            def __new__(cls, **kwargs):
+                return Producer()
+
+        async def run_workers(workers):
+            lifecycle.append("workers_stopped")
+
+        fake_aiokafka = SimpleNamespace(AIOKafkaProducer=ProducerFactory)
+        with patch.dict("sys.modules", {"aiokafka": fake_aiokafka}), \
+             patch.object(event_runtime, "build_relay_workers", return_value=[object()]), \
+             patch.object(event_runtime, "run_relay_workers", side_effect=run_workers):
+            await event_runtime.relay(settings(), object())
+
+        self.assertEqual(
+            lifecycle,
+            ["producer_started", "workers_stopped", "producer_stopped"],
+        )
+
     def test_dev_relay_uses_fixed_bounded_parallelism(self):
-        self.assertEqual(event_runtime.DEV_RELAY_CONCURRENCY, 8)
+        self.assertEqual(event_runtime.DEV_RELAY_CONCURRENCY, 2)
         source = Path(event_runtime.__file__).read_text(encoding="utf-8")
         self.assertIn("asyncio.gather", source)
         self.assertIn("relay_worker", source)
@@ -932,10 +1105,10 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         pool, producer = object(), object()
         workers = event_runtime.build_relay_workers(pool, producer, "dev-test-1")
 
-        self.assertEqual(len(workers), 8)
+        self.assertEqual(len(workers), 2)
         self.assertTrue(all(worker.producer is producer for worker in workers))
         self.assertTrue(all(worker.store.pool is pool for worker in workers))
-        self.assertEqual(len({id(worker.store) for worker in workers}), 8)
+        self.assertEqual(len({id(worker.store) for worker in workers}), 2)
         self.assertTrue(all(worker.store.run_id == "dev-test-1" for worker in workers))
 
     async def test_relay_step_logs_only_bounded_progress_fields(self):
@@ -967,9 +1140,19 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         safe_print.assert_not_called()
 
     def test_only_relay_receives_expanded_database_pool(self):
-        self.assertEqual(event_runtime.database_pool_size("relay"), 10)
+        self.assertEqual(event_runtime.database_pool_size("relay"), 4)
         for mode in ("bridge", "business-bridge"):
             self.assertEqual(event_runtime.database_pool_size(mode), 2)
+
+    def test_relay_connections_use_read_committed_without_extending_lock_timeout(self):
+        command = event_runtime.database_init_command("relay")
+        self.assertIn("transaction_isolation='READ-COMMITTED'", command)
+        self.assertIn("time_zone='+00:00'", command)
+        self.assertNotIn("lock_wait_timeout", command)
+        self.assertEqual(
+            event_runtime.database_init_command("bridge"),
+            "SET time_zone='+00:00'",
+        )
 
     async def test_backend_outbox_relay_publishes_bounded_metadata(self):
         class Cursor:

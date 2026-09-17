@@ -117,6 +117,11 @@ export interface VenueCloudStatus {
   last_success_at: string | null
   last_error_code: string | null
   last_pull_count: number
+  last_pull_accepted: number
+  last_pull_rejected: number
+  last_pull_retry_later: number
+  last_pull_uncertain: number
+  last_pull_reason_codes: string[]
   last_reconcile_at: string | null
 }
 
@@ -167,6 +172,17 @@ export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem
 }
 export async function getVenueCloudStatus(): Promise<VenueCloudStatus> {
   return (await api.get('/venue-cloud/status', passiveRequest)).data
+}
+export interface VenueCloudPullResult {
+  pulled: number
+  accepted: number
+  rejected: number
+  retry_later: number
+  uncertain: number
+  reason_codes: string[]
+}
+export async function pullVenueCloudNow(): Promise<VenueCloudPullResult> {
+  return (await api.post('/venue-cloud/pull', {})).data
 }
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
   return (await api.get('/venue-visits', { params })).data
@@ -1320,11 +1336,13 @@ export async function updateQuerySourceCell(
   },
 ): Promise<{
   values: Record<string, string>
+  changed_values?: Record<string, string>
   row_key: string
   revision: number
   pending_sync: boolean
   message: string
   row_hash?: string
+  data_version?: string
 }> {
   const { data } = await api.patch(`/query/${type}/source-rows/${sourceId}`, payload)
   return data
@@ -1969,6 +1987,7 @@ export interface ResidencePlatformConfig {
   login_mode: 'automatic_hidden_challenge'
   community_account_count: number
   active_session_count: number
+  community_codes: string[]
 }
 
 export interface ResidencePlatformConfigUpdate {

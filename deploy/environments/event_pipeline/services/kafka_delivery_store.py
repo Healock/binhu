@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import random
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -16,6 +17,41 @@ from .kafka_envelope import (
     serialize_event, event_partition_key, validate_event,
 )
 from .kafka_relay import Delivery, LEASE_SECONDS, MAX_ATTEMPTS
+
+
+LOCK_TRANSACTION_MAX_ATTEMPTS = 4
+LOCK_RETRY_BASE_SECONDS = 0.05
+LOCK_RETRY_MAX_SECONDS = 0.8
+_RETRYABLE_MYSQL_ERRORS = {1205, 1213}
+
+
+class LockContentionExhausted(RuntimeError):
+    """A bounded transaction retry was exhausted without exposing DB details."""
+
+    def __init__(self, operation: str, mysql_error_code: int, attempt_limit: int):
+        super().__init__(f"{operation}_lock_contention_exhausted")
+        self.operation = operation
+        self.mysql_error_code = mysql_error_code
+        self.attempt_limit = attempt_limit
+        self.safe_detail = (
+            "runtime_failure_type=LockContentionExhausted "
+            f"runtime_failure_stage=relay_{operation}"
+        )
+
+
+def lock_retry_delay(retry_number: int) -> float:
+    base = min(
+        LOCK_RETRY_BASE_SECONDS * (2 ** max(retry_number - 1, 0)),
+        LOCK_RETRY_MAX_SECONDS,
+    )
+    return round(base * random.uniform(0.8, 1.2), 6)
+
+
+def _mysql_error_code(exc: BaseException) -> int | None:
+    if not getattr(exc, "args", None):
+        return None
+    code = exc.args[0]
+    return code if isinstance(code, int) else None
 
 
 SCHEMA_SQL = """
@@ -79,11 +115,29 @@ class MySQLDeliveryStore:
         finally:
             self.pool.release(conn)
 
+    async def _run_transaction(self, operation: str, transaction):
+        """Retry a complete transaction for bounded transient lock conflicts."""
+        for attempt in range(1, LOCK_TRANSACTION_MAX_ATTEMPTS + 1):
+            async with self._connection() as conn:
+                try:
+                    await conn.begin()
+                    result = await transaction(conn)
+                    await conn.commit()
+                    return result
+                except BaseException as exc:
+                    await conn.rollback()
+                    error_code = _mysql_error_code(exc)
+                    if error_code not in _RETRYABLE_MYSQL_ERRORS:
+                        raise
+            if attempt == LOCK_TRANSACTION_MAX_ATTEMPTS:
+                raise LockContentionExhausted(
+                    operation, error_code, LOCK_TRANSACTION_MAX_ATTEMPTS,
+                ) from None
+            await asyncio.sleep(lock_retry_delay(attempt))
+
     async def claim(self) -> Delivery | None:
-        async with self._connection() as conn:
-            try:
-                await conn.begin()
-                async with conn.cursor() as cur:
+        async def transaction(conn):
+            async with conn.cursor() as cur:
                     await cur.execute(
                         """SELECT event_id,event_json,payload_sha256,status,
                                   event_attempts,dlq_attempts
@@ -99,7 +153,6 @@ class MySQLDeliveryStore:
                     )
                     row = await cur.fetchone()
                     if not row:
-                        await conn.commit()
                         return None
                     event_id, raw, digest, status, attempts, dlq_attempts = row
                     try:
@@ -117,7 +170,6 @@ class MySQLDeliveryStore:
                                locked_until=NULL WHERE event_id=%s AND run_id=%s""",
                             (event_id, self.run_id),
                         )
-                        await conn.commit()
                         return None
                     channel = "dlq" if status.startswith("dlq") or attempts >= MAX_ATTEMPTS else "events"
                     count = dlq_attempts if channel == "dlq" else attempts
@@ -128,7 +180,6 @@ class MySQLDeliveryStore:
                                locked_until=NULL WHERE event_id=%s AND run_id=%s""",
                             (event_id, self.run_id),
                         )
-                        await conn.commit()
                         return None
                     token = str(uuid.uuid4())
                     await cur.execute(
@@ -140,21 +191,18 @@ class MySQLDeliveryStore:
                          token, LEASE_SECONDS, int(channel == "events"), int(channel == "dlq"),
                          event_id, self.run_id),
                     )
-                await conn.commit()
-                return Delivery(event_id, payload, key, token, count + 1, channel,
-                                event_type=event["event_type"])
-            except BaseException:
-                await conn.rollback()
-                raise
+            return Delivery(event_id, payload, key, token, count + 1, channel,
+                            event_type=event["event_type"])
+
+        return await self._run_transaction("claim", transaction)
 
     async def finish(self, delivery: Delivery, *, status: str, error_code: str,
                      delay_seconds: float) -> bool:
         allowed = {"published", "retry", "dlq_pending", "dead_letter", "blocked"}
         if status not in allowed or not 0 <= delay_seconds <= 72:
             raise ValueError("invalid delivery completion")
-        async with self._connection() as conn:
-            try:
-                async with conn.cursor() as cur:
+        async def transaction(conn):
+            async with conn.cursor() as cur:
                     await cur.execute(
                         """UPDATE _kafka_event_delivery SET status=%s,last_error_code=%s,
                            lease_token=NULL,locked_until=NULL,
@@ -168,8 +216,6 @@ class MySQLDeliveryStore:
                          "publishing" if delivery.channel == "events" else "dlq_publishing"),
                     )
                     owned = cur.rowcount == 1
-                await conn.commit()
-                return owned
-            except BaseException:
-                await conn.rollback()
-                raise
+            return owned
+
+        return await self._run_transaction("finish", transaction)

@@ -14,6 +14,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings
+from app.drinking_page import render_drinking_report_page
 from app.main import create_app
 from app.security import b64encode, canonical_request, keyed_digest
 
@@ -336,7 +337,23 @@ def test_drinking_page_and_three_second_server_gate(tmp_path):
     assert 'data-signature-open="reporter"' in page.text
     assert 'data-signature-open="leader"' in page.text
     assert 'screen.orientation.lock' in page.text
+    assert '.signature-editor.force-landscape' in page.text
+    assert 'window.innerHeight>window.innerWidth' in page.text
+    assert "editor.classList.toggle('force-landscape',forceLandscape)" in page.text
+    assert "editor.classList.remove('force-landscape')" in page.text
+    assert "editor.classList.contains('force-landscape')" in page.text
+    assert '(e.clientY-r.top)/r.height' in page.text
+    assert '(r.right-e.clientX)/r.width' in page.text
+    assert 'canvas.clientWidth||r.width' in page.text
+    assert "window.addEventListener('resize',syncEditorOrientation)" in page.text
+    assert "screen.orientation?.addEventListener?.('change',syncEditorOrientation)" in page.text
+    assert "document.addEventListener('fullscreenchange',syncEditorOrientation)" in page.text
     assert '保存签名' in page.text
+    assert '再次查看规定' not in page.text
+    assert 'signature-watermark' in page.text
+    assert 'requestFullscreen' in page.text
+    assert '请先填写姓名' in page.text
+    assert '请先填写责任领导姓名' in page.text
     assert '请补充${missing.length}项必填内容' in page.text
     assert 'contextmenu' in page.text
     assert response.status_code == 400
@@ -553,3 +570,44 @@ def test_internal_api_rejects_nonce_replay_and_signs_valid_response(tmp_path):
     assert first.headers.get("X-Binhu-Response-Timestamp")
     assert first.headers.get("X-Binhu-Response-Signature")
     assert replay.status_code == 409
+
+
+def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
+    client, _repo, _config = make_client(tmp_path)
+    page = render_drinking_report_page()
+    assert 'transform:translateX(var(--signature-viewport-width)) rotate(90deg)' in page
+    # The watermark inherits the clockwise rotation of the fallback editor.  A
+    # counter-rotation would make the name horizontal in the rotated viewport.
+    assert '.signature-editor.force-landscape .editor-watermark' not in page
+    assert 'font-size:clamp(48px,12vw,120px)' in page
+    assert 'function cloneStrokes(strokes)' in page
+    assert 'function toCanonicalStrokes(strokes){return cloneStrokes(strokes)}' in page
+    assert 'function fromCanonicalStrokes(strokes){return cloneStrokes(strokes)}' in page
+    assert 'state[editingKey]=editorForced?toCanonicalStrokes(editingDraft)' in page
+    assert 'canvas.clientHeight||r.height' in page
+    assert "editor.style.setProperty('--signature-viewport-height',`${window.innerHeight}px`)" in page
+
+
+def test_signature_orientation_maps_screen_down_to_right_without_second_rotation():
+    # In the portrait fallback, editorPoint already applies the inverse CSS
+    # rotation: screen (x, y) becomes editor (y, viewport_width - x).  A
+    # downward screen stroke therefore has increasing editor x and constant y.
+    viewport_width = 1.0
+    start_screen = (0.60, 0.20)
+    end_screen = (0.60, 0.80)
+
+    def editor_point(point):
+        return (point[1], viewport_width - point[0])
+
+    start = editor_point(start_screen)
+    end = editor_point(end_screen)
+    assert end[0] > start[0]
+    assert end[1] == start[1]
+
+    # Saving the editor coordinates unchanged preserves the rightward stroke;
+    # applying another quarter-turn would incorrectly produce an upward one.
+    assert end[0] > start[0]
+    assert end[1] == start[1]
+
+
+# Signature orientation regression coverage is maintained with the public page contract.

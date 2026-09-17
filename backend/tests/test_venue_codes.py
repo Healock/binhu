@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import settings
 import routers.venue_codes as venue_codes
 from routers.venue_codes import (
+    _local_display,
+    _utc_iso,
     _check_form_token,
     _form_token,
     _public_venue_url,
@@ -235,3 +238,9 @@ async def test_delete_venue_soft_deletes_without_removing_visit_history(monkeypa
     assert "_venue_visits" not in statements[1][0]
     assert statements[1][1] == (5, "local_only", 3, 7)
     audit.assert_awaited_once()
+
+
+def test_drinking_report_times_are_explicit_utc_and_display_in_business_timezone():
+    value = datetime(2026, 9, 16, 10, 32, 0)
+    assert _utc_iso(value) == "2026-09-16T10:32:00Z"
+    assert _local_display(value, "Asia/Shanghai") == "2026年09月16日 18:32"
