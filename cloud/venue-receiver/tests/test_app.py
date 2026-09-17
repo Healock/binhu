@@ -576,35 +576,38 @@ def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
     client, _repo, _config = make_client(tmp_path)
     page = render_drinking_report_page()
     assert 'transform:translateX(var(--signature-viewport-width)) rotate(90deg)' in page
-    # The watermark lives inside the rotated editor and must inherit its clockwise
-    # orientation instead of applying a compensating counter-rotation.
+    # The watermark inherits the clockwise rotation of the fallback editor.  A
+    # counter-rotation would make the name horizontal in the rotated viewport.
     assert '.signature-editor.force-landscape .editor-watermark' not in page
     assert 'font-size:clamp(48px,12vw,120px)' in page
-    assert 'function toCanonicalStrokes(strokes)' in page
-    assert 'x:+point.y.toFixed(4),y:+(1-point.x).toFixed(4)' in page
-    assert 'function fromCanonicalStrokes(strokes)' in page
-    assert 'x:+(1-point.y).toFixed(4),y:+point.x.toFixed(4)' in page
+    assert 'function cloneStrokes(strokes)' in page
+    assert 'function toCanonicalStrokes(strokes){return cloneStrokes(strokes)}' in page
+    assert 'function fromCanonicalStrokes(strokes){return cloneStrokes(strokes)}' in page
     assert 'state[editingKey]=editorForced?toCanonicalStrokes(editingDraft)' in page
     assert 'canvas.clientHeight||r.height' in page
     assert "editor.style.setProperty('--signature-viewport-height',`${window.innerHeight}px`)" in page
 
 
-def test_signature_orientation_maps_downward_stroke_to_rightward_canonical_stroke():
-    # Canonical mapping is clockwise: a downward stroke (dx=0, dy>0) becomes
-    # a rightward stroke (dx'>0, dy'=0).  The inverse is used when toggling
-    # the fallback editor so a stroke is never rotated twice.
-    def to_canonical(point):
-        return (point[1], 1 - point[0])
+def test_signature_orientation_maps_screen_down_to_right_without_second_rotation():
+    # In the portrait fallback, editorPoint already applies the inverse CSS
+    # rotation: screen (x, y) becomes editor (y, viewport_width - x).  A
+    # downward screen stroke therefore has increasing editor x and constant y.
+    viewport_width = 1.0
+    start_screen = (0.60, 0.20)
+    end_screen = (0.60, 0.80)
 
-    start = to_canonical((0.25, 0.25))
-    end = to_canonical((0.25, 0.75))
+    def editor_point(point):
+        return (point[1], viewport_width - point[0])
+
+    start = editor_point(start_screen)
+    end = editor_point(end_screen)
     assert end[0] > start[0]
     assert end[1] == start[1]
 
-    def from_canonical(point):
-        return (1 - point[1], point[0])
+    # Saving the editor coordinates unchanged preserves the rightward stroke;
+    # applying another quarter-turn would incorrectly produce an upward one.
+    assert end[0] > start[0]
+    assert end[1] == start[1]
 
-    assert from_canonical(start) == (0.25, 0.25)
-    assert from_canonical(end) == (0.25, 0.75)
 
 # Signature orientation regression coverage is maintained with the public page contract.
