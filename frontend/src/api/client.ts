@@ -117,6 +117,11 @@ export interface VenueCloudStatus {
   last_success_at: string | null
   last_error_code: string | null
   last_pull_count: number
+  last_pull_accepted: number
+  last_pull_rejected: number
+  last_pull_retry_later: number
+  last_pull_uncertain: number
+  last_pull_reason_codes: string[]
   last_reconcile_at: string | null
 }
 
@@ -168,7 +173,15 @@ export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem
 export async function getVenueCloudStatus(): Promise<VenueCloudStatus> {
   return (await api.get('/venue-cloud/status', passiveRequest)).data
 }
-export async function pullVenueCloudNow(): Promise<{ pulled: number }> {
+export interface VenueCloudPullResult {
+  pulled: number
+  accepted: number
+  rejected: number
+  retry_later: number
+  uncertain: number
+  reason_codes: string[]
+}
+export async function pullVenueCloudNow(): Promise<VenueCloudPullResult> {
   return (await api.post('/venue-cloud/pull', {})).data
 }
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {

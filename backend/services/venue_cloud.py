@@ -34,11 +34,50 @@ _runtime_status: dict[str, Any] = {
     "cloud_oldest_pending_at": None,
     "cloud_uncertain_count": None,
     "cloud_active_key_id": None,
+    "last_pull_accepted": 0,
+    "last_pull_rejected": 0,
+    "last_pull_retry_later": 0,
+    "last_pull_uncertain": 0,
+    "last_pull_reason_codes": [],
 }
 _manual_pull_lock = asyncio.Lock()
 
 
-async def pull_venue_cloud_now() -> int:
+def _empty_pull_stats() -> dict[str, Any]:
+    return {
+        "pulled": 0,
+        "accepted": 0,
+        "rejected": 0,
+        "retry_later": 0,
+        "uncertain": 0,
+        "reason_codes": [],
+    }
+
+
+def _merge_pull_stats(total: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    for key in ("pulled", "accepted", "rejected", "retry_later", "uncertain"):
+        total[key] = int(total.get(key) or 0) + int(current.get(key) or 0)
+    total["reason_codes"] = sorted(
+        set(total.get("reason_codes") or []) | set(current.get("reason_codes") or [])
+    )
+    return total
+
+
+def _stats_from_results(results: list[dict[str, str]]) -> dict[str, Any]:
+    stats = _empty_pull_stats()
+    stats["pulled"] = len(results)
+    for result in results:
+        status = str(result.get("status") or "")
+        if status in ("accepted", "rejected", "retry_later", "uncertain"):
+            stats[status] += 1
+        reason_code = str(result.get("reason_code") or "")
+        if reason_code:
+            stats["reason_codes"].append(reason_code)
+    stats["reason_codes"] = sorted(set(stats["reason_codes"]))
+    return stats
+
+
+async def pull_venue_cloud_now() -> dict[str, Any]:
     """Run one bounded pull for an operator-triggered refresh.
 
     The scheduler and this endpoint share a lock so a manual refresh cannot
@@ -49,9 +88,18 @@ async def pull_venue_cloud_now() -> int:
     async with _manual_pull_lock:
         client = VenueCloudClient()
         try:
-            pulled = await drain_submissions(client)
-            _runtime_status.update(last_success_at=_utcnow().isoformat(), last_error_code=None, last_pull_count=pulled)
-            return pulled
+            stats = await drain_submissions(client)
+            _runtime_status.update(
+                last_success_at=_utcnow().isoformat(),
+                last_error_code=None,
+                last_pull_count=stats["pulled"],
+                last_pull_accepted=stats["accepted"],
+                last_pull_rejected=stats["rejected"],
+                last_pull_retry_later=stats["retry_later"],
+                last_pull_uncertain=stats["uncertain"],
+                last_pull_reason_codes=stats["reason_codes"],
+            )
+            return stats
         finally:
             await client.close()
 
@@ -516,9 +564,9 @@ async def _ingest_item(client: VenueCloudClient, lease_id: str, item: dict[str, 
         pool.release(conn)
 
 
-async def pull_submissions_once(client: VenueCloudClient) -> int:
+async def pull_submissions_once(client: VenueCloudClient) -> dict[str, Any]:
     if not settings.VENUE_CLOUD_PULL_ENABLED:
-        return 0
+        return _empty_pull_stats()
     request_id = str(uuid.uuid4())
     response = await client.request_json(
         "POST",
@@ -535,7 +583,7 @@ async def pull_submissions_once(client: VenueCloudClient) -> int:
     if not lease_id or not isinstance(items, list):
         raise VenueCloudClientError("invalid_cloud_response")
     if not items:
-        return 0
+        return _empty_pull_stats()
     lease_expires_text = str(response.get("lease_expires_at") or "")
     try:
         lease_expires_at = datetime.fromisoformat(lease_expires_text.replace("Z", "+00:00")).replace(tzinfo=None)
@@ -577,27 +625,27 @@ async def pull_submissions_once(client: VenueCloudClient) -> int:
         raise VenueCloudClientError("invalid_cloud_response")
     if actual != expected or len(applied) != len(expected):
         raise VenueCloudClientError("acknowledgement_incomplete")
-    return len(results)
+    return _stats_from_results(results)
 
 
-async def drain_submissions(client: VenueCloudClient) -> int:
-    total = 0
+async def drain_submissions(client: VenueCloudClient) -> dict[str, Any]:
+    total = _empty_pull_stats()
     while True:
-        pulled = await pull_submissions_once(client)
-        total += pulled
-        if pulled == 0:
+        current = await pull_submissions_once(client)
+        _merge_pull_stats(total, current)
+        if current["pulled"] == 0:
             return total
 
 
-async def wait_for_and_drain(client: VenueCloudClient, *, fallback_due: bool = False) -> int:
+async def wait_for_and_drain(client: VenueCloudClient, *, fallback_due: bool = False) -> dict[str, Any]:
     if not settings.VENUE_CLOUD_PULL_ENABLED:
-        return 0
+        return _empty_pull_stats()
     if fallback_due:
         return await drain_submissions(client)
     signal = await client.wait_for_submissions(settings.VENUE_CLOUD_WORKER_ID, timeout_seconds=20)
     if signal["available"]:
         return await drain_submissions(client)
-    return 0
+    return _empty_pull_stats()
 
 
 async def reconcile_venues_once(client: VenueCloudClient) -> int:
@@ -694,7 +742,7 @@ async def run_venue_cloud_scheduler() -> None:
                 # Serialize operator-triggered refreshes with the scheduler so
                 # a manual action cannot race a lease claimed by this worker.
                 async with _manual_pull_lock:
-                    pulled = await wait_for_and_drain(client, fallback_due=fallback_due)
+                    pull_stats = await wait_for_and_drain(client, fallback_due=fallback_due)
                 if fallback_due:
                     next_safety_pull = asyncio.get_running_loop().time() + 300
                 cloud_status = validate_status_response(
@@ -710,7 +758,16 @@ async def run_venue_cloud_scheduler() -> None:
                     await reconcile_venues_once(client)
                     _runtime_status["last_reconcile_at"] = _utcnow().isoformat()
                     next_reconcile = asyncio.get_running_loop().time() + 86400
-                _runtime_status.update(last_success_at=_utcnow().isoformat(), last_error_code=None, last_pull_count=pulled)
+                _runtime_status.update(
+                    last_success_at=_utcnow().isoformat(),
+                    last_error_code=None,
+                    last_pull_count=pull_stats["pulled"],
+                    last_pull_accepted=pull_stats["accepted"],
+                    last_pull_rejected=pull_stats["rejected"],
+                    last_pull_retry_later=pull_stats["retry_later"],
+                    last_pull_uncertain=pull_stats["uncertain"],
+                    last_pull_reason_codes=pull_stats["reason_codes"],
+                )
                 consecutive_failures = 0
                 if not settings.VENUE_CLOUD_PULL_ENABLED:
                     await asyncio.sleep(idle_delay)
