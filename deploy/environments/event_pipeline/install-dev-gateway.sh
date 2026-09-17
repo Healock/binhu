@@ -28,6 +28,7 @@ binhu-dev-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-event-pipelin
 binhu-dev-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-event-pipeline-gateway.py measure *
 binhu-dev-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-event-pipeline-gateway.py apply *
 binhu-dev-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-event-pipeline-gateway.py accept *
+binhu-dev-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-event-pipeline-gateway.py stop *
 EOF
 chmod 0440 /etc/sudoers.d/binhu-dev-event-pipeline
 visudo -cf /etc/sudoers.d/binhu-dev-event-pipeline >/dev/null

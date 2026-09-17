@@ -48,6 +48,14 @@ jobs:
           printf '%s\n' "$DEV_KEY" > "$RUNNER_TEMP/dev-ssh/key"
           printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
+          cleanup() {
+            # A cancelled runner must not leave the run-scoped Dev relay
+            # publishing after the acceptance job has ended. The gateway is
+            # restricted to this Dev Compose project and never deletes data.
+            ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
+              "binhu-dev-deploy@$DEV_HOST" "stop $RUN_ID" >/dev/null 2>&1 || true
+            rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
+          }
+          trap cleanup EXIT INT TERM
           ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
             "binhu-dev-deploy@$DEV_HOST" "accept $RUN_ID $SCALE"
-          rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"

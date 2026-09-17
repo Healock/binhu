@@ -34,6 +34,13 @@ def fail(message: str) -> None:
     raise SystemExit(f"Dev event-pipeline gateway refused: {message}")
 
 
+def checked(command: list[str]) -> str:
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        fail("Dev gateway command failed")
+    return result.stdout
+
+
 def validate_scale(value: str) -> int:
     if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
         fail("fixed acceptance scale required")
@@ -281,6 +288,36 @@ def accept(run_id: str, value: str) -> None:
                       "run_id": run_id, "scale": scale, "accepted": True}))
 
 
+def stop(run_id: str) -> None:
+    """Stop only Dev workers carrying the cancelled acceptance run identity.
+
+    This is intentionally a narrow emergency cleanup operation for a cancelled
+    GitHub runner.  It never removes containers, volumes, networks, or ledger
+    rows, and it cannot target another Compose project.
+    """
+    if not RUN_RE.fullmatch(run_id or ""):
+        fail("invalid Dev run id")
+    raw = checked(["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={PROJECT}"])
+    ids = raw.split()
+    stopped: list[str] = []
+    if ids:
+        items = json.loads(checked(["docker", "inspect", *ids]))
+        for item in items:
+            labels = item.get("Config", {}).get("Labels", {})
+            service = labels.get("com.docker.compose.service")
+            if service not in {"relay", "backend-outbox-relay"}:
+                continue
+            env = item.get("Config", {}).get("Env", [])
+            if f"DEV_RUN_ID={run_id}" not in env:
+                continue
+            name = item.get("Name", "").lstrip("/")
+            if name:
+                checked(["docker", "stop", "--timeout", "20", name])
+                stopped.append(name)
+    print(json.dumps({"environment": "development", "project": PROJECT,
+                      "run_id": run_id, "stopped": stopped}, sort_keys=True))
+
+
 def main() -> None:
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     action = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -292,6 +329,8 @@ def main() -> None:
         (measure if action == "measure" else apply)(sys.argv[2])
     elif action == "accept" and len(sys.argv) == 4:
         accept(sys.argv[2], sys.argv[3])
+    elif action == "stop" and len(sys.argv) == 3:
+        stop(sys.argv[2])
     else:
         fail("fixed prepare/measure/apply/accept contract required")
 
