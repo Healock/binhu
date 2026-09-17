@@ -4,6 +4,7 @@ import {
   changeOwnPassword,
   getAppBootstrap,
   getCurrentUser,
+  getResidencePlatformConfig,
   fetchWithAuth,
   recordSessionActivity,
   saveUserPreferences,
@@ -11,6 +12,7 @@ import {
 import type { User, UserPreferences } from '../types'
 import { clearRoleDashboardCaches } from '../utils/dashboardCache'
 import { detectClientDeviceType, getDeviceId } from '../utils/device.ts'
+import { cacheOnlineResidenceConfig } from '../utils/offlineResidenceClient'
 import {
   assertApiEnvironmentIdentity,
   environmentPath,
@@ -69,6 +71,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [environmentLabel, setEnvironmentLabel] = useState('正式环境')
   const [loadTestRunId, setLoadTestRunId] = useState('')
 
+  const cacheResidenceConfigIfAllowed = async (currentUser: User) => {
+    if (currentUser.role !== 'super_admin') return
+    try {
+      const config = await getResidencePlatformConfig()
+      cacheOnlineResidenceConfig(config)
+    } catch {
+      // Offline cache is intentionally left untouched when the authorized read
+      // fails or the account no longer has access.
+    }
+  }
+
   const applyBootstrap = (payload: Awaited<ReturnType<typeof getAppBootstrap>>, expected: AppEnvironment) => {
     assertApiEnvironmentIdentity(payload.environment, expected)
     if (payload.server_version) setServerVersion(payload.server_version)
@@ -84,7 +97,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const payload = await getAppBootstrap()
         applyBootstrap(payload, expected)
-        setUser(await getCurrentUser())
+        const currentUser = await getCurrentUser()
+        setUser(currentUser)
+        void cacheResidenceConfigIfAllowed(currentUser)
       } catch (error) {
         clearRecentAnnotations()
         setUser(null)
@@ -147,7 +162,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     await res.json()
     clearRoleDashboardCaches(window.sessionStorage)
-    setUser(await getCurrentUser())
+    const currentUser = await getCurrentUser()
+    setUser(currentUser)
+    void cacheResidenceConfigIfAllowed(currentUser)
   }
 
   const logout = async () => {

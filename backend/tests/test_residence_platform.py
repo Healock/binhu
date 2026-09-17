@@ -24,7 +24,6 @@ from services.residence_platform import (  # noqa: E402
 from services.residence_platform_config import (  # noqa: E402
     ResidencePlatformConfig,
     public_residence_config,
-    residence_username,
     serialize_residence_value,
 )
 from services.qmf_config import decrypt_secret  # noqa: E402
@@ -74,10 +73,10 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("queue_due_residence_tasks(force=full_scan)", scan_source)
         self.assertNotIn("REFRESH_DAYS", scan_source)
 
-    def test_community_account_is_derived_from_qmf_code(self):
-        self.assertEqual(residence_username("A123456789"), "A12345678900")
-        with self.assertRaises(ValueError):
-            residence_username("320584")
+    def test_public_config_exposes_the_configured_full_username(self):
+        public = public_residence_config(config(username="fixture-full-account"))
+        self.assertEqual(public["username"], "fixture-full-account")
+        self.assertEqual(public["account_mode"], "configured_full_username")
 
     def test_residence_status_schema_tracks_safe_total_duration(self):
         source = Path(__file__).parents[1].joinpath("services", "residence_status_scan.py").read_text(encoding="utf-8")
@@ -447,6 +446,23 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         )
         stale_client.lookup.assert_awaited_once_with(VALID_IDENTITY)
         fresh_client.lookup.assert_awaited_once_with(VALID_IDENTITY)
+
+    async def test_community_client_keeps_the_configured_full_username(self):
+        session = type("Session", (), {
+            "token": "fixture-session-token",
+            "organization_code": "320584",
+        })()
+        fake_pool = FakePool()
+        with patch.object(residence_status_scan, "_pool", return_value=fake_pool), patch.object(
+            residence_status_scan,
+            "load_residence_session",
+            new=AsyncMock(return_value=session),
+        ):
+            client = await residence_status_scan._community_client(
+                config(username="fixture-full-account"),
+                "3205840377",
+            )
+        self.assertEqual(client.config.username, "fixture-full-account")
 
     async def test_read_only_path_allowlist_rejects_other_routes(self):
         client = ResidencePlatformClient(config())

@@ -330,6 +330,7 @@ export default function SystemSettings() {
       const result = await updateResidencePlatformConfig({
         enabled: residenceConfig.enabled,
         base_url: residenceConfig.base_url,
+        username: residenceConfig.username,
         ...(residencePassword ? { password: residencePassword } : {}),
         mac_service_url: residenceConfig.mac_service_url,
         timeout_seconds: residenceConfig.timeout_seconds,
@@ -337,7 +338,7 @@ export default function SystemSettings() {
       })
       setResidenceConfig(result)
       setResidencePassword('')
-      setResidenceMsg('居住证平台配置已保存；后台将按任务社区自动登录并查询')
+      setResidenceMsg('居住证平台配置已保存；后台将使用完整账号自动登录并查询')
     } catch (error: any) {
       setResidenceMsg(error?.response?.data?.detail?.message || error?.response?.data?.detail || '居住证平台配置保存失败')
     } finally {
@@ -643,13 +644,13 @@ export default function SystemSettings() {
               type={residenceConfig.session_ready ? 'success' : 'warning'}
               showIcon
               message={residenceConfig.session_ready ? '自动查询已就绪' : '请先保存完整配置'}
-              description="系统按任务所属社区自动生成账号并完成后台登录；只调用常住人口预检索和流动人口登记查询两个只读接口。"
+              description="系统使用管理员填写的完整账号完成后台登录；只调用常住人口预检索和流动人口登记查询两个只读接口。"
             />
             <Alert
               type="info"
               showIcon
-              message="社区账号和登录挑战均由后台自动处理"
-              description="账号取社区管理中的全民防社区代码并在末尾加 00；所有社区共用一份统一密码。网页本身无需人工填写验证码，平台也不会再显示验证码输入框。"
+              message="完整账号和登录挑战均由后台处理"
+              description="账号必须按居住证系统中的完整值填写，不再从全民防社区代码推导。网页本身无需人工填写验证码，平台也不会显示验证码输入框。"
             />
             <div className="grid gap-4 md:grid-cols-2">
               <div className="settings-field">
@@ -670,6 +671,15 @@ export default function SystemSettings() {
                 <Input
                   value={residenceConfig.base_url}
                   onChange={event => setResidenceConfig(current => current ? { ...current, base_url: event.target.value } : current)}
+                  disabled={savingResidence}
+                />
+              </label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]">
+                <span className="settings-field__label font-medium">完整登录账号</span>
+                <Input
+                  value={residenceConfig.username}
+                  onChange={event => setResidenceConfig(current => current ? { ...current, username: event.target.value } : current)}
+                  autoComplete="username"
                   disabled={savingResidence}
                 />
               </label>
@@ -769,7 +779,7 @@ export default function SystemSettings() {
               column={{ xs: 1, sm: 2 }}
               items={[
                 { key: 'password', label: '统一密码', children: residenceConfig.password_configured ? '已配置（不回显）' : '未配置' },
-                { key: 'accounts', label: '可用社区账号', children: `${residenceConfig.community_account_count} 个` },
+                { key: 'account', label: '完整账号', children: residenceConfig.username || '未配置' },
                 { key: 'sessions', label: '已缓存社区会话', children: `${residenceConfig.active_session_count} 个` },
                 {
                   key: 'timing',

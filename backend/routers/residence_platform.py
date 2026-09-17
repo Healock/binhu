@@ -32,6 +32,7 @@ class ResidenceConfigUpdate(BaseModel):
 
     enabled: bool = False
     base_url: str = Field(max_length=500)
+    username: str | None = Field(default=None, max_length=200)
     password: str | None = Field(default=None, max_length=500)
     mac_service_url: str = Field(default="http://127.0.0.1:23333", max_length=500)
     timeout_seconds: int = Field(default=15, ge=1, le=120)
@@ -98,10 +99,12 @@ async def update_residence_config(
     conn=Depends(get_db),
 ):
     current = await load_residence_config(conn)
+    username = data.username.strip() if data.username is not None else current.username
     password = data.password if data.password is not None else current.password
     if data.enabled and not all(
         (
             data.base_url.strip(),
+            username,
             password,
             data.mac_service_url.strip(),
         )
@@ -110,6 +113,7 @@ async def update_residence_config(
     values: dict[str, Any] = {
         "residence_lookup_enabled": "1" if data.enabled else "0",
         "residence_base_url": data.base_url.strip().rstrip("/"),
+        "residence_username": username,
         "residence_mac_service_url": data.mac_service_url.strip().rstrip("/"),
         "residence_timeout_seconds": str(data.timeout_seconds),
         "residence_full_scan_interval_minutes": str(data.full_scan_interval_minutes),
@@ -117,6 +121,7 @@ async def update_residence_config(
     connection_changed = any(
         (
             data.base_url.strip().rstrip("/") != current.base_url,
+            username != current.username,
             data.mac_service_url.strip().rstrip("/") != current.mac_service_url,
         )
     )

@@ -1977,13 +1977,14 @@ export interface QmfConfigUpdate {
 export interface ResidencePlatformConfig {
   enabled: boolean
   base_url: string
+  username: string
   password_configured: boolean
   mac_service_url: string
   timeout_seconds: number
   full_scan_interval_minutes: number
   credentials_configured: boolean
   session_ready: boolean
-  account_mode: 'community_code_suffix_00'
+  account_mode: 'configured_full_username'
   login_mode: 'automatic_hidden_challenge'
   community_account_count: number
   active_session_count: number
@@ -1993,6 +1994,7 @@ export interface ResidencePlatformConfig {
 export interface ResidencePlatformConfigUpdate {
   enabled: boolean
   base_url: string
+  username: string
   password?: string
   mac_service_url: string
   timeout_seconds: number

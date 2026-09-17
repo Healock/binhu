@@ -23,7 +23,6 @@ from services.residence_platform_config import (
     ResidencePlatformConfig,
     load_residence_config,
     load_residence_session,
-    residence_username,
     save_residence_session,
 )
 from services.police_dispatch import normalize_community_label
@@ -339,7 +338,6 @@ async def _community_client(
             if session is None or session.token == rejected_token:
                 login_config = replace(
                     config,
-                    username=residence_username(community_code),
                     access_token="",
                     organization_code="",
                 )
@@ -353,7 +351,6 @@ async def _community_client(
                     await save_residence_session(conn, community_code, session)
     return ResidencePlatformClient(replace(
         config,
-        username=residence_username(community_code),
         access_token=session.token,
         organization_code=session.organization_code,
     ))
