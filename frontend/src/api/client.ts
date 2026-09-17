@@ -168,15 +168,49 @@ export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem
 export async function getVenueCloudStatus(): Promise<VenueCloudStatus> {
   return (await api.get('/venue-cloud/status', passiveRequest)).data
 }
+export async function pullVenueCloudNow(): Promise<{ pulled: number }> {
+  return (await api.post('/venue-cloud/pull', {})).data
+}
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
   return (await api.get('/venue-visits', { params })).data
+}
+export function getVenueVisitPhotoUrl(visitId: number): string {
+  return `/venue-visits/${visitId}/photo`
 }
 export async function exportVenueVisits(params: Record<string, unknown> = {}): Promise<Blob> {
   return (await api.get('/venue-visits/export', { params, responseType: 'blob' })).data
 }
+export async function exportVenueVisitsZip(params: Record<string, unknown> = {}): Promise<Blob> {
+  return (await api.get('/venue-visits/export-zip', { params, responseType: 'blob' })).data
+}
+export async function deleteVenueVisit(id: number): Promise<void> {
+  await api.delete(`/venue-visits/${id}`)
+}
 export async function getPublicVenueInfo(token: string): Promise<{ venue_id: number; name: string; form_token: string }> {
   return (await api.get(`/public/venue-codes/${encodeURIComponent(token)}`)).data
 }
+
+export interface DrinkingReport {
+  id: number
+  name: string
+  unit_position: string
+  drinking_at: string | null
+  drinking_place: string
+  reason: string
+  inviter: string
+  travel_method: string
+  responsible_leader_name: string
+  submitted_at: string | null
+}
+export interface DrinkingFormCode { exists: boolean; form_key: string; display_name: string; status: 'active' | 'inactive'; cloud_sync_status: string; cloud_synced_revision?: number | null; config_revision?: number; token_version?: number; pending_token_version?: number | null; cloud_sync_error_code?: string | null }
+export async function getDrinkingFormCode(): Promise<DrinkingFormCode> { return (await api.get('/public-forms/drinking-report')).data }
+export async function createDrinkingFormCode(): Promise<Record<string, unknown>> { return (await api.post('/public-forms/drinking-report', {})).data }
+export async function updateDrinkingFormStatus(status: 'active' | 'inactive'): Promise<Record<string, unknown>> { return (await api.patch('/public-forms/drinking-report/status', { status })).data }
+export async function rotateDrinkingFormCode(): Promise<Record<string, unknown>> { return (await api.post('/public-forms/drinking-report/rotate', {})).data }
+export async function getDrinkingFormQr(): Promise<{ url: string; image_url?: string; display_name: string }> { const data = (await api.get('/public-forms/drinking-report/qrcode')).data; return { ...data, image_url: resolveVenueCodeQrImageUrl(data.image_url) } }
+export async function listDrinkingReports(params: Record<string, unknown> = {}): Promise<{ data: DrinkingReport[]; total: number; page: number; page_size: number }> { return (await api.get('/drinking-reports', { params })).data }
+export async function getDrinkingReport(id: number): Promise<DrinkingReport & { notes: string; reporter_signature: unknown[]; leader_signature: unknown[] }> { return (await api.get(`/drinking-reports/${id}`)).data }
+export async function exportDrinkingReportPdf(id: number): Promise<Blob> { return (await api.get(`/drinking-reports/${id}/pdf`, { responseType: 'blob' })).data }
 
 export interface MaintenanceStatus {
   enabled: boolean
@@ -1938,6 +1972,7 @@ export interface ResidencePlatformConfig {
   login_mode: 'automatic_hidden_challenge'
   community_account_count: number
   active_session_count: number
+  community_codes: string[]
 }
 
 export interface ResidencePlatformConfigUpdate {

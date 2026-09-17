@@ -14,8 +14,9 @@
 
 ### GitHub Actions 隔离环境
 
-`Install Dev event-pipeline gateway`、`Prepare Dev event pipeline` 和
-`Deploy Dev event pipeline` 三个工作流都绑定 GitHub `development` Environment。
+`Install Dev event-pipeline gateway`、`Prepare Dev event pipeline`、
+`Deploy Dev event pipeline` 和 `Accept Dev event pipeline` 四个工作流都绑定
+GitHub `development` Environment。
 Dev 主机、部署密钥和已知主机指纹只能从该环境读取；生产发布工作流的
 `production` Environment 与密钥不会被这些工作流引用。若 `development`
 Environment 未配置完整，工作流必须在连接服务器前失败。
@@ -41,8 +42,11 @@ Environment 未配置完整，工作流必须在连接服务器前失败。
    不能把容器启动或只开放临时 Unix socket 当作数据库就绪。
 4. 为 Dev Flink 准备 Kafka 3.3.0-1.20、JDBC 3.3.0-1.20、MySQL Connector/J 8.4.0
    依赖，下载校验与许可证记录保留在外部证据目录。Flink 为 1.20.1、Java 17。
-   编译 `PipelineJob.java`，将私密 `pipeline.sql` 只读挂入
-   `/opt/flink/private/pipeline.sql`，设置 `APP_ENVIRONMENT=development`。
+   在候选构建阶段用 Java 17 编译 `PipelineJob.java`，并把源码 SHA 与编译出的
+   `pipeline-job.jar` SHA 一起写入候选清单。网关只接受这份固定 JAR，将其复制到
+   Dev JobManager 的临时上传路径；服务器原有旧 JAR 不作为本次运行制品。私密
+   `pipeline.sql` 仍只读挂入 `/opt/flink/private/pipeline.sql`，设置
+   `APP_ENVIRONMENT=development`。
    不使用会回显 SQL 和密码的交互 SQL Client；提交 Java 入口，并检查日志无凭据。
 
    JDBC sink 的 URL 固定启用受控的断线恢复参数（自动重连最多 3 次、TCP keepalive、
@@ -154,5 +158,86 @@ Redis `binhu:events`。它使用单独的 `backend-relay.env`、`backend` 内部
 Production、Staging、Shadow 或任何外部平台。服务器部署时只新增该服务，不重建
 Kafka、Flink、Schema Registry 或既有数据卷。
 
+### Resident dual-track monitor
+
+`dual-track-monitor` 是 Dev 项目内的只读常驻服务。它连接独立的
+`Dev_EventPipeline` 派生库，按当前 `DEV_RUN_ID` 比较
+`dev_task_metadata_python`、`dev_task_metadata` 和 Python 事件账本，不连接
+Backend、Production、Staging 或 Kafka/Flink 控制面，也不写业务表。每轮检查在
+专用 `evidence` 命名卷中创建新的脱敏比较报告；任务 ID 只写 SHA-256，报告不含
+人员、地址、备注或事件正文。发现投影或事件计数差异时写入不可覆盖的告警，更新
+`status.json` 为 `paused` 并停止，防止容器重启后清除失败状态或继续计时。暂停后
+必须完成归因修复并使用新的双轨证据编号重新开始。服务使用只读根文件系统、
+`/tmp` tmpfs、128 MiB 内存、0.2 CPU、128 pids 上限和 5 MiB × 2 的 Docker
+日志轮换；证据卷不随 Compose 更新删除。
+
+当前 Dev worker 镜像可能早于该服务发布，因此 Compose 会把候选包中的
+`runtime.py` 和 `dual_track_monitor.py` 以只读文件挂入 monitor 容器。该挂载只
+覆盖 monitor 入口模块，不改变镜像、业务代码或其他服务；候选包清单和 Compose
+模型哈希会同时记录这两个文件。
+
+### Flink JobGraph identity
+
+`PipelineJob` 使用一个 `StatementSet` 把 `dev_revisions` 和
+`dev_task_metadata` 两个 INSERT 分支提交为一个 JobGraph。两个分支共享一个
+Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到当前运行编号的
+完整事件流。Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时
+包含两个受控 sink、运行编号和 development 过滤条件一致，并且 Kafka 消费组完全
+匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
+checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
+
+### 固定规模双轨验收
+
+候选完成 `prepare → measure → apply` 且 `current.json` 仍绑定当前运行编号后，
+使用 `Accept Dev event pipeline` 执行受控规模验收。部署账号只接受
+`accept <run_id> <scale>`，其中 `scale` 只能是 `1002`、`10000` 或 `100000`；
+入口不接受脚本、SQL、文件路径、stdin 载荷或任意数量。事件使用保留的高位虚构
+source ID 和 UUIDv5，只包含任务元数据，不包含姓名、证件号、手机号、地址、备注、
+密码或令牌。同一运行编号的较大规模复用前序确定性事件 ID，因此重复执行和从
+1002 递增至 10000 时不会生成重复业务含义。
+
+验收 runner 只连接 `binhu-development-eventbus_internal`，使用只读根文件系统、
+tmpfs、固定资源和日志上限，不加入 Backend 网络，不挂载 Docker socket，也不访问
+Production、Staging 或 Shadow。runner 会把候选包中的 runtime、投递台账、事件合同与
+relay 状态机模块一并只读挂载，不能混用旧 worker 镜像内的过期实现。启动、连接、
+入队、比较或证据写入失败时只输出异常类型和固定阶段，完整业务值不进入日志；
+controller 另写不可覆盖的私密失败证据。
+
+为避免两条消费者尚在收敛时常驻 monitor 把短暂先后顺序误报成最终差异，受控
+controller 先停止当前 Dev `dual-track-monitor`，
+由 runner 投递并有界等待 Kafka 台账、Python 投影、Flink 投影和 revision sink
+全部达到目标，再逐字段核对 revision、event count、changed field count 和各事件
+分类计数。零差异时写入不可覆盖的脱敏证据并恢复 monitor；超时或任何差异时写入
+`paused` 状态、保留证据并保持 monitor 停止，禁止继续下一级规模。
+
+Dev relay 当前固定使用 2 个并发 worker、4 条派生库连接和一个共享的幂等 Kafka
+producer。每个 worker 使用独立的 delivery store，并继续通过 `FOR UPDATE SKIP LOCKED`、
+lease token 和完成栅栏领取与完成事件；并发度和连接数是代码常量，不能由环境变量临时
+放大。该设置只属于 Dev event-pipeline，relay 仍只加入 internal 网络，不连接 Backend、
+Production、Staging 或 Shadow。正常发布日志按每个 worker 每 1000 条输出一次安全计数，
+不记录 event ID、载荷或业务正文。
+
+1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。连续 7 天、
+至少 100000 条唯一事件、checkpoint/savepoint 恢复、完整第 6–11 项以及 Staging
+晋级仍须分别记录和签署，不能由该工作流自动标记完成。
+
 ### Workflow environment contract
-All install, prepare, and deploy workflows must run in the GitHub development Environment.
+All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.
+
+### Relay lock-contention contract
+
+The Dev delivery relay starts with two workers and a four-connection derived-MySQL pool.
+Relay connections use `READ COMMITTED` only for relay mode. `claim` and `finish` retry the
+complete transaction for MySQL 1213/1205, with at most four attempts and bounded exponential
+jitter. Exhaustion pauses the relay and emits a fixed, redacted diagnostic; it never increases
+`innodb_lock_wait_timeout`, loops forever, or logs SQL parameters and business payloads. Each
+worker has an independent retry context. Shutdown waits for all workers before stopping Kafka
+and closing the pool. The next acceptance run is
+`dev-20260917-dualtrack-monitor23` and must restart at scale 1002 without reusing monitor22
+evidence.
+
+The monitor23 10000 failure was traced to the monitor image retaining an older
+`kafka_delivery_store.py` while the candidate mounted a newer `runtime.py`. The relay-only
+`LockContentionExhausted` import is now lazy inside the relay worker, so the monitor entry
+does not require the new relay module. Monitor23 evidence remains immutable; monitor24 must
+restart at scale 1002.

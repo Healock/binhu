@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import settings
 import routers.venue_codes as venue_codes
 from routers.venue_codes import (
+    _local_display,
+    _utc_iso,
     _check_form_token,
     _form_token,
     _public_venue_url,
@@ -37,6 +40,35 @@ def test_venue_token_is_signed_and_expires():
 def test_photo_magic_validation():
     mime, size, digest = _validate_photo("a.jpg", "image/jpeg", b"\xff\xd8\xff" + b"x")
     assert mime == "image/jpeg" and size == 4 and len(digest) == 64
+
+
+def test_private_photo_response_disables_browser_caching(monkeypatch, tmp_path):
+    photo_dir = tmp_path / "photos"
+    photo_dir.mkdir()
+    photo_path = photo_dir / "photo.jpg"
+    photo_path.write_bytes(b"photo")
+    monkeypatch.setattr(settings, "VENUE_PHOTO_DIR", photo_dir)
+
+    class FakeCursor:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def execute(self, _query, _params):
+            return None
+
+        async def fetchone(self):
+            return ("photo.jpg", "image/jpeg")
+
+    class FakeConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    response = __import__("asyncio").run(venue_codes.venue_visit_photo(7, user={}, conn=FakeConnection()))
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch):
@@ -206,3 +238,9 @@ async def test_delete_venue_soft_deletes_without_removing_visit_history(monkeypa
     assert "_venue_visits" not in statements[1][0]
     assert statements[1][1] == (5, "local_only", 3, 7)
     audit.assert_awaited_once()
+
+
+def test_drinking_report_times_are_explicit_utc_and_display_in_business_timezone():
+    value = datetime(2026, 9, 16, 10, 32, 0)
+    assert _utc_iso(value) == "2026-09-16T10:32:00Z"
+    assert _local_display(value, "Asia/Shanghai") == "2026年09月16日 18:32"

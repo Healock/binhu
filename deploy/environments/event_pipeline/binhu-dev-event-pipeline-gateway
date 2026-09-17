@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Forced-command wrapper for the Dev event-pipeline only.  It intentionally
-# has no shell escape and accepts only the three operations below.
+# has no shell escape and accepts only the fixed operations below.
 parts=()
 read -r -a parts <<< "${SSH_ORIGINAL_COMMAND:-}"
 case "${parts[0]:-}" in
@@ -25,6 +25,13 @@ case "${parts[0]:-}" in
     [[ "${parts[1]}" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py \
       "${parts[0]}" "${parts[1]}"
+    ;;
+  accept)
+    [[ "${#parts[@]}" -eq 3 ]] || exit 64
+    [[ "${parts[1]}" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]] || exit 64
+    [[ "${parts[2]}" =~ ^(1002|10000|100000)$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py \
+      accept "${parts[1]}" "${parts[2]}"
     ;;
   *)
     echo 'Only fixed Dev event-pipeline commands are allowed.' >&2

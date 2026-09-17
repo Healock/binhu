@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from datetime import datetime, timezone
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -15,7 +16,37 @@ from services.venue_cloud_client import (
     validate_status_response,
     validate_venue_cloud_configuration,
     validate_wait_response,
-)
+ )
+
+
+def test_cloud_received_datetime_normalizes_receiver_utc_timestamp():
+    assert venue_cloud._cloud_received_datetime("2026-09-15T02:48:34Z") == datetime(2026, 9, 15, 2, 48, 34)
+    assert venue_cloud._cloud_received_datetime("2026-09-15T10:48:34+08:00") == datetime(2026, 9, 15, 2, 48, 34)
+    assert venue_cloud._cloud_received_datetime(datetime(2026, 9, 15, 2, 48, 34, tzinfo=timezone.utc)) == datetime(2026, 9, 15, 2, 48, 34)
+
+
+def test_cloud_received_datetime_preserves_naive_utc_and_empty_values():
+    naive = datetime(2026, 9, 15, 2, 48, 34)
+    assert venue_cloud._cloud_received_datetime(naive) is naive
+    assert venue_cloud._cloud_received_datetime("") is None
+    assert venue_cloud._cloud_received_datetime(None) is None
+
+
+def test_name_hmac_is_available_for_unicode_names():
+    from services.registry_security import hmac_digest
+
+    digest, version = hmac_digest(" 测试 用户 ", kind="name")
+
+    assert digest is not None
+    assert len(digest) == 64
+    assert version == 1
+
+
+def test_hmac_digest_rejects_unknown_kind():
+    from services.registry_security import hmac_digest
+
+    with pytest.raises(ValueError, match="unsupported HMAC kind"):
+        hmac_digest("value", kind="unknown")
 
 
 class FakeClient:

@@ -305,6 +305,16 @@ test('查询工作表全屏只切换应用内部布局并使用 Univer 原生查
   assert.match(componentSource, /QUERY_SHEET_UI_CONFIG/)
 })
 
+test('在线数据查询使用的搜索图标必须在页面模块中显式导入', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/DataQuery.tsx', import.meta.url),
+    'utf8',
+  )
+  const iconImport = pageSource.match(/import\s*\{([^}]*)\}\s*from '@ant-design\/icons'/)
+  assert.ok(iconImport, 'DataQuery 必须有 Ant Design 图标导入')
+  assert.match(iconImport[1], /\bSearchOutlined\b/)
+})
+
 test('实时连接未就绪时保存使用 HTTP 入口且不重复显示失败提示', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/DataQuery.tsx', import.meta.url),

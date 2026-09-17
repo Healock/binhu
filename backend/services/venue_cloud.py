@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
 import random
 import secrets
 import uuid
@@ -18,10 +19,11 @@ from database import db_manager
 from services.qmf_config import decrypt_secret, encrypt_secret
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
 from services.venue_cloud_client import VenueCloudClient, VenueCloudClientError, validate_status_response
-from services.venue_cloud_security import VenueCloudSecurityError, decrypt_submission
+from services.venue_cloud_security import VenueCloudSecurityError, decrypt_payload_submission, decrypt_submission
 
 
 SUPPORTED_ENCRYPTION_VERSION = "rsa-oaep-sha256+aes-256-gcm-v1"
+SUPPORTED_ENCRYPTION_VERSIONS = [SUPPORTED_ENCRYPTION_VERSION, "rsa-oaep-sha256+aes-256-gcm-payload-v1"]
 SAFE_REJECTION_CODES = {"venue_inactive", "payload_invalid", "photo_invalid", "key_unknown", "ciphertext_invalid"}
 _runtime_status: dict[str, Any] = {
     "last_success_at": None,
@@ -33,10 +35,45 @@ _runtime_status: dict[str, Any] = {
     "cloud_uncertain_count": None,
     "cloud_active_key_id": None,
 }
+_manual_pull_lock = asyncio.Lock()
+
+
+async def pull_venue_cloud_now() -> int:
+    """Run one bounded pull for an operator-triggered refresh.
+
+    The scheduler and this endpoint share a lock so a manual refresh cannot
+    lease the same cloud submissions concurrently with the background worker.
+    """
+    if not settings.VENUE_CLOUD_PULL_ENABLED:
+        raise VenueCloudClientError("cloud_pull_disabled")
+    async with _manual_pull_lock:
+        client = VenueCloudClient()
+        try:
+            pulled = await drain_submissions(client)
+            _runtime_status.update(last_success_at=_utcnow().isoformat(), last_error_code=None, last_pull_count=pulled)
+            return pulled
+        finally:
+            await client.close()
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _cloud_received_datetime(value: Any) -> datetime | None:
+    """Normalize the Receiver's UTC ISO timestamp for a MySQL DATETIME column."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def cloud_enabled() -> bool:
@@ -51,6 +88,17 @@ async def enqueue_venue_cloud_outbox(cur, venue_id: int, config_revision: int, a
         "INSERT INTO _venue_cloud_outbox (venue_id,config_revision,action,request_id,status) "
         "VALUES (%s,%s,%s,%s,'pending')",
         (venue_id, config_revision, action, request_id),
+    )
+    return request_id
+
+
+async def enqueue_public_form_outbox(cur, form_key: str, config_revision: int, action: str) -> str | None:
+    if not settings.VENUE_CLOUD_SYNC_ENABLED:
+        return None
+    request_id = str(uuid.uuid4())
+    await cur.execute(
+        "INSERT INTO _public_form_cloud_outbox (form_key,config_revision,action,request_id,status) VALUES (%s,%s,%s,%s,'pending')",
+        (form_key, config_revision, action, request_id),
     )
     return request_id
 
@@ -180,6 +228,64 @@ async def process_outbox_once(client: VenueCloudClient) -> int:
     return completed
 
 
+async def _claim_public_form_outbox_rows(limit: int = 20) -> list[dict[str, Any]]:
+    pool = db_manager.get_pool("registry")
+    async with pool.acquire() as conn:
+        try:
+            await conn.begin()
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("UPDATE _public_form_cloud_outbox SET status='pending' WHERE status='sending' AND updated_at<DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 MINUTE)")
+                await cur.execute(
+                    "SELECT outbox.id,outbox.form_key,outbox.config_revision,outbox.action,outbox.request_id,outbox.attempt_count,form.display_name,form.status,form.encrypted_token,form.token_version,form.pending_encrypted_token,form.pending_token_version FROM _public_form_cloud_outbox outbox JOIN _public_form_codes form ON form.form_key=outbox.form_key WHERE outbox.status IN ('pending','error') AND outbox.next_attempt_at<=UTC_TIMESTAMP() ORDER BY outbox.id LIMIT %s FOR UPDATE SKIP LOCKED",
+                    (limit,),
+                )
+                rows = list(await cur.fetchall())
+                if rows:
+                    ids = [int(row["id"]) for row in rows]
+                    placeholders = ",".join(["%s"] * len(ids))
+                    await cur.execute(f"UPDATE _public_form_cloud_outbox SET status='sending',attempt_count=attempt_count+1 WHERE id IN ({placeholders})", tuple(ids))
+            await conn.commit()
+            return rows
+        except Exception:
+            await conn.rollback()
+            raise
+
+
+async def process_public_form_outbox_once(client: VenueCloudClient) -> int:
+    if not settings.VENUE_CLOUD_SYNC_ENABLED:
+        return 0
+    rows = await _claim_public_form_outbox_rows()
+    completed = 0
+    for row in rows:
+        encrypted_token = row["pending_encrypted_token"] if row["action"] == "rotate" else row["encrypted_token"]
+        token_version = row["pending_token_version"] if row["action"] == "rotate" else row["token_version"]
+        try:
+            payload = {"request_id": str(row["request_id"]), "form_key": str(row["form_key"]), "display_name": str(row["display_name"]), "status": str(row["status"]), "token": decrypt_secret(encrypted_token), "token_version": int(token_version), "config_revision": int(row["config_revision"])}
+            result = await client.request_json("PUT", f"/api/internal/public-forms/{row['form_key']}", payload)
+            if int(result.get("config_revision", 0)) < int(row["config_revision"]):
+                raise VenueCloudClientError("cloud_revision_not_applied")
+            pool = db_manager.get_pool("registry")
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("UPDATE _public_form_cloud_outbox SET status='sent',last_error_code=NULL WHERE id=%s", (row["id"],))
+                    if row["action"] == "rotate":
+                        await cur.execute("UPDATE _public_form_codes SET token_hmac=pending_token_hmac,encrypted_token=pending_encrypted_token,token_version=pending_token_version,pending_token_hmac=NULL,pending_encrypted_token=NULL,pending_token_version=NULL,cloud_sync_status='confirmed',cloud_synced_revision=%s,cloud_synced_at=UTC_TIMESTAMP(),cloud_sync_error_code=NULL WHERE form_key=%s AND config_revision=%s", (result["config_revision"], row["form_key"], row["config_revision"]))
+                    else:
+                        await cur.execute("UPDATE _public_form_codes SET cloud_sync_status='confirmed',cloud_synced_revision=%s,cloud_synced_at=UTC_TIMESTAMP(),cloud_sync_error_code=NULL WHERE form_key=%s AND config_revision=%s", (result["config_revision"], row["form_key"], row["config_revision"]))
+                await conn.commit()
+            completed += 1
+        except (VenueCloudClientError, VenueCloudSecurityError) as exc:
+            pool = db_manager.get_pool("registry")
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("UPDATE _public_form_cloud_outbox SET status='error',last_error_code=%s,next_attempt_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 30 SECOND) WHERE id=%s", (getattr(exc, "reason_code", "security_error"), row["id"]))
+                    await cur.execute("UPDATE _public_form_codes SET cloud_sync_status='error',cloud_sync_error_code=%s WHERE form_key=%s", (getattr(exc, "reason_code", "security_error"), row["form_key"]))
+                await conn.commit()
+        except Exception:
+            continue
+    return completed
+
+
 def _validate_decrypted_payload(payload: dict[str, Any], photo: bytes, mime: str) -> tuple[str, str, str, str, str]:
     try:
         name = str(payload["name"]).strip()
@@ -214,6 +320,14 @@ async def _existing_cloud_visit(submission_id: str) -> bool:
             return bool(await cur.fetchone())
 
 
+async def _existing_drinking_report(submission_id: str) -> bool:
+    pool = db_manager.get_pool("registry")
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT id FROM _drinking_reports WHERE cloud_submission_id=%s", (submission_id,))
+            return bool(await cur.fetchone())
+
+
 async def _record_ingest_event(submission_id: str, venue_id: int | None, status: str, reason: str | None, key_id: str | None) -> None:
     try:
         pool = db_manager.get_pool("registry")
@@ -233,6 +347,78 @@ async def _ingest_item(client: VenueCloudClient, lease_id: str, item: dict[str, 
     submission_id = str(item.get("submission_id") or "")
     venue_id = int(item.get("local_venue_id") or 0)
     key_id = str(item.get("key_id") or "")
+    if str(item.get("submission_kind") or "venue_visit") == "drinking_report":
+        if await _existing_drinking_report(submission_id):
+            return {"submission_id": submission_id, "status": "accepted", "reason_code": ""}
+        try:
+            encrypted_payload = base64.urlsafe_b64decode(str(item["encrypted_payload"]) + "=" * (-len(str(item["encrypted_payload"])) % 4))
+            if hashlib.sha256(encrypted_payload).hexdigest() != str(item["ciphertext_sha256"]):
+                raise ValueError("ciphertext_invalid")
+            payload = decrypt_payload_submission(item, settings.VENUE_CLOUD_DECRYPTION_KEY_DIR)
+            required = ("name", "unit_position", "drinking_at", "drinking_place", "reason", "inviter", "travel_method", "responsible_leader_name", "reporter_signature", "leader_signature")
+            if any(not str(payload.get(k) or "").strip() for k in required):
+                raise ValueError("payload_invalid")
+            signatures = (payload["reporter_signature"], payload["leader_signature"])
+            for signature in signatures:
+                if not isinstance(signature, list) or not signature or len(signature) > 200:
+                    raise ValueError("payload_invalid")
+                distance = 0.0
+                points = 0
+                for stroke in signature:
+                    if not isinstance(stroke, list) or not stroke or len(stroke) > 1000:
+                        raise ValueError("payload_invalid")
+                    previous = None
+                    for point in stroke:
+                        if not isinstance(point, dict):
+                            raise ValueError("payload_invalid")
+                        x, y = float(point["x"]), float(point["y"])
+                        if not 0 <= x <= 1 or not 0 <= y <= 1:
+                            raise ValueError("payload_invalid")
+                        if previous is not None:
+                            distance += math.hypot(x - previous[0], y - previous[1])
+                        previous = (x, y)
+                        points += 1
+                if points > 5000 or distance < 0.02:
+                    raise ValueError("payload_invalid")
+            drinking_at = datetime.fromisoformat(str(payload["drinking_at"]).replace("Z", "+00:00"))
+            if drinking_at.tzinfo is None:
+                drinking_at = drinking_at.replace(tzinfo=timezone.utc)
+            drinking_at = drinking_at.astimezone(timezone.utc).replace(tzinfo=None)
+        except (VenueCloudSecurityError, ValueError, KeyError, TypeError, OverflowError):
+            await _record_ingest_event(submission_id, None, "rejected", "payload_invalid", key_id)
+            return {"submission_id": submission_id, "status": "rejected", "reason_code": "payload_invalid"}
+        pool = db_manager.get_pool("registry")
+        async with pool.acquire() as conn:
+            try:
+                await conn.begin()
+                async with conn.cursor() as cur:
+                    name = str(payload["name"]).strip()
+                    leader = str(payload["responsible_leader_name"]).strip()
+                    name_hmac, _ = hmac_digest(name, kind="name")
+                    leader_hmac, _ = hmac_digest(leader, kind="name")
+                    await cur.execute(
+                        "INSERT INTO _drinking_reports (cloud_submission_id,form_key,encrypted_name,name_hmac,encrypted_unit_position,encrypted_drinking_at,drinking_at,encrypted_drinking_place,encrypted_reason,encrypted_inviter,encrypted_travel_method,encrypted_notes,encrypted_responsible_leader_name,responsible_leader_hmac,encrypted_reporter_signature,encrypted_leader_signature,rules_version,rules_acknowledged_at,cloud_received_at,cloud_key_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (submission_id, str(item.get("public_form_key") or "drinking_report"), encrypt_secret(name), name_hmac, encrypt_secret(str(payload["unit_position"])), encrypt_secret(str(payload["drinking_at"])), drinking_at, encrypt_secret(str(payload["drinking_place"])), encrypt_secret(str(payload["reason"])), encrypt_secret(str(payload["inviter"])), encrypt_secret(str(payload["travel_method"])), encrypt_secret(str(payload.get("notes") or "")), encrypt_secret(leader), leader_hmac, encrypt_secret(json.dumps(payload["reporter_signature"], ensure_ascii=False)), encrypt_secret(json.dumps(payload["leader_signature"], ensure_ascii=False)), str(payload.get("rules_version") or "2026-09-16"), _cloud_received_datetime(payload.get("rules_acknowledged_at")) or _utcnow(), _cloud_received_datetime(item.get("received_at")), key_id),
+                    )
+                await conn.commit()
+            except aiomysql.IntegrityError:
+                await conn.rollback()
+                # Check the idempotency key on the same transaction connection.
+                # Acquiring a second registry connection while this one is held
+                # can exhaust the pool under concurrent pulls.
+                async with conn.cursor() as check_cur:
+                    await check_cur.execute(
+                        "SELECT id FROM _drinking_reports WHERE cloud_submission_id=%s",
+                        (submission_id,),
+                    )
+                    if await check_cur.fetchone():
+                        return {"submission_id": submission_id, "status": "accepted", "reason_code": ""}
+                return {"submission_id": submission_id, "status": "retry_later", "reason_code": "database_conflict"}
+            except Exception:
+                await conn.rollback()
+                return {"submission_id": submission_id, "status": "retry_later", "reason_code": "local_storage_error"}
+        await _record_ingest_event(submission_id, None, "accepted", None, key_id)
+        return {"submission_id": submission_id, "status": "accepted", "reason_code": ""}
     if await _existing_cloud_visit(submission_id):
         return {"submission_id": submission_id, "status": "accepted", "reason_code": ""}
     try:
@@ -293,7 +479,7 @@ async def _ingest_item(client: VenueCloudClient, lease_id: str, item: dict[str, 
                 (
                     venue_id, encrypt_secret(name), encrypt_secret(identity), identity_digest,
                     encrypt_secret(phone), phone_digest, encrypt_secret(address), submission_id,
-                    item.get("received_at"), key_id, retention,
+                    _cloud_received_datetime(item.get("received_at")), key_id, retention,
                 ),
             )
             visit_id = int(cur.lastrowid)
@@ -341,7 +527,7 @@ async def pull_submissions_once(client: VenueCloudClient) -> int:
             "request_id": request_id,
             "worker_id": settings.VENUE_CLOUD_WORKER_ID,
             "limit": min(50, max(1, settings.VENUE_CLOUD_PULL_BATCH_SIZE)),
-            "supported_encryption_versions": [SUPPORTED_ENCRYPTION_VERSION],
+            "supported_encryption_versions": SUPPORTED_ENCRYPTION_VERSIONS,
         },
     )
     lease_id = str(response.get("lease_id") or "")
@@ -463,6 +649,11 @@ async def get_venue_cloud_status() -> dict[str, Any]:
             )
             outbox = await cur.fetchone() or {}
             await cur.execute(
+                "SELECT SUM(status IN ('pending','sending','error')) AS pending,"
+                "SUM(status='error') AS failed FROM _public_form_cloud_outbox"
+            )
+            public_outbox = await cur.fetchone() or {}
+            await cur.execute(
                 "SELECT SUM(result_status='uncertain') AS uncertain_count FROM _venue_cloud_ingest_events"
             )
             ingest = await cur.fetchone() or {}
@@ -471,8 +662,8 @@ async def get_venue_cloud_status() -> dict[str, Any]:
         "sync_enabled": settings.VENUE_CLOUD_SYNC_ENABLED,
         "pull_enabled": settings.VENUE_CLOUD_PULL_ENABLED,
         "local_public_entry_enabled": settings.VENUE_LOCAL_PUBLIC_ENTRY_ENABLED,
-        "outbox_pending": int(outbox.get("outbox_pending") or 0),
-        "outbox_failed": int(outbox.get("outbox_failed") or 0),
+        "outbox_pending": int(outbox.get("outbox_pending") or 0) + int(public_outbox.get("pending") or 0),
+        "outbox_failed": int(outbox.get("outbox_failed") or 0) + int(public_outbox.get("failed") or 0),
         "uncertain_count": int(ingest.get("uncertain_count") or 0),
         **_runtime_status,
     }
@@ -497,9 +688,13 @@ async def run_venue_cloud_scheduler() -> None:
         while True:
             try:
                 await process_outbox_once(client)
+                await process_public_form_outbox_once(client)
                 now = asyncio.get_running_loop().time()
                 fallback_due = settings.VENUE_CLOUD_PULL_ENABLED and now >= next_safety_pull
-                pulled = await wait_for_and_drain(client, fallback_due=fallback_due)
+                # Serialize operator-triggered refreshes with the scheduler so
+                # a manual action cannot race a lease claimed by this worker.
+                async with _manual_pull_lock:
+                    pulled = await wait_for_and_drain(client, fallback_due=fallback_due)
                 if fallback_due:
                     next_safety_pull = asyncio.get_running_loop().time() + 300
                 cloud_status = validate_status_response(

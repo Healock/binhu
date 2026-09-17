@@ -54,7 +54,33 @@ class MySQLRepository:
             async with conn.cursor() as cur:
                 for statement in statements:
                     await cur.execute(statement)
+                await self._ensure_submission_columns(cur)
             await conn.commit()
+
+    async def _ensure_submission_columns(self, cur) -> None:
+        columns = {
+            "submission_kind": "VARCHAR(30) NOT NULL DEFAULT 'venue_visit' AFTER submission_id",
+            "public_form_key": "VARCHAR(80) DEFAULT NULL AFTER local_venue_id",
+        }
+        for name, definition in columns.items():
+            await cur.execute("SHOW COLUMNS FROM submissions LIKE %s", (name,))
+            if not await cur.fetchone():
+                await cur.execute(f"ALTER TABLE submissions ADD COLUMN `{name}` {definition}")
+        nullable = {
+            "local_venue_id": "BIGINT DEFAULT NULL",
+            "photo_object_key": "VARCHAR(200) DEFAULT NULL",
+            "photo_nonce": "VARCHAR(100) DEFAULT NULL",
+            "photo_ciphertext_sha256": "CHAR(64) DEFAULT NULL",
+            "photo_size": "BIGINT UNSIGNED DEFAULT NULL",
+            "photo_mime_type": "VARCHAR(100) DEFAULT NULL",
+        }
+        for name, definition in nullable.items():
+            await cur.execute("SHOW COLUMNS FROM submissions LIKE %s", (name,))
+            column = await cur.fetchone()
+            # Only migrate legacy NOT NULL columns.  Repeating MODIFY COLUMN on
+            # every receiver restart acquires unnecessary metadata locks.
+            if column and str(column.get("Null", "YES") if isinstance(column, dict) else column[2]).upper() == "NO":
+                await cur.execute(f"ALTER TABLE submissions MODIFY COLUMN `{name}` {definition}")
 
     async def get_venue_by_token(self, token_hmac: str) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
@@ -75,6 +101,63 @@ class MySQLRepository:
                     (token_hmac,),
                 )
                 return await cur.fetchone()
+
+    async def get_public_form_by_token(self, token_hmac: str) -> dict[str, Any] | None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT form_key,display_name,status,token_version,config_revision "
+                    "FROM public_forms WHERE token_hmac=%s",
+                    (token_hmac,),
+                )
+                return await cur.fetchone()
+
+    async def issue_public_form_token(self, token_hmac: str, form_key: str, not_before: datetime, expires_at: datetime) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO public_form_tokens (token_hmac,form_key,not_before,expires_at) VALUES (%s,%s,%s,%s)",
+                    (token_hmac, form_key, not_before, expires_at),
+                )
+            await conn.commit()
+
+    async def consume_public_form_token(self, token_hmac: str, form_key: str) -> bool:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE public_form_tokens SET consumed_at=UTC_TIMESTAMP() WHERE token_hmac=%s AND form_key=%s "
+                    "AND consumed_at IS NULL AND not_before<=UTC_TIMESTAMP() AND expires_at>=UTC_TIMESTAMP()",
+                    (token_hmac, form_key),
+                )
+                consumed = cur.rowcount == 1
+            await conn.commit()
+            return consumed
+
+    async def upsert_public_form(self, item: dict[str, Any]) -> dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            try:
+                await conn.begin()
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT config_revision,status,token_hmac,token_version FROM public_forms WHERE form_key=%s FOR UPDATE",
+                        (item["form_key"],),
+                    )
+                    current = await cur.fetchone()
+                    if current and int(current["config_revision"]) >= int(item["config_revision"]):
+                        await conn.commit()
+                        return {"applied": False, "config_revision": int(current["config_revision"]), "status": current["status"], "token_version": int(current["token_version"])}
+                    await cur.execute(
+                        "INSERT INTO public_forms (form_key,display_name,status,token_hmac,token_version,config_revision,last_request_id) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),"
+                        "status=VALUES(status),token_hmac=VALUES(token_hmac),token_version=VALUES(token_version),"
+                        "config_revision=VALUES(config_revision),last_request_id=VALUES(last_request_id)",
+                        (item["form_key"], item["display_name"], item["status"], item["token_hmac"], item["token_version"], item["config_revision"], item["request_id"]),
+                    )
+                await conn.commit()
+                return {"applied": True, "config_revision": int(item["config_revision"]), "status": item["status"], "token_version": int(item["token_version"])}
+            except Exception:
+                await conn.rollback()
+                raise
 
     async def check_rate_limits(self, limits: list[tuple[str, int]]) -> bool:
         exceeded = False
@@ -130,7 +213,7 @@ class MySQLRepository:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "SELECT submission_id,local_venue_id,request_fingerprint,state FROM submissions WHERE submission_id=%s",
+                    "SELECT submission_id,local_venue_id,public_form_key,submission_kind,request_fingerprint,state FROM submissions WHERE submission_id=%s",
                     (submission_id,),
                 )
                 return await cur.fetchone()
@@ -140,16 +223,16 @@ class MySQLRepository:
             try:
                 async with conn.cursor() as cur:
                     await cur.execute(
-                        "INSERT INTO submissions (submission_id,local_venue_id,request_fingerprint,state,"
+                        "INSERT INTO submissions (submission_id,submission_kind,local_venue_id,public_form_key,request_fingerprint,state,"
                         "encrypted_payload,wrapped_data_key,key_id,algorithm_version,payload_nonce,ciphertext_sha256,"
                         "photo_object_key,photo_nonce,photo_ciphertext_sha256,photo_size,photo_mime_type,expires_at) "
-                        "VALUES (%s,%s,%s,'queued',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "VALUES (%s,%s,%s,%s,%s,'queued',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (
-                            item["submission_id"], item["local_venue_id"], item["request_fingerprint"],
+                            item["submission_id"], item.get("submission_kind", "venue_visit"), item.get("local_venue_id"), item.get("public_form_key"), item["request_fingerprint"],
                             item["encrypted_payload"], item["wrapped_data_key"], item["key_id"],
                             item["algorithm_version"], item["payload_nonce"], item["ciphertext_sha256"],
-                            item["photo_object_key"], item["photo_nonce"], item["photo_ciphertext_sha256"],
-                            item["photo_size"], item["photo_mime_type"],
+                            item.get("photo_object_key"), item.get("photo_nonce"), item.get("photo_ciphertext_sha256"),
+                            item.get("photo_size"), item.get("photo_mime_type"),
                             utcnow() + timedelta(hours=self.queued_retention_hours),
                         ),
                     )
@@ -290,9 +373,9 @@ class MySQLRepository:
                             tuple([lease_id, worker_id, lease_expires_at, *ids]),
                         )
                         await cur.execute(
-                            f"SELECT submission_id,local_venue_id,encrypted_payload,wrapped_data_key,key_id,algorithm_version,"
-                            f"payload_nonce,ciphertext_sha256,photo_nonce,photo_ciphertext_sha256,photo_size,photo_mime_type,received_at "
-                            f"FROM submissions WHERE submission_id IN ({placeholders}) ORDER BY received_at",
+                            f"SELECT submission_id,submission_kind,local_venue_id,public_form_key,encrypted_payload,wrapped_data_key,key_id,algorithm_version,"
+                            f"payload_nonce,ciphertext_sha256,photo_object_key,photo_nonce,photo_ciphertext_sha256,photo_size,photo_mime_type,received_at "
+                        f"FROM submissions WHERE submission_id IN ({placeholders}) ORDER BY received_at",
                             tuple(ids),
                         )
                         rows = list(await cur.fetchall())
@@ -406,6 +489,7 @@ class MySQLRepository:
                         (accepted_retention_hours,),
                     )
                     await cur.execute("DELETE FROM form_tokens WHERE expires_at<UTC_TIMESTAMP()")
+                    await cur.execute("DELETE FROM public_form_tokens WHERE expires_at<UTC_TIMESTAMP()")
                     await cur.execute("DELETE FROM internal_request_nonces WHERE expires_at<UTC_TIMESTAMP()")
                     await cur.execute("DELETE FROM internal_request_results WHERE expires_at<UTC_TIMESTAMP()")
                     await cur.execute("DELETE FROM rate_limit_buckets WHERE expires_at<UTC_TIMESTAMP()")

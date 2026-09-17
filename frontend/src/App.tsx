@@ -192,7 +192,8 @@ function App() {
                 <Route path="/police-addresses" element={<PoliceAddressManagement />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="venue.view" />}>
-                <Route path="/venue-codes" element={<VenueCodeManagement />} />
+                <Route path="/qr-codes" element={<VenueCodeManagement />} />
+                <Route path="/venue-codes" element={<Navigate to="/qr-codes" replace />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="registry.property.view" />}>
                 <Route path="/registry" element={<RegistryManagement />} />

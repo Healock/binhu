@@ -2,12 +2,25 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
 
 from .kafka_event_contract import validate_task_event
-from .task_metadata_projection import IncrementalTaskMetadataProjector, flatten_projection
+from .task_metadata_projection import IncrementalTaskMetadataProjector, flatten_projection, _canonical
 
 TABLE = "dev_task_metadata_python"
+
+
+def event_ledger_sql(raw: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
+    """Return the idempotent durable event ledger insert for one event."""
+    event = validate_task_event(raw)
+    digest = hashlib.sha256(_canonical(event).encode("utf-8")).hexdigest()
+    return (
+        "INSERT INTO dev_task_metadata_python_events "
+        "(run_id,event_id,task_id,source_id,revision,canonical_sha256) "
+        "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE event_id=event_id",
+        (event["run_id"], event["event_id"], event["task_id"], event["source_id"], event["revision"], digest),
+    )
 
 
 def upsert_sql(row: dict[str, Any]) -> tuple[str, tuple[Any, ...]]:
@@ -45,21 +58,54 @@ async def run(config):
         charset="utf8mb4", init_command="SET time_zone='+00:00'",
     )
     projector = IncrementalTaskMetadataProjector()
-    await consumer.start()
+    from ..runtime import ensure_database_identity
     try:
+        await ensure_database_identity(pool, config)
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT run_id,task_id,source_id,revision,event_count,changed_field_count,"
+                    "created_count,saved_count,claimed_count,assigned_count,reviewed_count,"
+                    "archived_count,deleted_count FROM dev_task_metadata_python WHERE run_id=%s",
+                    (config["DEV_RUN_ID"],),
+                )
+                columns = ("run_id", "task_id", "source_id", "revision", "event_count", "changed_field_count",
+                           "created_count", "saved_count", "claimed_count", "assigned_count", "reviewed_count",
+                           "archived_count", "deleted_count")
+                for row in await cur.fetchall():
+                    persisted = dict(zip(columns, row))
+                    persisted["environment"] = "development"
+                    projector.restore_snapshot(persisted)
+        await consumer.start()
         async for message in consumer:
             event = validate_task_event(json.loads(message.value))
             if event["run_id"] != config["DEV_RUN_ID"]:
                 continue
-            row = projector.apply(event)
-            sql, params = upsert_sql(row)
             async with pool.acquire() as conn:
+                await conn.begin()
                 async with conn.cursor() as cur:
+                    ledger_sql, ledger_params = event_ledger_sql(event)
+                    await cur.execute(
+                        "SELECT canonical_sha256 FROM dev_task_metadata_python_events "
+                        "WHERE run_id=%s AND event_id=%s FOR UPDATE",
+                        (event["run_id"], event["event_id"]),
+                    )
+                    existing = await cur.fetchone()
+                    digest = ledger_params[-1]
+                    if existing is not None:
+                        if existing[0] != digest:
+                            raise ValueError("Python event ledger metadata conflict")
+                        await conn.rollback()
+                        continue
+                    await cur.execute(ledger_sql, ledger_params)
+                    row = projector.apply(event)
+                    sql, params = upsert_sql(row)
                     await cur.execute(sql, params)
+                await conn.commit()
     finally:
         await consumer.stop()
         pool.close()
         await pool.wait_closed()
 
 
-__all__ = ["TABLE", "run", "upsert_sql"]
+__all__ = ["TABLE", "event_ledger_sql", "run", "upsert_sql"]

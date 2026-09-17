@@ -9,6 +9,7 @@ import os
 import secrets
 import time
 import uuid
+import unicodedata
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,13 @@ from .security import (
     response_signature_headers,
     verify_request_signature,
 )
+from .validation import (
+    ValidationError,
+    validate_drinking_report_fields,
+    validate_public_submission_fields,
+    validate_signature_strokes,
+)
+from .drinking_page import render_drinking_report_page
 
 
 class VenueUpdate(BaseModel):
@@ -47,6 +55,16 @@ class VenueUpdate(BaseModel):
 class VenueSummary(BaseModel):
     local_venue_id: int = Field(gt=0)
     status: Literal["active", "inactive", "deleted"]
+    token: str = Field(min_length=32, max_length=200)
+    token_version: int = Field(ge=1)
+    config_revision: int = Field(ge=1)
+
+
+class PublicFormUpdate(BaseModel):
+    request_id: uuid.UUID
+    form_key: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_-]+$")
+    display_name: str = Field(min_length=1, max_length=200)
+    status: Literal["active", "inactive"]
     token: str = Field(min_length=32, max_length=200)
     token_version: int = Field(ge=1)
     config_revision: int = Field(ge=1)
@@ -168,27 +186,34 @@ def _normalize_photo(filename: str, content_type: str, data: bytes, config: Sett
 
 
 def _registration_page() -> str:
-    return """<!doctype html>
+    return r"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="referrer" content="no-referrer"><title>场所登记</title><style>
-:root{font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#17212b;background:#f3f6f8}*{box-sizing:border-box}
-body{margin:0;padding:max(24px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));min-height:100vh}
-main{max-width:560px;margin:auto;background:#fff;border:1px solid #dce4e8;border-radius:8px;padding:24px}h1{font-size:22px;margin:0 0 6px}
-p{color:#60717d;margin:0 0 20px}form{display:grid;gap:14px}label{display:grid;gap:6px;font-size:14px;font-weight:600}
-input{width:100%;min-height:44px;border:1px solid #b8c5cc;border-radius:6px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:6px;background:#176b5b;color:#fff;font:inherit;font-weight:700}
-#message{min-height:22px;color:#b42318}button:disabled{opacity:.6}</style></head><body><main><h1 id="venue">场所登记</h1>
-<p>请如实填写登记信息。</p><form id="form"><label>姓名<input name="name" maxlength="100" required autocomplete="name"></label>
-<label>公民身份号码<input name="identity_number" maxlength="18" required inputmode="text"></label>
-<label>手机号<input name="phone" maxlength="20" required inputmode="tel" autocomplete="tel"></label>
-<label>地址<input name="address" maxlength="500" required autocomplete="street-address"></label>
-<label>照片<input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required></label>
-<button type="submit">提交登记</button><div id="message" role="status"></div></form></main><script>
-const token=decodeURIComponent(location.pathname.split('/').pop()||'');const form=document.querySelector('#form');const message=document.querySelector('#message');let formToken='';
+:root{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#17212b;background:#f5f7fb;color-scheme:light}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:max(20px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));background:linear-gradient(180deg,#edf4ff 0,#f5f7fb 220px)}
+main{width:min(100%,560px);margin:clamp(12px,6vh,64px) auto 0;background:#fff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 12px 32px #1d4ed80f;padding:clamp(22px,5vw,36px)}
+.brand{display:inline-flex;align-items:center;gap:8px;color:#2563eb;font-weight:700;font-size:13px;letter-spacing:.04em}.brand i{display:block;width:9px;height:9px;border-radius:50%;background:#2563eb}
+h1{font-size:clamp(24px,5vw,30px);line-height:1.25;margin:14px 0 8px;color:#0f172a}p{color:#64748b;line-height:1.6;margin:0 0 26px}
+form{display:grid;gap:18px}label{display:grid;gap:7px;color:#334155;font-size:14px;font-weight:650}.label-text{display:flex;align-items:baseline;gap:4px;line-height:1.4}.required{display:inline-block;color:#dc2626;font-weight:750;line-height:1;margin:0}input{width:100%;min-height:46px;border:1px solid #cbd5e1;border-radius:10px;padding:11px 13px;background:#fff;color:#0f172a;font:inherit;transition:border-color .15s,box-shadow .15s}input:focus{outline:0;border-color:#2563eb;box-shadow:0 0 0 3px #2563eb1f}input[aria-invalid=true]{border-color:#dc2626;box-shadow:0 0 0 3px #dc26261a}
+input[type=file]{padding:9px;background:#f8fafc}.hint{font-size:12px;font-weight:400;color:#64748b}.field-error{min-height:16px;color:#dc2626;font-size:12px;font-weight:500}.actions{display:grid;gap:10px;margin-top:4px}button{min-height:48px;border:0;border-radius:10px;background:#2563eb;color:#fff;font:inherit;font-weight:700;cursor:pointer;box-shadow:0 5px 12px #2563eb2b}button:hover{background:#1d4ed8}button:disabled{opacity:.6;cursor:wait}.message{min-height:22px;color:#b42318;font-size:14px}.message.success{color:#15803d}@media(max-width:520px){body{padding-left:12px;padding-right:12px}main{margin-top:12px;padding:22px 18px;border-radius:14px}}
+</style></head><body><main><div class="brand"><i></i>滨湖新城派出所</div><h1 id="venue">场所登记</h1>
+<p>请填写真实、完整的信息。姓名、身份证号码、手机号、地址和照片均为必填项。</p><form id="form" novalidate>
+<label><span class="label-text">姓名<span class="required" aria-hidden="true">*</span></span><input name="name" maxlength="100" required autocomplete="name"><span class="field-error" data-error-for="name"></span></label>
+<label><span class="label-text">公民身份号码<span class="required" aria-hidden="true">*</span></span><input name="identity_number" maxlength="18" required inputmode="text" autocomplete="off"><span class="hint">请输入18位居民身份证号码</span><span class="field-error" data-error-for="identity_number"></span></label>
+<label><span class="label-text">手机号<span class="required" aria-hidden="true">*</span></span><input name="phone" maxlength="11" required inputmode="tel" autocomplete="tel"><span class="field-error" data-error-for="phone"></span></label>
+<label><span class="label-text">地址<span class="required" aria-hidden="true">*</span></span><input name="address" maxlength="500" required autocomplete="street-address"><span class="field-error" data-error-for="address"></span></label>
+<label><span class="label-text">照片<span class="required" aria-hidden="true">*</span></span><input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required><span class="hint">支持 JPG、PNG 或 WebP，单张不超过 5 MB</span><span class="field-error" data-error-for="photo"></span></label>
+<div class="actions"><button type="submit">提交登记</button><div id="message" class="message" role="status" aria-live="polite"></div></div></form></main><script>
+const token=decodeURIComponent(location.pathname.split('/').pop()||''),form=document.querySelector('#form'),message=document.querySelector('#message');let formToken='';
 const makeUuid=()=>{if(globalThis.crypto&&typeof globalThis.crypto.randomUUID==='function')return globalThis.crypto.randomUUID();const bytes=new Uint8Array(16);if(globalThis.crypto&&typeof globalThis.crypto.getRandomValues==='function')globalThis.crypto.getRandomValues(bytes);else for(let i=0;i<bytes.length;i++)bytes[i]=Math.floor(Math.random()*256);bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=[...bytes].map(value=>value.toString(16).padStart(2,'0')).join('');return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`};
-const submissionId=makeUuid();
+const submissionId=makeUuid();const identityWeights=[7,9,10,5,8,4,2,1,6,3,7,9,10,5,8,4,2],identityChecks='10X98765432';
+const normalizeText=value=>value.normalize('NFKC').trim().split(/\s+/u).join(' ');
+const identityValid=value=>{const v=normalizeText(value).replaceAll(' ','').toUpperCase();if(!/^[0-9]{17}[0-9X]$/.test(v))return false;const y=Number(v.slice(6,10)),m=Number(v.slice(10,12)),d=Number(v.slice(12,14)),dt=new Date(Date.UTC(y,m-1,d));if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==m-1||dt.getUTCDate()!==d)return false;return identityChecks[[...v.slice(0,17)].reduce((sum,digit,i)=>sum+Number(digit)*identityWeights[i],0)%11]===v[17]};
+const setError=(field,text)=>{const input=form.elements[field],target=document.querySelector(`[data-error-for="${field}"]`);if(target)target.textContent=text||'';if(input)input.setAttribute('aria-invalid',text?'true':'false')};
+const validate=()=>{const values=Object.fromEntries(new FormData(form).entries()),errors={};const name=normalizeText(String(values.name||'')),address=normalizeText(String(values.address||'')),phone=String(values.phone||'').trim().replace(/[ -]/g,'');if(!name)errors.name='请填写姓名';else if(/[\u0000-\u001f\u007f-\u009f]/u.test(name))errors.name='姓名不能包含控制字符';if(!identityValid(String(values.identity_number||'')))errors.identity_number='请输入有效的18位身份证号码';if(!/^1[3-9]\d{9}$/.test(phone))errors.phone='请输入有效的11位手机号';if(!address)errors.address='请填写地址';else if(/[\u0000-\u001f\u007f-\u009f]/u.test(address))errors.address='地址不能包含控制字符';if(!(values.photo instanceof File)||!values.photo.size)errors.photo='请选择照片';for(const field of ['name','identity_number','phone','address','photo'])setError(field,errors[field]);return {values:{...values,name,phone,address},errors};};
 fetch(`/api/public/venues/${encodeURIComponent(token)}`,{credentials:'omit'}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.detail||'二维码不可用');document.querySelector('#venue').textContent=d.name;formToken=d.form_token}).catch(e=>{message.textContent=e.message;form.hidden=true});
 let deviceId=localStorage.getItem('binhuVenueDeviceId');if(!deviceId){deviceId=makeUuid();localStorage.setItem('binhuVenueDeviceId',deviceId)}
-form.addEventListener('submit',async e=>{e.preventDefault();const button=form.querySelector('button');button.disabled=true;message.textContent='正在提交…';const body=new FormData(form);body.set('submission_id',submissionId);body.set('form_token',formToken);body.set('venue_token',token);body.set('device_id',deviceId);try{const r=await fetch('/api/public/submissions',{method:'POST',body,credentials:'omit'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'提交失败');message.textContent='提交成功';form.querySelectorAll('input,button').forEach(x=>x.disabled=true)}catch(err){message.textContent=err.message||'提交失败，请稍后重试';button.disabled=false}});
+form.addEventListener('submit',async e=>{e.preventDefault();message.textContent='';message.classList.remove('success');const checked=validate();if(Object.keys(checked.errors).length){message.textContent='请先修正标红字段';return}const button=form.querySelector('button');button.disabled=true;message.textContent='正在提交…';const body=new FormData(form);body.set('name',checked.values.name);body.set('phone',checked.values.phone);body.set('address',checked.values.address);body.set('submission_id',submissionId);body.set('form_token',formToken);body.set('venue_token',token);body.set('device_id',deviceId);try{const r=await fetch('/api/public/submissions',{method:'POST',body,credentials:'omit'});const d=await r.json();if(!r.ok)throw new Error(d.detail||'提交失败');message.textContent='提交成功，工作人员将在平台内核验登记信息';message.classList.add('success');form.querySelectorAll('input,button').forEach(x=>x.disabled=true)}catch(err){message.textContent=err.message||'提交失败，请稍后重试';button.disabled=false}});
 </script></body></html>"""
 
 
@@ -344,6 +369,98 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
 
+    @application.get("/drinking-report/{token}", response_class=HTMLResponse)
+    async def drinking_report_page(token: str, request: Request):
+        if not 32 <= len(token) <= 200:
+            raise HTTPException(404, "二维码不可用")
+        form = await request.app.state.repo.get_public_form_by_token(
+            keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", token)
+        )
+        if not form:
+            raise HTTPException(404, "二维码不可用")
+        if form["status"] != "active":
+            return HTMLResponse(_retired_registration_page(), status_code=410, headers={"Cache-Control": "no-store"})
+        return HTMLResponse(render_drinking_report_page(), headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'"})
+
+    @application.get("/api/public/forms/{token}")
+    async def public_form_info(token: str, request: Request):
+        form = await request.app.state.repo.get_public_form_by_token(
+            keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", token)
+        )
+        if not form or form["status"] != "active":
+            raise HTTPException(404, "二维码不存在或已停用")
+        form_token = secrets.token_urlsafe(32)
+        await request.app.state.repo.issue_public_form_token(
+            keyed_digest(app_config.FORM_TOKEN_HMAC_KEY, "public-form-token", form_token),
+            str(form["form_key"]),
+            _utcnow() + timedelta(seconds=3),
+            _utcnow() + timedelta(seconds=app_config.FORM_TOKEN_TTL_SECONDS),
+        )
+        return JSONResponse({"form_key": str(form["form_key"]), "display_name": str(form["display_name"]), "form_token": form_token}, headers={"Cache-Control": "no-store"})
+
+    @application.post("/api/public/drinking-reports", status_code=202)
+    async def public_drinking_report(payload: dict[str, Any], request: Request):
+        required = ("submission_id", "form_token", "form_token_value", "device_id", "name", "unit_position", "drinking_at", "drinking_place", "reason", "inviter", "travel_method", "responsible_leader_name", "reporter_signature", "leader_signature")
+        if any(not str(payload.get(k) or "").strip() for k in required):
+            raise HTTPException(422, "请完整填写必填字段并完成双方签名")
+        try:
+            submission_id = str(uuid.UUID(str(payload["submission_id"])))
+        except ValueError as exc:
+            raise HTTPException(422, "submission_id 无效") from exc
+        form = await request.app.state.repo.get_public_form_by_token(
+            keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", str(payload["form_token_value"]))
+        )
+        if not form or form["status"] != "active":
+            raise HTTPException(404, "二维码不存在或已停用")
+        if str(form["form_key"]) != "drinking_report":
+            raise HTTPException(422, "二维码类型无效")
+        device_id = str(payload["device_id"])
+        if not 16 <= len(device_id) <= 200:
+            raise HTTPException(422, "device_id 无效")
+        try:
+            normalized = validate_drinking_report_fields(payload, timezone_name=app_config.DRINKING_REPORT_TIMEZONE)
+            signatures = {
+                "reporter": validate_signature_strokes(payload["reporter_signature"], field="reporter_signature", label="报备人签名"),
+                "leader": validate_signature_strokes(payload["leader_signature"], field="leader_signature", label="责任领导签名"),
+            }
+        except ValidationError as exc:
+            raise HTTPException(422, exc.message, headers={"X-Binhu-Validation-Field": exc.field}) from exc
+        body = {**normalized, "rules_version": "2026-09-16", "rules_acknowledged_at": _iso(_utcnow()), "reporter_signature": signatures["reporter"], "leader_signature": signatures["leader"]}
+        fingerprint_fields = {k: str(v) for k, v in normalized.items()}
+        fingerprint_fields["reporter_signature"] = json.dumps(signatures["reporter"], sort_keys=True, separators=(",", ":"))
+        fingerprint_fields["leader_signature"] = json.dumps(signatures["leader"], sort_keys=True, separators=(",", ":"))
+        fingerprint = request_fingerprint(app_config.REQUEST_FINGERPRINT_KEY, fingerprint_fields, b"")
+        existing = await request.app.state.repo.get_submission(submission_id)
+        if existing:
+            if existing.get("public_form_key") == form["form_key"] and existing.get("request_fingerprint") == fingerprint:
+                return {"submission_id": submission_id, "status": existing["state"]}
+            raise HTTPException(409, "submission_id 已被其他内容使用")
+        client_host = request.client.host if request.client else "unknown"
+        rate_keys = [
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), 300),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-public-form", str(form["form_key"])), 60),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-device", device_id), 10),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-client", client_host), 30),
+        ]
+        if not await request.app.state.repo.check_rate_limits(rate_keys):
+            raise HTTPException(429, "提交过于频繁，请稍后再试")
+        if not await request.app.state.repo.consume_public_form_token(
+            keyed_digest(app_config.FORM_TOKEN_HMAC_KEY, "public-form-token", str(payload["form_token"])), str(form["form_key"])
+        ):
+            raise HTTPException(400, "报备页面已过期，请重新扫码")
+        encrypted = request.app.state.encryptor.encrypt_payload(canonical_json(body))
+        await request.app.state.repo.create_submission({"submission_id": submission_id, "submission_kind": "drinking_report", "public_form_key": str(form["form_key"]), "request_fingerprint": fingerprint, "encrypted_payload": encrypted.encrypted_payload, "wrapped_data_key": encrypted.wrapped_data_key, "key_id": encrypted.key_id, "algorithm_version": encrypted.algorithm_version, "payload_nonce": encrypted.payload_nonce, "ciphertext_sha256": encrypted.ciphertext_sha256})
+        with suppress(Exception):
+            await request.app.state.submission_notifier.notify()
+        return {"submission_id": submission_id, "status": "queued"}
+
+    @application.put("/api/internal/public-forms/{form_key}")
+    async def put_public_form(form_key: str, data: PublicFormUpdate, request: Request, _: str = Depends(internal_request)):
+        if form_key != data.form_key:
+            raise HTTPException(422, "form_key 不一致")
+        result = await request.app.state.repo.upsert_public_form({**data.model_dump(), "request_id": str(data.request_id), "token_hmac": keyed_digest(app_config.PUBLIC_TOKEN_HMAC_KEY, "public-form-token", data.token)})
+        return signed_json(request, result)
+
     @application.post("/api/public/submissions", status_code=202)
     async def public_submission(
         request: Request,
@@ -368,16 +485,19 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
         if venue["status"] != "active":
             raise HTTPException(410, "二维码已更换，请联系工作人员获取新场所码")
         venue_id = int(venue["local_venue_id"])
-        name_value = name.strip()
-        identity = identity_number.strip().upper().replace(" ", "")
-        phone_value = phone.strip().replace(" ", "").replace("-", "")
-        address_value = address.strip()
-        if not name_value or len(name_value) > 100 or not address_value or len(address_value) > 500:
-            raise HTTPException(422, "姓名或地址格式无效")
-        if not (len(identity) == 18 and identity[:17].isdigit() and (identity[-1].isdigit() or identity[-1] == "X")):
-            raise HTTPException(422, "公民身份号码格式无效")
-        if not (len(phone_value) == 11 and phone_value.isdigit() and phone_value.startswith("1")):
-            raise HTTPException(422, "手机号格式无效")
+        try:
+            normalized_fields = validate_public_submission_fields(
+                name=name,
+                identity_number=identity_number,
+                phone=phone,
+                address=address,
+            )
+        except ValidationError as exc:
+            raise HTTPException(422, exc.message, headers={"X-Binhu-Validation-Field": exc.field}) from exc
+        name_value = normalized_fields["name"]
+        identity = normalized_fields["identity_number"]
+        phone_value = normalized_fields["phone"]
+        address_value = normalized_fields["address"]
         photo_data = await photo.read(app_config.PHOTO_MAX_BYTES + 1)
         mime, normalized_photo = _normalize_photo(photo.filename or "photo", photo.content_type or "", photo_data, app_config)
         payload = {"name": name_value, "identity_number": identity, "phone": phone_value, "address": address_value}
@@ -464,8 +584,8 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
 
     @application.post("/api/internal/submissions/pull")
     async def pull(data: PullRequest, request: Request, _: str = Depends(internal_request)):
-        supported = "rsa-oaep-sha256+aes-256-gcm-v1"
-        if supported not in data.supported_encryption_versions:
+        supported = {"rsa-oaep-sha256+aes-256-gcm-v1", "rsa-oaep-sha256+aes-256-gcm-payload-v1"}
+        if not supported.intersection(data.supported_encryption_versions):
             raise HTTPException(409, "no_supported_encryption_version")
         lease_id, expires_at, rows = await request.app.state.repo.pull_submissions(data.worker_id, data.limit)
         items = []
@@ -473,12 +593,12 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             submission_id = str(row["submission_id"])
             items.append({
                 **{key: row[key] for key in (
-                    "submission_id", "local_venue_id", "encrypted_payload", "wrapped_data_key", "key_id",
-                    "algorithm_version", "payload_nonce", "ciphertext_sha256", "photo_nonce",
+                    "submission_id", "submission_kind", "local_venue_id", "public_form_key", "encrypted_payload", "wrapped_data_key", "key_id",
+                    "algorithm_version", "payload_nonce", "ciphertext_sha256", "photo_object_key", "photo_nonce",
                     "photo_ciphertext_sha256", "photo_size", "photo_mime_type",
                 )},
                 "received_at": _iso(row.get("received_at")),
-                "photo_download_path": f"/api/internal/submissions/{submission_id}/photo/{lease_id}",
+                "photo_download_path": f"/api/internal/submissions/{submission_id}/photo/{lease_id}" if row.get("photo_object_key") else None,
             })
         return signed_json(request, {"lease_id": lease_id, "lease_expires_at": _iso(expires_at), "items": items})
 

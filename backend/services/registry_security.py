@@ -17,8 +17,20 @@ def normalize_phone(value: str | None) -> str:
     return re.sub(r"[^0-9+]+", "", str(value or "").strip())
 
 
+def normalize_name(value: str | None) -> str:
+    """Normalize a person name for exact-match HMAC indexing."""
+    return re.sub(r"\s+", "", str(value or "").strip())
+
+
 def hmac_digest(value: str | None, *, kind: str) -> tuple[str | None, int]:
-    normalized = normalize_identity(value) if kind == "identity" else normalize_phone(value)
+    if kind == "identity":
+        normalized = normalize_identity(value)
+    elif kind == "phone":
+        normalized = normalize_phone(value)
+    elif kind == "name":
+        normalized = normalize_name(value)
+    else:
+        raise ValueError(f"unsupported HMAC kind: {kind}")
     if not normalized:
         return None, 1
     message = f"registry:{kind}:v1:{normalized}".encode("utf-8")
