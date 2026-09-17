@@ -14,6 +14,37 @@
 4. `docs/archive/` 是历史记录，只能参考，不能照着执行。
 5. `AGENTS.local.md` 可能包含本机运维信息。只有用户明确要求处理服务器、凭据或故障恢复时才能读取，不能提交或公开其中的内容。
 
+## 项目 Skill
+
+本项目维护了一组项目专属 Codex Skill，源文件位于 `skills/`。Skill 只是把既有项目规则整理成可执行流程，不是新的授权来源；Skill、当前代码和文档发生冲突时，以本文件、实际代码和检查结果为准。当前交付环境统一称为 Production、Staging、Development；本项目不创建 `shadow-load-test` Skill，Shadow 清理和将压测迁移到 Staging 属于后续独立工作。
+
+符合以下事务时，应优先使用对应 Skill（可使用 `$binhu-<name>` 明确调用）：
+
+| 事务 | Skill |
+| --- | --- |
+| 提交、准备或更新 Pull Request | `binhu-submit-pr` |
+| 同步 `main` 或创建隔离工作区 | `binhu-sync-main` |
+| 提交前测试和验证 | `binhu-verify-change` |
+| 敏感信息、外部接口和数据源边界检查 | `binhu-security-boundary-check` |
+| 新增或更新帮助中心文档 | `binhu-help-doc-update` |
+| 版本号、发布说明和版本标签 | `binhu-release-version` |
+| Pull Request 代码审查 | `binhu-review-pr` |
+| 前端桌面、窄屏、主题和高密度布局验收 | `binhu-frontend-responsive-check` |
+| 数据迁移和 `measure → migrate --apply → verify` | `binhu-migration-verify` |
+| Production 只读排查 | `binhu-readonly-production-diagnosis` |
+| 经授权的后端紧急热修 | `binhu-hotfix-deployment` |
+| 经授权的 Production 发布 | `binhu-production-deployment` |
+| Windows/Android 客户端构建和验收 | `binhu-desktop-client-release` |
+| 事故回滚 | `binhu-incident-rollback` |
+| Agent 初次进入项目或工作区不明确 | `binhu-project-onboarding` |
+| 测试夹具、验收样例和压测数据 | `binhu-test-fixture-safety` |
+| XLSX、XLS、CSV 导入导出功能 | `binhu-spreadsheet-feature` |
+| 居住证、全民防等外部只读查询 | `binhu-external-readonly-integration` |
+
+推荐日常链路为：`binhu-project-onboarding` → `binhu-sync-main` → 开发和测试 → `binhu-verify-change` → `binhu-security-boundary-check` → 按需使用 `binhu-help-doc-update` / `binhu-frontend-responsive-check` → `binhu-review-pr` → `binhu-submit-pr`。
+
+`binhu-production-deployment`、`binhu-hotfix-deployment`、`binhu-migration-verify` 和 `binhu-incident-rollback` 只提供门禁和执行流程，不授予生产、数据库、服务器或外部平台操作权限；执行实际变更前仍需用户明确授权。`binhu-readonly-production-diagnosis` 只能执行受控只读检查，不得借此重启、部署、清理、导入或修改生产。Skill 尚未注册到当前 Codex 时，可在仓库根目录执行 `scripts\install-binhu-skills.ps1`，再执行 `scripts\validate-binhu-skills.ps1`；注册脚本拒绝覆盖已有同名 Skill。
+
 ## 这个项目是做什么的
 
 滨湖智慧平台以本地 MySQL 业务表作为在线任务唯一主数据源，也支持管理员上传走访明细 XLSX。全民防和居住证平台仅作为外部只读来源；腾讯文档已完成迁移并正式下线，当前只保留受限的历史快照、备份和审计材料，正常业务不得读取、写回、删除或依赖其物理行号。数据按人员、社区和日期整理并显示在网页上，管理员还可以把系统统计和人工表单合并，导出社区警务工作日志 PDF。
