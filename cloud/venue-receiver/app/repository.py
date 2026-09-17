@@ -374,7 +374,7 @@ class MySQLRepository:
                         )
                         await cur.execute(
                             f"SELECT submission_id,submission_kind,local_venue_id,public_form_key,encrypted_payload,wrapped_data_key,key_id,algorithm_version,"
-                            f"payload_nonce,ciphertext_sha256,photo_nonce,photo_ciphertext_sha256,photo_size,photo_mime_type,received_at "
+                            f"payload_nonce,ciphertext_sha256,photo_object_key,photo_nonce,photo_ciphertext_sha256,photo_size,photo_mime_type,received_at "
                         f"FROM submissions WHERE submission_id IN ({placeholders}) ORDER BY received_at",
                             tuple(ids),
                         )

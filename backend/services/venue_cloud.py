@@ -35,6 +35,25 @@ _runtime_status: dict[str, Any] = {
     "cloud_uncertain_count": None,
     "cloud_active_key_id": None,
 }
+_manual_pull_lock = asyncio.Lock()
+
+
+async def pull_venue_cloud_now() -> int:
+    """Run one bounded pull for an operator-triggered refresh.
+
+    The scheduler and this endpoint share a lock so a manual refresh cannot
+    lease the same cloud submissions concurrently with the background worker.
+    """
+    if not settings.VENUE_CLOUD_PULL_ENABLED:
+        raise VenueCloudClientError("cloud_pull_disabled")
+    async with _manual_pull_lock:
+        client = VenueCloudClient()
+        try:
+            pulled = await drain_submissions(client)
+            _runtime_status.update(last_success_at=_utcnow().isoformat(), last_error_code=None, last_pull_count=pulled)
+            return pulled
+        finally:
+            await client.close()
 
 
 def _utcnow() -> datetime:
@@ -672,7 +691,10 @@ async def run_venue_cloud_scheduler() -> None:
                 await process_public_form_outbox_once(client)
                 now = asyncio.get_running_loop().time()
                 fallback_due = settings.VENUE_CLOUD_PULL_ENABLED and now >= next_safety_pull
-                pulled = await wait_for_and_drain(client, fallback_due=fallback_due)
+                # Serialize operator-triggered refreshes with the scheduler so
+                # a manual action cannot race a lease claimed by this worker.
+                async with _manual_pull_lock:
+                    pulled = await wait_for_and_drain(client, fallback_due=fallback_due)
                 if fallback_due:
                     next_safety_pull = asyncio.get_running_loop().time() + 300
                 cloud_status = validate_status_response(

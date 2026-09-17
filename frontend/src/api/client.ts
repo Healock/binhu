@@ -168,6 +168,9 @@ export async function getVenueCodeQr(id: number): Promise<{ venue: VenueCodeItem
 export async function getVenueCloudStatus(): Promise<VenueCloudStatus> {
   return (await api.get('/venue-cloud/status', passiveRequest)).data
 }
+export async function pullVenueCloudNow(): Promise<{ pulled: number }> {
+  return (await api.post('/venue-cloud/pull', {})).data
+}
 export async function listVenueVisits(params: Record<string, unknown> = {}): Promise<{ data: VenueVisitItem[]; total: number; page: number; page_size: number }> {
   return (await api.get('/venue-visits', { params })).data
 }

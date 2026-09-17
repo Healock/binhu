@@ -27,6 +27,10 @@ class FakeCursor:
     async def fetchone(self):
         return self.rows.pop(0) if self.rows else None
 
+    async def fetchall(self):
+        rows, self.rows = self.rows, []
+        return rows
+
 
 class FakeConnection:
     def __init__(self, cursor):
@@ -129,3 +133,24 @@ async def test_renew_lease_is_bound_to_owner_and_active_lease():
     assert params[1:] == ("lease-id", "binhu-primary")
     assert expires_at == params[0]
     assert pool.connection.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_pull_includes_photo_object_key_for_download_url_generation():
+    cursor = FakeCursor(rows=[
+        [{"submission_id": "submission-id"}],
+        [{"submission_id": "submission-id", "photo_object_key": "encrypted-photo.bin"}],
+    ])
+
+    async def fetchall():
+        batch = cursor.rows.pop(0)
+        return batch
+
+    cursor.fetchall = fetchall
+    repository = MySQLRepository(FakePool(cursor), queued_retention_hours=168, lease_seconds=300)
+
+    _lease_id, _expires_at, rows = await repository.pull_submissions("binhu-primary", 10)
+
+    select_sql = next(sql for sql, _params in cursor.executed if "FROM submissions WHERE submission_id IN" in sql)
+    assert "photo_object_key" in select_sql
+    assert rows[0]["photo_object_key"] == "encrypted-photo.bin"
