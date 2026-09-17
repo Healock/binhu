@@ -606,3 +606,5 @@ def test_signature_orientation_maps_downward_stroke_to_rightward_canonical_strok
 
     assert from_canonical(start) == (0.25, 0.25)
     assert from_canonical(end) == (0.25, 0.75)
+
+# Signature orientation regression coverage is maintained with the public page contract.
