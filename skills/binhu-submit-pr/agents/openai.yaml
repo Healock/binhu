@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Submit PR"
+  short_description: "Create validated Binhu pull requests"

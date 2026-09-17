@@ -1,0 +1,3 @@
+interface:
+  display_name: "Binhu Readonly Production Diagnosis"
+  short_description: "Inspect production read-only"
