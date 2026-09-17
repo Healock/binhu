@@ -3,6 +3,23 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { exportVenueVisitsZip, getVenueVisitPhotoUrl, resolveVenueCodeQrImageUrl } from '../src/api/client.ts'
+import { readVenueErrorPayload, venueRegistrationErrorMessage } from '../src/utils/venueRegistration.ts'
+
+test('场所登记按状态和内容类型安全解析错误响应', async () => {
+  const json = new Response(JSON.stringify({ detail: '业务校验失败' }), { status: 422, headers: { 'content-type': 'application/json; charset=utf-8' } })
+  assert.deepEqual(await readVenueErrorPayload(json), { detail: '业务校验失败' })
+  const html413 = new Response('<html><h1>413 Request Entity Too Large</h1></html>', { status: 413, headers: { 'content-type': 'text/html' } })
+  assert.equal(await readVenueErrorPayload(html413), null)
+  assert.equal(venueRegistrationErrorMessage(413, null), '照片或上传请求超过网关限制，请压缩照片后重试')
+  for (const status of [502, 503, 504]) {
+    assert.equal(venueRegistrationErrorMessage(status, null), '场所登记服务暂时不可用，请稍后重试')
+  }
+  assert.equal(venueRegistrationErrorMessage(404, null), '登记接口不存在或二维码入口与当前服务版本不一致，请重新扫码或联系管理员')
+  assert.equal(venueRegistrationErrorMessage(422, { detail: '照片内容无效' }), '照片内容无效')
+  const html = venueRegistrationErrorMessage(500, null)
+  assert.equal(html, '服务器返回了无法识别的错误页面，请稍后重试')
+  assert.doesNotMatch(html, /<html|token|身份证|手机号|地址/)
+})
 
 test('场所登记照片使用受认证的访问路径', () => {
   assert.equal(getVenueVisitPhotoUrl(42), '/venue-visits/42/photo')
@@ -78,6 +95,13 @@ test('遗留本地登记组件也把照片作为必填并防止空文件崩溃',
   const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
   assert.match(page, /请选择照片/)
   assert.match(page, /!values\.photo\?\.file/)
+})
+
+test('场所登记提交不会对错误 HTML 调用无保护的 response.json', () => {
+  const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  const submitBlock = page.split("resolveRuntimeApiUrl('/api/public/venue-visits')", 2)[1]?.split('setDone(true)', 1)[0] || ''
+  assert.doesNotMatch(submitBlock, /response\.json\(\)/)
+  assert.match(submitBlock, /readVenueErrorPayload\(response\)/)
 })
 
 test('二维码管理提供饮酒报备创建、查询、双签详情和单份 PDF', () => {

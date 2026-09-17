@@ -47,8 +47,22 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("access_log off;", drinking_location)
         public_forms_location = nginx.split("location ^~ /api/public/forms/", 1)[1].split("}", 1)[0]
         self.assertIn("access_log off;", public_forms_location)
+        public_location = nginx.split("location ^~ /api/public/", 1)[1].split("}", 1)[0]
+        self.assertIn("client_max_body_size 6m", public_location)
         log_format = (ROOT / "deploy/venue-cloud/nginx-http-context.conf").read_text(encoding="utf-8")
         self.assertNotIn("$http_referer", log_format)
+
+    def test_platform_venue_submission_has_exact_upload_location(self):
+        for path in (ROOT / "nginx/binhu.conf", ROOT / "nginx/migration/new-app-locations.conf"):
+            nginx = path.read_text(encoding="utf-8")
+            route = "location = /api/public/venue-visits"
+            self.assertIn(route, nginx)
+            block = nginx.split(route, 1)[1].split("}", 1)[0]
+            self.assertIn("client_max_body_size 6m", block)
+            self.assertIn("client_body_timeout 120s", block)
+            self.assertIn("proxy_read_timeout 120s", block)
+            self.assertIn("proxy_send_timeout 120s", block)
+            self.assertIn("proxy_pass http://127.0.0.1:37125", block)
 
     def test_workflow_is_manual_and_uses_restricted_gateway(self):
         workflow = (ROOT / ".github/workflows/venue-cloud-deploy.yml").read_text(encoding="utf-8")
