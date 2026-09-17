@@ -62,27 +62,35 @@ class FakeClient:
 @pytest.mark.asyncio
 async def test_worker_wake_drains_until_queue_is_empty(monkeypatch):
     client = FakeClient({"available": True, "pending_count": 2, "wake_reason": "available"})
-    batches = iter([2, 1, 0])
+    batches = iter([
+        {"pulled": 2, "accepted": 2, "rejected": 0, "retry_later": 0, "uncertain": 0, "reason_codes": []},
+        {"pulled": 1, "accepted": 1, "rejected": 0, "retry_later": 0, "uncertain": 0, "reason_codes": []},
+        {"pulled": 0, "accepted": 0, "rejected": 0, "retry_later": 0, "uncertain": 0, "reason_codes": []},
+    ])
     monkeypatch.setattr(venue_cloud.settings, "VENUE_CLOUD_PULL_ENABLED", True)
     monkeypatch.setattr(venue_cloud.settings, "VENUE_CLOUD_WORKER_ID", "binhu-primary")
     monkeypatch.setattr(venue_cloud, "pull_submissions_once", lambda _client: _async_next(batches))
 
     pulled = await venue_cloud.wait_for_and_drain(client)
 
-    assert pulled == 3
+    assert pulled["pulled"] == 3
+    assert pulled["accepted"] == 3
     assert client.wait_calls == [("binhu-primary", 20)]
 
 
 @pytest.mark.asyncio
 async def test_five_minute_fallback_pull_does_not_wait_for_signal(monkeypatch):
     client = FakeClient({"available": False, "pending_count": 0, "wake_reason": "timeout"})
-    batches = iter([1, 0])
+    batches = iter([
+        {"pulled": 1, "accepted": 1, "rejected": 0, "retry_later": 0, "uncertain": 0, "reason_codes": []},
+        {"pulled": 0, "accepted": 0, "rejected": 0, "retry_later": 0, "uncertain": 0, "reason_codes": []},
+    ])
     monkeypatch.setattr(venue_cloud.settings, "VENUE_CLOUD_PULL_ENABLED", True)
     monkeypatch.setattr(venue_cloud, "pull_submissions_once", lambda _client: _async_next(batches))
 
     pulled = await venue_cloud.wait_for_and_drain(client, fallback_due=True)
 
-    assert pulled == 1
+    assert pulled["pulled"] == 1
     assert client.wait_calls == []
 
 
@@ -98,7 +106,7 @@ async def test_wait_timeout_returns_without_pull(monkeypatch):
 
     monkeypatch.setattr(venue_cloud, "pull_submissions_once", pull)
 
-    assert await venue_cloud.wait_for_and_drain(client) == 0
+    assert (await venue_cloud.wait_for_and_drain(client))["pulled"] == 0
     assert calls == []
 
 
@@ -148,6 +156,23 @@ async def test_pull_rejects_incomplete_acknowledgement(monkeypatch):
 
     with pytest.raises(VenueCloudClientError, match="acknowledgement_incomplete"):
         await venue_cloud.pull_submissions_once(IncompleteAckClient())
+
+
+def test_pull_stats_classifies_results_without_business_data():
+    stats = venue_cloud._stats_from_results([
+        {"submission_id": "a", "status": "accepted", "reason_code": ""},
+        {"submission_id": "b", "status": "retry_later", "reason_code": "local_storage_error"},
+        {"submission_id": "c", "status": "rejected", "reason_code": "payload_invalid"},
+        {"submission_id": "d", "status": "uncertain", "reason_code": "commit_unknown"},
+    ])
+    assert stats == {
+        "pulled": 4,
+        "accepted": 1,
+        "rejected": 1,
+        "retry_later": 1,
+        "uncertain": 1,
+        "reason_codes": ["commit_unknown", "local_storage_error", "payload_invalid"],
+    }
 
 
 @pytest.mark.parametrize(

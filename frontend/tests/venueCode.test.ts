@@ -105,6 +105,6 @@ test('登记记录支持按场所筛选，饮酒报备提供云端拉取刷新',
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
   assert.match(page, /name="venue_id" label="场所"/)
   assert.match(page, /pullVenueCloudNow\(\)/)
-  assert.match(page, /饮酒报备记录已刷新|云端暂无待处理登记/)
+  assert.match(page, /已拉取 .*饮酒报备并入库|当前没有可处理的云端登记/)
   assert.match(client, /api\.post\('\/venue-cloud\/pull'/)
 })

@@ -404,11 +404,11 @@ async def venue_cloud_status(user: dict = Depends(require_permission(VENUE_VIEW)
 async def venue_cloud_pull(user: dict = Depends(require_permission(VENUE_VIEW))):
     """Immediately drain cloud submissions for the refresh action in QR management."""
     try:
-        pulled = await pull_venue_cloud_now()
+        result = await pull_venue_cloud_now()
     except Exception as exc:
         reason = getattr(exc, "reason_code", "cloud_pull_failed")
         raise HTTPException(503, f"云端拉取失败：{reason}") from exc
-    return {"pulled": pulled}
+    return result
 
 
 @admin_router.get("/public-forms/drinking-report")
