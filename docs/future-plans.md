@@ -20,6 +20,7 @@
 | 场所码云端独立接收与本地主动拉取 | 代码已实现并通过自动化测试；候选云端和真实公网闭环待验收 | [场所码云端独立接收与本地主动拉取](future-plans/venue-code-cloud-ingress.md) |
 | 多环境版本与 PR 可追溯治理 | 已确定方向，未开始 | [多环境版本与 PR 可追溯治理](future-plans/environment-release-traceability.md) |
 | Agent 复杂任务进度追踪 | 已确定方向，未开始；实施时需更新 `AGENTS.md` | [Agent 复杂任务进度追踪](future-plans/agent-task-progress-tracking.md) |
+| ORM 与 Repository 数据访问分层 | 已确定方向，等待事件流运行路径盘点；未开始实施 | [ORM 与 Repository 数据访问分层](future-plans/orm-repository-data-access.md) |
 
 ## 目录规则
 
