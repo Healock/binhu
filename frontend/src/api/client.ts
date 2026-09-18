@@ -2015,17 +2015,26 @@ export interface ResidencePlatformConfig {
   full_scan_interval_minutes: number
   credentials_configured: boolean
   session_ready: boolean
-  account_mode: 'configured_full_username'
+  login_community_id: number | null
+  login_community_name: string
+  selected_account_configured: boolean
+  account_mode: 'selected_community_account'
   login_mode: 'automatic_hidden_challenge'
   community_account_count: number
   active_session_count: number
   community_codes: string[]
+  community_options: Array<{
+    id: number
+    name: string
+    is_active: boolean
+    account_configured: boolean
+  }>
 }
 
 export interface ResidencePlatformConfigUpdate {
   enabled: boolean
   base_url: string
-  username: string
+  login_community_id: number | null
   password?: string
   mac_service_url: string
   timeout_seconds: number
@@ -2829,6 +2838,7 @@ export interface GridCommunity {
   is_active: boolean
   qmf_community_code: string
   qmf_organization_codes: string[]
+  residence_username_configured: boolean
 }
 
 export interface CommunityArea {
@@ -2945,6 +2955,7 @@ export async function updateGridCommunityDetails(
   areaId: number,
   qmfCommunityCode: string,
   qmfOrganizationCodes: string[] = [],
+  residenceUsername?: string | null,
 ): Promise<{
   name: string
   aliases: string[]
@@ -2958,6 +2969,7 @@ export async function updateGridCommunityDetails(
     area_id: areaId,
     qmf_community_code: qmfCommunityCode,
     qmf_organization_codes: qmfOrganizationCodes,
+    ...(residenceUsername !== undefined ? { residence_username: residenceUsername } : {}),
   })
   return data
 }

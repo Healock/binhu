@@ -12,6 +12,7 @@ from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.external_acquisition_jobs import create_job
 from services.residence_platform_config import (
+    COMMUNITY_CODE_PATTERN,
     RESIDENCE_CONFIG_KEYS,
     clear_residence_sessions,
     load_residence_config,
@@ -32,7 +33,7 @@ class ResidenceConfigUpdate(BaseModel):
 
     enabled: bool = False
     base_url: str = Field(max_length=500)
-    username: str | None = Field(default=None, max_length=200)
+    login_community_id: int | None = Field(default=None, gt=0)
     password: str | None = Field(default=None, max_length=500)
     mac_service_url: str = Field(default="http://127.0.0.1:23333", max_length=500)
     timeout_seconds: int = Field(default=15, ge=1, le=120)
@@ -57,19 +58,29 @@ async def _public_config(conn) -> dict[str, Any]:
     payload = public_residence_config(config)
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT COUNT(*) FROM _communities "
-            "WHERE is_active=1 AND qmf_community_code REGEXP '^[0-9A-Z]{10}$'"
+            "SELECT id,name,is_active,qmf_community_code,"
+            "CASE WHEN COALESCE(residence_username,'')<>'' THEN 1 ELSE 0 END "
+            "FROM _communities ORDER BY is_active DESC,name"
         )
-        payload["community_account_count"] = int((await cur.fetchone())[0] or 0)
-        await cur.execute(
-            "SELECT qmf_community_code FROM _communities "
-            "WHERE is_active=1 AND qmf_community_code REGEXP '^[0-9A-Z]{10}$' "
-            "ORDER BY id"
+        community_rows = await cur.fetchall()
+        payload["community_options"] = [
+            {
+                "id": int(row[0]),
+                "name": str(row[1] or ""),
+                "is_active": bool(row[2]),
+                "account_configured": bool(row[4]),
+            }
+            for row in community_rows
+        ]
+        payload["community_account_count"] = sum(
+            1 for row in community_rows if bool(row[2]) and bool(row[4])
         )
         payload["community_codes"] = [
-            str(row[0] or "").strip().upper()
-            for row in await cur.fetchall()
-            if str(row[0] or "").strip()
+            str(row[3] or "").strip().upper()
+            for row in community_rows
+            if bool(row[2]) and COMMUNITY_CODE_PATTERN.fullmatch(
+                str(row[3] or "").strip().upper()
+            )
         ]
         payload["session_ready"] = bool(
             payload["session_ready"] and payload["community_account_count"]
@@ -99,21 +110,39 @@ async def update_residence_config(
     conn=Depends(get_db),
 ):
     current = await load_residence_config(conn)
-    username = data.username.strip() if data.username is not None else current.username
     password = data.password if data.password is not None else current.password
+    selected_community = None
+    if data.login_community_id is not None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id,name,is_active,"
+                "CASE WHEN COALESCE(residence_username,'')<>'' THEN 1 ELSE 0 END "
+                "FROM _communities WHERE id=%s",
+                (data.login_community_id,),
+            )
+            selected_community = await cur.fetchone()
+        if not selected_community:
+            raise HTTPException(400, "所选登录社区不存在")
+        if not bool(selected_community[2]):
+            raise HTTPException(400, "所选登录社区已停用，请在社区管理中重新启用或改选其他社区")
+        if not bool(selected_community[3]):
+            raise HTTPException(400, "所选社区尚未配置居住证完整登录账号，请先到社区管理填写")
     if data.enabled and not all(
         (
             data.base_url.strip(),
-            username,
+            selected_community and bool(selected_community[3]),
             password,
             data.mac_service_url.strip(),
         )
     ):
-        raise HTTPException(400, "开启居住证查询前请完整填写接口、统一密码和 MAC 服务")
+        raise HTTPException(
+            400,
+            "开启居住证查询前请选择已配置账号的社区，并填写接口、统一密码和 MAC 服务",
+        )
     values: dict[str, Any] = {
         "residence_lookup_enabled": "1" if data.enabled else "0",
         "residence_base_url": data.base_url.strip().rstrip("/"),
-        "residence_username": username,
+        "residence_login_community_id": str(data.login_community_id or ""),
         "residence_mac_service_url": data.mac_service_url.strip().rstrip("/"),
         "residence_timeout_seconds": str(data.timeout_seconds),
         "residence_full_scan_interval_minutes": str(data.full_scan_interval_minutes),
@@ -121,7 +150,7 @@ async def update_residence_config(
     connection_changed = any(
         (
             data.base_url.strip().rstrip("/") != current.base_url,
-            username != current.username,
+            data.login_community_id != current.login_community_id,
             data.mac_service_url.strip().rstrip("/") != current.mac_service_url,
         )
     )

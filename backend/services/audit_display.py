@@ -25,6 +25,7 @@ ACTION_LABELS: dict[str, str] = {
     "area.delete": "删除片区",
     "community.enable": "启用社区",
     "community.disable": "停用社区",
+    "community.residence_account.update": "更新社区居住证账号",
     "personnel.create_with_account": "新增人员和账号",
     "personnel.update": "修改人员资料",
     "personnel.delete_with_account": "删除人员和关联账号",

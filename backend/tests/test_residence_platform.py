@@ -5,7 +5,7 @@ import os
 import unittest
 from datetime import date
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import httpx
 
@@ -23,6 +23,7 @@ from services.residence_platform import (  # noqa: E402
 )
 from services.residence_platform_config import (  # noqa: E402
     ResidencePlatformConfig,
+    load_residence_config,
     public_residence_config,
     serialize_residence_value,
 )
@@ -46,6 +47,55 @@ class FakePool:
         return FakeAcquire()
 
 
+class ResidenceConfigCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.query = ""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def execute(self, query, params=None):
+        self.query = str(query)
+        self.connection.queries.append((self.query, params))
+
+    async def fetchall(self):
+        if "FROM _system_config" in self.query:
+            return self.connection.config_rows
+        return []
+
+    async def fetchone(self):
+        if "FROM _communities" in self.query:
+            return self.connection.community_row
+        return None
+
+
+class ResidenceConfigConnection:
+    def __init__(self, *, active=True):
+        self.config_rows = [
+            ("residence_lookup_enabled", "1"),
+            ("residence_base_url", "https://residence.invalid/grandlynn-boot"),
+            ("residence_login_community_id", "12"),
+            ("residence_password", serialize_residence_value("residence_password", "fixture-password")),
+            ("residence_mac_service_url", "http://mac.invalid"),
+            ("residence_timeout_seconds", "5"),
+            ("residence_full_scan_interval_minutes", "30"),
+        ]
+        self.community_row = (
+            "测试社区",
+            "3205840377",
+            serialize_residence_value("residence_username", "fixture-community-account"),
+            1 if active else 0,
+        )
+        self.queries = []
+
+    def cursor(self):
+        return ResidenceConfigCursor(self)
+
+
 def config(**overrides) -> ResidencePlatformConfig:
     values = {
         "enabled": True,
@@ -57,6 +107,9 @@ def config(**overrides) -> ResidencePlatformConfig:
         "organization_code": "3205840377",
         "timeout_seconds": 5,
         "full_scan_interval_minutes": 30,
+        "login_community_id": 12,
+        "login_community_name": "测试社区",
+        "login_community_code": "3205840377",
     }
     values.update(overrides)
     return ResidencePlatformConfig(**values)
@@ -73,10 +126,25 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("queue_due_residence_tasks(force=full_scan)", scan_source)
         self.assertNotIn("REFRESH_DAYS", scan_source)
 
-    def test_public_config_exposes_the_configured_full_username(self):
+    def test_public_config_exposes_the_selected_community_account_for_offline_cache(self):
         public = public_residence_config(config(username="fixture-full-account"))
         self.assertEqual(public["username"], "fixture-full-account")
-        self.assertEqual(public["account_mode"], "configured_full_username")
+        self.assertEqual(public["login_community_id"], 12)
+        self.assertEqual(public["login_community_name"], "测试社区")
+        self.assertEqual(public["account_mode"], "selected_community_account")
+
+    async def test_config_loads_the_encrypted_account_from_selected_community(self):
+        loaded = await load_residence_config(ResidenceConfigConnection())
+        self.assertEqual(loaded.login_community_id, 12)
+        self.assertEqual(loaded.login_community_name, "测试社区")
+        self.assertEqual(loaded.username, "fixture-community-account")
+        self.assertTrue(loaded.session_ready)
+
+    async def test_inactive_selected_community_is_not_ready_but_keeps_its_name(self):
+        loaded = await load_residence_config(ResidenceConfigConnection(active=False))
+        self.assertEqual(loaded.login_community_name, "测试社区")
+        self.assertEqual(loaded.username, "")
+        self.assertFalse(loaded.session_ready)
 
     def test_residence_status_schema_tracks_safe_total_duration(self):
         source = Path(__file__).parents[1].joinpath("services", "residence_status_scan.py").read_text(encoding="utf-8")
@@ -447,22 +515,23 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         stale_client.lookup.assert_awaited_once_with(VALID_IDENTITY)
         fresh_client.lookup.assert_awaited_once_with(VALID_IDENTITY)
 
-    async def test_community_client_keeps_the_configured_full_username(self):
+    async def test_community_client_reuses_the_selected_community_session(self):
         session = type("Session", (), {
             "token": "fixture-session-token",
             "organization_code": "320584",
         })()
         fake_pool = FakePool()
+        session_loader = AsyncMock(return_value=session)
         with patch.object(residence_status_scan, "_pool", return_value=fake_pool), patch.object(
             residence_status_scan,
             "load_residence_session",
-            new=AsyncMock(return_value=session),
+            new=session_loader,
         ):
             client = await residence_status_scan._community_client(
                 config(username="fixture-full-account"),
-                "3205840377",
             )
         self.assertEqual(client.config.username, "fixture-full-account")
+        session_loader.assert_awaited_once_with(ANY, "community_12")
 
     async def test_read_only_path_allowlist_rejects_other_routes(self):
         client = ResidencePlatformClient(config())

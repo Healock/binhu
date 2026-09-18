@@ -323,18 +323,20 @@ async def _load_current_target(
 
 async def _community_client(
     config: ResidencePlatformConfig,
-    community_code: str,
     *,
     rejected_token: str = "",
 ) -> ResidencePlatformClient:
+    if not config.login_community_id:
+        raise ResidencePlatformError("login_community_missing", "尚未选择居住证平台登录社区")
+    session_scope = f"community_{config.login_community_id}"
     pool = _pool()
     async with pool.acquire() as conn:
-        session = await load_residence_session(conn, community_code)
+        session = await load_residence_session(conn, session_scope)
     if session is None or session.token == rejected_token:
-        lock = _community_login_locks.setdefault(community_code, asyncio.Lock())
+        lock = _community_login_locks.setdefault(session_scope, asyncio.Lock())
         async with lock:
             async with pool.acquire() as conn:
-                session = await load_residence_session(conn, community_code)
+                session = await load_residence_session(conn, session_scope)
             if session is None or session.token == rejected_token:
                 login_config = replace(
                     config,
@@ -342,13 +344,22 @@ async def _community_client(
                     organization_code="",
                 )
                 token, detected_org = await ResidencePlatformClient(login_config).login()
-                organization_code = detected_org or community_code[:6]
+                organization_code = (
+                    detected_org
+                    or config.login_community_code[:6]
+                    or config.organization_code[:6]
+                )
+                if len(organization_code) < 6:
+                    raise ResidencePlatformError(
+                        "organization_code_missing",
+                        "登录响应未返回组织代码，请在社区管理补充所选社区代码",
+                    )
                 session = ResidenceCommunitySession(
                     token=token,
                     organization_code=organization_code,
                 )
                 async with pool.acquire() as conn:
-                    await save_residence_session(conn, community_code, session)
+                    await save_residence_session(conn, session_scope, session)
     return ResidencePlatformClient(replace(
         config,
         access_token=session.token,
@@ -360,7 +371,7 @@ async def _lookup_target(
     config: ResidencePlatformConfig,
     target: ResidenceLookupTarget,
 ) -> Any:
-    client = await _community_client(config, target.community_code)
+    client = await _community_client(config)
     try:
         return await client.lookup(target.identity)
     except ResidencePlatformError as exc:
@@ -368,7 +379,6 @@ async def _lookup_target(
             raise
     client = await _community_client(
         config,
-        target.community_code,
         rejected_token=client.config.access_token,
     )
     return await client.lookup(target.identity)
@@ -378,7 +388,7 @@ async def _lookup_detail_target(
     config: ResidencePlatformConfig,
     target: ResidenceLookupTarget,
 ) -> ResidenceRegistrationDetail:
-    client = await _community_client(config, target.community_code)
+    client = await _community_client(config)
     try:
         return await client.lookup_detail(target.identity)
     except ResidencePlatformError as exc:
@@ -386,7 +396,6 @@ async def _lookup_detail_target(
             raise
     client = await _community_client(
         config,
-        target.community_code,
         rejected_token=client.config.access_token,
     )
     return await client.lookup_detail(target.identity)
@@ -396,7 +405,7 @@ async def _lookup_registration_address_target(
     config: ResidencePlatformConfig,
     target: ResidenceLookupTarget,
 ) -> tuple[str, str, str]:
-    client = await _community_client(config, target.community_code)
+    client = await _community_client(config)
     try:
         return await client.lookup_registration_address(target.identity)
     except ResidencePlatformError as exc:
@@ -404,7 +413,6 @@ async def _lookup_registration_address_target(
             raise
     client = await _community_client(
         config,
-        target.community_code,
         rejected_token=client.config.access_token,
     )
     return await client.lookup_registration_address(target.identity)

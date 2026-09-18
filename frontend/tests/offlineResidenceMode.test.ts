@@ -56,7 +56,7 @@ test('在线配置同步不要求密码明文', () => {
   assert.match(pageSource, /getResidencePlatformConfig\(\)/)
   assert.match(pageSource, /online\.username/)
   assert.match(pageSource, /统一登录密码不会回传/)
-  assert.match(apiSource, /account_mode: 'configured_full_username'/)
+  assert.match(apiSource, /account_mode: 'selected_community_account'/)
   assert.match(authSource, /currentUser\.role !== 'super_admin'/)
   assert.match(authSource, /cacheOnlineResidenceConfig\(config\)/)
   assert.match(authSource, /catch \{[\s\S]*cache is intentionally left untouched/)
