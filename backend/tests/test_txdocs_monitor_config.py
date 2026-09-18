@@ -8,6 +8,7 @@ from routers.stats import _txdocs_file_id, _txdocs_config_payload
 
 def test_monitor_url_only_accepts_https_qq_sheet_links():
     assert _txdocs_file_id("https://docs.qq.com/sheet/abc_123") == "abc_123"
+    assert _txdocs_file_id("https://docs.qq.com/sheet/abc_123?tab=BB08J2") == "abc_123"
     for value in ("http://docs.qq.com/sheet/x", "https://example.com/sheet/x", "https://docs.qq.com/doc/x"):
         try:
             _txdocs_file_id(value)
