@@ -311,6 +311,18 @@ test('工作表重建会保存并恢复外层滚动视口，用户主动滚动�
   assert.match(componentSource, /addEventListener\('touchstart', cancelOnUserInput/)
 })
 
+test('业务表切换为每个 Univer 实例使用独立挂载节点，避免异步销毁误删新节点', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /const mountNode = document\.createElement\('div'\)/)
+  assert.match(componentSource, /container\.appendChild\(mountNode\)/)
+  assert.match(componentSource, /createQueryUniver\(\s*mountNode,/s)
+  assert.match(componentSource, /mountNode\.remove\(\)/)
+  assert.doesNotMatch(componentSource, /container\.replaceChildren\(\)/)
+})
+
 test('工作表自动列宽保留合理的最小值和最大值', () => {
   assert.equal(fitQuerySheetColumnWidth('下发日期', 40), 92)
   assert.equal(fitQuerySheetColumnWidth('姓名', 96), 114)
