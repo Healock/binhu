@@ -186,6 +186,14 @@ Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到�
 匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
 checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
 
+10 万条规模验收要求 TaskManager 使用受控的 2 GiB 容器上限和 1792 MiB Flink
+process memory；JobManager 保持 768 MiB。两者都使用 `on-failure:3`，使 Dev 组件
+遭遇瞬时进程故障时可以有限恢复，但不能无限重启。Python metadata worker 使用
+256 MiB 上限。固定 Compose 修补器只接受从历史的 TaskManager
+`768 MiB + 640 MiB process memory + 无 restart policy` 精确迁移到这组配置，其他
+内存值、restart policy、网络、卷、镜像或路径变化一律拒绝。checkpoint/savepoint、
+Kafka、Redis 和派生 MySQL 数据卷均不因该资源修补删除。
+
 ### 固定规模双轨验收
 
 候选完成 `prepare → measure → apply` 且 `current.json` 仍绑定当前运行编号后，

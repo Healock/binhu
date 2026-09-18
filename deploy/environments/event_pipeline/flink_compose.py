@@ -24,11 +24,16 @@ ARTIFACT_NAMES = (
     "mysql-connector-j-8.4.0.jar",
     "dev-pipeline-job.jar",
 )
+LEGACY_TASKMANAGER_MEM_LIMIT = "805306368"
+APPROVED_TASKMANAGER_MEM_LIMIT = "2147483648"
+LEGACY_TASKMANAGER_PROCESS_SIZE = "640m"
+APPROVED_TASKMANAGER_PROCESS_SIZE = "1792m"
+APPROVED_RESTART_POLICY = "on-failure:3"
 FLINK_PROPERTIES = """jobmanager.memory.process.size: 640m
 jobmanager.memory.jvm-metaspace.size: 128m
 jobmanager.memory.jvm-overhead.min: 64m
 jobmanager.memory.jvm-overhead.max: 64m
-taskmanager.memory.process.size: 640m
+taskmanager.memory.process.size: 1792m
 taskmanager.memory.jvm-metaspace.size: 128m
 taskmanager.memory.jvm-overhead.min: 64m
 taskmanager.memory.jvm-overhead.max: 64m
@@ -90,6 +95,7 @@ def specification(image: str, artifact_root: Path) -> dict:
         "labels": {"binhu.environment": "development"},
         "mem_limit": "805306368",
         "pids_limit": 256,
+        "restart": APPROVED_RESTART_POLICY,
         "networks": {"internal": None},
         "volumes": mounts,
         "logging": {
@@ -114,6 +120,7 @@ def specification(image: str, artifact_root: Path) -> dict:
             },
             "taskmanager": {
                 **common,
+                "mem_limit": APPROVED_TASKMANAGER_MEM_LIMIT,
                 "command": ["taskmanager"],
                 "environment": {
                     "JOB_MANAGER_RPC_ADDRESS": "jobmanager",
@@ -139,6 +146,31 @@ def _without_approved_runtime_limits(spec: dict) -> dict:
     for service in ("jobmanager", "taskmanager"):
         if value["services"][service].get("pids_limit") == APPROVED_PIDS_LIMIT:
             value["services"][service].pop("pids_limit")
+    services = value["services"]
+    restart_policies = {services[name].get("restart") for name in ("jobmanager", "taskmanager")}
+    if restart_policies in ({None}, {APPROVED_RESTART_POLICY}):
+        for name in ("jobmanager", "taskmanager"):
+            services[name].pop("restart", None)
+
+    taskmanager = services["taskmanager"]
+    legacy_properties = FLINK_PROPERTIES.replace(
+        f"taskmanager.memory.process.size: {APPROVED_TASKMANAGER_PROCESS_SIZE}",
+        f"taskmanager.memory.process.size: {LEGACY_TASKMANAGER_PROCESS_SIZE}",
+    )
+    memory_shape = (
+        taskmanager.get("mem_limit"),
+        tuple(
+            services[name].get("environment", {}).get("FLINK_PROPERTIES")
+            for name in ("jobmanager", "taskmanager")
+        ),
+    )
+    if memory_shape in {
+        (APPROVED_TASKMANAGER_MEM_LIMIT, (FLINK_PROPERTIES, FLINK_PROPERTIES)),
+        (LEGACY_TASKMANAGER_MEM_LIMIT, (legacy_properties, legacy_properties)),
+    }:
+        taskmanager["mem_limit"] = APPROVED_TASKMANAGER_MEM_LIMIT
+        for name in ("jobmanager", "taskmanager"):
+            services[name]["environment"]["FLINK_PROPERTIES"] = FLINK_PROPERTIES
     return value
 
 
@@ -148,20 +180,36 @@ def measure(image: str, artifact_root: Path) -> dict:
     current = json.loads(TARGET.read_text(encoding="utf-8"))
     expected = specification(image, artifact_root)
     if _without_approved_runtime_limits(_without_environment_labels(current)) != _without_approved_runtime_limits(_without_environment_labels(expected)):
-        raise ValueError("Dev Flink Compose differs beyond the approved labels")
+        raise ValueError("Dev Flink Compose differs beyond the approved runtime migration")
     labels = {
         service: current["services"][service].get("labels", {}).get("binhu.environment")
         for service in ("jobmanager", "taskmanager")
     }
+    taskmanager_memory_update_required = (
+        current["services"]["taskmanager"].get("mem_limit") != APPROVED_TASKMANAGER_MEM_LIMIT
+        or f"taskmanager.memory.process.size: {APPROVED_TASKMANAGER_PROCESS_SIZE}"
+        not in current["services"]["taskmanager"].get("environment", {}).get("FLINK_PROPERTIES", "")
+    )
+    restart_policy_update_required = any(
+        current["services"][service].get("restart") != APPROVED_RESTART_POLICY
+        for service in ("jobmanager", "taskmanager")
+    )
     return {
         "environment": "development",
         "project": PROJECT,
         "target": str(TARGET),
         "labels": labels,
         "labels_update_required": any(value != "development" for value in labels.values()),
-        "requires_update": any(value != "development" for value in labels.values()) or any(
-            current["services"][service].get("pids_limit") != APPROVED_PIDS_LIMIT
-            for service in ("jobmanager", "taskmanager")
+        "taskmanager_memory_update_required": taskmanager_memory_update_required,
+        "restart_policy_update_required": restart_policy_update_required,
+        "requires_update": (
+            any(value != "development" for value in labels.values())
+            or any(
+                current["services"][service].get("pids_limit") != APPROVED_PIDS_LIMIT
+                for service in ("jobmanager", "taskmanager")
+            )
+            or taskmanager_memory_update_required
+            or restart_policy_update_required
         ),
         "other_changes": False,
         "pids_limit": {
@@ -202,6 +250,8 @@ def apply(image: str, artifact_root: Path, evidence_id: str) -> dict:
         "after_sha256": hashlib.sha256(payload).hexdigest(),
         "labels_added": before["labels_update_required"],
         "pids_limit_updated": before["pids_limit"] != {"jobmanager": APPROVED_PIDS_LIMIT, "taskmanager": APPROVED_PIDS_LIMIT},
+        "taskmanager_memory_updated": before["taskmanager_memory_update_required"],
+        "restart_policy_updated": before["restart_policy_update_required"],
         "verified": not after["requires_update"],
     }
     target = evidence / "result.json"
@@ -223,10 +273,10 @@ def main() -> None:
         else:
             result = measure(args.image, args.artifact_root)
             if args.action == "verify" and result["requires_update"]:
-                raise ValueError("Dev Flink environment labels are incomplete")
+                raise ValueError("Dev Flink runtime definition is incomplete")
         print(json.dumps(result))
     except (ValueError, OSError, KeyError, json.JSONDecodeError):
-        raise SystemExit("Dev Flink Compose label update refused; preserve current resources") from None
+        raise SystemExit("Dev Flink Compose runtime update refused; preserve current resources") from None
 
 
 if __name__ == "__main__":

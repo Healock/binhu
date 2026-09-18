@@ -270,3 +270,31 @@ monitor24 或 monitor25 的 1002/10000 证据。失败时派生 MySQL 容器发�
 门禁：派生 MySQL 的内存上限从 512 MiB 调整为 768 MiB，并显式设置 1536 MiB 的内存加
 交换上限；生产、Staging、Shadow 和数据卷未修改。修复完成后必须使用新的运行编号，从
 1002 → 10000 → 100000 重新验收。
+
+## 2026-09-18：monitor32 100000 Flink 资源故障
+
+`dev-20260918-dualtrack-monitor32` 来自主线提交
+`67ab5078e789e469e430d767675a283bbfd6abb1`。1002 条 workflow `35299947299`
+和 10000 条 workflow `35300140671` 均通过：delivery、Python/Flink projection、
+revision sink 和两边唯一事件分别完整达到目标，projection/revision mismatch 与
+未归因差异均为 0。
+
+100000 条 workflow `35301406451` 在 GitHub Actions 六小时上限后被取消。取消前
+100000 条事件已经全部发布，Python 投影已处理 100000 条；Flink 只处理 41571 条，
+剩余 58429 条是未收敛缺口。服务器证据确认 Dev Flink TaskManager 在 768 MiB cgroup
+上限内发生 OOM，并以 exit 137 退出；容器没有 restart policy，JobManager 随后因没有
+可用 slot 持续处于 RESTARTING。Python metadata worker 也曾在 160 MiB 上限附近被
+cgroup OOM 杀死一次，但依靠既有有限重启最终完成。两个 relay 正常，未发现新的
+1213、1205、deadlock 或 lock wait。
+
+本轮 `revision_mismatch_count=0`、`unattributed_difference_count=0`；现有证据表示
+Flink 没有处理完全部事件，不能据此判为相同事件的业务计算差异，也不能把 100000
+门禁标记为通过。失败证据保留在
+`/data/docker/volumes/binhu-development-pipeline_evidence/_data/dev-20260918-dualtrack-monitor32/`，
+不得覆盖或删除。
+
+修补只作用于 Dev event-pipeline：TaskManager 提高到 2 GiB 容器上限与 1792 MiB
+Flink process memory；JobManager 保持 768 MiB；二者使用 `on-failure:3`；Python
+metadata worker 提高到 256 MiB。受控 Compose 合同只允许从历史精确配置迁移，保留
+checkpoint/savepoint、Kafka、Redis、MySQL 数据卷和网络。修补合并后必须使用新的
+运行编号，从 1002、10000、100000 逐级重新验收；100000 和连续 7 天门禁仍未通过。

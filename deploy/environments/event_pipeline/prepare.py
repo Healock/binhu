@@ -133,7 +133,7 @@ def compose(images):
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {}}
     services["python-metadata-worker"] = {**common, "image": images["worker"],
-        "env_file": ["runtime.env"], "mem_limit": "160m", "cpus": .25,
+        "env_file": ["runtime.env"], "mem_limit": "256m", "cpus": .25,
         "read_only": True, "tmpfs": ["/tmp:size=16m"],
         "command": ["python", "-m", "event_pipeline.runtime", "python-metadata-worker"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
