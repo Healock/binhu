@@ -385,6 +385,19 @@ test('在线数据查询使用的搜索图标必须在页面模块中显式导�
   assert.match(iconImport[1], /\bSearchOutlined\b/)
 })
 
+test('切换业务表使用的选中行辅助函数必须显式导入', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  const importBlock = componentSource.match(
+    /import\s*\{([\s\S]*?)\}\s*from '\.\.\/utils\/querySpreadsheet'/,
+  )
+  assert.ok(importBlock, 'QuerySpreadsheet 必须从 querySpreadsheet 导入辅助函数')
+  assert.match(importBlock[1], /\bselectedQuerySheetRow\b/)
+  assert.match(componentSource, /selectedQuerySheetRow\(sheetRows, selectedWorksheetRow\)/)
+})
+
 test('实时连接未就绪时保存使用 HTTP 入口且不重复显示失败提示', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/DataQuery.tsx', import.meta.url),
