@@ -155,7 +155,7 @@ async def _load_monitor_credentials(cur) -> dict[str, str]:
 
 
 async def _load_monitor_targets(
-    cur, *, enabled_only: bool = False, include_legacy: bool = True
+    cur, *, enabled_only: bool = False, include_legacy: bool = False
 ) -> list[dict[str, Any]]:
     await cur.execute(
         """SELECT id, enabled, spreadsheet_url, file_id, data_sheet_id,
@@ -179,8 +179,8 @@ async def _load_monitor_targets(
         return [target for target in targets if not enabled_only or target["enabled"]]
     if not include_legacy:
         return []
-    # Legacy fallback is intentionally read-only and only used if the new
-    # table is empty, such as during a rolling deployment before migration.
+    # Legacy configuration is migration evidence only.  Runtime callers must
+    # never reactivate it after the new target table is initialized.
     await cur.execute(
         """SELECT id, enabled, spreadsheet_url, file_id, data_sheet_id,
                      header_row, parser_type, interval_seconds, updated_at
@@ -461,7 +461,6 @@ async def _load_inputs(
 ) -> tuple[dict[str, str] | None, list[dict[str, Any]], Any]:
     from database import db_manager
 
-    allowlist = monitoring_spreadsheet_ids()
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
@@ -482,43 +481,11 @@ async def _load_inputs(
                     and (target_ids is None or target["id"] in target_ids)
                 ]
                 return credentials, valid_targets, business_date
-            if not allowlist:
-                return None, [], business_date
-            await cur.execute(
-                "SELECT client_id, access_token, open_id "
-                "FROM _config_oauth_tokens ORDER BY id DESC LIMIT 1"
-            )
-            credential_row = await cur.fetchone()
-            credentials = None
-            if credential_row and credential_row[0] and credential_row[1] and credential_row[2]:
-                credentials = {
-                    "client_id": str(credential_row[0]),
-                    "access_token": str(credential_row[1]),
-                    "open_id": str(credential_row[2]),
-                }
-            marks = ", ".join(["%s"] * len(allowlist))
-            await cur.execute(
-                f"""
-                SELECT id, file_id, data_sheet_id, header_row, parser_type
-                FROM _config_spreadsheets
-                WHERE id IN ({marks}) AND enabled=1
-                  AND file_id<>'' AND data_sheet_id<>''
-                ORDER BY id
-                """,
-                allowlist,
-            )
-            configs = [
-                {
-                    "id": int(row[0]),
-                    "file_id": str(row[1]),
-                    "sheet_id": str(row[2]),
-                    "header_row": int(row[3] or 1),
-                    "parser_type": str(row[4]),
-                }
-                for row in await cur.fetchall()
-                if str(row[4]) in PARSER_REGISTRY and str(row[4]) != "default"
-            ]
-        return credentials, configs, business_date
+            # An initialized but empty target table means that monitoring has
+            # no configured sources.  The legacy OAuth/config tables are kept
+            # only as migration evidence and must never be reactivated by a
+            # rolling deployment or by deleting the last target.
+            return None, [], business_date
     finally:
         pool.release(conn)
 
@@ -529,46 +496,20 @@ async def monitoring_configuration_ready(cur) -> bool:
         cur, enabled_only=False, include_legacy=False
     )
     targets = [target for target in all_targets if target["enabled"]]
-    if all_targets:
-        credentials = await _load_monitor_credentials(cur)
-        return bool(
-            settings.TXDOCS_MONITORING_ENABLED
-            and credentials["client_id"]
-            and credentials["access_token"]
-            and credentials["open_id"]
-            and any(
-                target["file_id"] and target["sheet_id"]
-                and target["parser_type"] in PARSER_REGISTRY
-                and target["parser_type"] != "default"
-                for target in targets
-            )
+    if not settings.TXDOCS_MONITORING_ENABLED or not all_targets:
+        return False
+    credentials = await _load_monitor_credentials(cur)
+    return bool(
+        credentials["client_id"]
+        and credentials["access_token"]
+        and credentials["open_id"]
+        and any(
+            target["file_id"] and target["sheet_id"]
+            and target["parser_type"] in PARSER_REGISTRY
+            and target["parser_type"] != "default"
+            for target in targets
         )
-    allowlist = monitoring_spreadsheet_ids()
-    if not settings.TXDOCS_MONITORING_ENABLED or not allowlist:
-        return False
-    await cur.execute(
-        "SELECT client_id, access_token, open_id "
-        "FROM _config_oauth_tokens ORDER BY id DESC LIMIT 1"
     )
-    credentials = await cur.fetchone()
-    if not credentials or not all(credentials):
-        return False
-    marks = ", ".join(["%s"] * len(allowlist))
-    await cur.execute(
-        f"""
-        SELECT id, parser_type
-        FROM _config_spreadsheets
-        WHERE id IN ({marks}) AND enabled=1
-          AND file_id<>'' AND data_sheet_id<>''
-        """,
-        allowlist,
-    )
-    valid_ids = {
-        int(row[0])
-        for row in await cur.fetchall()
-        if str(row[1]) in PARSER_REGISTRY and str(row[1]) != "default"
-    }
-    return valid_ids == set(allowlist)
 
 
 async def _load_previous(cur, spreadsheet_id: int) -> tuple[Counter[MonitorVariant], bool]:
@@ -850,7 +791,7 @@ async def run_txdocs_statistics_monitor() -> None:
 
 
 async def _configured_monitor_source_ids() -> list[int]:
-    """Return target IDs for the new model, or legacy allowlist IDs."""
+    """Return enabled target IDs; legacy allowlists are migration-only."""
     from database import db_manager
 
     pool = db_manager.get_pool("online_data")
@@ -861,14 +802,11 @@ async def _configured_monitor_source_ids() -> list[int]:
                 "SELECT id FROM _txdocs_monitor_target WHERE enabled=1 ORDER BY id"
             )
             ids = [int(row[0]) for row in await cur.fetchall()]
-            await cur.execute("SELECT COUNT(*) FROM _txdocs_monitor_target")
-            has_new_targets = bool((await cur.fetchone() or [0])[0])
     except Exception:
         ids = []
-        has_new_targets = False
     finally:
         pool.release(conn)
-    return ids if has_new_targets else (ids or list(monitoring_spreadsheet_ids()))
+    return ids
 
 
 async def get_txdocs_statistics_overview(
@@ -882,11 +820,7 @@ async def get_txdocs_statistics_overview(
     """Return aggregate monitoring metrics without exposing remote row text."""
     base = {
         "enabled": bool(settings.TXDOCS_MONITORING_ENABLED),
-        "configured": (
-            bool(monitoring_spreadsheet_ids())
-            if configuration_ready is None
-            else configuration_ready
-        ),
+        "configured": bool(configuration_ready) if configuration_ready is not None else False,
         "status": "disabled",
         "start_date": start_date,
         "end_date": end_date,
@@ -929,11 +863,6 @@ async def get_txdocs_statistics_overview(
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
-            if not source_ids:
-                await cur.execute(
-                    "SELECT DISTINCT spreadsheet_id FROM _txdocs_monitor_current"
-                )
-                source_ids = [int(row[0]) for row in await cur.fetchall()]
             if not source_ids:
                 return {**base, "status": "healthy", "message": "尚未建立外部成功快照"}
             source_marks = ", ".join(["%s"] * len(source_ids))

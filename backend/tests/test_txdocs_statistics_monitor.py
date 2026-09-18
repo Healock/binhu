@@ -104,7 +104,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", False):
             self.assertEqual(await monitor.run_txdocs_statistics_once(), 0)
 
-    async def test_configuration_requires_credentials_and_every_allowlisted_source(self):
+    async def test_legacy_allowlist_is_not_a_runtime_configuration(self):
         class Cursor:
             def __init__(self, credentials, configs):
                 self.credentials = credentials
@@ -126,23 +126,16 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
                 monitor.settings, "TXDOCS_MONITORING_SPREADSHEET_IDS", "7,8"
             ),
         ):
-            self.assertTrue(
+            self.assertFalse(
                 await monitor.monitoring_configuration_ready(
                     Cursor(("client", "token", "open"), [(7, "全链条"), (8, "出租房屋核查")])
                 )
             )
-            self.assertFalse(
-                await monitor.monitoring_configuration_ready(
-                    Cursor(None, [(7, "全链条"), (8, "出租房屋核查")])
-                )
-            )
-            self.assertFalse(
-                await monitor.monitoring_configuration_ready(
-                    Cursor(("client", "token", "open"), [(7, "全链条")])
-                )
-            )
+            self.assertFalse(await monitor.monitoring_configuration_ready(
+                Cursor(None, [(7, "全链条"), (8, "出租房屋核查")])
+            ))
 
-    async def test_empty_successful_snapshot_is_counted_as_a_read(self):
+    async def test_empty_target_configuration_does_not_read_legacy_snapshot(self):
         class Cursor:
             def __init__(self):
                 self.results = iter([
@@ -199,7 +192,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["current_rows"], 0)
-        self.assertEqual(result["successful_reads"], 2)
+        self.assertEqual(result["successful_reads"], 0)
         self.assertEqual(result["status"], "healthy")
 
     def test_monitor_read_path_does_not_call_tencent_write_methods(self):
