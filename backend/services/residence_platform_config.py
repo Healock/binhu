@@ -55,7 +55,7 @@ class ResidencePlatformConfig:
 
     @property
     def credentials_configured(self) -> bool:
-        return bool(self.base_url and self.password and self.mac_service_url)
+        return bool(self.base_url and self.username and self.password and self.mac_service_url)
 
     @property
     def session_ready(self) -> bool:
@@ -69,16 +69,11 @@ class ResidenceCommunitySession:
     organization_code: str
 
 
-def residence_username(community_code: str) -> str:
+def _session_key(community_code: str) -> str:
     code = str(community_code or "").strip().upper()
     if not COMMUNITY_CODE_PATTERN.fullmatch(code):
         raise ValueError("invalid_community_code")
-    return f"{code}00"
-
-
-def _session_key(community_code: str) -> str:
-    residence_username(community_code)
-    return f"{RESIDENCE_SESSION_PREFIX}{community_code.strip().upper()}"
+    return f"{RESIDENCE_SESSION_PREFIX}{code}"
 
 
 async def load_residence_session(conn, community_code: str) -> ResidenceCommunitySession | None:
@@ -185,6 +180,7 @@ def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
         "full_scan_interval_minutes": config.full_scan_interval_minutes,
         "credentials_configured": config.credentials_configured,
         "session_ready": config.session_ready,
-        "account_mode": "community_code_suffix_00",
+        "username": config.username,
+        "account_mode": "configured_full_username",
         "login_mode": "automatic_hidden_challenge",
     }

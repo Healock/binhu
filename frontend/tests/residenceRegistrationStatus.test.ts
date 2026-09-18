@@ -47,18 +47,19 @@ test('the residence status tooltip shows the measured lookup duration', () => {
   assert.match(statusSource, /本次耗时/)
 })
 
-test('system settings uses automatic community accounts without a manual captcha', () => {
+test('system settings uses a configured full account without a manual captcha', () => {
   assert.match(settingsSource, /居住证平台首次登记识别/)
   assert.match(settingsSource, /只调用常住人口预检索和流动人口登记查询两个只读接口/)
-  assert.match(settingsSource, /全民防社区代码并在末尾加 00/)
+  assert.match(settingsSource, /完整登录账号/)
+  assert.match(settingsSource, /不再从全民防社区代码推导/)
   assert.match(settingsSource, /统一登录密码/)
   assert.match(settingsSource, /网页本身无需人工填写验证码/)
   assert.match(settingsSource, /全量查询间隔（分钟）/)
   assert.match(settingsSource, /重新查询全部流口指令核查对象/)
   assert.doesNotMatch(settingsSource, /获取登录验证码|登录并开始查询/)
   assert.doesNotMatch(settingsSource, /居住证.*(?:登记提交|注销提交|保存人员)/)
-  assert.match(communitiesSource, /居住证账号/)
-  assert.match(communitiesSource, /qmf_community_code\}00/)
+  assert.match(communitiesSource, /居住证完整账号由管理员在系统设置中单独配置/)
+  assert.doesNotMatch(communitiesSource, /qmf_community_code\}00/)
 })
 
 test('manual residence scan is a tracked background job with passive progress polling', () => {

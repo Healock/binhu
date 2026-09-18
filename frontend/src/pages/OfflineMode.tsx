@@ -8,6 +8,7 @@ import { getResidencePlatformConfig } from '../api/client'
 import { downloadBlob } from '../utils/fileDownload'
 import {
   OfflineResidenceClient,
+  cacheOnlineResidenceConfig,
   loadOfflineResidenceConfig,
   saveOfflineResidenceConfig,
   type OfflineResidenceConfig,
@@ -17,14 +18,8 @@ import { readOfflineWorkbook, writeOfflineWorkbook, type OfflineWorkbook } from 
 const { Dragger } = Upload
 type QueryState = 'idle' | 'running' | 'completed' | 'partial' | 'failed'
 
-function splitCommunityCodes(value: string): string[] {
-  return Array.from(new Set(value.split(/[\n,，;；\s]+/).map(item => item.trim().toUpperCase()).filter(Boolean)))
-}
-
-function configToText(codes: string[]): string { return codes.join('\n') }
-
 function configIsUsable(config: OfflineResidenceConfig): boolean {
-  return Boolean(config.enabled && config.base_url.trim() && config.password && config.mac_service_url.trim() && config.community_codes.length)
+  return Boolean(config.enabled && config.base_url.trim() && config.username.trim() && config.password && config.mac_service_url.trim())
 }
 
 export default function OfflineMode() {
@@ -48,7 +43,7 @@ export default function OfflineMode() {
     if (!config.enabled) return '离线居住证查询已关闭。'
     if (!config.base_url.trim() || !config.mac_service_url.trim()) return '请填写居住证接口地址和 MAC 服务地址。'
     if (!config.password) return '未填写统一登录密码。在线平台不会回传密码，请在此处手动填写。'
-    if (!config.community_codes.length) return '未填写社区代码。请每行填写一个全民防社区代码，账号会自动加 00。'
+    if (!config.username.trim()) return '未填写完整居住证登录账号，请填写账号原值。'
     return ''
   }, [config])
 
@@ -62,7 +57,6 @@ export default function OfflineMode() {
       ...config,
       base_url: config.base_url.trim().replace(/\/+$/, ''),
       mac_service_url: config.mac_service_url.trim().replace(/\/+$/, ''),
-      community_codes: Array.from(new Set(config.community_codes.map(item => item.trim().toUpperCase()).filter(Boolean))),
       timeout_seconds: Math.min(120, Math.max(1, Number(config.timeout_seconds) || 15)),
     }
     saveOfflineResidenceConfig(next)
@@ -75,19 +69,13 @@ export default function OfflineMode() {
     setConfigMessage('')
     try {
       const online = await getResidencePlatformConfig()
-      const next: OfflineResidenceConfig = {
-        ...config,
-        enabled: online.enabled,
-        base_url: online.base_url,
-        mac_service_url: online.mac_service_url,
-        timeout_seconds: online.timeout_seconds,
-        community_codes: Array.isArray(online.community_codes) ? online.community_codes : config.community_codes,
-      }
-      saveOfflineResidenceConfig(next)
+      const next = cacheOnlineResidenceConfig(online)
       setConfig(next)
-      setConfigMessage(online.password_configured && !next.password
-        ? '已同步接口、MAC、超时和社区代码。统一密码不会从平台返回，请手动填写。'
-        : '已同步接口、MAC、超时和社区代码；本地已有密码已保留。')
+      if (!online.base_url?.trim() || !online.username?.trim() || !online.mac_service_url?.trim()) {
+        setConfigMessage('在线配置尚不完整，已保留当前客户端的离线配置。')
+      } else setConfigMessage(online.password_configured && !next.password
+        ? '已同步接口、完整账号、MAC 和超时。统一密码不会从平台返回，请手动填写。'
+        : '已同步接口、完整账号、MAC 和超时；本地已有密码已保留。')
     } catch {
       setConfigMessage('无法连接滨湖平台，未同步在线配置；可以直接手动修改离线配置。')
     } finally {
@@ -171,7 +159,7 @@ export default function OfflineMode() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--app-page-bg)] px-6 py-10 text-[var(--app-text-primary)]">
+    <main className="offline-mode-page h-full min-h-0 overflow-y-auto overscroll-contain bg-[var(--app-page-bg)] px-4 py-6 text-[var(--app-text-primary)] md:px-6 md:py-10">
       <div className="mx-auto max-w-4xl">
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/login')}>返回登录</Button>
         <div className="mt-6 grid gap-4">
@@ -185,18 +173,20 @@ export default function OfflineMode() {
             </div>
           </section>
 
-          <Panel title="居住证系统配置" description="配置保存在当前客户端。在线平台只同步接口、MAC、超时和社区代码，统一登录密码不会回传。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>从在线配置同步</Button>}>
+          <Panel title="居住证系统配置" description="配置保存在当前客户端。在线平台会在有权用户成功读取配置后缓存接口、完整账号、MAC 和超时；统一登录密码不会回传。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>刷新在线配置</Button>}>
             <div className="grid gap-4">
               {configWarning && <Alert type="warning" showIcon message={configWarning} />}
               {configMessage && <Alert type="info" showIcon message={configMessage} />}
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">离线查询开关</span><div className="flex min-h-9 items-center gap-3"><Switch checked={config.enabled} onChange={enabled => updateConfig({ enabled })} /><span>{config.enabled ? '已开启' : '已关闭'}</span></div></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">居住证接口地址</span><Input value={config.base_url} onChange={event => updateConfig({ base_url: event.target.value })} /></label>
+                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">完整登录账号</span><Input value={config.username} onChange={event => updateConfig({ username: event.target.value })} autoComplete="username" /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">统一登录密码</span><Input.Password value={config.password} onChange={event => updateConfig({ password: event.target.value })} autoComplete="new-password" /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">MAC 服务地址</span><Input value={config.mac_service_url} onChange={event => updateConfig({ mac_service_url: event.target.value })} /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">请求超时（秒）</span><InputNumber min={1} max={120} value={config.timeout_seconds} onChange={value => updateConfig({ timeout_seconds: Number(value || 15) })} className="w-full" /></label>
               </div>
-              <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">社区代码</span><Input.TextArea rows={4} value={configToText(config.community_codes)} onChange={event => updateConfig({ community_codes: splitCommunityCodes(event.target.value) })} placeholder="每行一个全民防社区代码" /><span className="text-xs text-[var(--app-text-secondary)]">账号自动按“社区代码 + 00”生成。这里不保存居住证会话令牌。</span></label>
+              <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">查询组织代码（可选）</span><Input.TextArea rows={3} value={config.community_codes.join('\n')} onChange={event => updateConfig({ community_codes: Array.from(new Set(event.target.value.split(/[\n,，;；\s]+/).map(item => item.trim().toUpperCase()).filter(Boolean))) })} placeholder="接口未返回组织编码时，用于查询辖区回退" /><span className="text-xs text-[var(--app-text-secondary)]">仅作为查询辖区回退，不参与账号生成。</span></label>
+              <div className="text-xs text-[var(--app-text-secondary)]">账号必须填写居住证系统中的完整登录账号，不再根据社区代码自动拼接。这里不保存居住证会话令牌；在线同步成功后会缓存接口、账号、MAC 和超时等非敏感配置。</div>
               <div className="flex justify-end"><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
             </div>
           </Panel>

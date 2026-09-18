@@ -1,10 +1,20 @@
 export interface OfflineResidenceConfig {
   enabled: boolean
   base_url: string
+  username: string
   password: string
   mac_service_url: string
   timeout_seconds: number
   community_codes: string[]
+}
+
+export interface OnlineResidenceConfigSnapshot {
+  enabled?: boolean
+  base_url?: string
+  username?: string
+  mac_service_url?: string
+  timeout_seconds?: number
+  community_codes?: string[]
 }
 
 export interface OfflineResidenceQueryResult {
@@ -21,6 +31,7 @@ const STORAGE_KEY = 'binhu_offline_residence_config_v1'
 export const DEFAULT_OFFLINE_RESIDENCE_CONFIG: OfflineResidenceConfig = {
   enabled: true,
   base_url: '',
+  username: '',
   password: '',
   mac_service_url: 'http://127.0.0.1:23333',
   timeout_seconds: 15,
@@ -35,6 +46,7 @@ export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
     return {
       ...DEFAULT_OFFLINE_RESIDENCE_CONFIG,
       ...parsed,
+      username: typeof parsed.username === 'string' ? parsed.username.trim() : '',
       community_codes: Array.isArray(parsed.community_codes) ? parsed.community_codes.map(String).filter(Boolean) : [],
       timeout_seconds: Math.min(120, Math.max(1, Number(parsed.timeout_seconds || 15))),
     }
@@ -47,9 +59,33 @@ export function saveOfflineResidenceConfig(config: OfflineResidenceConfig): void
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     ...config,
     base_url: config.base_url.trim().replace(/\/+$/, ''),
+    username: config.username.trim(),
     mac_service_url: config.mac_service_url.trim().replace(/\/+$/, ''),
     community_codes: config.community_codes.map(item => item.trim().toUpperCase()).filter(Boolean),
   }))
+}
+
+/** Merge a successful authorized online read into the device-local offline config. */
+export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapshot): OfflineResidenceConfig {
+  const current = loadOfflineResidenceConfig()
+  if (
+    typeof snapshot.base_url !== 'string' || !snapshot.base_url.trim()
+    || typeof snapshot.username !== 'string' || !snapshot.username.trim()
+    || typeof snapshot.mac_service_url !== 'string' || !snapshot.mac_service_url.trim()
+  ) {
+    return current
+  }
+  const next: OfflineResidenceConfig = {
+    ...current,
+    ...(typeof snapshot.enabled === 'boolean' ? { enabled: snapshot.enabled } : {}),
+    ...(typeof snapshot.base_url === 'string' ? { base_url: snapshot.base_url } : {}),
+    ...(typeof snapshot.username === 'string' ? { username: snapshot.username } : {}),
+    ...(typeof snapshot.mac_service_url === 'string' ? { mac_service_url: snapshot.mac_service_url } : {}),
+    ...(typeof snapshot.timeout_seconds === 'number' ? { timeout_seconds: snapshot.timeout_seconds } : {}),
+    ...(Array.isArray(snapshot.community_codes) ? { community_codes: snapshot.community_codes } : {}),
+  }
+  saveOfflineResidenceConfig(next)
+  return loadOfflineResidenceConfig()
 }
 
 function baseUrl(config: OfflineResidenceConfig): string {
@@ -110,7 +146,7 @@ export class OfflineResidenceClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json;charset=UTF-8' },
       body: JSON.stringify({
-        username: `${communityCode}00`,
+        username: this.config.username,
         password: this.config.password,
         mac,
         remember_me: true,
@@ -141,12 +177,14 @@ export class OfflineResidenceClient {
 
   async lookup(identity: string): Promise<OfflineResidenceQueryResult> {
     if (!this.config.enabled) return { status: '查询未开启', error: 'disabled' }
-    if (!this.config.password || !this.config.base_url) return { status: '配置不完整', error: 'config_incomplete' }
+    if (!this.config.password || !this.config.username || !this.config.base_url) return { status: '配置不完整', error: 'config_incomplete' }
     const codes = this.config.community_codes.map(value => value.trim().toUpperCase()).filter(Boolean)
-    if (!codes.length) return { status: '缺少社区代码', error: 'community_code_missing' }
+    // A full account is shared by the configured residence platform. Community
+    // codes remain an optional organization fallback for older installations.
+    const lookupCodes = codes.length ? codes : ['']
     let lastError = ''
     let sawNotFound = false
-    for (const code of codes) {
+    for (const code of lookupCodes) {
       try {
         let session = this.tokens.get(code) || await this.login(code)
         let result = await this.lookupWithToken(identity, code, session)
