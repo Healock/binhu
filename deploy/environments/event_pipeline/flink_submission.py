@@ -203,6 +203,25 @@ class FlinkRest:
         self.request("/jobs/" + jid, method="PATCH")
 
 
+def wait_for_rest(client: FlinkRest, timeout: float = 60.0) -> list[dict[str, Any]]:
+    """Wait only for the JobManager REST listener to become reachable.
+
+    Compose reports the JobManager container as started before Flink binds its
+    REST port.  Retry that one fixed transport failure for a bounded period;
+    all validation and identity errors remain immediate failures.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return client.overview()
+        except ValueError as exc:
+            if str(exc) != "Flink REST request failed":
+                raise
+        if time.monotonic() >= deadline:
+            raise ValueError("Flink REST request failed") from None
+        time.sleep(1)
+
+
 def wait_for_runtime(client: FlinkRest, expected_run_id: str, consumer_groups: Callable[[], list[str]], timeout: float = 120.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last_error = "Flink jobs not ready"

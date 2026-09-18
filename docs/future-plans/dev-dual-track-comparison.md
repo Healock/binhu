@@ -305,3 +305,16 @@ checkpoint/savepoint、Kafka、Redis、MySQL 数据卷和网络。修补合并�
 policy。原迁移测试假设两边都是后来的 3-slot 带注释文本，因此拒绝了真实旧模型。
 本次没有绕过门禁；`monitor33` 的 apply evidence 保留。迁移器补充的兼容范围固定为这份
 完整历史文本，任意近似旧值或其他资源差异仍拒绝，修复后使用新的运行编号继续。
+
+`monitor34` 的受控 Flink Compose 迁移已经成功：TaskManager 使用 2 GiB 容器上限、
+1792 MiB process memory 和 `on-failure:3`，JobManager 使用 `on-failure:3`；二次
+measure 证明不再需要配置变化，checkpoint/savepoint 卷、网络和数据卷均保留。
+随后 apply 在首次读取 Flink REST 作业列表时失败。私有证据确认 JobManager 和
+TaskManager 均正常启动、TaskManager 已注册、REST 稍后成功监听且没有 OOM；失败原因是
+Compose 返回后 REST 尚未就绪，控制器第一次请求失败便立即退出，而不是运行时资源或
+业务一致性故障。
+
+`monitor34` 的失败证据和 apply evidence 必须保留且运行编号永久停用。控制器改为只对
+固定的 REST 启动传输错误执行最多 60 秒的有界等待，其他错误以及后续 JobGraph、run_id、
+consumer group、environment 和两个 sink 门禁保持不变。修复合并后使用全新的
+`dev-20260918-dualtrack-monitor35`，从 1002 → 10000 → 100000 逐级重新验收。

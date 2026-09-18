@@ -250,7 +250,8 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     source = Path(__file__).with_name("PipelineJob.java")
     candidate_jar = _build_candidate_flink_jar(source)
     client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
-    current, stale = flink_submission.partition_active_jobs(client.overview(), manifest["run_id"])
+    overview = flink_submission.wait_for_rest(client)
+    current, stale = flink_submission.partition_active_jobs(overview, manifest["run_id"])
     stale_summary = [{"jid": item.get("jid"), "name": item.get("name"), "state": item.get("state")}
                      for item in stale]
     stale_path = evidence / "flink-stale-jobs.json"

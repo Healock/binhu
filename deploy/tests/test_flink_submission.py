@@ -46,6 +46,46 @@ def job(name: str = RUN_ID, state: str = "RUNNING", sinks: tuple[str, ...] =
 
 
 class FlinkSubmissionContractTests(unittest.TestCase):
+    def test_rest_readiness_retries_only_the_fixed_startup_failure(self):
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def overview(self):
+                self.calls += 1
+                if self.calls < 3:
+                    raise ValueError("Flink REST request failed")
+                return [job()]
+
+        client = Client()
+        with patch.object(flink_submission.time, "sleep") as sleep:
+            self.assertEqual(
+                flink_submission.wait_for_rest(client, timeout=5),
+                [job()],
+            )
+        self.assertEqual(client.calls, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+        class InvalidClient:
+            def overview(self):
+                raise ValueError("invalid Flink REST path")
+
+        with patch.object(flink_submission.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "invalid Flink REST path"):
+                flink_submission.wait_for_rest(InvalidClient(), timeout=5)
+        sleep.assert_not_called()
+
+    def test_rest_readiness_has_a_fixed_timeout(self):
+        class Client:
+            def overview(self):
+                raise ValueError("Flink REST request failed")
+
+        with patch.object(flink_submission.time, "monotonic", side_effect=[10.0, 11.0]), \
+                patch.object(flink_submission.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "Flink REST request failed"):
+                flink_submission.wait_for_rest(Client(), timeout=0.5)
+        sleep.assert_not_called()
+
     def test_upload_jar_accepts_only_checked_dev_paths(self):
         calls = []
 

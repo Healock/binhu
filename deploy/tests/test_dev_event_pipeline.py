@@ -590,6 +590,49 @@ volumes:
                     control.apply()
             self.assertTrue(any("up" in command for command in calls))
 
+    def test_flink_submission_waits_for_rest_before_partitioning_jobs(self):
+        run_id = "dev-20260918-dualtrack-monitor35"
+        ready_job = {
+            "jid": "jid-current",
+            "name": run_id,
+            "state": "RUNNING",
+        }
+
+        class Client:
+            def overview(self):
+                raise AssertionError("control must use the bounded readiness result")
+
+        identity = {
+            "run_id": run_id,
+            "consumer_group": f"{run_id}-flink",
+            "topic": "dev.task.events.v1",
+            "environment": "development",
+        }
+        candidate = {
+            "source_sha256": "a" * 64,
+            "jar_sha256": "b" * 64,
+            "container_path": control.FLINK_CANDIDATE_JAR,
+        }
+        verified = {
+            "run_id": run_id,
+            "job_count": 1,
+            "consumer_group": f"{run_id}-flink",
+            "job_ids": ["jid-current"],
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(control, "_validate_flink_sql", return_value=identity), \
+                patch.object(control, "_validate_flink_compose"), \
+                patch.object(control, "_run_checked"), \
+                patch.object(control, "_build_candidate_flink_jar", return_value=candidate), \
+                patch.object(control.flink_submission, "FlinkRest", return_value=Client()), \
+                patch.object(control.flink_submission, "wait_for_rest", return_value=[ready_job]) as ready, \
+                patch.object(control.flink_submission, "wait_for_runtime", return_value=verified):
+            report = control._submit_and_verify_flink(
+                {"run_id": run_id}, Path(tmp)
+            )
+        self.assertEqual(report, verified)
+        ready.assert_called_once()
+
     def test_checkpoint_repair_rejects_shared_or_foreign_volume(self):
         items = [{"Name": name, "Config": {"Labels": {"com.docker.compose.project": "binhu-development-flink",
                   "binhu.environment": "development"}},
