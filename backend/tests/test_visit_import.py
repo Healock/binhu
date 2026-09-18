@@ -364,6 +364,11 @@ class VisitIdentityTests(unittest.TestCase):
                 aliases=[], residence_username="fixture\naccount"
             )
 
+    def test_residence_username_can_be_explicitly_cleared(self):
+        payload = CommunityAliasesUpdate(aliases=[], residence_username=None)
+        self.assertIn("residence_username", payload.model_fields_set)
+        self.assertIsNone(payload.residence_username)
+
     def test_community_police_officers_trim_and_deduplicate(self):
         payload = CommunityAliasesUpdate(
             aliases=[],

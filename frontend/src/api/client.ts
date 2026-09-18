@@ -2955,7 +2955,7 @@ export async function updateGridCommunityDetails(
   areaId: number,
   qmfCommunityCode: string,
   qmfOrganizationCodes: string[] = [],
-  residenceUsername?: string,
+  residenceUsername?: string | null,
 ): Promise<{
   name: string
   aliases: string[]
@@ -2969,7 +2969,7 @@ export async function updateGridCommunityDetails(
     area_id: areaId,
     qmf_community_code: qmfCommunityCode,
     qmf_organization_codes: qmfOrganizationCodes,
-    ...(residenceUsername ? { residence_username: residenceUsername } : {}),
+    ...(residenceUsername !== undefined ? { residence_username: residenceUsername } : {}),
   })
   return data
 }

@@ -40,6 +40,7 @@ export default function Communities() {
   const [qmfCommunityCodeDraft, setQmfCommunityCodeDraft] = useState('')
   const [qmfOrganizationCodesDraft, setQmfOrganizationCodesDraft] = useState<string[]>([])
   const [residenceUsernameDraft, setResidenceUsernameDraft] = useState('')
+  const [clearResidenceUsername, setClearResidenceUsername] = useState(false)
   const [policeOptions, setPoliceOptions] = useState<Array<{ id: number; name: string }>>([])
   const [savingDetails, setSavingDetails] = useState(false)
   const [areaEditorOpen, setAreaEditorOpen] = useState(false)
@@ -106,6 +107,7 @@ export default function Communities() {
     setQmfCommunityCodeDraft(community.qmf_community_code || '')
     setQmfOrganizationCodesDraft(community.qmf_organization_codes || [])
     setResidenceUsernameDraft('')
+    setClearResidenceUsername(false)
   }
 
   const handleSaveDetails = async () => {
@@ -124,7 +126,7 @@ export default function Communities() {
         areaDraft,
         qmfCommunityCodeDraft.trim(),
         qmfOrganizationCodesDraft,
-        residenceUsernameDraft.trim() || undefined,
+        clearResidenceUsername ? null : (residenceUsernameDraft.trim() || undefined),
       )
       const matchedText = result.matched_visit_rows > 0
         ? `，同时归类 ${result.matched_visit_rows} 条已有走访数据`
@@ -138,6 +140,7 @@ export default function Communities() {
       setQmfCommunityCodeDraft('')
       setQmfOrganizationCodesDraft([])
       setResidenceUsernameDraft('')
+      setClearResidenceUsername(false)
       await fetch()
     } catch (error: any) {
       setMsg(`保存失败：${error?.response?.data?.detail || '请稍后重试'}`)
@@ -464,6 +467,7 @@ export default function Communities() {
           setQmfCommunityCodeDraft('')
           setQmfOrganizationCodesDraft([])
           setResidenceUsernameDraft('')
+          setClearResidenceUsername(false)
         }}
       >
         <div className="space-y-5">
@@ -509,15 +513,39 @@ export default function Communities() {
             <div className="mb-2 font-medium text-slate-700">居住证完整登录账号</div>
             <Input.Password
               value={residenceUsernameDraft}
-              onChange={event => setResidenceUsernameDraft(event.target.value)}
+              onChange={event => {
+                setResidenceUsernameDraft(event.target.value)
+                setClearResidenceUsername(false)
+              }}
               placeholder={editingCommunity?.residence_username_configured
                 ? '已配置；留空保持不变'
                 : '请输入该社区的完整账号'}
               autoComplete="off"
               maxLength={200}
             />
+            {editingCommunity?.residence_username_configured && !clearResidenceUsername && (
+              <Button
+                type="link"
+                danger
+                size="small"
+                className="mt-2 px-0"
+                onClick={() => Modal.confirm({
+                  title: '清除居住证完整账号？',
+                  content: '清除后该社区将无法使用已保存的在线配置登录居住证平台，确定继续吗？',
+                  okText: '确认清除',
+                  cancelText: '取消',
+                  okButtonProps: { danger: true },
+                  onOk: () => {
+                    setResidenceUsernameDraft('')
+                    setClearResidenceUsername(true)
+                  },
+                })}
+              >
+                清除已配置账号
+              </Button>
+            )}
             <p className="mt-2 text-sm text-slate-500">
-              请填写居住证平台实际账号原值。账号加密保存且不回显，不再根据全民防社区代码自动拼接。
+              请填写居住证平台实际账号原值。账号加密保存且不回显；留空保持原值，点击“清除已配置账号”才会删除。
             </p>
           </div>
           <div>
