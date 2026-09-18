@@ -62,6 +62,7 @@ import {
   resolveQuerySheetThinBorderStyle,
   describeQuerySheetSelection,
   ensureQuerySheetRowsForPaste,
+  selectedQuerySheetRow,
   updateQuerySheetDrafts,
   type QuerySheetCellChange,
   type QuerySheetClipboardSnapshot,
