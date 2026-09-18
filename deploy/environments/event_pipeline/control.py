@@ -47,6 +47,7 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "register the fixed Dev schema before starting workers",
         "startup deadline reached; preserve resources and remeasure",
         "startup failed; preserve private diagnostics",
+        "Dev delivery index migration failed",
         "Flink jobs not ready",
         "old Dev Flink dual-track jobs did not stop",
         "Flink job is not RUNNING",
@@ -300,6 +301,15 @@ def apply():
     path.chmod(0o600)
     if result.returncode:
         raise ValueError("startup failed; preserve private diagnostics")
+    migration = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
+                                "run", "--rm", "--no-deps", "relay", "python", "-m",
+                                "event_pipeline.delivery_schema_migrate"],
+                               capture_output=True, text=True, timeout=90)
+    migration_path = evidence / "delivery-index-migration.log"
+    migration_path.write_text(migration.stdout + "\n" + migration.stderr)
+    migration_path.chmod(0o600)
+    if migration.returncode:
+        raise ValueError("Dev delivery index migration failed")
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     flink = _submit_and_verify_flink(manifest, evidence)
     return {**report, "startup_requested": True, "flink": flink, "acceptance": "pending"}

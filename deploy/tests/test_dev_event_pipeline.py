@@ -1015,14 +1015,22 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(store, "_run_transaction", side_effect=run_transaction):
             self.assertIsNone(await store.claim())
 
-        self.assertEqual(len(cursor.statements), 2)
-        pending_sql, expired_sql = [statement for statement, _ in cursor.statements]
-        self.assertIn("status IN ('pending','retry','dlq_pending')", pending_sql)
-        self.assertIn("available_at<=UTC_TIMESTAMP(6)", pending_sql)
-        self.assertNotIn(" OR ", pending_sql)
-        self.assertIn("status IN ('publishing','dlq_publishing')", expired_sql)
-        self.assertIn("locked_until<UTC_TIMESTAMP(6)", expired_sql)
-        self.assertNotIn(" OR ", expired_sql)
+        self.assertEqual(len(cursor.statements), 5)
+        statements = [statement for statement, _ in cursor.statements]
+        self.assertEqual(
+            [params[1] for _, params in cursor.statements],
+            ["pending", "retry", "dlq_pending", "publishing", "dlq_publishing"],
+        )
+        for statement in statements[:3]:
+            self.assertIn("status=%s", statement)
+            self.assertIn("available_at<=UTC_TIMESTAMP(6)", statement)
+            self.assertIn("ORDER BY created_at,event_id", statement)
+            self.assertNotIn(" OR ", statement)
+        for statement in statements[3:]:
+            self.assertIn("status=%s", statement)
+            self.assertIn("locked_until<UTC_TIMESTAMP(6)", statement)
+            self.assertIn("ORDER BY locked_until,created_at,event_id", statement)
+            self.assertNotIn(" OR ", statement)
 
     async def test_lock_contention_retry_is_bounded_and_safe(self):
         class OperationalError(Exception):
