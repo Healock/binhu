@@ -119,32 +119,34 @@ def command(arguments):
     return result.stdout
 
 
-def container_baseline():
+def container_baseline(environment):
     ids = command(['docker', 'ps', '-aq']).split()
     containers = json.loads(command(['docker', 'inspect', *ids]))
     return {container['Id']: {'name': container['Name'], 'image': container['Image'],
                              'started': container['State']['StartedAt'],
                              'running': container['State']['Running'], 'restarts': container['RestartCount']}
-            for container in containers if not container['Name'].startswith('/binhu-development-backend-')}
+            for container in containers
+            if not container['Name'].startswith(f'/binhu-{environment}-backend-')}
 
 
-def verify_baseline(before):
-    current = container_baseline()
+def verify_baseline(before, environment):
+    current = container_baseline(environment)
     if any(current.get(key) != value for key, value in before.items()):
         raise ValueError('environment_other_container_changed')
 
 
-def backup_databases(root, manifest, evidence):
+def backup_databases(environment, root, manifest, evidence):
     compose = json.loads((root / 'compose.json').read_text())
     service = compose['services']['environment-mysql']
     databases = list(manifest['databases'].values())
-    if any(not re.fullmatch('Dev_[A-Za-z0-9_]+', name) for name in databases):
-        raise ValueError('development_backup_target_invalid')
+    prefix = SPEC[environment][0]
+    if any(not re.fullmatch(re.escape(prefix) + '[A-Za-z0-9_]+', name) for name in databases):
+        raise ValueError('environment_backup_target_invalid')
     container = command(['docker', 'compose', '-f', str(root / 'compose.json'),
                          'ps', '-q', 'environment-mysql']).strip()
     if not re.fullmatch('[0-9a-f]{64}', container):
-        raise ValueError('development_database_container_invalid')
-    backup = evidence / 'development-databases.sql.gz'
+        raise ValueError('environment_database_container_invalid')
+    backup = evidence / f'{environment}-databases.sql.gz'
     arguments = ['docker', 'exec', container, 'sh', '-c',
                  'export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; exec mysqldump -u root '
                  '--single-transaction --routines --triggers --events --hex-blob '
@@ -154,7 +156,7 @@ def backup_databases(root, manifest, evidence):
         try:
             shutil.copyfileobj(process.stdout, destination)
             if process.wait(timeout=300):
-                raise RuntimeError('development_database_backup_failed')
+                raise RuntimeError('environment_database_backup_failed')
         finally:
             process.stdout.close()
     size = 0
@@ -162,7 +164,7 @@ def backup_databases(root, manifest, evidence):
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             size += len(chunk)
     if size < 1024:
-        raise ValueError('development_database_backup_empty')
+        raise ValueError('environment_database_backup_empty')
     write_json(evidence / 'backup.json', {'sha256': file_hash(backup), 'bytes': backup.stat().st_size,
                                         'uncompressed_bytes': size, 'databases': databases,
                                         'mysql_image': service['image']})
@@ -209,14 +211,17 @@ def check_resources(root):
         raise ValueError('environment_update_resources_insufficient')
 
 
-def apply_development(artifact, image_directory, expected_id, evidence):
+def apply_environment(environment, artifact, image_directory, expected_id, evidence):
     import fcntl
     from .database_identity import run as verify_database_identity
-    root = root_for('development')
+    if environment not in SPEC:
+        raise ValueError('nonproduction_environment_required')
+    root = root_for(environment)
     evidence = Path(evidence).absolute()
     evidence_parent = EVIDENCE_ROOT
+    evidence_prefix = 'dev' if environment == 'development' else environment
     if (evidence.parent != evidence_parent or evidence.resolve() != evidence or evidence.exists()
-            or not re.fullmatch('dev-update-[0-9a-f]{16}', evidence.name)):
+            or not re.fullmatch(f'{evidence_prefix}-update-[0-9a-f]{{16}}', evidence.name)):
         raise ValueError('environment_evidence_path_invalid')
     with (root / '.deployment.lock').open('a') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -224,10 +229,10 @@ def apply_development(artifact, image_directory, expected_id, evidence):
         artifact_manifest = verify_artifact(artifact)
         manifest, compose, env_text = read_configuration(root)
         candidate, new_env, new_manifest = candidate_configuration(
-            'development', root, manifest, compose, env_text, image)
-        if not verify_database_identity('development')['all_markers_present']:
+            environment, root, manifest, compose, env_text, image)
+        if not verify_database_identity(environment)['all_markers_present']:
             raise ValueError('environment_database_identity_incomplete')
-        baseline = container_baseline()
+        baseline = container_baseline(environment)
         check_resources(root)
         evidence.mkdir(mode=0o700)
         changed = False
@@ -243,7 +248,7 @@ def apply_development(artifact, image_directory, expected_id, evidence):
             if tree_hashes(previous / 'static') != old_static_hashes:
                 raise ValueError('environment_static_backup_failed')
             write_json(evidence / 'previous-files.json', tree_hashes(previous))
-            backup_databases(root, manifest, evidence)
+            backup_databases(environment, root, manifest, evidence)
             releases = root / 'releases'
             if releases.is_symlink():
                 raise ValueError('environment_release_path_invalid')
@@ -272,17 +277,17 @@ def apply_development(artifact, image_directory, expected_id, evidence):
             for name in ('backend.env', 'compose.json', 'manifest.json'):
                 replace_file(prepared / name, root / name)
             command(['docker', 'compose', '-f', str(root / 'compose.json'), 'up', '-d', '--no-deps', 'backend'])
-            report = wait_healthy('development', image['version'])
-            if not verify_database_identity('development')['all_markers_present']:
+            report = wait_healthy(environment, image['version'])
+            if not verify_database_identity(environment)['all_markers_present']:
                 raise ValueError('environment_database_identity_incomplete')
             backend_id = command(['docker', 'compose', '-f', str(root / 'compose.json'), 'ps', '-q', 'backend']).strip()
             backend = json.loads(command(['docker', 'inspect', backend_id]))[0]
             if (backend['Image'] != image['image_id']
-                    or backend['Config']['Labels'].get('com.docker.compose.project') != 'binhu-development'
+                    or backend['Config']['Labels'].get('com.docker.compose.project') != f'binhu-{environment}'
                     or [entry for entry in backend['Config']['Env'] if entry.startswith('APP_VERSION=')]
                     != ['APP_VERSION=' + image['version']]):
                 raise ValueError('environment_running_image_mismatch')
-            verify_baseline(baseline)
+            verify_baseline(baseline, environment)
             report.update({'artifact_id': expected_id, 'image_id': image['image_id'],
                            'commit': image['commit'], 'business_acceptance': False})
             write_json(evidence / 'result.json', report)
@@ -296,33 +301,54 @@ def apply_development(artifact, image_directory, expected_id, evidence):
                     command(['docker', 'compose', '-f', str(root / 'compose.json'), 'up', '-d', '--no-deps', 'backend'])
                     rollback = 'application_restored_health_pending'
                     old_version = parse_environment(env_text).get('APP_VERSION') or manifest.get('version') or '0.0.0'
-                    wait_healthy('development', old_version)
+                    wait_healthy(environment, old_version)
                     rollback = 'application_restored_health_verified'
                 except Exception:
                     rollback = 'application_restore_failed'
-            write_json(evidence / 'failure.json', {'error': 'development_update_failed',
+            write_json(evidence / 'failure.json', {'error': f'{environment}_update_failed',
                                                   'rollback': rollback, 'database_restored': False})
-            raise RuntimeError('development_update_failed; inspect private evidence') from None
+            raise RuntimeError(f'{environment}_update_failed; inspect private evidence') from None
 
 
-def measure_development(artifact, image_directory, expected_id):
+def measure_environment(environment, artifact, image_directory, expected_id):
     from .database_identity import run as verify_database_identity
-    root = root_for('development')
+    if environment not in SPEC:
+        raise ValueError('nonproduction_environment_required')
+    root = root_for(environment)
     image = verify_image(artifact, expected_id, image_directory)
     manifest, compose, env_text = read_configuration(root)
-    candidate_configuration('development', root, manifest, compose, env_text, image)
-    if not verify_database_identity('development')['all_markers_present']:
+    candidate_configuration(environment, root, manifest, compose, env_text, image)
+    if not verify_database_identity(environment)['all_markers_present']:
         raise ValueError('environment_database_identity_incomplete')
     check_resources(root)
-    return {'environment': 'development', 'candidate_version': image['version'],
+    return {'environment': environment, 'candidate_version': image['version'],
             'artifact_id': expected_id, 'image_id': image['image_id'],
             'database_identity_verified': True, 'configuration_verified': True,
             'configuration_hashes': manifest['hashes'], 'application_switched': False}
 
 
+def apply_development(artifact, image_directory, expected_id, evidence):
+    """Backward-compatible Development update entry point."""
+    return apply_environment('development', artifact, image_directory, expected_id, evidence)
+
+
+def apply_staging(artifact, image_directory, expected_id, evidence):
+    return apply_environment('staging', artifact, image_directory, expected_id, evidence)
+
+
+def measure_development(artifact, image_directory, expected_id):
+    """Backward-compatible Development measurement entry point."""
+    return measure_environment('development', artifact, image_directory, expected_id)
+
+
+def measure_staging(artifact, image_directory, expected_id):
+    return measure_environment('staging', artifact, image_directory, expected_id)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['measure-development', 'apply-development'])
+    parser.add_argument('action', choices=[
+        'measure-development', 'apply-development', 'measure-staging', 'apply-staging'])
     parser.add_argument('--artifact', type=Path, required=True)
     parser.add_argument('--image-directory', type=Path, required=True)
     parser.add_argument('--expected-artifact-id', required=True)
@@ -332,12 +358,16 @@ def main():
         parser.error('run on authorized Linux environment host as root')
     os.umask(0o077)
     try:
-        if args.action == 'measure-development':
-            report = measure_development(args.artifact, args.image_directory, args.expected_artifact_id)
+        operation, environment = args.action.split('-', 1)
+        if operation == 'measure':
+            report = measure_environment(
+                environment, args.artifact, args.image_directory, args.expected_artifact_id)
         else:
             if not args.evidence:
                 parser.error('apply requires a new evidence directory')
-            report = apply_development(args.artifact, args.image_directory, args.expected_artifact_id, args.evidence)
+            report = apply_environment(
+                environment, args.artifact, args.image_directory,
+                args.expected_artifact_id, args.evidence)
         print(json.dumps(report))
     except (ValueError, RuntimeError, OSError, KeyError, subprocess.TimeoutExpired):
         raise SystemExit('environment_update_failed; inspect private evidence') from None
