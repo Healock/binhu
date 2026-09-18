@@ -92,7 +92,11 @@ def compose(images):
             "healthcheck": {"test": ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "--silent"],
                             "interval": "5s", "timeout": "3s", "retries": 36, "start_period": "180s"},
             "command": ["--innodb-buffer-pool-size=128M", "--max-connections=20",
-                        "--innodb-file-per-table=OFF", "--innodb-data-file-path=ibdata1:12M:autoextend:max:1024M",
+                        # The derived Dev database keeps the controlled acceptance
+                        # ledger and both projections in a shared system tablespace.
+                        # 1 GiB is exhausted before the 100,000-event gate; keep a
+                        # bounded 4 GiB ceiling instead of allowing unbounded growth.
+                        "--innodb-file-per-table=OFF", "--innodb-data-file-path=ibdata1:12M:autoextend:max:4096M",
                         "--innodb-redo-log-capacity=64M", "--skip-log-bin"],
             "volumes": ["mysql:/var/lib/mysql", "./init.sql:/docker-entrypoint-initdb.d/01-pipeline.sql:ro"]},
         "dev-derived-redis": {**common, "image": images["redis"], "mem_limit": "96m", "cpus": .25,

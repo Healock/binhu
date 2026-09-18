@@ -330,3 +330,19 @@ REST 就绪门禁、写出空的旧作业清单并提交当前 JobGraph。服务
 这类固定传输错误，而是立即退出。该故障属于 Dev 验收工具竞态，不是业务双轨差异。
 `monitor35` 的失败证据必须保留，运行编号不再复用。运行时等待修补后使用新的
 `dev-20260918-dualtrack-monitor36` 从 1002 → 10000 → 100000 重新验收。
+
+## 2026-09-18：monitor36 100000 入队容量门禁失败
+
+`monitor36` 的 1002 和 10000 条累计验收均通过。100000 条运行在入队阶段失败，
+不是 Python/Flink 结果差异：Dev 派生 MySQL 返回 `The table is full`，随后 relay
+退出；失败时 `ibdata1` 使用 `innodb_data_file_path=ibdata1:12M:autoextend:max:1024M`
+且 `innodb_file_per_table=OFF`。当时 `_kafka_event_delivery` 约 726 MiB（含索引），
+Python/Flink 派生表仍需继续写入，因而 1 GiB 系统表空间在达到 100000 前耗尽。服务器
+磁盘仍有充足空间，Production、Staging、Kafka、Flink 和 Schema Registry 未受影响。
+
+本轮失败目录和 `monitor36` 1002/10000 证据保留不覆盖，运行编号永久停用。修补仅限
+Dev event-pipeline：派生 MySQL 受控 Compose 将系统表空间上限从 1 GiB 提升到 4 GiB，
+该上限仍由 Compose 合同测试和服务器 measure/apply 门禁固定校验；仍使用具名数据卷、
+禁用 binlog、固定内存上限和有限资源门禁，不删除现有卷或验收数据。
+修补合并并在服务器确认当前 Compose 只发生该预期变化后，必须使用新的运行编号从
+1002 → 10000 → 100000 重新验收。

@@ -1029,7 +1029,7 @@ volumes:
             self.assertIn("mem_limit", service)
             self.assertIn("cpus", service)
         self.assertFalse(any(v.get("external") for v in spec["volumes"].values()))
-        self.assertIn("max:1024M", " ".join(spec["services"]["dev-derived-mysql"]["command"]))
+        self.assertIn("max:4096M", " ".join(spec["services"]["dev-derived-mysql"]["command"]))
         self.assertEqual(spec["services"]["dev-derived-mysql"]["mem_limit"], "768m")
         self.assertEqual(spec["services"]["dev-derived-mysql"]["memswap_limit"], "1536m")
         self.assertEqual(spec["services"]["python-metadata-worker"]["mem_limit"], "256m")
