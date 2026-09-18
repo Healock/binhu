@@ -226,7 +226,15 @@ def wait_for_runtime(client: FlinkRest, expected_run_id: str, consumer_groups: C
     deadline = time.monotonic() + timeout
     last_error = "Flink jobs not ready"
     while time.monotonic() < deadline:
-        current, _ = partition_active_jobs(client.overview(), expected_run_id)
+        try:
+            overview = client.overview()
+        except ValueError as exc:
+            if str(exc) != "Flink REST request failed":
+                raise
+            last_error = str(exc)
+            time.sleep(2)
+            continue
+        current, _ = partition_active_jobs(overview, expected_run_id)
         if len(current) == 1:
             try:
                 details = [client.details(str(item["jid"])) for item in current]
