@@ -20,7 +20,7 @@ PUBLIC_CANDIDATE_FILES = frozenset({
     "init.sql", "redis.conf", "pipeline.sql", "runtime.py",
     "dual_track_monitor.py", "scale_acceptance.py", "kafka_delivery_store.py",
     "kafka_event_contract.py", "kafka_envelope.py", "kafka_relay.py",
-    "delivery_schema_migrate.py",
+    "delivery_schema_migrate.py", "python_metadata_worker.py",
 })
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
@@ -139,6 +139,9 @@ def compose(images):
     services["python-metadata-worker"] = {**common, "image": images["worker"],
         "env_file": ["runtime.env"], "mem_limit": "256m", "cpus": .25,
         "read_only": True, "tmpfs": ["/tmp:size=16m"],
+        "volumes": [
+            "./python_metadata_worker.py:/opt/dev-pipeline/event_pipeline/services/python_metadata_worker.py:ro",
+        ],
         "command": ["python", "-m", "event_pipeline.runtime", "python-metadata-worker"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
@@ -381,6 +384,7 @@ CREATE TABLE dev_task_metadata_python_events (
         "kafka_envelope.py": (services_root / "kafka_envelope.py").read_text(encoding="utf-8"),
         "kafka_relay.py": (services_root / "kafka_relay.py").read_text(encoding="utf-8"),
         "delivery_schema_migrate.py": Path(__file__).with_name("delivery_schema_migrate.py").read_text(encoding="utf-8"),
+        "python_metadata_worker.py": (services_root / "python_metadata_worker.py").read_text(encoding="utf-8"),
     }
     for name, content in files.items():
         target = ROOT / name
