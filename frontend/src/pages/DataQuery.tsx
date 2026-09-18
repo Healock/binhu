@@ -27,6 +27,7 @@ import {
 } from '@ant-design/icons'
 import {
   createQuerySourceRow,
+  createQuerySourceRowsBulk,
   deleteQuerySourceRow,
   formatUTCTime,
   getQueryDataVersion,
@@ -58,6 +59,7 @@ import {
   queryInspectorOptions,
   type QuerySheetCellChange,
   type QuerySheetFilterCriteria,
+  type QuerySheetSelection,
 } from '../utils/querySpreadsheet'
 import {
   connectQueryRealtime,
@@ -106,7 +108,8 @@ export default function DataQuery() {
   const [requiredFields, setRequiredFields] = useState<string[]>([])
   const [draftRows, setDraftRows] = useState<DisplayRow[]>([])
   const [savingDraftIds, setSavingDraftIds] = useState<Set<string>>(new Set())
-  const [selectedSheetRow, setSelectedSheetRow] = useState<DisplayRow | null>(null)
+  const [selectedSheetSelection, setSelectedSheetSelection] = useState<QuerySheetSelection | null>(null)
+  const selectedSheetRow = selectedSheetSelection?.primary || null
   const [sheetSaving, setSheetSaving] = useState(false)
   const [sheetEditing, setSheetEditing] = useState(false)
   const [sheetCommitFailure, setSheetCommitFailure] = useState<{
@@ -212,7 +215,7 @@ export default function DataQuery() {
         current,
         Math.max(1, Math.ceil(result.total / MOBILE_CARD_PAGE_SIZE)),
       ))
-      setSelectedSheetRow(null)
+      setSelectedSheetSelection(null)
       setSheetRevision(current => current + 1)
     } catch (requestError) {
       if (sequence !== fetchSequence.current) return
@@ -229,7 +232,7 @@ export default function DataQuery() {
       setDataSourceMode('local')
       setScopeMessage('')
       setRowManageMessage('')
-      setSelectedSheetRow(null)
+      setSelectedSheetSelection(null)
       setSheetRevision(current => current + 1)
     } finally {
       if (sequence === fetchSequence.current && !silent) setLoading(false)
@@ -382,9 +385,59 @@ export default function DataQuery() {
 
   const discardDraft = useCallback((draftId: string) => {
     setDraftRows(current => current.filter(row => row.__draft_id !== draftId))
-    setSelectedSheetRow(null)
+    setSelectedSheetSelection(null)
     setSheetRevision(current => current + 1)
   }, [])
+
+  const submitDrafts = useCallback(async (selection: QuerySheetSelection) => {
+    if (!selection.fullRows) {
+      messageApi.warning('请使用工作表左侧行号选择连续整行后再批量写入')
+      return
+    }
+    const candidates = selection.rows.flatMap((row, offset) => (
+      row.__kind === 'draft' && isQueryDraftTouched(row, columns)
+        ? [{ row, worksheetRow: selection.rowNumbers[offset] }]
+        : []
+    ))
+    if (!candidates.length) return
+    const invalid = candidates.flatMap(({ row, worksheetRow }) => {
+      const missing = missingQueryDraftFields(row, requiredFields)
+      return missing.length ? [`工作表第 ${worksheetRow + 1} 行：请先填写 ${missing.join('、')}`] : []
+    })
+    if (invalid.length) {
+      messageApi.warning(invalid.join('；'))
+      return
+    }
+    const candidateIds = candidates.map(({ row }) => String(row.__draft_id || ''))
+    setSavingDraftIds(current => new Set([...current, ...candidateIds]))
+    try {
+      const result = await createQuerySourceRowsBulk(selectedType, candidates.map(({ row }) => ({
+        draft_id: String(row.__draft_id || ''),
+        values: Object.fromEntries(columns.map(column => [column, String(row[column] ?? '')])),
+      })))
+      messageApi.success(result.message)
+      const ids = new Set(candidateIds)
+      setDraftRows(current => current.filter(row => !ids.has(String(row.__draft_id || ''))))
+      setSelectedSheetSelection(null)
+      await fetchData()
+    } catch (requestError) {
+      const detail = (requestError as any)?.response?.data?.detail
+      const errors = detail && typeof detail === 'object' && Array.isArray(detail.errors)
+        ? detail.errors.map((item: any) => {
+          const candidate = candidates[Number(item.index)] as { row: DisplayRow; worksheetRow: number } | undefined
+          const label = candidate ? `工作表第 ${candidate.worksheetRow + 1} 行` : `批次第 ${Number(item.index) + 1} 行`
+          return `${label}（${String(item.draft_id || '未知草稿')}）：${item.message}`
+        }).join('；')
+        : ''
+      messageApi.error(errors || errorText(requestError, '批量新增失败，草稿已保留'))
+    } finally {
+      setSavingDraftIds(current => {
+        const next = new Set(current)
+        candidateIds.forEach(id => next.delete(id))
+        return next
+      })
+    }
+  }, [columns, fetchData, messageApi, requiredFields, selectedType])
 
   const submitDraft = useCallback(async (row: DisplayRow) => {
     const draftId = String(row.__draft_id || '')
@@ -402,7 +455,7 @@ export default function DataQuery() {
       const result = await createQuerySourceRow(selectedType, values)
       messageApi.success(result.message)
       setDraftRows(current => current.filter(item => item.__draft_id !== draftId))
-      setSelectedSheetRow(null)
+      setSelectedSheetSelection(null)
       await fetchData()
     } catch (requestError) {
       messageApi.error(errorText(requestError, '新增失败，草稿已保留'))
@@ -623,7 +676,7 @@ export default function DataQuery() {
     setCanAdd(false)
     setRequiredFields([])
     setDraftRows([])
-    setSelectedSheetRow(null)
+    setSelectedSheetSelection(null)
   }
 
   const changeBusinessType = (value: string) => {
@@ -636,7 +689,7 @@ export default function DataQuery() {
     setCanAdd(false)
     setRequiredFields([])
     setDraftRows([])
-    setSelectedSheetRow(null)
+    setSelectedSheetSelection(null)
   }
 
   return (
@@ -779,7 +832,7 @@ export default function DataQuery() {
                     setSortBy(undefined)
                     setSortOrder('asc')
                     setMobilePage(1)
-                    setSelectedSheetRow(null)
+                    setSelectedSheetSelection(null)
                   }}
                 >
                   清除排序
@@ -796,7 +849,26 @@ export default function DataQuery() {
               <span className="text-sm text-[var(--app-text-secondary)]">
                 选择单元格或整行后，可在这里查看来源状态和行操作
               </span>
-            ) : selectedSheetRow.__kind === 'draft' ? (() => {
+            ) : selectedSheetSelection && selectedSheetSelection.rows.length > 1 ? (() => {
+              const invalid = !selectedSheetSelection.fullRows || selectedSheetSelection.rows.some(row => row.__kind !== 'draft')
+              const candidates = selectedSheetSelection.rows.filter(row => row.__kind === 'draft' && isQueryDraftTouched(row, columns))
+              return (
+                <>
+                  <Tag color="gold">已选 {candidates.length} 行草稿</Tag>
+                  <span className="text-sm text-[var(--app-text-secondary)]">按工作表从上到下写入；空白行将跳过，任一校验失败则整批不写入</span>
+                  {!selectedSheetSelection.fullRows && <span className="text-sm text-red-600">请点击左侧行号选择连续整行</span>}
+                  {invalid && <span className="text-sm text-red-600">选区包含已有数据行，不能批量新增</span>}
+                  <Button
+                    type="primary"
+                    size="small"
+                    disabled={invalid || candidates.length === 0}
+                    onClick={() => submitDrafts(selectedSheetSelection)}
+                  >
+                    写入任务池
+                  </Button>
+                </>
+              )
+            })() : selectedSheetRow.__kind === 'draft' ? (() => {
               const touched = isQueryDraftTouched(selectedSheetRow, columns)
               const draftId = String(selectedSheetRow.__draft_id || '')
               const missing = missingQueryDraftFields(selectedSheetRow, requiredFields)
@@ -900,14 +972,14 @@ export default function DataQuery() {
                 setSortBy(column)
                 setSortOrder(order)
                 setMobilePage(1)
-                setSelectedSheetRow(null)
+                setSelectedSheetSelection(null)
               }}
               onDraftsChange={setDraftRows}
               onFilterCriteriaChange={criteria => {
                 setSheetFilterCriteria(criteria)
                 setMobilePage(1)
               }}
-              onSelectionChange={setSelectedSheetRow}
+              onSelectionChange={setSelectedSheetSelection}
               onCommit={handleSheetCommit}
               onCommitFailure={(changes, retry) => setSheetCommitFailure({ changes, retry })}
               onBlocked={messageApi.warning}

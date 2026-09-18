@@ -141,6 +141,126 @@ class SourceRowCreate(BaseModel):
     values: dict[str, str]
 
 
+class SourceRowBulkItem(BaseModel):
+    draft_id: str = Field(min_length=1, max_length=200)
+    values: dict[str, str]
+
+
+class SourceRowBulkCreate(BaseModel):
+    rows: list[SourceRowBulkItem] = Field(min_length=1)
+
+
+async def _create_local_source_rows_bulk(
+    *, parser_type: str, parser, items: list[SourceRowBulkItem],
+    request: Request, user: dict, conn,
+) -> list[dict]:
+    """Validate and create local rows atomically, preserving request order."""
+    lock_name = f"binhu_local_source_create_{parser_type}"
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT GET_LOCK(%s, %s)", (lock_name, 3))
+        locked = bool((await cur.fetchone() or [0])[0] == 1)
+    if not locked:
+        raise HTTPException(409, "本地任务池正在批量写入，请稍后重试")
+    transaction_started = False
+    try:
+        normalized: list[dict] = []
+        errors: list[dict] = []
+        seen: dict[str, int] = {}
+        async with conn.cursor() as cur:
+            for index, item in enumerate(items):
+                values = {
+                    column: str(item.values.get(column, "") or "").strip()
+                    for column in parser.COLUMNS
+                }
+                try:
+                    missing_required = [
+                        key for key in parser.get_business_key()
+                        if not values.get(key)
+                    ]
+                    if missing_required:
+                        raise ValueError(f"请填写业务主键字段：{'、'.join(missing_required)}")
+                    parser.validate_new_row(values)
+                    formal = await validate_new_row_scope(cur, user, parser, values)
+                    if formal:
+                        values[parser.COMMUNITY_COLUMN] = formal
+                    row_key = parser.make_row_key(values)
+                    if row_key in seen:
+                        raise ValueError(f"与第 {seen[row_key] + 1} 行重复业务主键")
+                    seen[row_key] = index
+                    normalized.append({"index": index, "item": item, "values": values, "row_key": row_key})
+                except PermissionError as exc:
+                    errors.append({"index": index, "draft_id": item.draft_id, "code": "scope_forbidden", "message": str(exc)})
+                except ValueError as exc:
+                    message = str(exc)
+                    code = "duplicate_request" if "重复业务主键" in message else (
+                        "missing_required" if "请填写业务主键字段" in message or "社区不能为空" in message else "validation"
+                    )
+                    errors.append({"index": index, "draft_id": item.draft_id, "code": code, "message": message})
+            if normalized:
+                keys = [entry["row_key"] for entry in normalized]
+                placeholders = ",".join(["%s"] * len(keys))
+                await cur.execute(
+                    "SELECT row_key FROM _online_source_rows AS source "
+                    "WHERE parser_type=%s AND row_key IN (" + placeholders + ") "
+                    "AND archived_at IS NULL " + active_source_sql_filter(parser_type),
+                    [parser_type, *keys],
+                )
+                existing = {str(row[0]) for row in await cur.fetchall()}
+                for entry in normalized:
+                    if entry["row_key"] in existing:
+                        item = entry["item"]
+                        errors.append({"index": entry["index"], "draft_id": item.draft_id, "code": "duplicate_existing", "message": "本地任务池中已经存在相同业务主键"})
+            if errors:
+                raise HTTPException(400, {"message": "批量校验失败，未写入任何任务", "errors": sorted(errors, key=lambda value: value["index"])})
+            await conn.begin()
+            transaction_started = True
+            results: list[dict] = []
+            for entry in normalized:
+                values, row_key = entry["values"], entry["row_key"]
+                await cur.execute(
+                    f"INSERT INTO `{parser.table_name}` (_row_key, "
+                    + ", ".join(f"`{column}`" for column in parser.COLUMNS)
+                    + ") VALUES (" + ", ".join(["%s"] * (len(parser.COLUMNS) + 1)) + ")",
+                    [row_key, *[values[column] for column in parser.COLUMNS]],
+                )
+                physical_row = int(cur.lastrowid)
+                row_hash = local_row_hash(values)
+                await cur.execute(
+                    "INSERT INTO _online_source_rows (spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,values_json,cell_meta_json,revision,refreshed_at,source_kind,source_ref) "
+                    "VALUES (0,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),'local_table',%s)",
+                    (parser_type, local_sheet_id(parser_type), physical_row, row_key, row_hash, stable_json(values), stable_json({column: {"type": "text"} for column in parser.COLUMNS}), f"{parser.table_name}:{physical_row}"),
+                )
+                await cur.execute(
+                    "INSERT INTO _local_source_records (parser_type,local_task_id,business_key,source_kind,source_ref,values_json,content_hash,status) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active')",
+                    (parser_type, physical_row, row_key, f"{parser.table_name}:{physical_row}", stable_json(values), row_hash),
+                )
+                results.append({"draft_id": entry["item"].draft_id, "physical_row": physical_row, "row_key": row_key, "values": values})
+            await rebuild_projection_rows(cur, parser_type, [entry["row_key"] for entry in normalized], reconcile_graph=False)
+            for result in results:
+                await enqueue_event(cur, domain="online", event_type="online.task.created", aggregate_type="online_task", aggregate_id=f"{parser_type}:{result['row_key']}", aggregate_revision=1, audiences=["authenticated"])
+            for result in results:
+                await cur.execute("SELECT id, revision FROM _online_source_rows WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s AND archived_at IS NULL LIMIT 1", (parser_type, result["row_key"]))
+                source_row = await cur.fetchone()
+                if not source_row:
+                    raise HTTPException(500, "本地来源记录创建失败")
+                result.update(source_id=int(source_row[0]), revision=int(source_row[1] or 1))
+            await conn.commit()
+            transaction_started = False
+        await record_admin_audit(user, "online.local_bulk_create", target_type="local_source_rows", target_name=parser_type, detail={"parser_type": parser_type, "count": len(results)}, conn=conn, **request_audit_fields(request))
+        return results
+    except Exception:
+        if transaction_started:
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+        raise
+    finally:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+            await cur.fetchone()
+
+
 def _json_path(column: str) -> str:
     return '$."' + column.replace('"', '\\"') + '"'
 
@@ -2491,6 +2611,23 @@ async def create_source_row(
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
     parser = get_parser(parser_type)
+    if local_data_source_enabled():
+        result = (await _create_local_source_rows_bulk(
+            parser_type=parser_type,
+            parser=parser,
+            items=[SourceRowBulkItem(draft_id="single", values=data.values)],
+            request=request,
+            user=user,
+            conn=conn,
+        ))[0]
+        return {
+            "message": "已创建本地业务数据",
+            "source_id": result["source_id"],
+            "row_key": result["row_key"],
+            "revision": result["revision"],
+            "values": result["values"],
+            "pending_sync": False,
+        }
     values = {
         column: str(data.values.get(column, "") or "").strip()
         for column in parser.COLUMNS
@@ -2705,6 +2842,30 @@ async def create_source_row(
         "row_key": new_key,
         "pending_sync": True,
     }
+
+
+@router.post("/{parser_type}/source-rows/bulk")
+async def create_source_rows_bulk(
+    parser_type: str,
+    data: SourceRowBulkCreate,
+    request: Request,
+    user: dict = Depends(require_permission(ONLINE_RAW_ROW_MANAGE)),
+    conn=Depends(get_db),
+):
+    if parser_type not in QUERY_TYPES:
+        raise HTTPException(400, "不支持的业务类型")
+    if not local_data_source_enabled():
+        raise HTTPException(410, "腾讯数据源已下线")
+    parser = get_parser(parser_type)
+    results = await _create_local_source_rows_bulk(
+        parser_type=parser_type,
+        parser=parser,
+        items=data.rows,
+        request=request,
+        user=user,
+        conn=conn,
+    )
+    return {"message": f"已批量创建 {len(results)} 条本地业务数据", "rows": results, "pending_sync": False}
 
 
 @router.delete("/{parser_type}/source-rows/{source_id}")

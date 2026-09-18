@@ -24,10 +24,35 @@ import {
   resolveQuerySheetPasteValues,
   resolveQuerySheetSortRequest,
   resolveQuerySheetThinBorderStyle,
+  describeQuerySheetSelection,
+  ensureQuerySheetRowsForPaste,
   selectedQuerySheetRow,
   querySheetEditGenerationMatches,
   updateQuerySheetDrafts,
 } from '../src/utils/querySpreadsheet.ts'
+
+const pasteColumns = ['社区', '姓名', '身份证号']
+
+test('整行选区按工作表顺序返回行号并识别整行', () => {
+  const rows = buildQuerySheetRows([], [
+    { 社区: 'A', 姓名: '一', 身份证号: '1', __kind: 'draft', __draft_id: 'd1' },
+    { 社区: '', 姓名: '', 身份证号: '', __kind: 'draft', __draft_id: 'd2' },
+  ], pasteColumns, true, index => `d-${index}`, 1)
+  const selection = describeQuerySheetSelection(rows, pasteColumns, {
+    startRow: 1, endRow: 2, startColumn: 0, endColumn: 2,
+  })
+  assert.deepEqual(selection?.rowNumbers, [1, 2])
+  assert.equal(selection?.fullRows, true)
+})
+
+test('粘贴超出尾部会追加空白草稿但不转换业务行', () => {
+  const rows = buildQuerySheetRows([{ 社区: 'A', 姓名: '已有', 身份证号: '1', __row_key: 'k' }], [], pasteColumns, true, index => `d-${index}`, 1)
+  assert.equal(ensureQuerySheetRowsForPaste(rows, pasteColumns, 2, 3, true, index => `paste-${index}`), true)
+  assert.equal(rows.length, 4)
+  assert.equal(rows[0].kind, 'data')
+  assert.equal(rows[3].kind, 'blank')
+  assert.equal(ensureQuerySheetRowsForPaste(rows, pasteColumns, 1, 2, true, index => `bad-${index}`), false)
+})
 
 test('automatic spreadsheet coercion is detected and blocked', () => {
   assert.equal(
