@@ -354,6 +354,16 @@ class VisitIdentityTests(unittest.TestCase):
                 aliases=[], qmf_community_code="320584037-"
             )
 
+    def test_residence_username_is_trimmed_and_rejects_control_characters(self):
+        payload = CommunityAliasesUpdate(
+            aliases=[], residence_username="  fixture-community-account  "
+        )
+        self.assertEqual(payload.residence_username, "fixture-community-account")
+        with self.assertRaises(ValueError):
+            CommunityAliasesUpdate(
+                aliases=[], residence_username="fixture\naccount"
+            )
+
     def test_community_police_officers_trim_and_deduplicate(self):
         payload = CommunityAliasesUpdate(
             aliases=[],

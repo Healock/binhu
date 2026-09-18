@@ -29,6 +29,7 @@ from services.qmf_community import (
     normalize_qmf_community_code,
     valid_qmf_community_code,
 )
+from services.qmf_config import encrypt_secret
 from services.member_departments import (
     get_member_departments,
     replace_member_departments,
@@ -185,6 +186,7 @@ class CommunityAliasesUpdate(BaseModel):
     area_id: Optional[int] = Field(default=None, gt=0)
     qmf_community_code: Optional[str] = Field(default=None, max_length=20)
     qmf_organization_codes: list[str] = Field(default_factory=list, max_length=30)
+    residence_username: Optional[str] = Field(default=None, max_length=200)
 
     @field_validator("name")
     @classmethod
@@ -204,6 +206,16 @@ class CommunityAliasesUpdate(BaseModel):
         normalized = normalize_qmf_community_code(value)
         if normalized and not valid_qmf_community_code(normalized):
             raise ValueError("全民防社区代码必须为 10 位大写字母或数字")
+        return normalized
+
+    @field_validator("residence_username")
+    @classmethod
+    def normalize_residence_username(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+            raise ValueError("居住证完整账号不能包含控制字符")
         return normalized
 
     @field_validator("qmf_organization_codes")
@@ -687,7 +699,8 @@ async def list_communities(
         await cur.execute(f"""
             SELECT c.id, c.name, c.police_officers,
                    COALESCE(g.grid_count, 0) AS grid_count,
-                   area.id, area.name, c.is_active, c.qmf_community_code
+                   area.id, area.name, c.is_active, c.qmf_community_code,
+                   CASE WHEN COALESCE(c.residence_username,'')<>'' THEN 1 ELSE 0 END
             FROM _communities c
             LEFT JOIN _areas AS area ON area.id=c.area_id
             LEFT JOIN (
@@ -756,6 +769,7 @@ async def list_communities(
                 "area_name": str(row[5] or ""),
                 "is_active": bool(row[6]),
                 "qmf_community_code": str(row[7] or ""),
+                "residence_username_configured": bool(row[8]),
                 "qmf_organization_codes": organizations_by_community.get(int(row[0]), []),
             }
             for row in rows
@@ -1220,11 +1234,11 @@ async def update_community_status(
 async def update_community_aliases(
     community_id: int,
     data: CommunityAliasesUpdate,
+    request: Request,
     user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
     conn=Depends(get_db),
 ):
     """设置社区别名和民警，并把已导入走访数据归到正式名称。"""
-    del user
     returned_officers = data.police_officers
     await conn.begin()
     try:
@@ -1256,23 +1270,25 @@ async def update_community_aliases(
                 )
 
             if "qmf_community_code" in data.model_fields_set:
-                previous_code = str(current.get("qmf_community_code") or "").strip()
-                next_code = str(data.qmf_community_code or "").strip()
                 await cur.execute(
                     "UPDATE _communities SET qmf_community_code=%s WHERE id=%s",
                     (data.qmf_community_code or None, community_id),
                 )
-                session_keys = {
-                    f"residence_session_{code}"
-                    for code in (previous_code, next_code)
-                    if code
-                }
-                if session_keys:
-                    placeholders = ",".join(["%s"] * len(session_keys))
-                    await cur.execute(
-                        f"DELETE FROM _system_config WHERE config_key IN ({placeholders})",
-                        tuple(sorted(session_keys)),
-                    )
+                await cur.execute(
+                    "DELETE FROM _system_config WHERE LEFT(config_key,%s)=%s",
+                    (len("residence_session_"), "residence_session_"),
+                )
+
+            if "residence_username" in data.model_fields_set:
+                username = str(data.residence_username or "").strip()
+                await cur.execute(
+                    "UPDATE _communities SET residence_username=%s WHERE id=%s",
+                    (encrypt_secret(username) if username else None, community_id),
+                )
+                await cur.execute(
+                    "DELETE FROM _system_config WHERE LEFT(config_key,%s)=%s",
+                    (len("residence_session_"), "residence_session_"),
+                )
 
             if "qmf_organization_codes" in data.model_fields_set:
                 requested_codes = set(data.qmf_organization_codes)
@@ -1501,10 +1517,28 @@ async def update_community_aliases(
                     (target_name, alias),
                 )
                 matched_rows += cur.rowcount
+            await cur.execute(
+                "SELECT CASE WHEN COALESCE(residence_username,'')<>'' THEN 1 ELSE 0 END "
+                "FROM _communities WHERE id=%s",
+                (community_id,),
+            )
+            account_row = await cur.fetchone()
+            residence_username_configured = bool(account_row and account_row[0])
         await conn.commit()
     except Exception:
         await conn.rollback()
         raise
+
+    if "residence_username" in data.model_fields_set:
+        await record_admin_audit(
+            user,
+            "community.residence_account.update",
+            conn=conn,
+            target_type="community",
+            target_name=str(community_id),
+            detail={"configured": residence_username_configured},
+            **request_audit_fields(request),
+        )
 
     return {
         "message": "社区资料已保存",
@@ -1514,6 +1548,7 @@ async def update_community_aliases(
         "matched_visit_rows": matched_rows,
         "area_id": data.area_id,
         "qmf_community_code": data.qmf_community_code,
+        "residence_username_configured": residence_username_configured,
     }
 
 

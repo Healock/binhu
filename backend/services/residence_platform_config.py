@@ -14,6 +14,7 @@ RESIDENCE_CONFIG_KEYS = {
     "residence_lookup_enabled",
     "residence_base_url",
     "residence_username",
+    "residence_login_community_id",
     "residence_password",
     "residence_mac_service_url",
     "residence_access_token",
@@ -28,6 +29,7 @@ RESIDENCE_SECRET_KEYS = {
 }
 RESIDENCE_SESSION_PREFIX = "residence_session_"
 COMMUNITY_CODE_PATTERN = re.compile(r"[0-9A-Z]{10}")
+SESSION_SCOPE_PATTERN = re.compile(r"(?:[0-9A-Z]{10}|community_[1-9][0-9]*)")
 
 
 def _as_bool(value: Any) -> bool:
@@ -52,10 +54,19 @@ class ResidencePlatformConfig:
     organization_code: str
     timeout_seconds: int
     full_scan_interval_minutes: int
+    login_community_id: int | None = None
+    login_community_name: str = ""
+    login_community_code: str = ""
 
     @property
     def credentials_configured(self) -> bool:
-        return bool(self.base_url and self.username and self.password and self.mac_service_url)
+        return bool(
+            self.login_community_id
+            and self.base_url
+            and self.username
+            and self.password
+            and self.mac_service_url
+        )
 
     @property
     def session_ready(self) -> bool:
@@ -69,18 +80,18 @@ class ResidenceCommunitySession:
     organization_code: str
 
 
-def _session_key(community_code: str) -> str:
-    code = str(community_code or "").strip().upper()
-    if not COMMUNITY_CODE_PATTERN.fullmatch(code):
-        raise ValueError("invalid_community_code")
-    return f"{RESIDENCE_SESSION_PREFIX}{code}"
+def _session_key(session_scope: str) -> str:
+    scope = str(session_scope or "").strip().upper()
+    if not SESSION_SCOPE_PATTERN.fullmatch(scope):
+        raise ValueError("invalid_residence_session_scope")
+    return f"{RESIDENCE_SESSION_PREFIX}{scope}"
 
 
-async def load_residence_session(conn, community_code: str) -> ResidenceCommunitySession | None:
+async def load_residence_session(conn, session_scope: str) -> ResidenceCommunitySession | None:
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT config_value FROM _system_config WHERE config_key=%s",
-            (_session_key(community_code),),
+            (_session_key(session_scope),),
         )
         row = await cur.fetchone()
     if not row:
@@ -100,7 +111,7 @@ async def load_residence_session(conn, community_code: str) -> ResidenceCommunit
 
 async def save_residence_session(
     conn,
-    community_code: str,
+    session_scope: str,
     session: ResidenceCommunitySession,
 ) -> None:
     stored = encrypt_secret(json.dumps({
@@ -111,17 +122,17 @@ async def save_residence_session(
         await cur.execute(
             "INSERT INTO _system_config (config_key,config_value) VALUES (%s,%s) "
             "ON DUPLICATE KEY UPDATE config_value=%s",
-            (_session_key(community_code), stored, stored),
+            (_session_key(session_scope), stored, stored),
         )
     await conn.commit()
 
 
-async def clear_residence_sessions(conn, community_code: str = "") -> None:
+async def clear_residence_sessions(conn, session_scope: str = "") -> None:
     async with conn.cursor() as cur:
-        if community_code:
+        if session_scope:
             await cur.execute(
                 "DELETE FROM _system_config WHERE config_key=%s",
-                (_session_key(community_code),),
+                (_session_key(session_scope),),
             )
         else:
             await cur.execute(
@@ -147,10 +158,33 @@ async def load_residence_config(conn) -> ResidencePlatformConfig:
             return decrypt_secret(raw)
         return str(raw or "")
 
+    login_community_id = None
+    try:
+        candidate_id = int(values.get("residence_login_community_id") or 0)
+        login_community_id = candidate_id if candidate_id > 0 else None
+    except (TypeError, ValueError):
+        login_community_id = None
+    selected_username = ""
+    selected_name = ""
+    selected_code = ""
+    if login_community_id is not None:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT name,qmf_community_code,residence_username,is_active "
+                "FROM _communities WHERE id=%s",
+                (login_community_id,),
+            )
+            selected = await cur.fetchone()
+        if selected:
+            selected_name = str(selected[0] or "").strip()
+            selected_code = str(selected[1] or "").strip().upper()
+            if bool(selected[3]) and selected[2]:
+                selected_username = decrypt_secret(selected[2]).strip()
+
     return ResidencePlatformConfig(
         enabled=_as_bool(values.get("residence_lookup_enabled")),
         base_url=value("residence_base_url").rstrip("/"),
-        username=value("residence_username"),
+        username=selected_username,
         password=value("residence_password"),
         mac_service_url=value(
             "residence_mac_service_url", "http://127.0.0.1:23333"
@@ -162,6 +196,9 @@ async def load_residence_config(conn) -> ResidencePlatformConfig:
             1440,
             max(5, _as_int(values.get("residence_full_scan_interval_minutes"), 30)),
         ),
+        login_community_id=login_community_id,
+        login_community_name=selected_name,
+        login_community_code=selected_code,
     )
 
 
@@ -181,6 +218,9 @@ def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
         "credentials_configured": config.credentials_configured,
         "session_ready": config.session_ready,
         "username": config.username,
-        "account_mode": "configured_full_username",
+        "login_community_id": config.login_community_id,
+        "login_community_name": config.login_community_name,
+        "selected_account_configured": bool(config.username),
+        "account_mode": "selected_community_account",
         "login_mode": "automatic_hidden_challenge",
     }

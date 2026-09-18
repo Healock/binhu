@@ -2012,6 +2012,15 @@ class DatabaseManager:
                         "ALTER TABLE _communities "
                         "ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1"
                     )
+                await cur.execute(
+                    "SHOW COLUMNS FROM _communities LIKE 'residence_username'"
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        "ALTER TABLE _communities "
+                        "ADD COLUMN residence_username TEXT DEFAULT NULL "
+                        "AFTER qmf_community_code"
+                    )
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _community_aliases (
                         id INT AUTO_INCREMENT PRIMARY KEY,

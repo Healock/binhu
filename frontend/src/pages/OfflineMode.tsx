@@ -186,7 +186,7 @@ export default function OfflineMode() {
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">请求超时（秒）</span><InputNumber min={1} max={120} value={config.timeout_seconds} onChange={value => updateConfig({ timeout_seconds: Number(value || 15) })} className="w-full" /></label>
               </div>
               <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">查询组织代码（可选）</span><Input.TextArea rows={3} value={config.community_codes.join('\n')} onChange={event => updateConfig({ community_codes: Array.from(new Set(event.target.value.split(/[\n,，;；\s]+/).map(item => item.trim().toUpperCase()).filter(Boolean))) })} placeholder="接口未返回组织编码时，用于查询辖区回退" /><span className="text-xs text-[var(--app-text-secondary)]">仅作为查询辖区回退，不参与账号生成。</span></label>
-              <div className="text-xs text-[var(--app-text-secondary)]">账号必须填写居住证系统中的完整登录账号，不再根据社区代码自动拼接。这里不保存居住证会话令牌；在线同步成功后会缓存接口、账号、MAC 和超时等非敏感配置。</div>
+              <div className="text-xs text-[var(--app-text-secondary)]">账号必须填写居住证系统中的完整登录账号，不再根据社区代码自动拼接。这里不保存居住证会话令牌；在线同步成功后会把所选社区账号、接口、MAC 和超时缓存到当前客户端。</div>
               <div className="flex justify-end"><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
             </div>
           </Panel>
