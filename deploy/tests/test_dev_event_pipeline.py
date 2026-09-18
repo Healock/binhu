@@ -853,6 +853,19 @@ volumes:
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
 
+    def test_python_worker_candidate_mounts_event_ledger_module_read_only(self):
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
+        service = spec["services"]["python-metadata-worker"]
+        self.assertIn(
+            "./python_metadata_worker.py:/opt/dev-pipeline/event_pipeline/services/python_metadata_worker.py:ro",
+            service["volumes"],
+        )
+
+    def test_candidate_manifest_includes_python_event_ledger_module(self):
+        self.assertIn("python_metadata_worker.py", event_prepare.PUBLIC_CANDIDATE_FILES)
+        source = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "services" / "python_metadata_worker.py").read_text(encoding="utf-8")
+        self.assertIn("dev_task_metadata_python_events", source)
+
     def test_compose_includes_read_only_resident_dual_track_monitor(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
         service = spec["services"]["dual-track-monitor"]
