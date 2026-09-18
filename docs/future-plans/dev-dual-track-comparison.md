@@ -298,3 +298,10 @@ Flink process memory；JobManager 保持 768 MiB；二者使用 `on-failure:3`�
 metadata worker 提高到 256 MiB。受控 Compose 合同只允许从历史精确配置迁移，保留
 checkpoint/savepoint、Kafka、Redis、MySQL 数据卷和网络。修补合并后必须使用新的
 运行编号，从 1002、10000、100000 逐级重新验收；100000 和连续 7 天门禁仍未通过。
+
+`monitor33` 首次部署在 apply 的 Flink Compose 身份门禁停止。新候选正确要求 2 GiB、
+1792 MiB 和 `on-failure:3`，服务器当前文件仍是更早的受控模型：JobManager/TaskManager
+分别保留 1/3 slot 的历史属性文本、640 MiB process memory，且没有说明注释和 restart
+policy。原迁移测试假设两边都是后来的 3-slot 带注释文本，因此拒绝了真实旧模型。
+本次没有绕过门禁；`monitor33` 的 apply evidence 保留。迁移器补充的兼容范围固定为这份
+完整历史文本，任意近似旧值或其他资源差异仍拒绝，修复后使用新的运行编号继续。

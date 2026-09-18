@@ -666,11 +666,16 @@ volumes:
             service.pop("restart", None)
         taskmanager = legacy["services"]["taskmanager"]
         taskmanager["mem_limit"] = "805306368"
-        for service in legacy["services"].values():
-            service["environment"]["FLINK_PROPERTIES"] = service["environment"]["FLINK_PROPERTIES"].replace(
+        for name, slots in (("jobmanager", "1"), ("taskmanager", "3")):
+            properties = legacy["services"][name]["environment"]["FLINK_PROPERTIES"]
+            properties = properties.replace(
                 "taskmanager.memory.process.size: 1792m",
                 "taskmanager.memory.process.size: 640m",
-            )
+            ).replace(
+                "# The metadata projection has three independent JDBC sink/source tasks.\n",
+                "",
+            ).replace("taskmanager.numberOfTaskSlots: 3", f"taskmanager.numberOfTaskSlots: {slots}")
+            legacy["services"][name]["environment"]["FLINK_PROPERTIES"] = properties
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "flink-pipeline-compose.json"
             target.write_text(json.dumps(legacy), encoding="utf-8")
@@ -683,9 +688,22 @@ volumes:
     def test_flink_compose_measure_rejects_unapproved_runtime_limits(self):
         image = "sha256:" + "a" * 64
         artifact_root = Path("/srv/binhu-environments/build-dev-pipeline-a9409fce")
+
+        def near_legacy(spec):
+            for service in spec["services"].values():
+                service.pop("restart", None)
+                service["environment"]["FLINK_PROPERTIES"] = service["environment"][
+                    "FLINK_PROPERTIES"
+                ].replace(
+                    "taskmanager.memory.process.size: 1792m",
+                    "taskmanager.memory.process.size: 640m",
+                )
+            spec["services"]["taskmanager"]["mem_limit"] = "805306368"
+
         for name, mutate in (
             ("memory", lambda spec: spec["services"]["taskmanager"].update(mem_limit="3g")),
             ("restart", lambda spec: spec["services"]["taskmanager"].update(restart="always")),
+            ("near-legacy", near_legacy),
         ):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 changed = flink_compose.specification(image, artifact_root)

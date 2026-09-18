@@ -43,6 +43,17 @@ taskmanager.memory.managed.size: 64m
 # The metadata projection has three independent JDBC sink/source tasks.
 taskmanager.numberOfTaskSlots: 3
 """
+LEGACY_TASKMANAGER_FLINK_PROPERTIES = FLINK_PROPERTIES.replace(
+    f"taskmanager.memory.process.size: {APPROVED_TASKMANAGER_PROCESS_SIZE}",
+    f"taskmanager.memory.process.size: {LEGACY_TASKMANAGER_PROCESS_SIZE}",
+).replace(
+    "# The metadata projection has three independent JDBC sink/source tasks.\n",
+    "",
+)
+LEGACY_JOBMANAGER_FLINK_PROPERTIES = LEGACY_TASKMANAGER_FLINK_PROPERTIES.replace(
+    "taskmanager.numberOfTaskSlots: 3",
+    "taskmanager.numberOfTaskSlots: 1",
+)
 APPROVED_PIDS_LIMIT = 256
 
 
@@ -153,10 +164,6 @@ def _without_approved_runtime_limits(spec: dict) -> dict:
             services[name].pop("restart", None)
 
     taskmanager = services["taskmanager"]
-    legacy_properties = FLINK_PROPERTIES.replace(
-        f"taskmanager.memory.process.size: {APPROVED_TASKMANAGER_PROCESS_SIZE}",
-        f"taskmanager.memory.process.size: {LEGACY_TASKMANAGER_PROCESS_SIZE}",
-    )
     memory_shape = (
         taskmanager.get("mem_limit"),
         tuple(
@@ -166,7 +173,10 @@ def _without_approved_runtime_limits(spec: dict) -> dict:
     )
     if memory_shape in {
         (APPROVED_TASKMANAGER_MEM_LIMIT, (FLINK_PROPERTIES, FLINK_PROPERTIES)),
-        (LEGACY_TASKMANAGER_MEM_LIMIT, (legacy_properties, legacy_properties)),
+        (
+            LEGACY_TASKMANAGER_MEM_LIMIT,
+            (LEGACY_JOBMANAGER_FLINK_PROPERTIES, LEGACY_TASKMANAGER_FLINK_PROPERTIES),
+        ),
     }:
         taskmanager["mem_limit"] = APPROVED_TASKMANAGER_MEM_LIMIT
         for name in ("jobmanager", "taskmanager"):

@@ -193,6 +193,9 @@ process memory；JobManager 保持 768 MiB。两者都使用 `on-failure:3`，�
 `768 MiB + 640 MiB process memory + 无 restart policy` 精确迁移到这组配置，其他
 内存值、restart policy、网络、卷、镜像或路径变化一律拒绝。checkpoint/savepoint、
 Kafka、Redis 和派生 MySQL 数据卷均不因该资源修补删除。
+服务器最早的受控定义中，JobManager 与 TaskManager 的嵌入属性分别保留 1/3 个 slot，
+且没有后续说明注释；迁移器只把这两个完整历史文本视为旧模型，不接受仅拼接部分旧值的
+近似配置。
 
 ### 固定规模双轨验收
 
