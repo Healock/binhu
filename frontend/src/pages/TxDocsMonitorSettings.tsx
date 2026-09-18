@@ -3,6 +3,7 @@ import { Alert, Button, Input, InputNumber, Select, Space, Switch } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { PageHeader, Panel } from '../components/ui'
 import {
+  apiErrorMessage,
   disableTxDocsMonitorConfig,
   getTxDocsMonitorConfig,
   runTxDocsMonitorNow,
@@ -42,8 +43,8 @@ export default function TxDocsMonitorSettings() {
       setHeaderRow(value.header_row || 1)
       setInterval(value.interval_seconds || 600)
       setEnabled(value.enabled)
-    } catch (cause: any) {
-      setError(cause?.response?.data?.detail || '配置加载失败，请稍后重试')
+    } catch (cause: unknown) {
+      setError(apiErrorMessage(cause, '配置加载失败，请稍后重试'))
     } finally {
       setLoading(false)
     }
@@ -66,8 +67,8 @@ export default function TxDocsMonitorSettings() {
         enabled,
       })
       setConfig(value); setAccessToken(''); setMessage('配置已保存。Token 不会在页面回显。')
-    } catch (cause: any) {
-      setError(cause?.response?.data?.detail || '保存失败，未修改现有配置')
+    } catch (cause: unknown) {
+      setError(apiErrorMessage(cause, '保存失败，未修改现有配置'))
     } finally { setSaving(false) }
   }
 
@@ -78,7 +79,7 @@ export default function TxDocsMonitorSettings() {
 
   const runNow = async () => {
     setRunning(true); setError(''); setMessage('')
-    try { const result = await runTxDocsMonitorNow(); setMessage(result.message) } catch (cause: any) { setError(cause?.response?.data?.detail || '读取失败，请查看监控状态') } finally { setRunning(false) }
+    try { const result = await runTxDocsMonitorNow(); setMessage(result.message) } catch (cause: unknown) { setError(apiErrorMessage(cause, '读取失败，请查看监控状态')) } finally { setRunning(false) }
   }
 
   return (

@@ -14,6 +14,17 @@ test('全端首页进入仪表盘且在线汇总迁移到独立路由', () => {
   assert.match(configurator, /locked=\{itemId === 'dashboard'\}/)
 })
 
+test('腾讯只读监控配置将 FastAPI 校验错误转换为可渲染文本', () => {
+  const page = read('../src/pages/TxDocsMonitorSettings.tsx')
+  const client = read('../src/api/client.ts')
+  assert.match(page, /apiErrorMessage/)
+  assert.match(page, /setError\(apiErrorMessage\(cause, '保存失败，未修改现有配置'\)\)/)
+  assert.match(page, /setError\(apiErrorMessage\(cause, '配置加载失败，请稍后重试'\)\)/)
+  assert.match(page, /setError\(apiErrorMessage\(cause, '读取失败，请查看监控状态'\)\)/)
+  assert.match(client, /if \(Array\.isArray\(detail\)\)/)
+  assert.match(client, /typeof \(item as \{ msg\?: unknown \}\)\.msg === 'string'/)
+})
+
 test('手机汇总入口按视口隐藏，电脑端仍保留', () => {
   const source = read('../src/pages/RoleDashboard.tsx')
   assert.match(source, /const mobile = useMobileViewport\(\)/)
