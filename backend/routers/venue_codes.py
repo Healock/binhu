@@ -73,6 +73,41 @@ class PublicFormStatus(BaseModel):
     status: str = Field(pattern="^(active|inactive)$")
 
 
+def _parse_venue_ids(raw: str | None) -> list[int]:
+    """Parse the comma-separated venue filter used by list and export endpoints."""
+    if not raw or not raw.strip():
+        return []
+    values: list[int] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            venue_id = int(token)
+        except ValueError as exc:
+            raise HTTPException(422, "场所筛选参数无效") from exc
+        if venue_id <= 0:
+            raise HTTPException(422, "场所筛选参数无效")
+        if venue_id not in values:
+            values.append(venue_id)
+    return values
+
+
+def _append_venue_filter(
+    where: list[str],
+    params: list[object],
+    venue_id: int | None,
+    venue_ids: str | None,
+) -> None:
+    ids = _parse_venue_ids(venue_ids)
+    if ids:
+        where.append(f"visit.venue_id IN ({','.join(['%s'] * len(ids))})")
+        params.extend(ids)
+    elif venue_id is not None:
+        where.append("visit.venue_id=%s")
+        params.append(venue_id)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -503,11 +538,10 @@ async def drinking_form_qrcode(format: str = Query(default="json", pattern="^(js
 
 
 @admin_router.get("/venue-visits")
-async def list_visits(user: dict = Depends(require_permission(VENUE_VIEW)), conn=Depends(get_venue_db), venue_id: int | None = Query(default=None), keyword: str = Query(default="", max_length=100), start: datetime | None = None, end: datetime | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200)):
+async def list_visits(user: dict = Depends(require_permission(VENUE_VIEW)), conn=Depends(get_venue_db), venue_id: int | None = Query(default=None), venue_ids: str | None = Query(default=None, max_length=1000), keyword: str = Query(default="", max_length=100), start: datetime | None = None, end: datetime | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200)):
     where = ["visit.deleted_at IS NULL"]
     params: list[object] = []
-    if venue_id is not None:
-        where.append("visit.venue_id=%s"); params.append(venue_id)
+    _append_venue_filter(where, params, venue_id, venue_ids)
     if start:
         where.append("visit.submitted_at >= %s"); params.append(start)
     if end:
@@ -617,9 +651,9 @@ async def export_drinking_report_pdf(report_id: int, request: Request, user: dic
 
 
 @admin_router.get("/venue-visits/export-zip")
-async def export_visits_zip(request: Request, user: dict = Depends(require_permission(VENUE_EXPORT)), conn=Depends(get_venue_db), venue_id: int | None = None, keyword: str = Query(default="", max_length=100), start: datetime | None = None, end: datetime | None = None):
+async def export_visits_zip(request: Request, user: dict = Depends(require_permission(VENUE_EXPORT)), conn=Depends(get_venue_db), venue_id: int | None = None, venue_ids: str | None = Query(default=None, max_length=1000), keyword: str = Query(default="", max_length=100), start: datetime | None = None, end: datetime | None = None):
     where = ["visit.deleted_at IS NULL"]; params: list[object] = []
-    if venue_id is not None: where.append("visit.venue_id=%s"); params.append(venue_id)
+    _append_venue_filter(where, params, venue_id, venue_ids)
     if start: where.append("visit.submitted_at >= %s"); params.append(start)
     if end: where.append("visit.submitted_at < %s"); params.append(end)
     async with conn.cursor() as cur:
@@ -653,9 +687,9 @@ async def export_visits_zip(request: Request, user: dict = Depends(require_permi
 
 
 @admin_router.get("/venue-visits/export")
-async def export_visits(request: Request, user: dict = Depends(require_permission(VENUE_EXPORT)), conn=Depends(get_venue_db), venue_id: int | None = None, start: datetime | None = None, end: datetime | None = None):
+async def export_visits(request: Request, user: dict = Depends(require_permission(VENUE_EXPORT)), conn=Depends(get_venue_db), venue_id: int | None = None, venue_ids: str | None = Query(default=None, max_length=1000), start: datetime | None = None, end: datetime | None = None):
     where = ["visit.deleted_at IS NULL"]; params: list[object] = []
-    if venue_id is not None: where.append("visit.venue_id=%s"); params.append(venue_id)
+    _append_venue_filter(where, params, venue_id, venue_ids)
     if start: where.append("visit.submitted_at >= %s"); params.append(start)
     if end: where.append("visit.submitted_at < %s"); params.append(end)
     async with conn.cursor() as cur:

@@ -85,9 +85,16 @@ test('场所登记支持按条件查询并导出包含照片的 ZIP', () => {
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
   assert.match(page, /姓名、身份证号、手机号、地址/)
   assert.match(page, /DatePicker.RangePicker/)
-  assert.match(page, /exportVenueVisitsZip\(visitFilters\)/)
+  assert.match(page, /exportVenueVisitsZip\(visitFilters, setExportProgress\)/)
+  assert.match(page, /mode="multiple"/)
+  assert.match(page, /name="venue_ids"/)
+  assert.match(page, /场所留空表示导出全部场所/)
+  assert.match(page, /<Progress percent=\{exportProgress \?\? 0\}/)
+  assert.match(page, /loading=\{exportingVisits\}/)
   assert.match(page, /导出查询结果（ZIP）/)
   assert.match(client, /api.get\('\/venue-visits\/export-zip'/)
+  assert.match(client, /timeout: 10 \* 60 \* 1000/)
+  assert.match(client, /onDownloadProgress/)
   assert.equal(typeof exportVenueVisitsZip, 'function')
 })
 
@@ -124,10 +131,11 @@ test('二维码管理提供饮酒报备创建、查询、双签详情和单份 P
   assert.match(navigation, /label: '二维码管理'/)
 })
 
-test('登记记录支持按场所筛选，饮酒报备提供云端拉取刷新', () => {
+test('登记记录支持多选场所筛选，饮酒报备提供云端拉取刷新', () => {
   const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
-  assert.match(page, /name="venue_id" label="场所"/)
+  assert.match(page, /name="venue_ids" label="场所"/)
+  assert.match(page, /values\.venue_ids\?\.length \? values\.venue_ids\.join\(','\)/)
   assert.match(page, /pullVenueCloudNow\(\)/)
   assert.match(page, /已拉取 .*饮酒报备并入库|当前没有可处理的云端登记/)
   assert.match(client, /api\.post\('\/venue-cloud\/pull'/)

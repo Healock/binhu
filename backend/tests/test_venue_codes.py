@@ -19,14 +19,52 @@ import routers.venue_codes as venue_codes
 from routers.venue_codes import (
     _local_display,
     _utc_iso,
+    _append_venue_filter,
     _check_form_token,
     _form_token,
+    _parse_venue_ids,
     _public_venue_url,
     _token_digest,
     _validate_photo,
     delete_venue,
     venue_qrcode,
 )
+
+
+def test_parse_venue_ids_empty_means_all_and_deduplicates():
+    assert _parse_venue_ids(None) == []
+    assert _parse_venue_ids("") == []
+    assert _parse_venue_ids(" ") == []
+    assert _parse_venue_ids("2,5,2") == [2, 5]
+
+
+@pytest.mark.parametrize("raw", ["abc", "0", "-1", "2,abc"])
+def test_parse_venue_ids_rejects_invalid_values(raw):
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_venue_ids(raw)
+    assert exc_info.value.status_code == 422
+
+
+def test_append_venue_filter_supports_multiple_ids_and_legacy_single_id():
+    where = ["visit.deleted_at IS NULL"]
+    params: list[object] = []
+    _append_venue_filter(where, params, None, "2,5,2")
+    assert where[-1] == "visit.venue_id IN (%s,%s)"
+    assert params == [2, 5]
+
+    where = ["visit.deleted_at IS NULL"]
+    params = []
+    _append_venue_filter(where, params, 7, None)
+    assert where[-1] == "visit.venue_id=%s"
+    assert params == [7]
+
+
+def test_append_venue_filter_omits_condition_for_all_venues():
+    where = ["visit.deleted_at IS NULL"]
+    params: list[object] = []
+    _append_venue_filter(where, params, None, None)
+    assert where == ["visit.deleted_at IS NULL"]
+    assert params == []
 
 
 def test_venue_token_is_signed_and_expires():

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, DatePicker, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Upload, message, Tabs } from 'antd'
+import { Alert, Button, DatePicker, Form, Input, Modal, Popconfirm, Progress, Select, Space, Table, Tag, Upload, message, Tabs } from 'antd'
 import { DeleteOutlined, DownloadOutlined, EyeOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined } from '@ant-design/icons'
 import {
   apiErrorMessage,
@@ -91,7 +91,9 @@ export default function VenueCodeManagement() {
   const [loading, setLoading] = useState(false)
   const [qrLoadingId, setQrLoadingId] = useState<number | null>(null)
   const [error, setError] = useState('')
-  const [visitFilters, setVisitFilters] = useState<{ venue_id?: number; keyword?: string; start?: string; end?: string }>({})
+  const [visitFilters, setVisitFilters] = useState<{ venue_ids?: string; keyword?: string; start?: string; end?: string }>({})
+  const [exportingVisits, setExportingVisits] = useState(false)
+  const [exportProgress, setExportProgress] = useState<number | null>(0)
   const [drinkingForm, setDrinkingForm] = useState<DrinkingFormCode | null>(null)
   const [drinkingReports, setDrinkingReports] = useState<DrinkingReport[]>([])
   const [pullingCloud, setPullingCloud] = useState(false)
@@ -144,13 +146,22 @@ export default function VenueCodeManagement() {
   }
 
   const exportZip = async () => {
+    if (exportingVisits) return
+    setExportingVisits(true)
+    setExportProgress(0)
     try {
-      const blob = await exportVenueVisitsZip(visitFilters)
+      const blob = await exportVenueVisitsZip(visitFilters, setExportProgress)
       await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.zip`)
-    } catch (reason: unknown) { message.error(apiErrorMessage(reason, '压缩包导出失败')) }
+      setExportProgress(100)
+      message.success('登记查询结果已导出')
+    } catch (reason: unknown) {
+      message.error(apiErrorMessage(reason, '压缩包导出失败'))
+    } finally {
+      setExportingVisits(false)
+    }
   }
-  const searchVisits = async (values: { venue_id?: number; keyword?: string; range?: [any, any] }) => {
-    const filters = { venue_id: values.venue_id || undefined, keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
+  const searchVisits = async (values: { venue_ids?: number[]; keyword?: string; range?: [any, any] }) => {
+    const filters = { venue_ids: values.venue_ids?.length ? values.venue_ids.join(',') : undefined, keyword: values.keyword?.trim() || undefined, start: values.range?.[0]?.toISOString(), end: values.range?.[1]?.toISOString() }
     setVisitFilters(filters)
     try { const result = await listVenueVisits(filters); setVisits(result.data) } catch (reason: unknown) { message.error(apiErrorMessage(reason, '登记查询失败')) }
   }
@@ -292,14 +303,20 @@ export default function VenueCodeManagement() {
         <Table rowKey="id" loading={loading} columns={columns} dataSource={venues} pagination={{ pageSize: 20 }} scroll={{ x: 1120 }} />
       </Panel>
       <Panel title="最近登记记录" padded={false}>
-        <div className="p-4 flex flex-wrap items-center gap-3">
-          <Form layout="inline" onFinish={searchVisits}>
-            <Form.Item name="venue_id" label="场所"><Select allowClear placeholder="全部场所" style={{ width: 180 }} options={venues.filter(item => item.status !== 'deleted').map(item => ({ label: item.name, value: item.id }))} /></Form.Item>
-            <Form.Item name="keyword"><Input allowClear placeholder="姓名、身份证号、手机号、地址" style={{ width: 260 }} /></Form.Item>
-            <Form.Item name="range"><DatePicker.RangePicker showTime /></Form.Item>
-            <Button type="primary" htmlType="submit">查询</Button>
-          </Form>
-          {canExport && <Button icon={<DownloadOutlined />} onClick={exportZip}>导出查询结果（ZIP）</Button>}
+        <div className="grid gap-3 p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <Form layout="inline" onFinish={searchVisits} className="flex flex-1 flex-wrap items-end gap-3">
+              <Form.Item name="venue_ids" label="场所" className="mb-0"><Select mode="multiple" allowClear maxTagCount="responsive" placeholder="全部场所" style={{ width: 280 }} options={venues.filter(item => item.status !== 'deleted').map(item => ({ label: item.name, value: item.id }))} /></Form.Item>
+              <Form.Item name="keyword" className="mb-0"><Input allowClear placeholder="姓名、身份证号、手机号、地址" style={{ width: 260 }} /></Form.Item>
+              <Form.Item name="range" className="mb-0"><DatePicker.RangePicker showTime /></Form.Item>
+              <Button type="primary" htmlType="submit">查询</Button>
+            </Form>
+            {canExport && <Button icon={<DownloadOutlined />} loading={exportingVisits} disabled={exportingVisits} onClick={exportZip}>导出查询结果（ZIP）</Button>}
+          </div>
+          {exportingVisits && <div className="grid max-w-xl gap-1" role="status" aria-live="polite">
+            <span className="text-xs text-[var(--app-text-secondary)]">正在生成并下载 ZIP；场所留空表示导出全部场所。请勿重复点击。</span>
+            <Progress percent={exportProgress ?? 0} status="active" size="small" />
+          </div>}
         </div>
         <Table
           rowKey="id"
