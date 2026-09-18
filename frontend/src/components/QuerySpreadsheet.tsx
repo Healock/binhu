@@ -405,7 +405,28 @@ export function QuerySpreadsheet({
     // the next business table and remove a node that is no longer its child.
     const mountNode = document.createElement('div')
     mountNode.className = 'query-spreadsheet__instance'
+    // Keep the imperative mount's viewport contract next to its lifecycle.
+    // The stylesheet mirrors this for normal rendering, while the inline
+    // geometry prevents a future parent layout change from collapsing the
+    // canvas before Univer's own resize observer can measure it.
+    Object.assign(mountNode.style, {
+      position: 'absolute',
+      inset: '0',
+      minWidth: '0',
+      minHeight: '0',
+    })
     container.appendChild(mountNode)
+
+    const resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(entries => {
+        const size = entries[0]?.contentRect
+        if (!size || size.width <= 0 || size.height <= 0) return
+        // Univer's render engine listens to the browser resize signal. The
+        // observer makes that contract work for container-only changes too.
+        window.dispatchEvent(new Event('resize'))
+      })
+      : null
+    resizeObserver?.observe(container)
 
     const generation = `${businessType}-${source}-${revision}`
     const sheetRows = buildQuerySheetRows(
@@ -1220,6 +1241,7 @@ export function QuerySpreadsheet({
       callbacksRef.current.onEditingChange?.(false)
       if (reconcileTimer) clearTimeout(reconcileTimer)
       cancelViewportRestore()
+      resizeObserver?.disconnect()
       disposables.forEach(disposable => disposable.dispose())
       if (applyAppearanceRef.current === applyAppearance) applyAppearanceRef.current = null
       univer.dispose()

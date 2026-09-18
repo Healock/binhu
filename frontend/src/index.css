@@ -6429,6 +6429,13 @@ html.native-mobile-shell .app-sidebar__item-label {
   background: var(--app-surface);
 }
 
+.query-spreadsheet__instance {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
 .query-spreadsheet-card {
   overflow-anchor: none;
 }
