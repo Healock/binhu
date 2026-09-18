@@ -19,6 +19,7 @@ PUBLIC_CANDIDATE_FILES = frozenset({
     "init.sql", "redis.conf", "pipeline.sql", "runtime.py",
     "dual_track_monitor.py", "scale_acceptance.py", "kafka_delivery_store.py",
     "kafka_event_contract.py", "kafka_envelope.py", "kafka_relay.py",
+    "delivery_schema_migrate.py",
 })
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
@@ -112,6 +113,7 @@ def compose(images):
             "./kafka_event_contract.py:/opt/dev-pipeline/event_pipeline/services/kafka_event_contract.py:ro",
             "./kafka_envelope.py:/opt/dev-pipeline/event_pipeline/services/kafka_envelope.py:ro",
             "./kafka_relay.py:/opt/dev-pipeline/event_pipeline/services/kafka_relay.py:ro",
+            "./delivery_schema_migrate.py:/opt/dev-pipeline/event_pipeline/delivery_schema_migrate.py:ro",
         ],
     })
     services["business-bridge"] = {**common, "image": images["worker"],
