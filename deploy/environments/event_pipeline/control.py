@@ -207,6 +207,15 @@ def _validate_flink_compose() -> None:
             raise ValueError(f"Dev Flink {name} environment label missing")
         if service.get("pids_limit") != 256:
             raise ValueError(f"Dev Flink {name} pids_limit missing")
+        if service.get("restart") != "on-failure:3":
+            raise ValueError(f"Dev Flink {name} restart policy mismatch")
+        expected_memory = "2147483648" if name == "taskmanager" else "805306368"
+        if service.get("mem_limit") != expected_memory:
+            raise ValueError(f"Dev Flink {name} memory limit mismatch")
+        if name == "taskmanager" and "taskmanager.memory.process.size: 1792m" not in service.get(
+            "environment", {}
+        ).get("FLINK_PROPERTIES", ""):
+            raise ValueError("Dev Flink taskmanager process memory limit mismatch")
         mounts = service.get("volumes", [])
         if not any(mount.get("target") == "/opt/flink/checkpoints" and mount.get("source") == "flink-checkpoints"
                    for mount in mounts if isinstance(mount, dict)):

@@ -558,6 +558,16 @@ volumes:
                 path.write_text(json.dumps(broken), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "pids_limit"):
                     control._validate_flink_compose()
+                broken = copy.deepcopy(spec)
+                broken["services"]["taskmanager"]["mem_limit"] = "805306368"
+                path.write_text(json.dumps(broken), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "memory limit"):
+                    control._validate_flink_compose()
+                broken = copy.deepcopy(spec)
+                broken["services"]["taskmanager"]["restart"] = "no"
+                path.write_text(json.dumps(broken), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "restart policy"):
+                    control._validate_flink_compose()
 
     def test_apply_does_not_report_pending_when_flink_gate_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -618,6 +628,22 @@ volumes:
         with self.assertRaises(ValueError):
             flink_compose.specification("flink:latest", Path("/srv/binhu-environments/build-dev-pipeline-a9409fce"))
 
+    def test_flink_taskmanager_has_bounded_100k_memory_and_restart(self):
+        spec = flink_compose.specification(
+            "sha256:" + "a" * 64,
+            Path("/srv/binhu-environments/build-dev-pipeline-a9409fce"),
+        )
+        jobmanager = spec["services"]["jobmanager"]
+        taskmanager = spec["services"]["taskmanager"]
+        self.assertEqual(jobmanager["mem_limit"], "805306368")
+        self.assertEqual(taskmanager["mem_limit"], "2147483648")
+        self.assertIn(
+            "taskmanager.memory.process.size: 1792m",
+            taskmanager["environment"]["FLINK_PROPERTIES"],
+        )
+        self.assertEqual(jobmanager["restart"], "on-failure:3")
+        self.assertEqual(taskmanager["restart"], "on-failure:3")
+
     def test_flink_compose_patch_rejects_unapproved_changes(self):
         expected = flink_compose.specification(
             "sha256:" + "a" * 64,
@@ -631,6 +657,45 @@ volumes:
             flink_compose._without_environment_labels(changed),
             flink_compose._without_environment_labels(expected),
         )
+
+    def test_flink_compose_measure_accepts_only_the_exact_legacy_memory_shape(self):
+        image = "sha256:" + "a" * 64
+        artifact_root = Path("/srv/binhu-environments/build-dev-pipeline-a9409fce")
+        legacy = flink_compose.specification(image, artifact_root)
+        for service in legacy["services"].values():
+            service.pop("restart", None)
+        taskmanager = legacy["services"]["taskmanager"]
+        taskmanager["mem_limit"] = "805306368"
+        for service in legacy["services"].values():
+            service["environment"]["FLINK_PROPERTIES"] = service["environment"]["FLINK_PROPERTIES"].replace(
+                "taskmanager.memory.process.size: 1792m",
+                "taskmanager.memory.process.size: 640m",
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "flink-pipeline-compose.json"
+            target.write_text(json.dumps(legacy), encoding="utf-8")
+            with patch.object(flink_compose, "TARGET", target), patch.object(flink_compose, "ROOT", target.parent):
+                report = flink_compose.measure(image, artifact_root)
+            self.assertTrue(report["requires_update"])
+            self.assertTrue(report["taskmanager_memory_update_required"])
+            self.assertTrue(report["restart_policy_update_required"])
+
+    def test_flink_compose_measure_rejects_unapproved_runtime_limits(self):
+        image = "sha256:" + "a" * 64
+        artifact_root = Path("/srv/binhu-environments/build-dev-pipeline-a9409fce")
+        for name, mutate in (
+            ("memory", lambda spec: spec["services"]["taskmanager"].update(mem_limit="3g")),
+            ("restart", lambda spec: spec["services"]["taskmanager"].update(restart="always")),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                changed = flink_compose.specification(image, artifact_root)
+                mutate(changed)
+                target = Path(tmp) / "flink-pipeline-compose.json"
+                target.write_text(json.dumps(changed), encoding="utf-8")
+                with patch.object(flink_compose, "TARGET", target), patch.object(
+                    flink_compose, "ROOT", target.parent
+                ), self.assertRaises(ValueError):
+                    flink_compose.measure(image, artifact_root)
 
     def test_schema_registry_identity_and_closed_body(self):
         import json
@@ -906,6 +971,7 @@ volumes:
         self.assertIn("max:1024M", " ".join(spec["services"]["dev-derived-mysql"]["command"]))
         self.assertEqual(spec["services"]["dev-derived-mysql"]["mem_limit"], "768m")
         self.assertEqual(spec["services"]["dev-derived-mysql"]["memswap_limit"], "1536m")
+        self.assertEqual(spec["services"]["python-metadata-worker"]["mem_limit"], "256m")
         self.assertEqual(spec["services"]["relay"]["depends_on"]["dev-derived-mysql"]["condition"], "service_healthy")
         self.assertIn("-h127.0.0.1", spec["services"]["dev-derived-mysql"]["healthcheck"]["test"])
         with self.assertRaises(ValueError):
