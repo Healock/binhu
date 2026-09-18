@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 
@@ -379,6 +380,11 @@ CREATE TABLE dev_task_metadata_python_events (
     }
     for name, content in files.items():
         target = ROOT / name
+        # A failed candidate extraction can leave a same-named directory at a
+        # generated file path. It is not a valid candidate artifact; remove
+        # only that exact path before writing the next isolated Dev candidate.
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
         target.write_text(content, encoding="utf-8")
         # Parent directory stays private.  Files consumed by an unprivileged
         # container user are explicitly readable; credentials and manifests
