@@ -3,6 +3,8 @@ import os
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
+from unittest.mock import patch
+
 from routers.stats import _txdocs_file_id, _txdocs_config_payload
 
 
@@ -28,3 +30,19 @@ def test_monitor_config_payload_never_returns_token():
     assert payload["configured"] is True
     assert "access_token" not in payload
     assert payload["access_token_configured"] is True
+
+
+def test_monitor_config_uses_environment_identity_as_hard_boundary():
+    target = {
+        "enabled": True, "spreadsheet_url": "https://docs.qq.com/sheet/demo", "file_id": "demo",
+        "sheet_id": "sheet1", "header_row": 1, "parser_type": "全链条",
+        "interval_seconds": 600,
+    }
+    with patch("services.txdocs_statistics_monitor.settings.APP_ENVIRONMENT", "production"):
+        production = _txdocs_config_payload(target, {"client_id": "c", "access_token": "t", "open_id": "o"})
+    with patch("services.txdocs_statistics_monitor.settings.APP_ENVIRONMENT", "staging"):
+        staging = _txdocs_config_payload(target, {"client_id": "c", "access_token": "t", "open_id": "o"})
+    assert production["environment_allowed"] is True
+    assert production["enabled"] is True
+    assert staging["environment_allowed"] is False
+    assert staging["enabled"] is False

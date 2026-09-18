@@ -48,17 +48,11 @@ XLSX 清理和导入不包含在程序发布中，必须另有文件、影子核
 
 腾讯业务数据源仍保持下线，`LOCAL_DATA_SOURCE_ENABLED=true` 与 `TXDOCS_ENABLED=false` 不变。确需在在线汇总中观察外部腾讯表变化时，使用独立配置：
 
-```text
-BINHU_TXDOCS_MONITORING_ENABLED=true
-BINHU_TXDOCS_MONITORING_SPREADSHEET_IDS=1,2
-BINHU_TXDOCS_MONITORING_INTERVAL_SECONDS=600
-```
+旧版 `BINHU_TXDOCS_MONITORING_ENABLED` 环境变量只作为兼容配置保留，不再是 Production 的运行门禁。Production 启用前只读核对 OAuth 令牌有效期、表格编号、业务类型和腾讯接口额度；不要把文件编号、令牌或表格正文写入部署台账。`TXDOCS_MONITORING_MAX_ROWS_PER_SHEET` 与单表超时必须保持有限值。
 
-白名单值是生产 `_config_spreadsheets` 中已经登记的固定编号，不能由网页或请求参数覆盖。启用前只读核对 OAuth 令牌有效期、表格编号、业务类型和腾讯接口额度；不要把文件编号、令牌或表格正文写入部署台账。`TXDOCS_MONITORING_MAX_ROWS_PER_SHEET` 与单表超时必须保持有限值。
+新部署可由超级管理员在“在线数据汇总 → 配置外部监控”维护独立目标。页面保存的表格链接、子表、解析类型、读取间隔和启停状态写入 `_txdocs_monitor_target`，Access Token 加密保存且不回显；“立即读取一次”只触发一次受限只读读取。调度器动态读取数据库目标，保存或禁用后无需重启 backend。页面不提供同步、写回、删除或通用 OAuth 管理。
 
-新部署可由超级管理员在“在线数据汇总 → 配置外部监控”维护独立目标。页面保存的表格链接、子表、解析类型和读取间隔写入 `_txdocs_monitor_config`，Access Token 加密保存且不回显；“立即读取一次”只触发一次受限只读读取。该配置优先于环境变量白名单，禁用配置后不会继续使用旧白名单。页面不提供同步、写回、删除或通用 OAuth 管理。
-
-监控结果写入 `daily_report` 的 `_txdocs_monitor_*` 独立表，只包含 HMAC 摘要、社区级计数和安全错误码。它不更新 `OnlineData` 业务表、`_online_source_*`、任务流水或本地日报。回退时先关闭监控开关；兼容新增表可以保留，不应删除历史统计来模拟回退。Dev、Staging 和 Shadow 必须保持该开关关闭。
+监控结果写入 `daily_report` 的 `_txdocs_monitor_*` 独立表，只包含 HMAC 摘要、社区级计数和安全错误码。它不更新 `OnlineData` 业务表、`_online_source_*`、任务流水或本地日报。回退时先在系统设置禁用全部监控目标；兼容新增表可以保留，不应删除历史统计来模拟回退。Dev、Staging 和 Shadow 由后端环境身份硬性禁止。
 
 ## 全链条已登记归档改用居住证自动确认（待合并）
 

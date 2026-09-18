@@ -131,12 +131,12 @@ export default function TxDocsMonitorSettings() {
         description="仅用于外部腾讯表的只读监控与汇总，不导入平台任务、不回写或删除腾讯数据。一个只读连接可以配置多个业务表和子表。"
         actions={<Button onClick={() => navigate('/summary')}>返回在线数据汇总</Button>}
       />
-      {!config?.server_enabled && !loading && (
+      {!config?.environment_allowed && !loading && (
         <Alert
           type="warning"
           showIcon
-          message="服务器未开启腾讯只读监控开关"
-          description="页面可以保存多个监控目标，但“立即读取一次”和定时读取仍会被后端拒绝。请由部署人员在生产后端环境配置 TXDOCS_MONITORING_ENABLED=true 并重启 backend；这不是页面开关可以替代的。"
+          message="当前环境不允许启用腾讯只读监控"
+          description="腾讯只读监控只允许在 Production 环境使用；Development、Staging 和 Shadow 由后端硬性禁止。Production 中启用或禁用目标后立即生效，无需修改环境变量或重启 backend。"
         />
       )}
       {error && <Alert type="error" showIcon message={error} />}
@@ -150,7 +150,7 @@ export default function TxDocsMonitorSettings() {
         </div>
       </Panel>
 
-      <Panel title="监控目标" description="每个目标对应一个业务解析类型和腾讯子表；同一个 docs.qq.com/sheet 文件可以通过不同 tab 配置多个目标。">
+      <Panel title="监控目标" description="每个目标对应一个业务解析类型和腾讯子表；同一个 docs.qq.com/sheet 文件可以通过不同 tab 配置多个目标。Production 中保存后立即生效，无需修改环境变量或重启 backend。">
         <div className="grid gap-4">
           {targets.map(target => (
             <div key={target.id} className="grid gap-3 rounded-lg border border-[var(--app-border)] p-4">
@@ -158,7 +158,7 @@ export default function TxDocsMonitorSettings() {
                 <strong>目标 {target.id > 0 ? '#' + target.id : '（新目标）'}</strong>
                 <Space wrap>
                   <span className="text-sm text-[var(--app-text-muted)]">{target.status}</span>
-                  <Switch checked={target.enabled} onChange={enabled => updateTarget(target.id, { enabled })} checkedChildren="启用" unCheckedChildren="停用" />
+                  <Switch checked={target.enabled} disabled={!config?.environment_allowed} onChange={enabled => updateTarget(target.id, { enabled })} checkedChildren="启用" unCheckedChildren="停用" />
                   <Button type="primary" loading={savingId === target.id} onClick={() => void saveTarget(target)}>保存目标</Button>
                   <Popconfirm title="移除此监控目标？" description="历史快照不会删除。" onConfirm={() => void removeTarget(target)} okText="移除" cancelText="取消">
                     <Button danger loading={savingId === target.id}>移除</Button>
@@ -177,7 +177,7 @@ export default function TxDocsMonitorSettings() {
           {!targets.length && <div className="text-sm text-[var(--app-text-muted)]">尚未配置监控目标，请先添加一个业务表。</div>}
           <Space wrap>
             <Button onClick={() => setTargets(current => [...current, newTarget()])}>新增监控目标</Button>
-            <Button loading={running} disabled={!config?.server_enabled || !targets.some(target => target.enabled) || savingId !== null} onClick={() => void runNow()}>立即读取一次</Button>
+            <Button loading={running} disabled={!config?.environment_allowed || !config?.configured || !targets.some(target => target.enabled) || savingId !== null} onClick={() => void runNow()}>立即读取一次</Button>
             <Button danger loading={savingId === 0} disabled={!targets.some(target => target.enabled) || savingId !== null} onClick={() => void disable()}>禁用全部监控</Button>
           </Space>
         </div>

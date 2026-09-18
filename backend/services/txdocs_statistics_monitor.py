@@ -25,6 +25,12 @@ from services.parsers import PARSER_REGISTRY, get_parser
 
 LOCK_NAME = "binhu:txdocs-statistics-monitor"
 USAGE_SOURCE = "statistics_monitor"
+MONITOR_CONFIG_POLL_SECONDS = 30
+
+
+def monitoring_environment_allowed() -> bool:
+    """Only Production may contact the external Tencent read-only source."""
+    return str(settings.APP_ENVIRONMENT or "").strip().lower() == "production"
 
 
 async def ensure_txdocs_monitor_config_schema(cur) -> None:
@@ -490,26 +496,75 @@ async def _load_inputs(
         pool.release(conn)
 
 
-async def monitoring_configuration_ready(cur) -> bool:
-    """Check the server-side allowlist and credentials without returning them."""
+async def monitoring_configuration_state(cur) -> dict[str, Any]:
+    """Return privacy-safe database switch state without exposing credentials."""
     all_targets = await _load_monitor_targets(
         cur, enabled_only=False, include_legacy=False
     )
     targets = [target for target in all_targets if target["enabled"]]
-    if not settings.TXDOCS_MONITORING_ENABLED or not all_targets:
-        return False
+    if not targets:
+        return {
+            "enabled": False,
+            "configured": False,
+            "target_count": len(all_targets),
+            "enabled_target_count": 0,
+            "configured_target_count": 0,
+            "credentials_configured": False,
+        }
     credentials = await _load_monitor_credentials(cur)
-    return bool(
+    credentials_configured = bool(
         credentials["client_id"]
         and credentials["access_token"]
         and credentials["open_id"]
-        and any(
+    )
+    configured_target_count = sum(
+        1
+        for target in targets
+        if (
             target["file_id"] and target["sheet_id"]
             and target["parser_type"] in PARSER_REGISTRY
             and target["parser_type"] != "default"
-            for target in targets
         )
     )
+    return {
+        "enabled": True,
+        "configured": bool(credentials_configured and configured_target_count),
+        "target_count": len(all_targets),
+        "enabled_target_count": len(targets),
+        "configured_target_count": configured_target_count,
+        "credentials_configured": credentials_configured,
+    }
+
+
+async def monitoring_configuration_ready(cur) -> bool:
+    """Check the database-controlled target switch and credentials."""
+    return bool((await monitoring_configuration_state(cur))["configured"])
+
+
+async def get_monitoring_runtime_state() -> dict[str, Any]:
+    """Load sanitized runtime state without holding a connection during reads."""
+    environment_allowed = monitoring_environment_allowed()
+    if not environment_allowed:
+        return {
+            "environment_allowed": False,
+            "enabled": False,
+            "configured": False,
+            "target_count": 0,
+            "enabled_target_count": 0,
+            "configured_target_count": 0,
+            "credentials_configured": False,
+        }
+
+    from database import db_manager
+
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            state = await monitoring_configuration_state(cur)
+    finally:
+        pool.release(conn)
+    return {"environment_allowed": True, **state}
 
 
 async def _load_previous(cur, spreadsheet_id: int) -> tuple[Counter[MonitorVariant], bool]:
@@ -684,7 +739,7 @@ async def run_txdocs_statistics_once(
     ``target_ids`` is used only by the scheduler to honor each target's own
     interval.  A manual run leaves it unset and reads every enabled target.
     """
-    if not settings.TXDOCS_MONITORING_ENABLED:
+    if not monitoring_environment_allowed():
         return 0
     from database import db_manager
     from services.txdocs_client import TxDocsClient
@@ -746,8 +801,8 @@ async def run_txdocs_statistics_once(
 
 
 async def run_txdocs_statistics_monitor() -> None:
-    """Run the bounded production scheduler when its separate switch is on."""
-    if not settings.TXDOCS_MONITORING_ENABLED:
+    """Poll database-controlled targets in Production without restart."""
+    if not monitoring_environment_allowed():
         return
     loop = asyncio.get_running_loop()
     next_due: dict[int, float] = {}
@@ -786,8 +841,10 @@ async def run_txdocs_statistics_monitor() -> None:
             print("[TXDOCS_MONITOR] status=failed code=scheduler_iteration_failed")
         now = loop.time()
         waits = [due - now for due in next_due.values() if due > now]
-        interval = min(waits, default=max(60, settings.TXDOCS_MONITORING_INTERVAL_SECONDS))
-        await asyncio.sleep(max(1, interval))
+        interval = min(waits, default=MONITOR_CONFIG_POLL_SECONDS)
+        await asyncio.sleep(
+            max(1, min(interval, MONITOR_CONFIG_POLL_SECONDS))
+        )
 
 
 async def _configured_monitor_source_ids() -> list[int]:
@@ -816,10 +873,22 @@ async def get_txdocs_statistics_overview(
     communities: list[str] | None,
     *,
     configuration_ready: bool | None = None,
+    monitoring_enabled: bool | None = None,
+    environment_allowed: bool | None = None,
 ) -> dict[str, Any]:
     """Return aggregate monitoring metrics without exposing remote row text."""
+    runtime_allowed = (
+        monitoring_environment_allowed()
+        if environment_allowed is None
+        else bool(environment_allowed)
+    )
+    database_enabled = (
+        bool(configuration_ready)
+        if monitoring_enabled is None
+        else bool(monitoring_enabled)
+    )
     base = {
-        "enabled": bool(settings.TXDOCS_MONITORING_ENABLED),
+        "enabled": bool(runtime_allowed and database_enabled),
         "configured": bool(configuration_ready) if configuration_ready is not None else False,
         "status": "disabled",
         "start_date": start_date,
@@ -834,7 +903,12 @@ async def get_txdocs_statistics_overview(
         "is_stale": False,
         "message": "腾讯表只读监控未启用",
     }
-    if not settings.TXDOCS_MONITORING_ENABLED:
+    if not runtime_allowed:
+        return {
+            **base,
+            "message": "当前环境不允许启用腾讯表只读监控",
+        }
+    if not database_enabled:
         return base
     if configuration_ready is False:
         return {
