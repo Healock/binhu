@@ -184,24 +184,26 @@ const QUERY_SHEET_LONG_TEXT_COLUMNS = new Set([
 ])
 
 /**
- * 本地业务表的展示值按文本处理。显式声明 STRING，既避免 Univer
- * 把 7.30、身份证号或长手机号重新推断为数字，也不会在公式栏暴露
- * FORCE_STRING 使用的前导单引号标记。
+ * 身份证号和联系方式必须使用 Excel 的文本格式。仅设置 STRING 不够：
+ * Univer 在编辑或粘贴时仍可能把长数字重新解析为 NUMBER；而
+ * FORCE_STRING 虽然能保精度，却会让编辑器在编辑态显示前导单引号。
+ * 文本格式会让 Univer 的编辑/粘贴路径直接走字符串分支，同时保留原文。
  */
 export function isQuerySheetExactTextColumn(column: string): boolean {
   return /(身份证|证件|手机号|手机|电话|联系号码|联系方式)/u.test(String(column || ''))
 }
 
+const QUERY_SHEET_TEXT_STYLE = {
+  n: { pattern: '@' },
+} as const
+
 export function querySheetTextCell(value: unknown, column = ''): ICellData {
-  return {
+  const cell: ICellData = {
     v: stringifyCell(value),
-    // FORCE_STRING prevents Univer from rendering long digit-only identifiers
-    // through JavaScript's precision-losing numeric path. Its marker is hidden
-    // by QUERY_SHEET_FEATURE_CONFIG, so users still see clean text.
-    t: isQuerySheetExactTextColumn(column)
-      ? CellValueType.FORCE_STRING
-      : CellValueType.STRING,
+    t: CellValueType.STRING,
   }
+  if (isQuerySheetExactTextColumn(column)) cell.s = QUERY_SHEET_TEXT_STYLE
+  return cell
 }
 
 /** 把文本近似换算成像素宽度，不调用 Univer 的列宽命令和撤销栈。 */

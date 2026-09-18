@@ -179,22 +179,25 @@ test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅
   assert.deepEqual(querySheetPalette(true), querySheetPalette(false))
 })
 
-test('腾讯日期使用普通字符串，身份证和电话使用防精度损失字符串', () => {
+test('查询工作表用文本格式保存身份证和电话，编辑时不显示强制文本引号', () => {
   assert.deepEqual(querySheetTextCell('7.30'), {
     v: '7.30',
     t: CellValueType.STRING,
   })
   assert.deepEqual(querySheetTextCell(320525199110160250n, '身份证号'), {
     v: '320525199110160250',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
+    s: { n: { pattern: '@' } },
   })
   assert.deepEqual(querySheetTextCell('320525199110160251', '参考身份证号码'), {
     v: '320525199110160251',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
+    s: { n: { pattern: '@' } },
   })
   assert.deepEqual(querySheetTextCell('13800138000', '手机号码'), {
     v: '13800138000',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
+    s: { n: { pattern: '@' } },
   })
   assert.equal(isQuerySheetExactTextColumn('姓名'), false)
   assert.equal(isQuerySheetExactTextColumn('联系方式'), true)
