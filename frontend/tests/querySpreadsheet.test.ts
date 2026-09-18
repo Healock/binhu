@@ -179,22 +179,25 @@ test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅
   assert.deepEqual(querySheetPalette(true), querySheetPalette(false))
 })
 
-test('腾讯日期使用普通字符串，身份证和电话使用防精度损失字符串', () => {
+test('查询工作表用文本格式保存身份证和电话，编辑时不显示强制文本引号', () => {
   assert.deepEqual(querySheetTextCell('7.30'), {
     v: '7.30',
     t: CellValueType.STRING,
   })
   assert.deepEqual(querySheetTextCell(320525199110160250n, '身份证号'), {
     v: '320525199110160250',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
+    s: { n: { pattern: '@' } },
   })
   assert.deepEqual(querySheetTextCell('320525199110160251', '参考身份证号码'), {
     v: '320525199110160251',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
+    s: { n: { pattern: '@' } },
   })
   assert.deepEqual(querySheetTextCell('13800138000', '手机号码'), {
     v: '13800138000',
-    t: CellValueType.FORCE_STRING,
+    t: CellValueType.STRING,
+    s: { n: { pattern: '@' } },
   })
   assert.equal(isQuerySheetExactTextColumn('姓名'), false)
   assert.equal(isQuerySheetExactTextColumn('联系方式'), true)
@@ -272,6 +275,9 @@ test('Univer 横向滚动前确认当前原生单元格编辑', () => {
     'utf8',
   )
   assert.match(componentSource, /event\.id === ScrollCommand\.id/)
+  assert.match(componentSource, /SetScrollRelativeCommand/)
+  assert.match(componentSource, /event\.cancel = true/)
+  assert.match(componentSource, /univerAPI\.executeCommand\(event\.id, event\.params\)/)
   assert.match(componentSource, /workbook\.isCellEditing\(\)/)
   assert.match(componentSource, /workbook\.endEditingAsync\(true\)/)
   assert.doesNotMatch(componentSource, /query-editor-scroll.*querySelector|style\.display\s*=\s*['"]none/)
@@ -360,6 +366,13 @@ test('查询工作表全屏只切换应用内部布局并使用 Univer 原生查
   assert.doesNotMatch(pageSource, /aria-label="查找"/)
   assert.match(componentSource, /UniverSheetsFindReplacePreset\(\)/)
   assert.match(componentSource, /QUERY_SHEET_UI_CONFIG/)
+  const styles = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(styles, /\.query-spreadsheet-card--fullscreen\s*\{[\s\S]*?inset:\s*0;/)
+  assert.match(styles, /html\.query-sheet-fullscreen-active \.app-sidebar\s*\{[\s\S]*?display:\s*none\s*!important;/)
+  assert.match(styles, /html\.query-sheet-fullscreen-active \.app-shell > main\s*\{[\s\S]*?flex:\s*1 1 100%;/)
 })
 
 test('在线数据查询使用的搜索图标必须在页面模块中显式导入', () => {
