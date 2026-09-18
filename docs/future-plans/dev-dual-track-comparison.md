@@ -318,3 +318,15 @@ Compose 返回后 REST 尚未就绪，控制器第一次请求失败便立即退
 固定的 REST 启动传输错误执行最多 60 秒的有界等待，其他错误以及后续 JobGraph、run_id、
 consumer group、environment 和两个 sink 门禁保持不变。修复合并后使用全新的
 `dev-20260918-dualtrack-monitor35`，从 1002 → 10000 → 100000 逐级重新验收。
+
+`monitor35` 使用 REST 首次就绪修补后的候选。prepare、摘要校验、固定网关 prepare/measure、
+Schema Registry、Compose 启动和 delivery index migration 均通过；控制器也成功越过首次
+REST 就绪门禁、写出空的旧作业清单并提交当前 JobGraph。服务器私有证据确认该 JobGraph
+最终为 RUNNING，两个 sink 的 4 个 task 全部启动，TaskManager 没有 OOM，Production
+基线未受影响。
+
+本轮 apply 仍失败于提交后的运行时收敛阶段。JobManager 初始化 JobGraph 期间，一次
+`/jobs/overview` 达到 REST 客户端 15 秒上限；`wait_for_runtime()` 的 120 秒窗口没有捕获
+这类固定传输错误，而是立即退出。该故障属于 Dev 验收工具竞态，不是业务双轨差异。
+`monitor35` 的失败证据必须保留，运行编号不再复用。运行时等待修补后使用新的
+`dev-20260918-dualtrack-monitor36` 从 1002 → 10000 → 100000 重新验收。

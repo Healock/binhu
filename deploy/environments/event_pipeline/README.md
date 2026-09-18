@@ -202,6 +202,8 @@ Dev apply 在读取首次作业列表前，会对固定的 `Flink REST request f
 最多 60 秒的有界等待；其他 REST、身份和合同错误立即失败。等待成功后仍必须完整核验
 当前 run_id、consumer group、development 过滤条件、单个 RUNNING JobGraph 和两个受控
 INSERT sink，不能把 REST 可访问误报为 Flink 验收通过。
+提交 JobGraph 后的 120 秒运行时收敛窗口同样只容忍这一固定 REST 传输错误，避免作业初始化
+短暂占用 REST 线程时提前退出；窗口耗尽、其他 REST 错误或身份门禁失败仍然停止 apply。
 
 ### 固定规模双轨验收
 

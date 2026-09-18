@@ -86,6 +86,32 @@ class FlinkSubmissionContractTests(unittest.TestCase):
                 flink_submission.wait_for_rest(Client(), timeout=0.5)
         sleep.assert_not_called()
 
+    def test_runtime_wait_retries_a_transient_rest_transport_failure(self):
+        class Client:
+            def __init__(self):
+                self.overview_calls = 0
+
+            def overview(self):
+                self.overview_calls += 1
+                if self.overview_calls == 1:
+                    raise ValueError("Flink REST request failed")
+                return [job()]
+
+            def details(self, _jid):
+                return job()
+
+        client = Client()
+        with patch.object(flink_submission.time, "sleep") as sleep:
+            report = flink_submission.wait_for_runtime(
+                client,
+                RUN_ID,
+                lambda: [f"{RUN_ID}-flink"],
+                timeout=5,
+            )
+        self.assertEqual(report["run_id"], RUN_ID)
+        self.assertEqual(client.overview_calls, 2)
+        sleep.assert_called_once_with(2)
+
     def test_upload_jar_accepts_only_checked_dev_paths(self):
         calls = []
 
