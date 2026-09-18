@@ -221,6 +221,30 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertNotIn(forbidden, source)
 
+    def test_monitor_configuration_supports_shared_credentials_and_multiple_targets(self):
+        config_source = inspect.getsource(monitor.ensure_txdocs_monitor_config_schema)
+        loader_source = inspect.getsource(monitor._load_monitor_targets)
+        self.assertIn("_txdocs_monitor_connection", config_source)
+        self.assertIn("_txdocs_monitor_target", config_source)
+        self.assertIn("UNIQUE KEY uq_txdocs_monitor_target", config_source)
+        self.assertIn("include_legacy", loader_source)
+        self.assertIn("enabled_only", loader_source)
+
+    def test_monitor_runtime_is_separate_from_retired_business_switch(self):
+        source = inspect.getsource(monitor.run_txdocs_statistics_once)
+        self.assertIn("TXDOCS_MONITORING_ENABLED", source)
+        self.assertNotIn("TXDOCS_ENABLED", source)
+
+    def test_schema_migration_does_not_use_deprecated_mysql_values_expression(self):
+        source = inspect.getsource(monitor.ensure_txdocs_monitor_config_schema)
+        self.assertNotIn("VALUES(client_id)", source)
+        self.assertIn("NOT EXISTS", source)
+
+    def test_scheduler_can_select_individual_target_intervals(self):
+        source = inspect.getsource(monitor.run_txdocs_statistics_monitor)
+        self.assertIn("target_ids", inspect.getsource(monitor.run_txdocs_statistics_once))
+        self.assertIn("interval_seconds", source)
+
 
 if __name__ == "__main__":
     unittest.main()

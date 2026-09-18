@@ -25,6 +25,17 @@ test('腾讯只读监控配置将 FastAPI 校验错误转换为可渲染文本',
   assert.match(client, /typeof \(item as \{ msg\?: unknown \}\)\.msg === 'string'/)
 })
 
+test('腾讯只读监控配置支持多个目标并明确区分服务器总开关', () => {
+  const page = read('../src/pages/TxDocsMonitorSettings.tsx')
+  const client = read('../src/api/client.ts')
+  assert.match(page, /一个只读连接可以配置多个业务表和子表/)
+  assert.match(page, /新增监控目标/)
+  assert.match(page, /TXDOCS_MONITORING_ENABLED=true/)
+  assert.match(page, /tabFromUrl/)
+  assert.match(client, /targets: TxDocsMonitorTarget\[\]/)
+  assert.match(client, /deleteTxDocsMonitorConfig/)
+})
+
 test('手机汇总入口按视口隐藏，电脑端仍保留', () => {
   const source = read('../src/pages/RoleDashboard.tsx')
   assert.match(source, /const mobile = useMobileViewport\(\)/)

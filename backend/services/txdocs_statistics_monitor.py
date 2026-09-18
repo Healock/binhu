@@ -50,26 +50,162 @@ async def ensure_txdocs_monitor_config_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """
     )
-
-
-async def _load_monitor_config(cur) -> dict[str, Any] | None:
     await cur.execute(
-        """SELECT id, enabled, spreadsheet_url, file_id, data_sheet_id,
-                  header_row, parser_type, client_id, access_token, open_id,
-                  interval_seconds, updated_at
-           FROM _txdocs_monitor_config WHERE id=1"""
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_connection (
+            id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+            client_id VARCHAR(200) NOT NULL DEFAULT '',
+            access_token TEXT NOT NULL,
+            open_id VARCHAR(200) NOT NULL DEFAULT '',
+            updated_by INT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    await cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_target (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            enabled TINYINT(1) NOT NULL DEFAULT 0,
+            spreadsheet_url TEXT NOT NULL,
+            file_id VARCHAR(200) NOT NULL DEFAULT '',
+            data_sheet_id VARCHAR(100) NOT NULL DEFAULT '',
+            header_row INT UNSIGNED NOT NULL DEFAULT 1,
+            parser_type VARCHAR(50) NOT NULL DEFAULT '',
+            interval_seconds INT UNSIGNED NOT NULL DEFAULT 600,
+            updated_by INT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_txdocs_monitor_target (file_id, data_sheet_id, parser_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    # PR #718 shipped a singleton config table.  Copy it once into the new
+    # shared-connection/target model; the legacy row remains as a rollback
+    # reference and is never used when a migrated target exists.
+    # Keep this migration compatible with MySQL 8.0.20+, where the legacy
+    # VALUES(column) expression is deprecated.  The INSERT only creates the
+    # new singleton; the UPDATE fills empty fields without overwriting newer
+    # credentials that may have been saved during a rolling deployment.
+    await cur.execute(
+        """
+        INSERT INTO _txdocs_monitor_connection
+            (id, client_id, access_token, open_id, updated_by)
+        SELECT 1, client_id, access_token, open_id, updated_by
+        FROM _txdocs_monitor_config AS legacy
+        WHERE legacy.id=1
+          AND NOT EXISTS (
+              SELECT 1 FROM _txdocs_monitor_connection AS current
+              WHERE current.id=1
+          )
+        """
+    )
+    await cur.execute(
+        """
+        UPDATE _txdocs_monitor_connection AS current
+        JOIN _txdocs_monitor_config AS legacy ON legacy.id=1
+        SET current.client_id=IF(current.client_id='', legacy.client_id, current.client_id),
+            current.access_token=IF(current.access_token='', legacy.access_token, current.access_token),
+            current.open_id=IF(current.open_id='', legacy.open_id, current.open_id),
+            current.updated_by=COALESCE(current.updated_by, legacy.updated_by)
+        WHERE current.id=1
+        """
+    )
+    await cur.execute(
+        """
+        INSERT INTO _txdocs_monitor_target
+            (enabled, spreadsheet_url, file_id, data_sheet_id, header_row, parser_type,
+             interval_seconds, updated_by)
+        SELECT enabled, spreadsheet_url, file_id, data_sheet_id, header_row, parser_type,
+               interval_seconds, updated_by
+        FROM _txdocs_monitor_config AS legacy
+        WHERE legacy.id=1 AND legacy.file_id<>'' AND legacy.data_sheet_id<>''
+          AND NOT EXISTS (
+              SELECT 1 FROM _txdocs_monitor_target AS target
+              WHERE target.file_id=legacy.file_id
+                AND target.data_sheet_id=legacy.data_sheet_id
+                AND target.parser_type=legacy.parser_type
+          )
+        """
+    )
+
+
+async def _load_monitor_credentials(cur) -> dict[str, str]:
+    await cur.execute(
+        """SELECT client_id, access_token, open_id
+           FROM _txdocs_monitor_connection WHERE id=1"""
     )
     row = await cur.fetchone()
     if not row:
-        return None
+        # Compatibility with installations that have not run the startup
+        # migration yet (and with read-only unit-test cursors).
+        await cur.execute(
+            """SELECT client_id, access_token, open_id
+               FROM _txdocs_monitor_config WHERE id=1"""
+        )
+        row = await cur.fetchone()
     return {
+        "client_id": str(row[0] or "") if row else "",
+        "access_token": decrypt_secret(row[1]) if row else "",
+        "open_id": str(row[2] or "") if row else "",
+    }
+
+
+async def _load_monitor_targets(
+    cur, *, enabled_only: bool = False, include_legacy: bool = True
+) -> list[dict[str, Any]]:
+    await cur.execute(
+        """SELECT id, enabled, spreadsheet_url, file_id, data_sheet_id,
+                     header_row, parser_type, interval_seconds, updated_at
+                FROM _txdocs_monitor_target
+                ORDER BY id"""
+    )
+    rows = await cur.fetchall()
+    targets = [
+        {
+            "id": int(row[0]), "enabled": bool(row[1]),
+            "spreadsheet_url": str(row[2] or ""), "file_id": str(row[3] or ""),
+            "sheet_id": str(row[4] or ""), "header_row": int(row[5] or 1),
+            "parser_type": str(row[6] or ""),
+            "interval_seconds": int(row[7] or 600), "updated_at": row[8],
+        }
+        for row in rows
+        if len(row) >= 9
+    ]
+    if targets:
+        return [target for target in targets if not enabled_only or target["enabled"]]
+    if not include_legacy:
+        return []
+    # Legacy fallback is intentionally read-only and only used if the new
+    # table is empty, such as during a rolling deployment before migration.
+    await cur.execute(
+        """SELECT id, enabled, spreadsheet_url, file_id, data_sheet_id,
+                     header_row, parser_type, interval_seconds, updated_at
+                FROM _txdocs_monitor_config WHERE id=1"""
+        + (" AND enabled=1" if enabled_only else "")
+    )
+    row = await cur.fetchone()
+    if not row:
+        return []
+    return [{
         "id": int(row[0]), "enabled": bool(row[1]),
         "spreadsheet_url": str(row[2] or ""), "file_id": str(row[3] or ""),
         "sheet_id": str(row[4] or ""), "header_row": int(row[5] or 1),
-        "parser_type": str(row[6] or ""), "client_id": str(row[7] or ""),
-        "access_token": decrypt_secret(row[8]), "open_id": str(row[9] or ""),
-        "interval_seconds": int(row[10] or 600), "updated_at": row[11],
-    }
+        "parser_type": str(row[6] or ""),
+        "interval_seconds": int(row[7] or 600), "updated_at": row[8],
+    }]
+
+
+async def _load_monitor_config(cur) -> dict[str, Any] | None:
+    targets = await _load_monitor_targets(cur)
+    if not targets:
+        return None
+    target = dict(targets[0])
+    target.update(await _load_monitor_credentials(cur))
+    return target
 
 
 @dataclass(frozen=True)
@@ -320,7 +456,9 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
     )
 
 
-async def _load_inputs() -> tuple[dict[str, str] | None, list[dict[str, Any]], Any]:
+async def _load_inputs(
+    target_ids: set[int] | None = None,
+) -> tuple[dict[str, str] | None, list[dict[str, Any]], Any]:
     from database import db_manager
 
     allowlist = monitoring_spreadsheet_ids()
@@ -329,25 +467,21 @@ async def _load_inputs() -> tuple[dict[str, str] | None, list[dict[str, Any]], A
     try:
         async with conn.cursor() as cur:
             business_date = await get_business_date(cur)
-            monitor_config = await _load_monitor_config(cur)
-            if monitor_config is not None:
-                if not monitor_config["enabled"]:
-                    return None, [], business_date
-                credentials = None
-                if monitor_config["client_id"] and monitor_config["access_token"] and monitor_config["open_id"]:
-                    credentials = {
-                        "client_id": monitor_config["client_id"],
-                        "access_token": monitor_config["access_token"],
-                        "open_id": monitor_config["open_id"],
-                    }
-                if monitor_config["file_id"] and monitor_config["sheet_id"] and monitor_config["parser_type"] in PARSER_REGISTRY:
-                    return credentials, [{
-                        "id": 1,
-                        "file_id": monitor_config["file_id"],
-                        "sheet_id": monitor_config["sheet_id"],
-                        "header_row": monitor_config["header_row"],
-                        "parser_type": monitor_config["parser_type"],
-                    }], business_date
+            all_targets = await _load_monitor_targets(
+                cur, enabled_only=False, include_legacy=False
+            )
+            targets = [target for target in all_targets if target["enabled"]]
+            if all_targets:
+                credentials = await _load_monitor_credentials(cur)
+                credentials = credentials if all(credentials.values()) else None
+                valid_targets = [
+                    target for target in targets
+                    if target["file_id"] and target["sheet_id"]
+                    and target["parser_type"] in PARSER_REGISTRY
+                    and target["parser_type"] != "default"
+                    and (target_ids is None or target["id"] in target_ids)
+                ]
+                return credentials, valid_targets, business_date
             if not allowlist:
                 return None, [], business_date
             await cur.execute(
@@ -391,17 +525,23 @@ async def _load_inputs() -> tuple[dict[str, str] | None, list[dict[str, Any]], A
 
 async def monitoring_configuration_ready(cur) -> bool:
     """Check the server-side allowlist and credentials without returning them."""
-    monitor_config = await _load_monitor_config(cur)
-    if monitor_config is not None:
+    all_targets = await _load_monitor_targets(
+        cur, enabled_only=False, include_legacy=False
+    )
+    targets = [target for target in all_targets if target["enabled"]]
+    if all_targets:
+        credentials = await _load_monitor_credentials(cur)
         return bool(
             settings.TXDOCS_MONITORING_ENABLED
-            and monitor_config["enabled"]
-            and monitor_config["file_id"]
-            and monitor_config["sheet_id"]
-            and monitor_config["parser_type"] in PARSER_REGISTRY
-            and monitor_config["client_id"]
-            and monitor_config["access_token"]
-            and monitor_config["open_id"]
+            and credentials["client_id"]
+            and credentials["access_token"]
+            and credentials["open_id"]
+            and any(
+                target["file_id"] and target["sheet_id"]
+                and target["parser_type"] in PARSER_REGISTRY
+                and target["parser_type"] != "default"
+                for target in targets
+            )
         )
     allowlist = monitoring_spreadsheet_ids()
     if not settings.TXDOCS_MONITORING_ENABLED or not allowlist:
@@ -595,8 +735,14 @@ async def _read_config(client: Any, config: dict[str, Any]):
     return rows
 
 
-async def run_txdocs_statistics_once() -> int:
-    """Run one read-only monitoring pass; return successful source count."""
+async def run_txdocs_statistics_once(
+    target_ids: set[int] | None = None,
+) -> int:
+    """Run one read-only monitoring pass; return successful source count.
+
+    ``target_ids`` is used only by the scheduler to honor each target's own
+    interval.  A manual run leaves it unset and reads every enabled target.
+    """
     if not settings.TXDOCS_MONITORING_ENABLED:
         return 0
     from database import db_manager
@@ -613,7 +759,7 @@ async def run_txdocs_statistics_once() -> int:
         if not lock_acquired:
             return 0
 
-        credentials, configs, business_date = await _load_inputs()
+        credentials, configs, business_date = await _load_inputs(target_ids)
         if not credentials or not business_date:
             print("[TXDOCS_MONITOR] skipped code=credentials_unavailable")
             return 0
@@ -662,28 +808,67 @@ async def run_txdocs_statistics_monitor() -> None:
     """Run the bounded production scheduler when its separate switch is on."""
     if not settings.TXDOCS_MONITORING_ENABLED:
         return
+    loop = asyncio.get_running_loop()
+    next_due: dict[int, float] = {}
     while True:
         try:
-            await run_txdocs_statistics_once()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            print("[TXDOCS_MONITOR] status=failed code=scheduler_iteration_failed")
-        interval = max(60, settings.TXDOCS_MONITORING_INTERVAL_SECONDS)
-        try:
             from database import db_manager
+
             pool = db_manager.get_pool("online_data")
             conn = await pool.acquire()
             try:
                 async with conn.cursor() as cur:
-                    config = await _load_monitor_config(cur)
-                if config and config.get("interval_seconds"):
-                    interval = max(60, min(86400, int(config["interval_seconds"])))
+                    targets = await _load_monitor_targets(cur, enabled_only=True)
             finally:
                 pool.release(conn)
+            enabled_ids = {int(target["id"]) for target in targets}
+            now = loop.time()
+            next_due = {
+                target_id: due
+                for target_id, due in next_due.items()
+                if target_id in enabled_ids
+            }
+            due_targets: list[dict[str, Any]] = []
+            for target in targets:
+                target_id = int(target["id"])
+                due = next_due.setdefault(target_id, now)
+                if due <= now:
+                    due_targets.append(target)
+            for target in due_targets:
+                target_id = int(target["id"])
+                await run_txdocs_statistics_once({target_id})
+                interval = max(60, min(86400, int(target.get("interval_seconds") or 600)))
+                next_due[target_id] = loop.time() + interval
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
-        await asyncio.sleep(interval)
+            print("[TXDOCS_MONITOR] status=failed code=scheduler_iteration_failed")
+        now = loop.time()
+        waits = [due - now for due in next_due.values() if due > now]
+        interval = min(waits, default=max(60, settings.TXDOCS_MONITORING_INTERVAL_SECONDS))
+        await asyncio.sleep(max(1, interval))
+
+
+async def _configured_monitor_source_ids() -> list[int]:
+    """Return target IDs for the new model, or legacy allowlist IDs."""
+    from database import db_manager
+
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id FROM _txdocs_monitor_target WHERE enabled=1 ORDER BY id"
+            )
+            ids = [int(row[0]) for row in await cur.fetchall()]
+            await cur.execute("SELECT COUNT(*) FROM _txdocs_monitor_target")
+            has_new_targets = bool((await cur.fetchone() or [0])[0])
+    except Exception:
+        ids = []
+        has_new_targets = False
+    finally:
+        pool.release(conn)
+    return ids if has_new_targets else (ids or list(monitoring_spreadsheet_ids()))
 
 
 async def get_txdocs_statistics_overview(
@@ -728,7 +913,7 @@ async def get_txdocs_statistics_overview(
         return {**base, "status": "unavailable", "message": "当前业务类型没有外部监控数据"}
 
     type_marks = ", ".join(["%s"] * len(valid_types))
-    source_ids = monitoring_spreadsheet_ids()
+    source_ids = await _configured_monitor_source_ids()
     community_clause = ""
     community_params: list[str] = []
     if communities is not None:

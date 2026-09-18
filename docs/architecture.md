@@ -27,7 +27,7 @@
 
 ### 腾讯表独立只读统计监控
 
-生产可通过单独的 `TXDOCS_MONITORING_ENABLED` 开关和超级管理员配置的固定腾讯表目标，周期性只读观察指定腾讯表。目标配置保存在独立的 `_txdocs_monitor_config` 中，包含表格链接、子表、解析类型、读取间隔和加密凭据；环境变量白名单仍可作为兼容回退。该监控不改变本地 MySQL 作为唯一业务主数据源的事实，也不复用已经退役的 `TXDOCS_ENABLED` 业务开关。
+生产可通过单独的 `TXDOCS_MONITORING_ENABLED` 开关和超级管理员配置的固定腾讯表目标，周期性只读观察指定腾讯表。一个共享的加密只读连接可以挂载多个 `_txdocs_monitor_target` 目标，每个目标独立保存表格链接、子表、解析类型、读取间隔和启停状态；旧的 `_txdocs_monitor_config` 单目标表仅作为滚动升级迁移来源保留，环境变量白名单仍可作为兼容回退。该监控不改变本地 MySQL 作为唯一业务主数据源的事实，也不复用已经退役的 `TXDOCS_ENABLED` 业务开关。
 
 监控器读取后立即把行转换为带服务端密钥的业务键 HMAC、内容 HMAC 和社区计数；姓名、证件号、电话、地址、完整单元格正文及腾讯物理行号不落库。`daily_report._txdocs_monitor_current` 保存最近一次成功状态，`_txdocs_monitor_runs` 和 `_txdocs_monitor_run_communities` 保存安全运行摘要及社区级变化数量。首个成功快照只建立基线；后续以业务键匹配内容，行排序不计变化，业务键不变但内容变化计为“外部内容变化”。
 

@@ -81,6 +81,7 @@ ACTION_LABELS: dict[str, str] = {
     "report.summary_config.update": "修改总汇总配置",
     "txdocs.monitor.config.update": "修改腾讯只读监控配置",
     "txdocs.monitor.config.disable": "禁用腾讯只读监控",
+    "txdocs.monitor.config.delete": "删除腾讯只读监控目标",
     "txdocs.monitor.run": "手动读取腾讯只读监控",
     "sync.trigger": "触发在线数据同步",
     "sync.schedule.update": "修改自动同步计划",
