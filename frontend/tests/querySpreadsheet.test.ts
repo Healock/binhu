@@ -272,6 +272,9 @@ test('Univer 横向滚动前确认当前原生单元格编辑', () => {
     'utf8',
   )
   assert.match(componentSource, /event\.id === ScrollCommand\.id/)
+  assert.match(componentSource, /SetScrollRelativeCommand/)
+  assert.match(componentSource, /event\.cancel = true/)
+  assert.match(componentSource, /univerAPI\.executeCommand\(event\.id, event\.params\)/)
   assert.match(componentSource, /workbook\.isCellEditing\(\)/)
   assert.match(componentSource, /workbook\.endEditingAsync\(true\)/)
   assert.doesNotMatch(componentSource, /query-editor-scroll.*querySelector|style\.display\s*=\s*['"]none/)
@@ -348,6 +351,13 @@ test('查询工作表全屏只切换应用内部布局并使用 Univer 原生查
   assert.doesNotMatch(pageSource, /aria-label="查找"/)
   assert.match(componentSource, /UniverSheetsFindReplacePreset\(\)/)
   assert.match(componentSource, /QUERY_SHEET_UI_CONFIG/)
+  const styles = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
+  assert.match(styles, /\.query-spreadsheet-card--fullscreen\s*\{[\s\S]*?inset:\s*0;/)
+  assert.match(styles, /html\.query-sheet-fullscreen-active \.app-sidebar\s*\{[\s\S]*?display:\s*none\s*!important;/)
+  assert.match(styles, /html\.query-sheet-fullscreen-active \.app-shell > main\s*\{[\s\S]*?flex:\s*1 1 100%;/)
 })
 
 test('在线数据查询使用的搜索图标必须在页面模块中显式导入', () => {

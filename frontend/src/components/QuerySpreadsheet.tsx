@@ -28,7 +28,7 @@ import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort'
 import sortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace'
 import findReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
-import { ScrollCommand } from '@univerjs/sheets-ui'
+import { ScrollCommand, SetScrollRelativeCommand } from '@univerjs/sheets-ui'
 
 import '@univerjs/preset-sheets-core/lib/index.css'
 import '@univerjs/preset-sheets-data-validation/lib/index.css'
@@ -630,6 +630,7 @@ export function QuerySpreadsheet({
 
     let disposed = false
     let suppressCommands = false
+    let replayingHorizontalScroll = false
     let saving = false
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined
     let selectedWorksheetRow = -1
@@ -1077,13 +1078,31 @@ export function QuerySpreadsheet({
       }),
       univerAPI.addEvent(univerAPI.Event.BeforeCommandExecute, event => {
         if (suppressCommands) return
-        if (event.id === ScrollCommand.id && workbook.isCellEditing()) {
+        if (replayingHorizontalScroll) return
+        const isHorizontalScrollCommand = event.id === ScrollCommand.id
+          || event.id === SetScrollRelativeCommand.id
+        if (isHorizontalScrollCommand && workbook.isCellEditing()) {
           const currentScroll = workbook.getScrollStateBySheetId(sheetId)
-          if (querySheetScrollMovesHorizontally(currentScroll, event.params)) {
-            // Commit through Univer's native editor lifecycle before its canvas
-            // moves. BeforeSheetEditEnd captures the exact draft and the normal
-            // reconciliation path persists it once.
-            void workbook.endEditingAsync(true)
+          const movesHorizontally = event.id === SetScrollRelativeCommand.id
+            ? Number(event.params?.offsetX || 0) !== 0
+            : querySheetScrollMovesHorizontally(currentScroll, event.params)
+          if (movesHorizontally) {
+            // Do not let the canvas move while Univer's native editor still
+            // owns the cell. The editor overlay otherwise keeps its old
+            // coordinates and visibly drifts from the cell after scrolling.
+            event.cancel = true
+            replayingHorizontalScroll = true
+            void workbook.endEditingAsync(true).then(() => {
+              if (disposed) return
+              return univerAPI.executeCommand(event.id, event.params).catch(() => {
+                if (!disposed) callbacksRef.current.onBlocked('横向滚动失败，请重试')
+              })
+            }).catch(() => {
+              if (!disposed) callbacksRef.current.onBlocked('横向滚动前结束编辑失败，请重试')
+            }).finally(() => {
+              replayingHorizontalScroll = false
+            })
+            return
           }
         }
         if ([UndoCommand.id, RedoCommand.id].includes(event.id)) {

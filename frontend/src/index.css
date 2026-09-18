@@ -6458,12 +6458,8 @@ html.native-mobile-shell .app-sidebar__item-label {
 
 .query-spreadsheet-card--fullscreen {
   position: fixed;
-  z-index: 40;
-  inset: 0 0 0 232px;
-}
-
-.app-shell:has(.app-sidebar--collapsed) .query-spreadsheet-card--fullscreen {
-  left: 64px;
+  z-index: 60;
+  inset: 0;
 }
 
 .query-spreadsheet-card--fullscreen .query-spreadsheet-toolbar {
@@ -6474,6 +6470,16 @@ html.native-mobile-shell .app-sidebar__item-label {
 html.query-sheet-fullscreen-active,
 html.query-sheet-fullscreen-active body {
   overflow: hidden;
+}
+
+html.query-sheet-fullscreen-active .app-sidebar {
+  display: none !important;
+}
+
+html.query-sheet-fullscreen-active .app-shell > main {
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 100%;
 }
 
 html.query-sheet-fullscreen-active .app-route-transition {
