@@ -375,6 +375,7 @@ CREATE TABLE dev_task_metadata_python_events (
         "kafka_event_contract.py": (services_root / "kafka_event_contract.py").read_text(encoding="utf-8"),
         "kafka_envelope.py": (services_root / "kafka_envelope.py").read_text(encoding="utf-8"),
         "kafka_relay.py": (services_root / "kafka_relay.py").read_text(encoding="utf-8"),
+        "delivery_schema_migrate.py": Path(__file__).with_name("delivery_schema_migrate.py").read_text(encoding="utf-8"),
     }
     for name, content in files.items():
         target = ROOT / name
