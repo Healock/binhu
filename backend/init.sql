@@ -206,6 +206,33 @@ CREATE TABLE IF NOT EXISTS _txdocs_monitor_config (
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Multiple read-only targets share one encrypted Tencent connection.  The
+-- legacy singleton above is retained for rolling-deploy migration only.
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_connection (
+    id              TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+    client_id       VARCHAR(200) NOT NULL DEFAULT '',
+    access_token    TEXT NOT NULL,
+    open_id         VARCHAR(200) NOT NULL DEFAULT '',
+    updated_by      INT DEFAULT NULL,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_target (
+    id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    enabled         TINYINT(1) NOT NULL DEFAULT 0,
+    spreadsheet_url TEXT NOT NULL,
+    file_id         VARCHAR(200) NOT NULL DEFAULT '',
+    data_sheet_id   VARCHAR(100) NOT NULL DEFAULT '',
+    header_row      INT UNSIGNED NOT NULL DEFAULT 1,
+    parser_type     VARCHAR(50) NOT NULL DEFAULT '',
+    interval_seconds INT UNSIGNED NOT NULL DEFAULT 600,
+    updated_by      INT DEFAULT NULL,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_txdocs_monitor_target (file_id, data_sheet_id, parser_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS _sync_log (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     status          VARCHAR(20) DEFAULT 'pending',

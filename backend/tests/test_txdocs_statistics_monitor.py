@@ -104,7 +104,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", False):
             self.assertEqual(await monitor.run_txdocs_statistics_once(), 0)
 
-    async def test_configuration_requires_credentials_and_every_allowlisted_source(self):
+    async def test_legacy_allowlist_is_not_a_runtime_configuration(self):
         class Cursor:
             def __init__(self, credentials, configs):
                 self.credentials = credentials
@@ -126,23 +126,16 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
                 monitor.settings, "TXDOCS_MONITORING_SPREADSHEET_IDS", "7,8"
             ),
         ):
-            self.assertTrue(
+            self.assertFalse(
                 await monitor.monitoring_configuration_ready(
                     Cursor(("client", "token", "open"), [(7, "全链条"), (8, "出租房屋核查")])
                 )
             )
-            self.assertFalse(
-                await monitor.monitoring_configuration_ready(
-                    Cursor(None, [(7, "全链条"), (8, "出租房屋核查")])
-                )
-            )
-            self.assertFalse(
-                await monitor.monitoring_configuration_ready(
-                    Cursor(("client", "token", "open"), [(7, "全链条")])
-                )
-            )
+            self.assertFalse(await monitor.monitoring_configuration_ready(
+                Cursor(None, [(7, "全链条"), (8, "出租房屋核查")])
+            ))
 
-    async def test_empty_successful_snapshot_is_counted_as_a_read(self):
+    async def test_empty_target_configuration_does_not_read_legacy_snapshot(self):
         class Cursor:
             def __init__(self):
                 self.results = iter([
@@ -199,7 +192,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result["current_rows"], 0)
-        self.assertEqual(result["successful_reads"], 2)
+        self.assertEqual(result["successful_reads"], 0)
         self.assertEqual(result["status"], "healthy")
 
     def test_monitor_read_path_does_not_call_tencent_write_methods(self):
@@ -220,6 +213,30 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             "physical_row", "access_token", "client_secret",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_monitor_configuration_supports_shared_credentials_and_multiple_targets(self):
+        config_source = inspect.getsource(monitor.ensure_txdocs_monitor_config_schema)
+        loader_source = inspect.getsource(monitor._load_monitor_targets)
+        self.assertIn("_txdocs_monitor_connection", config_source)
+        self.assertIn("_txdocs_monitor_target", config_source)
+        self.assertIn("UNIQUE KEY uq_txdocs_monitor_target", config_source)
+        self.assertIn("include_legacy", loader_source)
+        self.assertIn("enabled_only", loader_source)
+
+    def test_monitor_runtime_is_separate_from_retired_business_switch(self):
+        source = inspect.getsource(monitor.run_txdocs_statistics_once)
+        self.assertIn("TXDOCS_MONITORING_ENABLED", source)
+        self.assertNotIn("TXDOCS_ENABLED", source)
+
+    def test_schema_migration_does_not_use_deprecated_mysql_values_expression(self):
+        source = inspect.getsource(monitor.ensure_txdocs_monitor_config_schema)
+        self.assertNotIn("VALUES(client_id)", source)
+        self.assertIn("NOT EXISTS", source)
+
+    def test_scheduler_can_select_individual_target_intervals(self):
+        source = inspect.getsource(monitor.run_txdocs_statistics_monitor)
+        self.assertIn("target_ids", inspect.getsource(monitor.run_txdocs_statistics_once))
+        self.assertIn("interval_seconds", source)
 
 
 if __name__ == "__main__":

@@ -1046,6 +1046,18 @@ export interface TxDocsMonitoringOverview {
 }
 
 export interface TxDocsMonitorConfig {
+  server_enabled: boolean
+  enabled: boolean
+  configured: boolean
+  targets: TxDocsMonitorTarget[]
+  client_id_configured: boolean
+  access_token_configured: boolean
+  open_id_configured: boolean
+  status: string
+}
+
+export interface TxDocsMonitorTarget {
+  id: number
   enabled: boolean
   configured: boolean
   spreadsheet_url_configured: boolean
@@ -1055,10 +1067,8 @@ export interface TxDocsMonitorConfig {
   header_row: number
   parser_type: string
   interval_seconds: number
-  client_id_configured: boolean
-  access_token_configured: boolean
-  open_id_configured: boolean
   status: string
+  updated_at: string | null
 }
 
 export async function getTxDocsMonitorConfig(): Promise<TxDocsMonitorConfig> {
@@ -1066,6 +1076,7 @@ export async function getTxDocsMonitorConfig(): Promise<TxDocsMonitorConfig> {
 }
 
 export async function updateTxDocsMonitorConfig(payload: {
+  target_id?: number
   spreadsheet_url: string
   data_sheet_id: string
   parser_type: string
@@ -1081,6 +1092,10 @@ export async function updateTxDocsMonitorConfig(payload: {
 
 export async function disableTxDocsMonitorConfig(): Promise<void> {
   await api.post('/stats/txdocs-monitor/config/disable', {})
+}
+
+export async function deleteTxDocsMonitorConfig(targetId: number): Promise<void> {
+  await api.delete(`/stats/txdocs-monitor/config/${targetId}`)
 }
 
 export async function runTxDocsMonitorNow(): Promise<{ successful_sources: number; message: string }> {

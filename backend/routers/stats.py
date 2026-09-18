@@ -25,6 +25,8 @@ from services.txdocs_statistics_monitor import (
     get_txdocs_statistics_overview,
     monitoring_configuration_ready,
     _load_monitor_config,
+    _load_monitor_credentials,
+    _load_monitor_targets,
     ensure_txdocs_monitor_config_schema,
     run_txdocs_statistics_once,
 )
@@ -63,6 +65,7 @@ class SummaryConfigUpdate(BaseModel):
 
 
 class TxDocsMonitorConfigUpdate(BaseModel):
+    target_id: int | None = Field(default=None, ge=1)
     spreadsheet_url: str = Field(min_length=1, max_length=1000)
     data_sheet_id: str = Field(min_length=1, max_length=100)
     parser_type: str = Field(min_length=1, max_length=50)
@@ -84,29 +87,66 @@ def _txdocs_file_id(url: str) -> str:
     return match.group(1)
 
 
-def _txdocs_config_payload(config: dict | None) -> dict:
-    if not config:
-        return {
-            "enabled": False, "configured": False, "spreadsheet_url_configured": False, "spreadsheet_url": "",
-            "file_id": "", "data_sheet_id": "", "header_row": 1,
-            "parser_type": "", "interval_seconds": 600,
-            "client_id_configured": False, "access_token_configured": False,
-            "open_id_configured": False, "status": "未配置",
-        }
-    credentials = bool(config.get("client_id") and config.get("access_token") and config.get("open_id"))
-    ready = bool(config.get("enabled") and config.get("file_id") and config.get("sheet_id")
-                 and config.get("parser_type") in PARSER_REGISTRY and credentials)
+def _txdocs_target_payload(target: dict, credentials: dict[str, str]) -> dict:
+    has_credentials = bool(
+        credentials.get("client_id")
+        and credentials.get("access_token")
+        and credentials.get("open_id")
+    )
+    ready = bool(
+        target.get("enabled")
+        and target.get("file_id")
+        and target.get("sheet_id")
+        and target.get("parser_type") in PARSER_REGISTRY
+        and target.get("parser_type") != "default"
+        and has_credentials
+    )
     return {
-        "enabled": bool(config.get("enabled")), "configured": ready,
-        "spreadsheet_url_configured": bool(config.get("spreadsheet_url")),
-        "spreadsheet_url": config.get("spreadsheet_url", ""),
-        "file_id": config.get("file_id", ""), "data_sheet_id": config.get("sheet_id", ""),
-        "header_row": config.get("header_row", 1), "parser_type": config.get("parser_type", ""),
-        "interval_seconds": config.get("interval_seconds", 600),
-        "client_id_configured": bool(config.get("client_id")),
-        "access_token_configured": bool(config.get("access_token")),
-        "open_id_configured": bool(config.get("open_id")),
-        "status": "已启用" if ready else ("已禁用" if not config.get("enabled") else "配置不完整"),
+        "id": int(target.get("id") or 1),
+        "enabled": bool(target.get("enabled")),
+        "configured": ready,
+        "spreadsheet_url_configured": bool(target.get("spreadsheet_url")),
+        "spreadsheet_url": target.get("spreadsheet_url", ""),
+        "file_id": target.get("file_id", ""),
+        "data_sheet_id": target.get("sheet_id", ""),
+        "header_row": target.get("header_row", 1),
+        "parser_type": target.get("parser_type", ""),
+        "interval_seconds": target.get("interval_seconds", 600),
+        "status": "已启用" if ready else ("已禁用" if not target.get("enabled") else "配置不完整"),
+        "updated_at": target.get("updated_at").isoformat() if target.get("updated_at") else None,
+    }
+
+
+def _txdocs_config_payload(
+    targets: list[dict] | dict, credentials: dict[str, str] | None = None
+) -> dict:
+    # Keep the helper compatible with the former singleton shape for callers
+    # and tests during rolling upgrades.  The response is still normalized to
+    # the multi-target shape and never exposes credential values.
+    if isinstance(targets, dict):
+        legacy = targets
+        credentials = credentials or {
+            "client_id": str(legacy.get("client_id") or ""),
+            "access_token": str(legacy.get("access_token") or ""),
+            "open_id": str(legacy.get("open_id") or ""),
+        }
+        targets = [legacy]
+    credentials = credentials or {}
+    target_payloads = [_txdocs_target_payload(target, credentials) for target in targets]
+    configured = any(item["configured"] for item in target_payloads)
+    return {
+        "server_enabled": bool(settings.TXDOCS_MONITORING_ENABLED),
+        "enabled": any(item["enabled"] for item in target_payloads),
+        "configured": configured,
+        "targets": target_payloads,
+        "client_id_configured": bool(credentials.get("client_id")),
+        "access_token_configured": bool(credentials.get("access_token")),
+        "open_id_configured": bool(credentials.get("open_id")),
+        "status": (
+            "服务器未开启"
+            if not settings.TXDOCS_MONITORING_ENABLED
+            else ("已启用" if configured else ("未配置" if not target_payloads else "配置不完整"))
+        ),
     }
 
 
@@ -349,8 +389,9 @@ async def get_txdocs_monitor_overview(
 async def get_txdocs_monitor_config(_user: dict = Depends(require_super_admin), conn=Depends(get_db)):
     async with conn.cursor() as cur:
         await ensure_txdocs_monitor_config_schema(cur)
-        config = await _load_monitor_config(cur)
-    return _txdocs_config_payload(config)
+        targets = await _load_monitor_targets(cur)
+        credentials = await _load_monitor_credentials(cur)
+    return _txdocs_config_payload(targets, credentials)
 
 
 @router.put("/txdocs-monitor/config")
@@ -361,42 +402,151 @@ async def update_txdocs_monitor_config(payload: TxDocsMonitorConfigUpdate, reque
         raise HTTPException(status_code=400, detail="请选择受支持的只读监控业务类型")
     async with conn.cursor() as cur:
         await ensure_txdocs_monitor_config_schema(cur)
-        current = await _load_monitor_config(cur)
-        access_token = encrypt_secret(payload.access_token.strip()) if payload.access_token.strip() else encrypt_secret(str((current or {}).get("access_token") or ""))
-        if payload.enabled and not (payload.client_id.strip() and access_token and payload.open_id.strip()):
+        current_credentials = await _load_monitor_credentials(cur)
+        normalized_sheet_id = payload.data_sheet_id.strip()
+        normalized_url = payload.spreadsheet_url.strip()
+        # A target's natural key is the Tencent file, sub-sheet and parser.
+        # Check it before changing the shared credentials so a mistaken edit
+        # cannot partially save credentials and then fail on the unique key.
+        await cur.execute(
+            """SELECT id FROM _txdocs_monitor_target
+               WHERE file_id=%s AND data_sheet_id=%s AND parser_type=%s
+                 AND (%s IS NULL OR id<>%s)
+               LIMIT 1""",
+            (file_id, normalized_sheet_id, payload.parser_type,
+             payload.target_id, payload.target_id),
+        )
+        duplicate = await cur.fetchone()
+        if duplicate:
+            raise HTTPException(
+                status_code=409,
+                detail="相同腾讯表、数据子表和业务类型的监控目标已存在，请编辑已有目标",
+            )
+        client_id = payload.client_id.strip() or current_credentials["client_id"]
+        open_id = payload.open_id.strip() or current_credentials["open_id"]
+        access_token = (
+            encrypt_secret(payload.access_token.strip())
+            if payload.access_token.strip()
+            else encrypt_secret(current_credentials["access_token"])
+        )
+        if payload.enabled and not (client_id and access_token and open_id):
             raise HTTPException(status_code=400, detail="启用监控前必须填写 client_id、access_token 和 open_id")
         await cur.execute(
-            """INSERT INTO _txdocs_monitor_config
-               (id, enabled, spreadsheet_url, file_id, data_sheet_id, header_row,
-                parser_type, client_id, access_token, open_id, interval_seconds, updated_by)
-               VALUES (1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON DUPLICATE KEY UPDATE enabled=VALUES(enabled), spreadsheet_url=VALUES(spreadsheet_url),
-                 file_id=VALUES(file_id), data_sheet_id=VALUES(data_sheet_id), header_row=VALUES(header_row),
-                 parser_type=VALUES(parser_type), client_id=VALUES(client_id), access_token=VALUES(access_token),
-                 open_id=VALUES(open_id), interval_seconds=VALUES(interval_seconds), updated_by=VALUES(updated_by)""",
-            (int(payload.enabled), payload.spreadsheet_url.strip(), file_id, payload.data_sheet_id.strip(), payload.header_row,
-             payload.parser_type, payload.client_id.strip(), access_token, payload.open_id.strip(), payload.interval_seconds, int(user["id"])),
+            "SELECT id FROM _txdocs_monitor_connection WHERE id=1"
         )
+        connection_exists = await cur.fetchone()
+        if connection_exists:
+            await cur.execute(
+            """UPDATE _txdocs_monitor_connection
+               SET client_id=%s, access_token=%s, open_id=%s, updated_by=%s
+               WHERE id=1""",
+            (client_id, access_token, open_id, int(user["id"])),
+            )
+        else:
+            await cur.execute(
+                """INSERT INTO _txdocs_monitor_connection
+                   (id, client_id, access_token, open_id, updated_by)
+                   VALUES (1,%s,%s,%s,%s)""",
+                (client_id, access_token, open_id, int(user["id"])),
+            )
+        if payload.target_id is None:
+            await cur.execute(
+                """SELECT id FROM _txdocs_monitor_target
+                   WHERE file_id=%s AND data_sheet_id=%s AND parser_type=%s
+                   LIMIT 1""",
+                (file_id, payload.data_sheet_id.strip(), payload.parser_type),
+            )
+            existing = await cur.fetchone()
+            if existing:
+                target_id = int(existing[0])
+                await cur.execute(
+                    """UPDATE _txdocs_monitor_target
+                       SET enabled=%s, spreadsheet_url=%s, header_row=%s,
+                           interval_seconds=%s, updated_by=%s
+                       WHERE id=%s""",
+                    (int(payload.enabled), normalized_url, payload.header_row,
+                     payload.interval_seconds,
+                     int(user["id"]), target_id),
+                )
+            else:
+                await cur.execute(
+                    """INSERT INTO _txdocs_monitor_target
+                       (enabled, spreadsheet_url, file_id, data_sheet_id, header_row,
+                        parser_type, interval_seconds, updated_by)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (int(payload.enabled), normalized_url, file_id,
+                     normalized_sheet_id, payload.header_row,
+                     payload.parser_type, payload.interval_seconds, int(user["id"])),
+                )
+                target_id = int(cur.lastrowid)
+        else:
+            await cur.execute(
+                """UPDATE _txdocs_monitor_target
+                   SET enabled=%s, spreadsheet_url=%s, file_id=%s, data_sheet_id=%s,
+                       header_row=%s, parser_type=%s, interval_seconds=%s, updated_by=%s
+                   WHERE id=%s""",
+                (int(payload.enabled), normalized_url, file_id,
+                 normalized_sheet_id, payload.header_row,
+                 payload.parser_type, payload.interval_seconds, int(user["id"]),
+                 payload.target_id),
+            )
+            if cur.rowcount != 1:
+                raise HTTPException(status_code=404, detail="腾讯只读监控目标不存在")
+            target_id = payload.target_id
     await record_admin_audit(user, "txdocs.monitor.config.update", target_type="txdocs_monitor_config",
-                             target_name="腾讯只读监控", detail={"enabled": payload.enabled, "interval_seconds": payload.interval_seconds},
+                             target_name=f"腾讯只读监控目标:{target_id}", detail={"enabled": payload.enabled, "interval_seconds": payload.interval_seconds},
                              **request_audit_fields(request))
     async with conn.cursor() as cur:
-        return _txdocs_config_payload(await _load_monitor_config(cur))
+        return _txdocs_config_payload(
+            await _load_monitor_targets(cur), await _load_monitor_credentials(cur)
+        )
 
 
 @router.post("/txdocs-monitor/config/disable")
 async def disable_txdocs_monitor_config(request: Request, user: dict = Depends(require_super_admin), conn=Depends(get_db)):
     async with conn.cursor() as cur:
         await ensure_txdocs_monitor_config_schema(cur)
-        await cur.execute("UPDATE _txdocs_monitor_config SET enabled=0, updated_by=%s WHERE id=1", (int(user["id"]),))
+        await cur.execute(
+            "UPDATE _txdocs_monitor_target SET enabled=0, updated_by=%s",
+            (int(user["id"]),),
+        )
     await record_admin_audit(user, "txdocs.monitor.config.disable", target_type="txdocs_monitor_config", target_name="腾讯只读监控", detail={}, **request_audit_fields(request))
     return {"enabled": False, "message": "腾讯只读监控已禁用"}
+
+
+@router.delete("/txdocs-monitor/config/{target_id}")
+async def delete_txdocs_monitor_config(
+    target_id: int,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
+    async with conn.cursor() as cur:
+        await ensure_txdocs_monitor_config_schema(cur)
+        await cur.execute("DELETE FROM _txdocs_monitor_target WHERE id=%s", (target_id,))
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=404, detail="腾讯只读监控目标不存在")
+    await record_admin_audit(
+        user,
+        "txdocs.monitor.config.delete",
+        target_type="txdocs_monitor_config",
+        target_name=f"腾讯只读监控目标:{target_id}",
+        detail={},
+        **request_audit_fields(request),
+    )
+    return {"deleted": True, "target_id": target_id}
 
 
 @router.post("/txdocs-monitor/run")
 async def run_txdocs_monitor_now(request: Request, user: dict = Depends(require_super_admin)):
     if not settings.TXDOCS_MONITORING_ENABLED:
-        raise HTTPException(status_code=409, detail="服务器未开启腾讯只读监控开关")
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "服务器未开启腾讯只读监控开关。请在生产后端环境配置 "
+                "TXDOCS_MONITORING_ENABLED=true 并重启 backend；页面目标开关不能替代服务器开关。"
+            ),
+        )
     try:
         count = await run_txdocs_statistics_once()
     except Exception as exc:  # noqa: BLE001 - do not expose remote details

@@ -1,32 +1,52 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Input, InputNumber, Select, Space, Switch } from 'antd'
+import { Alert, Button, Input, InputNumber, Popconfirm, Select, Space, Switch } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { PageHeader, Panel } from '../components/ui'
 import {
   apiErrorMessage,
+  deleteTxDocsMonitorConfig,
   disableTxDocsMonitorConfig,
   getTxDocsMonitorConfig,
   runTxDocsMonitorNow,
   updateTxDocsMonitorConfig,
   type TxDocsMonitorConfig,
+  type TxDocsMonitorTarget,
 } from '../api/client'
 
 const PARSER_TYPES = ['全链条', '出租房屋核查', '寄递业', '疑似返苏', '苏州涉警', '交通涉警']
 
+const newTarget = (): TxDocsMonitorTarget => ({
+  id: -Date.now(),
+  enabled: false,
+  configured: false,
+  spreadsheet_url_configured: false,
+  spreadsheet_url: '',
+  file_id: '',
+  data_sheet_id: '',
+  header_row: 1,
+  parser_type: '全链条',
+  interval_seconds: 600,
+  status: '未保存',
+  updated_at: null,
+})
+
+function tabFromUrl(value: string): string {
+  try {
+    return new URL(value).searchParams.get('tab')?.trim() || ''
+  } catch {
+    return ''
+  }
+}
+
 export default function TxDocsMonitorSettings() {
   const navigate = useNavigate()
   const [config, setConfig] = useState<TxDocsMonitorConfig | null>(null)
-  const [url, setUrl] = useState('')
-  const [sheetId, setSheetId] = useState('')
-  const [parserType, setParserType] = useState('全链条')
-  const [headerRow, setHeaderRow] = useState(1)
-  const [interval, setInterval] = useState(600)
+  const [targets, setTargets] = useState<TxDocsMonitorTarget[]>([])
   const [clientId, setClientId] = useState('')
   const [accessToken, setAccessToken] = useState('')
   const [openId, setOpenId] = useState('')
-  const [enabled, setEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
+  const [savingId, setSavingId] = useState<number | null>(null)
   const [running, setRunning] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -37,12 +57,7 @@ export default function TxDocsMonitorSettings() {
     try {
       const value = await getTxDocsMonitorConfig()
       setConfig(value)
-      setUrl(value.spreadsheet_url || '')
-      setSheetId(value.data_sheet_id)
-      setParserType(value.parser_type || '全链条')
-      setHeaderRow(value.header_row || 1)
-      setInterval(value.interval_seconds || 600)
-      setEnabled(value.enabled)
+      setTargets(value.targets || [])
     } catch (cause: unknown) {
       setError(apiErrorMessage(cause, '配置加载失败，请稍后重试'))
     } finally {
@@ -52,64 +67,120 @@ export default function TxDocsMonitorSettings() {
 
   useEffect(() => { void load() }, [])
 
-  const save = async () => {
-    setSaving(true); setMessage(''); setError('')
+  const updateTarget = (id: number, patch: Partial<TxDocsMonitorTarget>) => {
+    setTargets(current => current.map(target => target.id === id ? { ...target, ...patch } : target))
+  }
+
+  const saveTarget = async (target: TxDocsMonitorTarget) => {
+    setSavingId(target.id); setMessage(''); setError('')
     try {
       const value = await updateTxDocsMonitorConfig({
-        spreadsheet_url: url,
-        data_sheet_id: sheetId,
-        parser_type: parserType,
-        header_row: headerRow,
-        interval_seconds: interval,
+        target_id: target.id > 0 ? target.id : undefined,
+        spreadsheet_url: target.spreadsheet_url,
+        data_sheet_id: target.data_sheet_id,
+        parser_type: target.parser_type,
+        header_row: target.header_row,
+        interval_seconds: target.interval_seconds,
         client_id: clientId,
         access_token: accessToken,
         open_id: openId,
-        enabled,
+        enabled: target.enabled,
       })
-      setConfig(value); setAccessToken(''); setMessage('配置已保存。Token 不会在页面回显。')
+      setConfig(value)
+      setTargets(value.targets || [])
+      setAccessToken('')
+      setMessage('监控目标已保存（共 ' + (value.targets?.length || 0) + ' 个目标）。')
     } catch (cause: unknown) {
       setError(apiErrorMessage(cause, '保存失败，未修改现有配置'))
-    } finally { setSaving(false) }
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  const removeTarget = async (target: TxDocsMonitorTarget) => {
+    setSavingId(target.id); setMessage(''); setError('')
+    try {
+      if (target.id > 0) await deleteTxDocsMonitorConfig(target.id)
+      setTargets(current => current.filter(item => item.id !== target.id))
+      setMessage('监控目标已移除；历史只读统计快照仍保留。')
+    } catch (cause: unknown) {
+      setError(apiErrorMessage(cause, '移除失败，请稍后重试'))
+    } finally {
+      setSavingId(null)
+    }
   }
 
   const disable = async () => {
-    setSaving(true); setError(''); setMessage('')
-    try { await disableTxDocsMonitorConfig(); setEnabled(false); setMessage('监控已禁用') } catch { setError('禁用失败，请稍后重试') } finally { setSaving(false) }
+    setSavingId(0); setError(''); setMessage('')
+    try { await disableTxDocsMonitorConfig(); await load(); setMessage('所有只读监控目标已禁用') }
+    catch (cause: unknown) { setError(apiErrorMessage(cause, '禁用失败，请稍后重试')) }
+    finally { setSavingId(null) }
   }
 
   const runNow = async () => {
     setRunning(true); setError(''); setMessage('')
-    try { const result = await runTxDocsMonitorNow(); setMessage(result.message) } catch (cause: unknown) { setError(apiErrorMessage(cause, '读取失败，请查看监控状态')) } finally { setRunning(false) }
+    try { const result = await runTxDocsMonitorNow(); setMessage(result.message) }
+    catch (cause: unknown) { setError(apiErrorMessage(cause, '读取失败，请查看监控状态')) }
+    finally { setRunning(false) }
   }
 
   return (
     <div className="grid gap-4">
-      <PageHeader title="腾讯只读监控配置" description="仅用于外部腾讯表的只读监控与汇总，不导入平台任务、不回写或删除腾讯数据。" actions={<Button onClick={() => navigate('/summary')}>返回在线数据汇总</Button>} />
+      <PageHeader
+        title="腾讯只读监控配置"
+        description="仅用于外部腾讯表的只读监控与汇总，不导入平台任务、不回写或删除腾讯数据。一个只读连接可以配置多个业务表和子表。"
+        actions={<Button onClick={() => navigate('/summary')}>返回在线数据汇总</Button>}
+      />
+      {!config?.server_enabled && !loading && (
+        <Alert
+          type="warning"
+          showIcon
+          message="服务器未开启腾讯只读监控开关"
+          description="页面可以保存多个监控目标，但“立即读取一次”和定时读取仍会被后端拒绝。请由部署人员在生产后端环境配置 TXDOCS_MONITORING_ENABLED=true 并重启 backend；这不是页面开关可以替代的。"
+        />
+      )}
       {error && <Alert type="error" showIcon message={error} />}
       {message && <Alert type="success" showIcon message={message} />}
-      <Panel title="监控目标" description="仅支持腾讯文档表格链接；监控器只读取聚合统计。">
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="settings-field"><span className="settings-field__label">腾讯表链接</span><Input placeholder="https://docs.qq.com/sheet/..." value={url} onChange={event => setUrl(event.target.value)} /></label>
-          <label className="settings-field"><span className="settings-field__label">数据子表 ID</span><Input value={sheetId} onChange={event => setSheetId(event.target.value)} /></label>
-          <label className="settings-field"><span className="settings-field__label">解析业务类型</span><Select className="w-full" value={parserType} onChange={setParserType} options={PARSER_TYPES.map(value => ({ value, label: value }))} /></label>
-          <label className="settings-field"><span className="settings-field__label">表头行号</span><InputNumber className="w-full" min={1} max={100} value={headerRow} onChange={value => setHeaderRow(Number(value || 1))} /></label>
-          <label className="settings-field"><span className="settings-field__label">自动读取间隔（秒）</span><InputNumber className="w-full" min={60} max={86400} value={interval} onChange={value => setInterval(Number(value || 600))} /></label>
-          <label className="settings-field flex items-center justify-between"><span className="settings-field__label">启用只读监控</span><Switch checked={enabled} onChange={setEnabled} /></label>
-        </div>
-      </Panel>
-      <Panel title="只读凭据" description="填写新 Token 时会加密保存；旧 Token 只显示为已配置，不会回显。">
+
+      <Panel title="只读连接凭据" description="凭据在服务器加密保存并由所有监控目标共享；Token 不会回显，也不会进入监控快照。">
         <div className="grid gap-3 md:grid-cols-2">
           <label className="settings-field"><span className="settings-field__label">Client ID</span><Input value={clientId} onChange={event => setClientId(event.target.value)} placeholder={config?.client_id_configured ? '已配置，留空表示保持不变' : ''} /></label>
           <label className="settings-field"><span className="settings-field__label">Access Token</span><Input.Password value={accessToken} onChange={event => setAccessToken(event.target.value)} placeholder={config?.access_token_configured ? '已配置，留空表示保持不变' : ''} /></label>
           <label className="settings-field"><span className="settings-field__label">Open ID</span><Input value={openId} onChange={event => setOpenId(event.target.value)} placeholder={config?.open_id_configured ? '已配置，留空表示保持不变' : ''} /></label>
         </div>
       </Panel>
-      <Panel title="操作" description={loading ? '正在读取配置…' : `当前状态：${config?.status || '未配置'}`}>
-        <Space wrap>
-          <Button type="primary" loading={saving} onClick={() => void save()}>保存配置</Button>
-          <Button loading={running} disabled={!enabled || saving} onClick={() => void runNow()}>立即读取一次</Button>
-          <Button danger loading={saving} disabled={!config?.enabled} onClick={() => void disable()}>禁用监控</Button>
-        </Space>
+
+      <Panel title="监控目标" description="每个目标对应一个业务解析类型和腾讯子表；同一个 docs.qq.com/sheet 文件可以通过不同 tab 配置多个目标。">
+        <div className="grid gap-4">
+          {targets.map(target => (
+            <div key={target.id} className="grid gap-3 rounded-lg border border-[var(--app-border)] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <strong>目标 {target.id > 0 ? '#' + target.id : '（新目标）'}</strong>
+                <Space wrap>
+                  <span className="text-sm text-[var(--app-text-muted)]">{target.status}</span>
+                  <Switch checked={target.enabled} onChange={enabled => updateTarget(target.id, { enabled })} checkedChildren="启用" unCheckedChildren="停用" />
+                  <Button type="primary" loading={savingId === target.id} onClick={() => void saveTarget(target)}>保存目标</Button>
+                  <Popconfirm title="移除此监控目标？" description="历史快照不会删除。" onConfirm={() => void removeTarget(target)} okText="移除" cancelText="取消">
+                    <Button danger loading={savingId === target.id}>移除</Button>
+                  </Popconfirm>
+                </Space>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="settings-field md:col-span-2"><span className="settings-field__label">腾讯表链接</span><Input placeholder="https://docs.qq.com/sheet/DRV...?...tab=BB08J2" value={target.spreadsheet_url} onChange={event => { const value = event.target.value; const tab = tabFromUrl(value); updateTarget(target.id, { spreadsheet_url: value, data_sheet_id: tab || target.data_sheet_id }) }} /></label>
+                <label className="settings-field"><span className="settings-field__label">数据子表 ID（tab）</span><Input value={target.data_sheet_id} onChange={event => updateTarget(target.id, { data_sheet_id: event.target.value })} /></label>
+                <label className="settings-field"><span className="settings-field__label">解析业务类型</span><Select className="w-full" value={target.parser_type} onChange={parser_type => updateTarget(target.id, { parser_type })} options={PARSER_TYPES.map(value => ({ value, label: value }))} /></label>
+                <label className="settings-field"><span className="settings-field__label">表头行号</span><InputNumber className="w-full" min={1} max={100} value={target.header_row} onChange={value => updateTarget(target.id, { header_row: Number(value || 1) })} /></label>
+                <label className="settings-field"><span className="settings-field__label">自动读取间隔（秒）</span><InputNumber className="w-full" min={60} max={86400} value={target.interval_seconds} onChange={value => updateTarget(target.id, { interval_seconds: Number(value || 600) })} /></label>
+              </div>
+            </div>
+          ))}
+          {!targets.length && <div className="text-sm text-[var(--app-text-muted)]">尚未配置监控目标，请先添加一个业务表。</div>}
+          <Space wrap>
+            <Button onClick={() => setTargets(current => [...current, newTarget()])}>新增监控目标</Button>
+            <Button loading={running} disabled={!config?.server_enabled || !targets.some(target => target.enabled) || savingId !== null} onClick={() => void runNow()}>立即读取一次</Button>
+            <Button danger loading={savingId === 0} disabled={!targets.some(target => target.enabled) || savingId !== null} onClick={() => void disable()}>禁用全部监控</Button>
+          </Space>
+        </div>
       </Panel>
     </div>
   )
