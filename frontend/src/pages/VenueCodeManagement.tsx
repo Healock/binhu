@@ -36,6 +36,7 @@ import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import AuthenticatedImage from '../components/AuthenticatedImage'
 import { resolveRuntimeApiUrl } from '../utils/apiEnvironment'
+import { readVenueErrorPayload, venueRegistrationErrorMessage } from '../utils/venueRegistration'
 
 const emptyVenue: VenueCodeInput = {
   name: '',
@@ -408,8 +409,8 @@ export function PublicVenuePage() {
     body.append('photo', values.photo.file)
     const response = await fetch(resolveRuntimeApiUrl('/api/public/venue-visits'), { method: 'POST', body })
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({}))
-      throw new Error(payload.detail || '提交失败')
+      const payload = await readVenueErrorPayload(response)
+      throw new Error(venueRegistrationErrorMessage(response.status, payload))
     }
     setDone(true)
   }

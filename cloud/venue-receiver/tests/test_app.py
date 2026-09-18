@@ -289,6 +289,16 @@ def test_registration_page_contains_client_side_format_checks_and_required_field
     assert '.label-text{display:flex;align-items:baseline' in page
     assert "identityChecks" in page
     assert "^1[3-9]\\d{9}$" in page
+    assert "const readResponse=async r=>" in page
+    assert "r.headers.get('content-type')" in page
+    assert "JSON.parse(text)" in page
+    assert "r.json()" not in page
+    assert "response.status===413" in page
+    assert "response.status===404" in page
+    assert "[502,503,504].includes(response.status)" in page
+    assert "服务器返回了无法识别的错误页面，请稍后重试" in page
+    assert "form.querySelectorAll('input,button').forEach(x=>x.disabled=true)" in page
+    assert "button.disabled=false" in page
 
 
 def _drinking_payload(token, form_token, *, signature=None):
