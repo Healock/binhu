@@ -114,8 +114,17 @@ def origin_allowed(socket: WebSocket) -> bool:
     parsed = urlsplit(origin)
     if parsed.scheme not in {'http', 'https'} or parsed.path not in {'', '/'}:
         return False
+    # Uvicorn sees the internal ws:// hop behind Nginx, so its socket URL
+    # cannot be used to reconstruct the browser's public HTTPS origin. Accept
+    # only the explicitly configured public web origin here; do not trust
+    # client-supplied forwarding headers for this authorization decision.
+    public_origin = urlsplit(str(getattr(settings, 'PUBLIC_WEB_BASE_URL', '') or ''))
+    if public_origin.scheme in {'http', 'https'} and public_origin.netloc:
+        if origin.rstrip('/') == f'{public_origin.scheme}://{public_origin.netloc}':
+            return True
     scheme = 'https' if socket.url.scheme == 'wss' else 'http'
-    return origin.rstrip('/') == f'{scheme}://{socket.headers.get("host", "")}'
+    host = socket.headers.get('host', '')
+    return origin.rstrip('/') == f'{scheme}://{host}'
 
 
 async def read_version(parser_type, user):

@@ -106,6 +106,37 @@ class QuerySocketTests(unittest.TestCase):
                 with self.subTest(origin=origin):
                     self.assertEqual(query_socket.origin_allowed(socket), expected)
 
+    def test_public_https_origin_is_accepted_behind_internal_ws_proxy(self):
+        settings = SimpleNamespace(
+            cors_allowed_origins=[],
+            PUBLIC_WEB_BASE_URL='https://public.example:48726',
+        )
+        socket = SimpleNamespace(
+            headers={
+                'origin': 'https://public.example:48726',
+                'host': '127.0.0.1:37125',
+                'x-forwarded-proto': 'https',
+                'x-forwarded-host': 'public.example:48726',
+            },
+            url=SimpleNamespace(scheme='ws'),
+        )
+        with patch.object(query_socket, 'settings', settings):
+            self.assertTrue(query_socket.origin_allowed(socket))
+
+    def test_forwarded_origin_headers_cannot_bypass_origin_check(self):
+        settings = SimpleNamespace(cors_allowed_origins=[], PUBLIC_WEB_BASE_URL='')
+        socket = SimpleNamespace(
+            headers={
+                'origin': 'https://public.example:48726',
+                'host': '127.0.0.1:37125',
+                'x-forwarded-proto': 'https',
+                'x-forwarded-host': 'public.example:48726',
+            },
+            url=SimpleNamespace(scheme='ws'),
+        )
+        with patch.object(query_socket, 'settings', settings):
+            self.assertFalse(query_socket.origin_allowed(socket))
+
     def test_duplicate_request_id_cannot_repeat_write(self):
         with patch.object(query_socket, 'get_current_user', new=AsyncMock(return_value=self.user)), \
              patch.object(query_socket, 'read_version', new=AsyncMock(return_value='v1')), \
