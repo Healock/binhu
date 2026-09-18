@@ -46,10 +46,29 @@ install -o root -g root -m 0755 \
 case "$role" in
   new)
     [[ $# -eq 2 ]] || exit 64
+    command -v docker >/dev/null 2>&1 || {
+      echo "Docker is required to verify the internal bridge address." >&2
+      exit 1
+    }
+    readonly bridge_gateway="$(docker network inspect binhu_default \
+      --format '{{(index .IPAM.Config 0).Gateway}}')"
+    [[ "$bridge_gateway" == "172.18.0.1" ]] || {
+      echo "binhu_default bridge gateway differs from the reviewed adapter address." >&2
+      exit 1
+    }
     install -d -o root -g root -m 0755 /etc/nginx/snippets
+    if [[ -e /etc/nginx/snippets/binhu-environment-account-gateway.conf ]] \
+      && ! cmp -s "$template_dir/environment-account-gateway.conf" \
+        /etc/nginx/snippets/binhu-environment-account-gateway.conf; then
+      echo "Existing environment-account gateway differs; review and back it up before replacement." >&2
+      exit 1
+    fi
     install -o root -g root -m 0644 \
       "$template_dir/new-app-locations.conf" \
       /etc/nginx/snippets/binhu-app-locations.conf
+    install -o root -g root -m 0644 \
+      "$template_dir/environment-account-gateway.conf" \
+      /etc/nginx/snippets/binhu-environment-account-gateway.conf
     install -o root -g root -m 0644 \
       "$template_dir/new-maintenance.conf" "$profile_dir/new-maintenance.conf"
     install -o root -g root -m 0644 \

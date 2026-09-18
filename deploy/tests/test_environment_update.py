@@ -1,6 +1,7 @@
 import contextlib
 import copy
 import io
+import itertools
 import json
 from pathlib import Path
 import tempfile
@@ -17,10 +18,11 @@ from deploy.tests import test_environment_static_preparation as fixtures
 
 
 class EnvironmentUpdateTests(unittest.TestCase):
-    def fixture(self, root):
+    def fixture(self, root, environment='development'):
         args = fixtures.EnvironmentStaticPreparationTests().prepare(
             root, '<html><head><script type="module" src="./assets/app.js"></script></head></html>')
-        target = root / 'development'
+        args.environment = environment
+        target = root / environment
         with patch.object(runtime, 'root_for', return_value=target), \
                 patch.object(runtime, 'image_id', side_effect=lambda value: value), \
                 patch.object(runtime, 'command', return_value=''), contextlib.redirect_stdout(io.StringIO()):
@@ -48,6 +50,28 @@ class EnvironmentUpdateTests(unittest.TestCase):
             self.assertEqual(new_manifest['databases'], manifest['databases'])
             self.assertEqual(candidate['services']['backend']['image'], self.image()['image_id'])
             self.assertIn(self.image()['artifact_id'], candidate['services']['backend']['volumes'][0])
+
+    def test_staging_candidate_uses_only_staging_identity_and_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target, (manifest, compose, env_text) = self.fixture(Path(directory), 'staging')
+            candidate, new_env, new_manifest = candidate_configuration(
+                'staging', target, manifest, compose, env_text, self.image())
+            values = parse_environment(new_env)
+            self.assertEqual(values['APP_ENVIRONMENT'], 'staging')
+            self.assertEqual(values['SESSION_COOKIE_NAME'], 'binhu_staging_session')
+            self.assertTrue(all(name.startswith('Staging_') for name in new_manifest['databases'].values()))
+            self.assertEqual(candidate['name'], 'binhu-staging')
+            self.assertEqual(candidate['networks']['internal']['name'], 'binhu-staging_internal')
+            self.assertEqual(candidate['volumes']['mysql']['name'], 'binhu-staging_mysql')
+            self.assertEqual(candidate['services']['backend']['ports'], ['127.0.0.1:48126:37125'])
+            self.assertNotIn('Dev_', new_env)
+
+    def test_staging_rejects_development_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target, (manifest, compose, env_text) = self.fixture(Path(directory))
+            with self.assertRaisesRegex(ValueError, 'environment_identity_mismatch'):
+                candidate_configuration(
+                    'staging', target, manifest, compose, env_text, self.image())
 
     def test_production_target_foreign_network_overrides_and_mounts_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,22 +104,24 @@ class EnvironmentUpdateTests(unittest.TestCase):
             parse_environment('APP_ENVIRONMENT=development\nAPP_ENVIRONMENT=production\n')
 
     def test_application_update_and_failures_keep_database_and_rollback_boundaries(self):
-        for failure in ('none', 'backup', 'health'):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+        for environment, failure in itertools.product(
+                ('development', 'staging'), ('none', 'backup', 'health')):
+            with self.subTest(environment=environment, failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
-                target, original = self.fixture(root)
+                target, original = self.fixture(root, environment)
                 artifact = root / 'artifact'
                 artifact.mkdir()
                 with tarfile.open(artifact / 'frontend.tar', 'w') as archive:
                     archive.add(target / 'static/index.html', arcname='index.html')
-                evidence = root / ('dev-update-' + 'a' * 16)
+                evidence_prefix = 'dev' if environment == 'development' else environment
+                evidence = root / (evidence_prefix + '-update-' + 'a' * 16)
                 image = self.image()
                 calls = []
                 def command(arguments):
                     calls.append(arguments)
                     if arguments[:2] == ['docker', 'inspect']:
                         return json.dumps([{'Image': image['image_id'], 'Config': {
-                            'Labels': {'com.docker.compose.project': 'binhu-development'},
+                            'Labels': {'com.docker.compose.project': 'binhu-' + environment},
                             'Env': ['APP_VERSION=' + image['version']]}}])
                     return 'a' * 64
                 with contextlib.ExitStack() as stack:
@@ -118,13 +144,15 @@ class EnvironmentUpdateTests(unittest.TestCase):
                         return_value={'health': True}))
                     stack.enter_context(patch.object(update.time, 'sleep'))
                     if failure == 'none':
-                        result = update.apply_development(artifact, root / 'image', image['artifact_id'], evidence)
+                        result = update.apply_environment(
+                            environment, artifact, root / 'image', image['artifact_id'], evidence)
                         self.assertFalse(result['business_acceptance'])
                         self.assertEqual(read_configuration(target)[0]['artifact_id'], image['artifact_id'])
                         self.assertEqual(identity.call_count, 2)
                     else:
-                        with self.assertRaisesRegex(RuntimeError, 'development_update_failed'):
-                            update.apply_development(artifact, root / 'image', image['artifact_id'], evidence)
+                        with self.assertRaisesRegex(RuntimeError, environment + '_update_failed'):
+                            update.apply_environment(
+                                environment, artifact, root / 'image', image['artifact_id'], evidence)
                         self.assertEqual(read_configuration(target), original)
                         self.assertTrue((evidence / 'failure.json').exists())
                     backup.assert_called_once()

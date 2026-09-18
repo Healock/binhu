@@ -846,11 +846,37 @@ docker exec binhu-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
 ```dotenv
 BINHU_OPS_AGENT_TOKEN=<单独生成的随机内部令牌>
 BINHU_BACKUP_DIR=<服务器上的专用备份目录>
-BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS='{"development":"http://<private-dev-gateway>","staging":"http://<private-staging-gateway>"}'
+BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS='{"development":"http://172.18.0.1:18081/development","staging":"http://172.18.0.1:18081/staging"}'
 BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS='{"development":"<dev-only-token>","staging":"<staging-only-token>"}'
 ```
 
-环境账号网关必须只在服务器内部可达，并为 Dev、Staging 使用不同令牌。生产接口不会在网关不可用时回退到生产账号库。
+环境账号使用 `nginx/migration/environment-account-gateway.conf` 提供的内部适配层。它只监听经现场复核的 `binhu_default` bridge 网关 `172.18.0.1:18081`，只允许 Docker bridge 来源，并且只暴露以下四个精确路径：
+
+```text
+GET  /development/api/internal/environment-accounts
+POST /development/api/internal/environment-accounts/reset
+GET  /staging/api/internal/environment-accounts
+POST /staging/api/internal/environment-accounts/reset
+```
+
+生产 Backend 继续在环境基址后追加 `/api/internal/environment-accounts` 或 `/reset`。Dev 和 Staging 后端分别只绑定宿主机回环端口 `48125`、`48126`；不得把这些端口或内部适配器监听发布到公网、局域网或公网 HTTPS server，也不得把生产 Backend 加入两个环境的 Compose 网络。适配器关闭访问日志、清除 Cookie 和 Authorization，只转发 `X-Environment-Account-Token`；上游不可用时返回不含响应正文的结构化 503。
+
+安装前必须重新读取 `binhu_default` 的 bridge gateway；如果不是模板中已经审查的地址，停止安装并单独评审配置，禁止直接套用旧地址。先升级并验证 Dev/Staging 后端已注册内部环境账号接口，再安装候选片段。Nginx 变更前保留当前文件，运行 `nginx -t`，只有验证通过才平滑 reload；验证或 reload 失败时恢复旧片段和旧程序配置。回滚不恢复或删除任何环境账号或业务数据。
+
+环境账号网关必须只在服务器内部可达，并为 Dev、Staging 使用不同令牌。生产接口会校验响应中的环境身份和数据结构，在网关不可用、旧版本软 404 或身份不匹配时不会回退到生产账号库。真实令牌只写服务器私密配置，不进入 Git、PR、普通日志或诊断包。
+
+当前 Nginx 只是稳定内部 API 合同的 adapter，不代表已经接入 Kong/APISIX。未来正式选型后，可由 Kong/APISIX 接管 `/development/api/internal/*` 和 `/staging/api/internal/*`，同时保持后端接口路径、token header 和环境身份响应不变；网关产品、TLS、限流、熔断和多实例设计应另立 PR。
+
+现有 Development 更新命令保持兼容，同时提供 Staging 对称入口：
+
+```text
+python -m deploy.environments.update measure-development ...
+python -m deploy.environments.update apply-development ... --evidence /srv/deploy-backups/environment-triad/dev-update-<run-id>
+python -m deploy.environments.update measure-staging ...
+python -m deploy.environments.update apply-staging ... --evidence /srv/deploy-backups/environment-triad/staging-update-<run-id>
+```
+
+四个命令都会校验 artifact、镜像、配置 hash、环境身份、数据库 marker、Compose 隔离和外部系统关闭状态。apply 只重建目标环境 Backend，更新前备份目标环境数据库和静态/配置文件；失败时只恢复目标环境程序、配置和容器，不自动恢复数据库。Development 与 Staging 不得共用数据库前缀、Cookie、Compose 项目、网络、卷、Redis 或 evidence 目录。
 
 内部令牌不能和数据库、SSH、管理员或应用密钥共用。备份目录只用于平台备份，不要指向项目根目录或数据卷。
 

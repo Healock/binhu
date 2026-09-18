@@ -88,6 +88,16 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
         self.assertIn("restore_previous", switcher)
         self.assertIn("systemctl reload nginx", switcher)
 
+    def test_environment_account_gateway_install_is_guarded(self) -> None:
+        installer = (ROOT / "deploy/install-nginx-migration-profiles.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("docker network inspect binhu_default", installer)
+        self.assertIn('bridge_gateway" == "172.18.0.1"', installer)
+        self.assertIn("Existing environment-account gateway differs", installer)
+        self.assertIn("environment-account-gateway.conf", installer)
+        self.assertIn("-m 0644", installer)
+
     def test_long_photo_import_timeout_is_https_only(self) -> None:
         config = (ROOT / "nginx/binhu.conf").read_text(encoding="utf-8")
         first_server = config.index("server {")
@@ -174,6 +184,7 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
             ROOT / "deploy/install-nginx-migration-profiles.sh",
             ROOT / "nginx/migration/old-maintenance.conf.template",
             ROOT / "nginx/migration/old-proxy.conf.template",
+            ROOT / "nginx/migration/environment-account-gateway.conf",
         ]
         combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)
         self.assertNotRegex(combined, re.compile(r"(?i)(password|token|secret)\s*="))

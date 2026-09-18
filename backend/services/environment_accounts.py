@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -30,8 +31,16 @@ def gateway_urls() -> dict[str, str]:
         raise EnvironmentAccountGatewayError("unknown", "configuration_invalid")
     result = {}
     for environment, url in value.items():
-        if environment in _ALLOWED and isinstance(url, str) and url.startswith(("http://", "https://")):
-            result[environment] = url.rstrip("/")
+        if environment not in _ALLOWED:
+            raise EnvironmentAccountGatewayError(str(environment), "environment_not_allowed")
+        if not isinstance(url, str):
+            raise EnvironmentAccountGatewayError(environment, "configuration_invalid")
+        parsed = urlsplit(url)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment or parsed.path.rstrip("/") != f"/{environment}"):
+            raise EnvironmentAccountGatewayError(environment, "configuration_invalid")
+        result[environment] = url.rstrip("/")
     return result
 
 
