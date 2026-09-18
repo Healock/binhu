@@ -2034,13 +2034,15 @@ export interface QmfConfigUpdate {
 export interface ResidencePlatformConfig {
   enabled: boolean
   base_url: string
-  username: string
   password_configured: boolean
   mac_service_url: string
   timeout_seconds: number
   full_scan_interval_minutes: number
   credentials_configured: boolean
   session_ready: boolean
+  login_community_ids: number[]
+  login_community_names: string[]
+  login_community_count: number
   login_community_id: number | null
   login_community_name: string
   selected_account_configured: boolean
@@ -2060,7 +2062,7 @@ export interface ResidencePlatformConfig {
 export interface ResidencePlatformConfigUpdate {
   enabled: boolean
   base_url: string
-  login_community_id: number | null
+  login_community_ids: number[]
   password?: string
   mac_service_url: string
   timeout_seconds: number
@@ -2485,14 +2487,40 @@ export async function updateQmfConfig(payload: QmfConfigUpdate): Promise<QmfConf
 
 export async function getResidencePlatformConfig(): Promise<ResidencePlatformConfig> {
   const { data } = await api.get('/residence-platform/config', activeRequest)
-  return data
+  return normalizeResidencePlatformConfig(data)
+}
+
+function normalizeResidencePlatformConfig(data: Partial<ResidencePlatformConfig>): ResidencePlatformConfig {
+  const legacyId = typeof data.login_community_id === 'number' ? data.login_community_id : null
+  const hasArrayScope = Array.isArray(data.login_community_ids)
+  const rawIds = hasArrayScope
+    ? data.login_community_ids!.filter(id => Number.isInteger(id) && id > 0)
+    : legacyId ? [legacyId] : []
+  const ids = Array.from(new Set(rawIds)).sort((left, right) => left - right)
+  const rawNames = Array.isArray(data.login_community_names)
+    ? data.login_community_names
+    : data.login_community_name ? [data.login_community_name] : []
+  const namesById = new Map<number, string>()
+  rawIds.forEach((id, index) => {
+    const name = rawNames[index]
+    if (typeof name === 'string' && name) namesById.set(id, name)
+  })
+  const names = ids.map(id => namesById.get(id)).filter((name): name is string => Boolean(name))
+  return {
+    ...data,
+    login_community_ids: ids,
+    login_community_names: names,
+    login_community_count: ids.length,
+    login_community_id: ids[0] ?? null,
+    login_community_name: names[0] || '',
+  } as ResidencePlatformConfig
 }
 
 export async function updateResidencePlatformConfig(
   payload: ResidencePlatformConfigUpdate,
 ): Promise<ResidencePlatformConfig> {
   const { data } = await api.put('/residence-platform/config', payload, activeRequest)
-  return data
+  return normalizeResidencePlatformConfig(data)
 }
 
 export async function startResidencePlatformScan(): Promise<{

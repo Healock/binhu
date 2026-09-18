@@ -49,8 +49,9 @@ test('the residence status tooltip shows the measured lookup duration', () => {
 
 test('community accounts are maintained per community and selected in system settings', () => {
   assert.match(settingsSource, /居住证平台首次登记识别/)
-  assert.match(settingsSource, /login_community_id: residenceConfig\.login_community_id/)
-  assert.match(settingsSource, /placeholder="请选择登录社区"/)
+  assert.match(settingsSource, /login_community_ids: residenceConfig\.login_community_ids/)
+  assert.doesNotMatch(settingsSource, /login_community_id: residenceConfig\.login_community_id/)
+  assert.match(settingsSource, /placeholder="请选择登录社区（可多选）"/)
   assert.match(settingsSource, /community_options\.map/)
   assert.match(settingsSource, /未配置账号/)
   assert.match(settingsSource, /请先到社区管理填写该社区的居住证完整登录账号/)
@@ -68,6 +69,18 @@ test('community accounts are maintained per community and selected in system set
   assert.match(communitiesSource, /已配置；留空保持不变/)
   assert.match(communitiesSource, /账号加密保存且不回显/)
   assert.doesNotMatch(communitiesSource, /qmf_community_code\}00/)
+})
+
+test('residence lookup scope supports multiple communities without exposing credentials', () => {
+  assert.match(apiSource, /login_community_ids: number\[\]/)
+  assert.match(apiSource, /login_community_names: string\[\]/)
+  assert.match(apiSource, /login_community_ids: number\[\]/g)
+  assert.match(settingsSource, /mode="multiple"/)
+  assert.match(settingsSource, /value=\{residenceConfig\.login_community_ids\}/)
+  assert.match(settingsSource, /login_community_ids: value/)
+  assert.match(settingsSource, /maxTagCount|responsive/)
+  assert.doesNotMatch(settingsSource, /username: residenceConfig\.username/)
+  assert.doesNotMatch(settingsSource, /access_token: residenceConfig/)
 })
 
 test('manual residence scan is a tracked background job with passive progress polling', () => {

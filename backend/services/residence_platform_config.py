@@ -15,6 +15,7 @@ RESIDENCE_CONFIG_KEYS = {
     "residence_base_url",
     "residence_username",
     "residence_login_community_id",
+    "residence_login_community_ids",
     "residence_password",
     "residence_mac_service_url",
     "residence_access_token",
@@ -43,6 +44,42 @@ def _as_int(value: Any, fallback: int) -> int:
         return fallback
 
 
+def normalize_residence_community_ids(value: Any) -> tuple[int, ...]:
+    """Return a sorted, unique tuple of positive community IDs."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return ()
+    if not isinstance(value, (list, tuple)):
+        return ()
+    normalized: set[int] = set()
+    for item in value:
+        if isinstance(item, bool):
+            return ()
+        try:
+            candidate = int(item)
+        except (TypeError, ValueError):
+            return ()
+        if candidate <= 0 or str(item).strip() != str(candidate):
+            return ()
+        normalized.add(candidate)
+    return tuple(sorted(normalized))
+
+
+@dataclass(frozen=True)
+class ResidenceCommunityAccount:
+    id: int
+    name: str
+    code: str
+    username: str
+    is_active: bool = True
+
+    @property
+    def account_configured(self) -> bool:
+        return bool(self.username)
+
+
 @dataclass(frozen=True)
 class ResidencePlatformConfig:
     enabled: bool
@@ -57,13 +94,26 @@ class ResidencePlatformConfig:
     login_community_id: int | None = None
     login_community_name: str = ""
     login_community_code: str = ""
+    login_community_ids: tuple[int, ...] = ()
+    login_community_names: tuple[str, ...] = ()
+    login_communities: tuple[ResidenceCommunityAccount, ...] = ()
 
     @property
     def credentials_configured(self) -> bool:
+        selected_ids = self.login_community_ids or ((self.login_community_id,) if self.login_community_id else ())
+        accounts_ready = (
+            len(self.login_communities) == len(selected_ids)
+            and all(
+                community.account_configured and community.is_active
+                for community in self.login_communities
+            )
+            if self.login_communities
+            else len(selected_ids) == 1 and bool(self.username)
+        )
         return bool(
-            self.login_community_id
+            selected_ids
             and self.base_url
-            and self.username
+            and accounts_ready
             and self.password
             and self.mac_service_url
         )
@@ -158,28 +208,46 @@ async def load_residence_config(conn) -> ResidencePlatformConfig:
             return decrypt_secret(raw)
         return str(raw or "")
 
-    login_community_id = None
-    try:
-        candidate_id = int(values.get("residence_login_community_id") or 0)
-        login_community_id = candidate_id if candidate_id > 0 else None
-    except (TypeError, ValueError):
-        login_community_id = None
-    selected_username = ""
-    selected_name = ""
-    selected_code = ""
-    if login_community_id is not None:
+    if "residence_login_community_ids" in values:
+        login_community_ids = normalize_residence_community_ids(
+            values.get("residence_login_community_ids")
+        )
+    else:
+        try:
+            candidate_id = int(values.get("residence_login_community_id") or 0)
+            login_community_ids = (candidate_id,) if candidate_id > 0 else ()
+        except (TypeError, ValueError):
+            login_community_ids = ()
+    selected_accounts: list[ResidenceCommunityAccount] = []
+    if login_community_ids:
         async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT name,qmf_community_code,residence_username,is_active "
-                "FROM _communities WHERE id=%s",
-                (login_community_id,),
-            )
-            selected = await cur.fetchone()
-        if selected:
-            selected_name = str(selected[0] or "").strip()
-            selected_code = str(selected[1] or "").strip().upper()
-            if bool(selected[3]) and selected[2]:
-                selected_username = decrypt_secret(selected[2]).strip()
+            for community_id in login_community_ids:
+                await cur.execute(
+                    "SELECT id,name,qmf_community_code,residence_username,is_active "
+                    "FROM _communities WHERE id=%s",
+                    (community_id,),
+                )
+                selected = await cur.fetchone()
+                if not selected:
+                    continue
+                username = ""
+                if bool(selected[4]) and selected[3]:
+                    username = decrypt_secret(selected[3]).strip()
+                selected_accounts.append(ResidenceCommunityAccount(
+                    id=int(selected[0]),
+                    name=str(selected[1] or "").strip(),
+                    code=str(selected[2] or "").strip().upper(),
+                    username=username,
+                    is_active=bool(selected[4]),
+                ))
+    login_community_id = login_community_ids[0] if login_community_ids else None
+    first_account = next(
+        (account for account in selected_accounts if account.id == login_community_id),
+        None,
+    )
+    selected_username = first_account.username if first_account else ""
+    selected_name = first_account.name if first_account else ""
+    selected_code = first_account.code if first_account else ""
 
     return ResidencePlatformConfig(
         enabled=_as_bool(values.get("residence_lookup_enabled")),
@@ -199,6 +267,9 @@ async def load_residence_config(conn) -> ResidencePlatformConfig:
         login_community_id=login_community_id,
         login_community_name=selected_name,
         login_community_code=selected_code,
+        login_community_ids=login_community_ids,
+        login_community_names=tuple(account.name for account in selected_accounts),
+        login_communities=tuple(selected_accounts),
     )
 
 
@@ -217,10 +288,15 @@ def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
         "full_scan_interval_minutes": config.full_scan_interval_minutes,
         "credentials_configured": config.credentials_configured,
         "session_ready": config.session_ready,
-        "username": config.username,
         "login_community_id": config.login_community_id,
         "login_community_name": config.login_community_name,
-        "selected_account_configured": bool(config.username),
+        "login_community_ids": list(config.login_community_ids),
+        "login_community_names": list(config.login_community_names),
+        "login_community_count": len(config.login_community_ids),
+        "selected_account_configured": (
+            all(community.account_configured for community in config.login_communities)
+            if config.login_communities else bool(config.username)
+        ),
         "account_mode": "selected_community_account",
         "login_mode": "automatic_hidden_challenge",
     }

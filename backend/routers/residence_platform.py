@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +18,7 @@ from services.residence_platform_config import (
     clear_residence_sessions,
     load_residence_config,
     public_residence_config,
+    normalize_residence_community_ids,
     serialize_residence_value,
 )
 from services.residence_status_scan import (
@@ -33,6 +35,8 @@ class ResidenceConfigUpdate(BaseModel):
 
     enabled: bool = False
     base_url: str = Field(max_length=500)
+    login_community_ids: list[Annotated[int, Field(gt=0, strict=True)]] = Field(default_factory=list)
+    # Kept for older clients during the configuration contract transition.
     login_community_id: int | None = Field(default=None, gt=0)
     password: str | None = Field(default=None, max_length=500)
     mac_service_url: str = Field(default="http://127.0.0.1:23333", max_length=500)
@@ -111,18 +115,23 @@ async def update_residence_config(
 ):
     current = await load_residence_config(conn)
     password = data.password if data.password is not None else current.password
-    selected_community = None
-    if data.login_community_id is not None:
-        async with conn.cursor() as cur:
+    selected_ids = normalize_residence_community_ids(data.login_community_ids)
+    if "login_community_ids" not in data.model_fields_set and data.login_community_id is not None:
+        selected_ids = (data.login_community_id,)
+    selected_rows: list[tuple[Any, ...]] = []
+    async with conn.cursor() as cur:
+        for community_id in selected_ids:
             await cur.execute(
                 "SELECT id,name,is_active,"
                 "CASE WHEN COALESCE(residence_username,'')<>'' THEN 1 ELSE 0 END "
                 "FROM _communities WHERE id=%s",
-                (data.login_community_id,),
+                (community_id,),
             )
             selected_community = await cur.fetchone()
-        if not selected_community:
-            raise HTTPException(400, "所选登录社区不存在")
+            if not selected_community:
+                raise HTTPException(400, "所选登录社区不存在")
+            selected_rows.append(selected_community)
+    for selected_community in selected_rows:
         if not bool(selected_community[2]):
             raise HTTPException(400, "所选登录社区已停用，请在社区管理中重新启用或改选其他社区")
         if not bool(selected_community[3]):
@@ -130,7 +139,8 @@ async def update_residence_config(
     if data.enabled and not all(
         (
             data.base_url.strip(),
-            selected_community and bool(selected_community[3]),
+            selected_ids,
+            selected_rows and len(selected_rows) == len(selected_ids),
             password,
             data.mac_service_url.strip(),
         )
@@ -142,15 +152,16 @@ async def update_residence_config(
     values: dict[str, Any] = {
         "residence_lookup_enabled": "1" if data.enabled else "0",
         "residence_base_url": data.base_url.strip().rstrip("/"),
-        "residence_login_community_id": str(data.login_community_id or ""),
+        "residence_login_community_ids": json.dumps(selected_ids, separators=(",", ":")),
+        "residence_login_community_id": str(selected_ids[0] if selected_ids else ""),
         "residence_mac_service_url": data.mac_service_url.strip().rstrip("/"),
         "residence_timeout_seconds": str(data.timeout_seconds),
         "residence_full_scan_interval_minutes": str(data.full_scan_interval_minutes),
     }
+    scope_changed = selected_ids != current.login_community_ids
     connection_changed = any(
         (
             data.base_url.strip().rstrip("/") != current.base_url,
-            data.login_community_id != current.login_community_id,
             data.mac_service_url.strip().rstrip("/") != current.mac_service_url,
         )
     )
@@ -161,6 +172,11 @@ async def update_residence_config(
     await _save_values(conn, values)
     if data.password is not None or connection_changed:
         await clear_residence_sessions(conn)
+    elif scope_changed:
+        previous_ids = set(current.login_community_ids)
+        selected_id_set = set(selected_ids)
+        for affected_id in sorted(previous_ids.symmetric_difference(selected_id_set)):
+            await clear_residence_sessions(conn, f"community_{affected_id}")
     await record_admin_audit(
         user,
         "residence_platform.config.update",

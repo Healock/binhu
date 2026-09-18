@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import ANY, AsyncMock, patch
 
 import httpx
+from fastapi import HTTPException
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -22,11 +23,15 @@ from services.residence_platform import (  # noqa: E402
     registration_status,
 )
 from services.residence_platform_config import (  # noqa: E402
+    ResidenceCommunityAccount,
     ResidencePlatformConfig,
     load_residence_config,
+    normalize_residence_community_ids,
     public_residence_config,
     serialize_residence_value,
 )
+from routers import residence_platform as residence_router  # noqa: E402
+from routers.residence_platform import ResidenceConfigUpdate  # noqa: E402
 from services.qmf_config import decrypt_secret  # noqa: E402
 from services import residence_status_scan  # noqa: E402
 
@@ -69,6 +74,9 @@ class ResidenceConfigCursor:
 
     async def fetchone(self):
         if "FROM _communities" in self.query:
+            if hasattr(self.connection, "community_rows"):
+                community_id = int(self.connection.queries[-1][1][0])
+                return self.connection.community_rows.get(community_id)
             return self.connection.community_row
         return None
 
@@ -85,6 +93,7 @@ class ResidenceConfigConnection:
             ("residence_full_scan_interval_minutes", "30"),
         ]
         self.community_row = (
+            12,
             "测试社区",
             "3205840377",
             serialize_residence_value("residence_username", "fixture-community-account"),
@@ -94,6 +103,50 @@ class ResidenceConfigConnection:
 
     def cursor(self):
         return ResidenceConfigCursor(self)
+
+
+class MultiResidenceConfigConnection(ResidenceConfigConnection):
+    def __init__(self):
+        super().__init__()
+        self.config_rows = [
+            ("residence_lookup_enabled", "1"),
+            ("residence_base_url", "https://residence.invalid/grandlynn-boot"),
+            ("residence_login_community_ids", "[18, 12, 12]"),
+            ("residence_password", serialize_residence_value("residence_password", "fixture-password")),
+            ("residence_mac_service_url", "http://mac.invalid"),
+            ("residence_timeout_seconds", "5"),
+            ("residence_full_scan_interval_minutes", "30"),
+        ]
+        self.community_rows = {
+            12: (12, "测试社区", "3205840377", serialize_residence_value("residence_username", "fixture-community-account-a"), 1),
+            18: (18, "第二社区", "3205840388", serialize_residence_value("residence_username", "fixture-community-account-b"), 1),
+        }
+
+
+class ResidenceSelectionCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.community_id = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def execute(self, _query, params=None):
+        self.community_id = int(params[0])
+
+    async def fetchone(self):
+        return self.connection.community_rows.get(self.community_id)
+
+
+class ResidenceSelectionConnection:
+    def __init__(self, community_rows):
+        self.community_rows = community_rows
+
+    def cursor(self):
+        return ResidenceSelectionCursor(self)
 
 
 def config(**overrides) -> ResidencePlatformConfig:
@@ -110,6 +163,8 @@ def config(**overrides) -> ResidencePlatformConfig:
         "login_community_id": 12,
         "login_community_name": "测试社区",
         "login_community_code": "3205840377",
+        "login_community_ids": (12,),
+        "login_community_names": ("测试社区",),
     }
     values.update(overrides)
     return ResidencePlatformConfig(**values)
@@ -126,9 +181,9 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("queue_due_residence_tasks(force=full_scan)", scan_source)
         self.assertNotIn("REFRESH_DAYS", scan_source)
 
-    def test_public_config_exposes_the_selected_community_account_for_offline_cache(self):
+    def test_public_config_exposes_scope_and_safe_status_without_account_secret(self):
         public = public_residence_config(config(username="fixture-full-account"))
-        self.assertEqual(public["username"], "fixture-full-account")
+        self.assertNotIn("username", public)
         self.assertEqual(public["login_community_id"], 12)
         self.assertEqual(public["login_community_name"], "测试社区")
         self.assertEqual(public["account_mode"], "selected_community_account")
@@ -139,6 +194,221 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.login_community_name, "测试社区")
         self.assertEqual(loaded.username, "fixture-community-account")
         self.assertTrue(loaded.session_ready)
+
+    async def test_config_loads_normalized_multi_community_accounts(self):
+        loaded = await load_residence_config(MultiResidenceConfigConnection())
+        self.assertEqual(loaded.login_community_ids, (12, 18))
+        self.assertEqual(loaded.login_community_names, ("测试社区", "第二社区"))
+        self.assertEqual(
+            [community.username for community in loaded.login_communities],
+            ["fixture-community-account-a", "fixture-community-account-b"],
+        )
+        self.assertTrue(loaded.credentials_configured)
+
+    async def test_new_empty_scope_does_not_fall_back_to_legacy_single_id(self):
+        connection = ResidenceConfigConnection()
+        connection.config_rows.extend([
+            ("residence_login_community_ids", "[]"),
+        ])
+        loaded = await load_residence_config(connection)
+        self.assertEqual(loaded.login_community_ids, ())
+        self.assertIsNone(loaded.login_community_id)
+        self.assertFalse(loaded.credentials_configured)
+
+    async def test_invalid_new_scope_fails_closed_instead_of_using_legacy_id(self):
+        connection = ResidenceConfigConnection()
+        connection.config_rows.extend([
+            ("residence_login_community_ids", "not-json"),
+        ])
+        loaded = await load_residence_config(connection)
+        self.assertEqual(loaded.login_community_ids, ())
+        self.assertFalse(loaded.credentials_configured)
+
+    def test_public_config_exposes_selected_names_without_multiple_credentials(self):
+        public = public_residence_config(config(
+            login_community_ids=(12, 18),
+            login_community_names=("测试社区", "第二社区"),
+        ))
+        self.assertEqual(public["login_community_ids"], [12, 18])
+        self.assertEqual(public["login_community_names"], ["测试社区", "第二社区"])
+        self.assertEqual(public["login_community_count"], 2)
+        self.assertNotIn("usernames", public)
+
+    def test_invalid_multi_community_values_fail_closed(self):
+        self.assertEqual(normalize_residence_community_ids("[18, 12, 12]"), (12, 18))
+        self.assertEqual(normalize_residence_community_ids("[0, -1, \"x\"]"), ())
+
+    def test_config_update_requires_positive_community_ids(self):
+        payload = ResidenceConfigUpdate(
+            enabled=True,
+            base_url="https://residence.invalid",
+            login_community_ids=[18, 12, 12],
+        )
+        self.assertEqual(payload.login_community_ids, [18, 12, 12])
+        with self.assertRaises(ValueError):
+            ResidenceConfigUpdate(
+                enabled=True,
+                base_url="https://residence.invalid",
+                login_community_ids=[0],
+            )
+        with self.assertRaises(ValueError):
+            ResidenceConfigUpdate(
+                enabled=True,
+                base_url="https://residence.invalid",
+                login_community_ids=["12"],
+            )
+
+    def test_multi_scope_without_per_community_metadata_is_not_ready(self):
+        self.assertFalse(config(
+            login_community_ids=(12, 18),
+            login_communities=(),
+        ).credentials_configured)
+
+    async def test_config_update_normalizes_scope_and_clears_only_affected_sessions(self):
+        connection = ResidenceSelectionConnection({
+            12: (12, "测试社区", 1, 1),
+            18: (18, "第二社区", 1, 1),
+        })
+        save_values = AsyncMock()
+        clear_sessions = AsyncMock()
+        with patch.object(
+            residence_router,
+            "load_residence_config",
+            new=AsyncMock(return_value=config(login_community_ids=(12,))),
+        ), patch.object(
+            residence_router,
+            "_save_values",
+            new=save_values,
+        ), patch.object(
+            residence_router,
+            "clear_residence_sessions",
+            new=clear_sessions,
+        ), patch.object(
+            residence_router,
+            "record_admin_audit",
+            new=AsyncMock(),
+        ), patch.object(
+            residence_router,
+            "request_audit_fields",
+            return_value={},
+        ), patch.object(
+            residence_router,
+            "_public_config",
+            new=AsyncMock(return_value={"login_community_ids": [12, 18]}),
+        ), patch.object(
+            residence_router,
+            "wake_residence_lookup_scheduler",
+        ):
+            result = await residence_router.update_residence_config(
+                ResidenceConfigUpdate(
+                    enabled=True,
+                    base_url="https://residence.invalid/grandlynn-boot",
+                    login_community_ids=[18, 12, 12],
+                    mac_service_url="http://mac.invalid",
+                ),
+                object(),
+                {"id": 1},
+                connection,
+            )
+        self.assertEqual(result["login_community_ids"], [12, 18])
+        saved = save_values.await_args.args[1]
+        self.assertEqual(saved["residence_login_community_ids"], "[12,18]")
+        self.assertEqual(saved["residence_login_community_id"], "12")
+        clear_sessions.assert_awaited_once_with(ANY, "community_18")
+
+    async def test_config_update_rejects_invalid_selected_communities(self):
+        cases = (
+            ({}, [12], "不存在"),
+            ({12: (12, "测试社区", 0, 1)}, [12], "已停用"),
+            ({12: (12, "测试社区", 1, 0)}, [12], "未配置"),
+        )
+        for rows, selected_ids, detail in cases:
+            with self.subTest(detail=detail), patch.object(
+                residence_router,
+                "load_residence_config",
+                new=AsyncMock(return_value=config()),
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    await residence_router.update_residence_config(
+                        ResidenceConfigUpdate(
+                            enabled=True,
+                            base_url="https://residence.invalid/grandlynn-boot",
+                            login_community_ids=selected_ids,
+                            mac_service_url="http://mac.invalid",
+                        ),
+                        object(),
+                        {"id": 1},
+                        ResidenceSelectionConnection(rows),
+                    )
+            self.assertEqual(raised.exception.status_code, 400)
+            self.assertIn(detail, str(raised.exception.detail))
+
+    async def test_enabled_config_rejects_an_empty_scope(self):
+        with patch.object(
+            residence_router,
+            "load_residence_config",
+            new=AsyncMock(return_value=config()),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await residence_router.update_residence_config(
+                    ResidenceConfigUpdate(
+                        enabled=True,
+                        base_url="https://residence.invalid/grandlynn-boot",
+                        login_community_ids=[],
+                        mac_service_url="http://mac.invalid",
+                    ),
+                    object(),
+                    {"id": 1},
+                    ResidenceSelectionConnection({}),
+                )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("请选择", str(raised.exception.detail))
+
+    async def test_out_of_scope_target_is_rejected_before_client_request(self):
+        scoped = config(
+            login_community_ids=(12,),
+            login_communities=(ResidenceCommunityAccount(12, "测试社区", "3205840377", "fixture-a", True),),
+        )
+        client = AsyncMock()
+        with patch.object(residence_status_scan, "_community_client", new=client):
+            with self.assertRaises(ResidencePlatformError) as raised:
+                await residence_status_scan._lookup_target(
+                    scoped,
+                    residence_status_scan.ResidenceLookupTarget(
+                        identity=VALID_IDENTITY,
+                        community_code="3205840388",
+                        community_id=18,
+                    ),
+                )
+        self.assertEqual(raised.exception.code, "community_out_of_scope")
+        client.assert_not_awaited()
+
+    async def test_each_community_uses_its_own_username_and_session_scope(self):
+        scoped = config(
+            login_community_ids=(12, 18),
+            login_communities=(
+                ResidenceCommunityAccount(12, "测试社区", "3205840377", "fixture-a", True),
+                ResidenceCommunityAccount(18, "第二社区", "3205840388", "fixture-b", True),
+            ),
+        )
+        sessions = {
+            "community_12": type("Session", (), {"token": "token-a", "organization_code": "320584"})(),
+            "community_18": type("Session", (), {"token": "token-b", "organization_code": "320588"})(),
+        }
+        session_loader = AsyncMock(side_effect=lambda _conn, scope: sessions[scope])
+        with patch.object(residence_status_scan, "_pool", return_value=FakePool()), patch.object(
+            residence_status_scan,
+            "load_residence_session",
+            new=session_loader,
+        ):
+            client_a = await residence_status_scan._community_client(scoped, community_id=12)
+            client_b = await residence_status_scan._community_client(scoped, community_id=18)
+        self.assertEqual(client_a.config.username, "fixture-a")
+        self.assertEqual(client_b.config.username, "fixture-b")
+        self.assertEqual(
+            [call.args[1] for call in session_loader.await_args_list],
+            ["community_12", "community_18"],
+        )
 
     async def test_inactive_selected_community_is_not_ready_but_keeps_its_name(self):
         loaded = await load_residence_config(ResidenceConfigConnection(active=False))
