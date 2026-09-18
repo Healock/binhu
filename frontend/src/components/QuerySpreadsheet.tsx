@@ -399,7 +399,12 @@ export function QuerySpreadsheet({
       restoreFrame = window.requestAnimationFrame(restore)
     }
 
-    container.replaceChildren()
+    // Keep each Univer instance in its own imperative mount node. Reusing the
+    // React-owned container lets an asynchronously disposing instance race with
+    // the next business table and remove a node that is no longer its child.
+    const mountNode = document.createElement('div')
+    mountNode.className = 'query-spreadsheet__instance'
+    container.appendChild(mountNode)
 
     const generation = `${businessType}-${source}-${revision}`
     const sheetRows = buildQuerySheetRows(
@@ -414,9 +419,9 @@ export function QuerySpreadsheet({
     const workbookId = `query-${Date.now()}-${revision}`
     const sheetId = `sheet-${revision}`
     const { univer, univerAPI } = createQueryUniver(
-      container,
+      mountNode,
       UniverSheetsCorePreset({
-        container,
+        container: mountNode,
         ...QUERY_SHEET_UI_CONFIG,
         sheets: QUERY_SHEET_FEATURE_CONFIG,
       }),
@@ -1198,7 +1203,7 @@ export function QuerySpreadsheet({
       disposables.forEach(disposable => disposable.dispose())
       if (applyAppearanceRef.current === applyAppearance) applyAppearanceRef.current = null
       univer.dispose()
-      container.replaceChildren()
+      if (mountNode.parentNode === container) mountNode.remove()
     }
   // `revision` is the explicit rebuild boundary. Draft edits update the parent state,
   // but must not destroy and recreate the workbook while the user is typing.
