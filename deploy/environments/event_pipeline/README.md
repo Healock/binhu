@@ -197,6 +197,12 @@ Kafka、Redis 和派生 MySQL 数据卷均不因该资源修补删除。
 且没有后续说明注释；迁移器只把这两个完整历史文本视为旧模型，不接受仅拼接部分旧值的
 近似配置。
 
+Compose 的 `up -d` 返回只表示容器已经启动，不表示 JobManager REST 已经监听 8081。
+Dev apply 在读取首次作业列表前，会对固定的 `Flink REST request failed` 启动错误执行
+最多 60 秒的有界等待；其他 REST、身份和合同错误立即失败。等待成功后仍必须完整核验
+当前 run_id、consumer group、development 过滤条件、单个 RUNNING JobGraph 和两个受控
+INSERT sink，不能把 REST 可访问误报为 Flink 验收通过。
+
 ### 固定规模双轨验收
 
 候选完成 `prepare → measure → apply` 且 `current.json` 仍绑定当前运行编号后，
