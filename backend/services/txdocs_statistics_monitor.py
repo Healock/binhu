@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 import hashlib
 import hmac
 import json
+import re
 from typing import Any, Iterable
 
 from config import settings
@@ -237,13 +238,20 @@ class MonitorDelta:
 class MonitorBusinessBucket:
     """Privacy-safe business classification for one external snapshot.
 
-    Only a community label, a dispatch date and the workflow state are kept.
-    No person, address, source row or other external row content is stored.
+    Only the fields required by the aggregate report are kept: community,
+    checker name, dispatch date and workflow state.  No identity number,
+    phone, address, physical row or other external row content is stored.
     """
 
     community: str
+    checker_name: str
     dispatch_date: date | None
     task_state: str
+
+
+def _normalize_checker_name(value: Any) -> str:
+    """Normalize the external checker label without inventing an assignee."""
+    return re.sub(r"\s+", " ", str(value or "").strip())[:200]
 
 
 def build_monitor_business_buckets(
@@ -283,6 +291,7 @@ def build_monitor_business_buckets(
             dispatch_date = parsed.date() if parsed else business_date
         result[MonitorBusinessBucket(
             community=parser.community_value(normalized),
+            checker_name=_normalize_checker_name(normalized.get("核查人")),
             dispatch_date=dispatch_date,
             task_state=state,
         )] += 1
@@ -524,15 +533,60 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
             run_id BIGINT NOT NULL,
             community_hash CHAR(64) NOT NULL,
             community VARCHAR(200) NOT NULL DEFAULT '',
+            checker_name VARCHAR(200) NOT NULL DEFAULT '',
             dispatch_date DATE NOT NULL,
             task_state VARCHAR(20) NOT NULL,
             row_count INT UNSIGNED NOT NULL DEFAULT 0,
-            PRIMARY KEY (run_id, community_hash, dispatch_date, task_state),
+            PRIMARY KEY (
+                run_id, community_hash, checker_name, dispatch_date, task_state
+            ),
             INDEX idx_txdocs_monitor_bucket_date (dispatch_date, task_state)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
         """
     )
+    # PR #750 created the bucket table without the checker dimension.  Upgrade
+    # it in place so existing snapshots remain readable as unassigned external
+    # rows and the next successful read can persist one bucket per checker.
+    await cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema=DATABASE()
+          AND table_name='_txdocs_monitor_run_buckets'
+          AND column_name='checker_name'
+        """
+    )
+    checker_column_exists = bool((await cur.fetchone() or [0])[0])
+    if not checker_column_exists:
+        await cur.execute(
+            """
+            ALTER TABLE _txdocs_monitor_run_buckets
+            ADD COLUMN checker_name VARCHAR(200) NOT NULL DEFAULT ''
+                AFTER community
+            """
+        )
+    await cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.statistics
+        WHERE table_schema=DATABASE()
+          AND table_name='_txdocs_monitor_run_buckets'
+          AND index_name='PRIMARY'
+          AND column_name='checker_name'
+        """
+    )
+    checker_in_primary_key = bool((await cur.fetchone() or [0])[0])
+    if not checker_in_primary_key:
+        await cur.execute(
+            """
+            ALTER TABLE _txdocs_monitor_run_buckets
+            DROP PRIMARY KEY,
+            ADD PRIMARY KEY (
+                run_id, community_hash, checker_name, dispatch_date, task_state
+            )
+            """
+        )
 
 
 async def _load_inputs(
@@ -747,15 +801,16 @@ async def _persist_success(
                 await cur.executemany(
                     """
                     INSERT INTO _txdocs_monitor_run_buckets (
-                        run_id, community_hash, community, dispatch_date,
-                        task_state, row_count
-                    ) VALUES (%s,%s,%s,%s,%s,%s)
+                        run_id, community_hash, community, checker_name,
+                        dispatch_date, task_state, row_count
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s)
                     """,
                     [
                         (
                             run_id,
                             _hmac_digest("txdocs-monitor-community", bucket.community),
                             bucket.community,
+                            bucket.checker_name,
                             bucket.dispatch_date,
                             bucket.task_state,
                             count,
@@ -996,6 +1051,7 @@ async def get_txdocs_business_overlay(
     end_date: str,
     parser_types: list[str],
     communities: list[str] | None,
+    inspector: str | None = None,
 ) -> dict[str, Any]:
     """Return external business counts for overlaying local statistics.
 
@@ -1043,7 +1099,8 @@ async def get_txdocs_business_overlay(
             try:
                 await cur.execute(
                     f"""
-                    SELECT bucket.community, bucket.dispatch_date,
+                    SELECT bucket.community, bucket.checker_name,
+                           bucket.dispatch_date,
                            bucket.task_state, SUM(bucket.row_count),
                            MAX(run.finished_at)
                     FROM _txdocs_monitor_run_buckets bucket
@@ -1057,8 +1114,8 @@ async def get_txdocs_business_overlay(
                         GROUP BY spreadsheet_id, parser_type
                     ) latest ON latest.id=run.id
                     WHERE run.status='success' {community_clause}
-                    GROUP BY bucket.community, bucket.dispatch_date,
-                             bucket.task_state
+                    GROUP BY bucket.community, bucket.checker_name,
+                             bucket.dispatch_date, bucket.task_state
                     """,
                     (end_date, *valid_types, *source_ids, *community_params),
                 )
@@ -1069,32 +1126,44 @@ async def get_txdocs_business_overlay(
                 # work and the overlay remains absent until the next startup.
                 return result
 
-            metrics: dict[str, dict[str, int]] = defaultdict(
-                lambda: {
+            def empty_metrics() -> dict[str, Any]:
+                return {
                     "total": 0, "carryover": 0, "new": 0,
                     "pending": 0, "unchecked": 0, "checked": 0,
                     "completed": 0, "changed": 0,
+                    "sources": ["txdocs_readonly"],
                 }
+
+            metrics: dict[str, dict[str, Any]] = defaultdict(empty_metrics)
+            assignee_metrics: dict[str, dict[str, dict[str, Any]]] = defaultdict(
+                lambda: defaultdict(empty_metrics)
             )
-            for community, dispatch_date, task_state, row_count, _finished in bucket_rows:
+            inspector_filter = _normalize_checker_name(inspector)
+            for (
+                community, checker_name, dispatch_date, task_state,
+                row_count, _finished,
+            ) in bucket_rows:
                 name = str(community or "")
+                checker = _normalize_checker_name(checker_name)
+                if inspector_filter and checker != inspector_filter:
+                    continue
                 count = int(row_count or 0)
-                item = metrics[name]
-                item["total"] += count
-                if str(task_state or "") == "completed":
-                    item["completed"] += count
-                else:
-                    item["pending"] += count
-                    if str(task_state or "") == "checked":
-                        item["checked"] += count
+                for item in (metrics[name], assignee_metrics[name][checker]):
+                    item["total"] += count
+                    if str(task_state or "") == "completed":
+                        item["completed"] += count
                     else:
-                        item["unchecked"] += count
-                dispatch_text = str(dispatch_date or "")[:10]
-                if dispatch_text and dispatch_text < start_date:
-                    if str(task_state or "") != "completed":
-                        item["carryover"] += count
-                elif start_date <= dispatch_text <= end_date:
-                    item["new"] += count
+                        item["pending"] += count
+                        if str(task_state or "") == "checked":
+                            item["checked"] += count
+                        else:
+                            item["unchecked"] += count
+                    dispatch_text = str(dispatch_date or "")[:10]
+                    if dispatch_text and dispatch_text < start_date:
+                        if str(task_state or "") != "completed":
+                            item["carryover"] += count
+                    elif start_date <= dispatch_text <= end_date:
+                        item["new"] += count
 
             await cur.execute(
                 f"""
@@ -1141,6 +1210,7 @@ async def get_txdocs_business_overlay(
 
     totals = {key: 0 for key in ("total_tasks", "carryover_tasks", "new_tasks", "changed_tasks", "pending_tasks", "completed_tasks")}
     for community, item in metrics.items():
+        item["assignees"] = dict(assignee_metrics.get(community, {}))
         result["communities"][community] = item
         totals["total_tasks"] += item["total"]
         totals["carryover_tasks"] += item["carryover"]

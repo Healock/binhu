@@ -25,6 +25,30 @@ def _overlay_payload():
                 "checked": 0,
                 "completed": 1,
                 "carryover": 0,
+                "assignees": {
+                    "测试人员甲": {
+                        "total": 1,
+                        "pending": 1,
+                        "new": 1,
+                        "changed": 1,
+                        "unchecked": 1,
+                        "checked": 0,
+                        "completed": 0,
+                        "carryover": 0,
+                        "sources": ["txdocs_readonly"],
+                    },
+                    "测试人员乙": {
+                        "total": 1,
+                        "pending": 0,
+                        "new": 1,
+                        "changed": 0,
+                        "unchecked": 0,
+                        "checked": 0,
+                        "completed": 1,
+                        "carryover": 0,
+                        "sources": ["txdocs_readonly"],
+                    },
+                },
             },
         },
     }
@@ -77,13 +101,16 @@ async def test_external_overlay_merges_counts_and_recalculates_rates():
 
 
 @pytest.mark.asyncio
-async def test_external_overlay_keeps_read_only_rows_out_of_inspector_assignment():
+async def test_external_overlay_uses_real_checker_names_and_merges_same_name():
     result = {
         "exists": True,
         "community": {"columns": ["社区", "数据总数"], "data": []},
         "inspector": {
             "columns": ["社区", "姓名", "数据总数", "未核查", "已核查", "已完成"],
-            "data": [],
+            "data": [{
+                "社区": "社区一", "姓名": "测试人员甲", "数据总数": 3,
+                "未核查": 1, "已核查": 1, "已完成": 1,
+            }],
         },
     }
 
@@ -98,11 +125,14 @@ async def test_external_overlay_keeps_read_only_rows_out_of_inspector_assignment
             communities=None,
         )
 
-    inspector_row = actual["inspector"]["data"][0]
-    assert inspector_row["姓名"] == "外部腾讯表（只读）"
-    assert inspector_row["社区"] == "社区一"
-    assert inspector_row["数据总数"] == 2
-    assert inspector_row["已完成"] == 1
+    rows = {row["姓名"]: row for row in actual["inspector"]["data"]}
+    assert "外部腾讯表（只读）" not in rows
+    assert rows["测试人员甲"]["数据总数"] == 4
+    assert rows["测试人员甲"]["未核查"] == 2
+    assert rows["测试人员甲"]["数据来源"] == "本地业务数据 + 腾讯只读"
+    assert rows["测试人员乙"]["数据总数"] == 1
+    assert rows["测试人员乙"]["已完成"] == 1
+    assert rows["测试人员乙"]["数据来源"] == "腾讯只读"
 
 
 @pytest.mark.asyncio
@@ -120,4 +150,5 @@ async def test_external_overlay_can_render_when_local_report_is_empty():
 
     assert actual["exists"] is True
     assert actual["community"]["data"][0]["数据总数"] == 2
-    assert actual["inspector"]["data"][0]["姓名"] == "外部腾讯表（只读）"
+    rows = {row["姓名"]: row for row in actual["inspector"]["data"]}
+    assert set(rows) == {"测试人员甲", "测试人员乙"}
