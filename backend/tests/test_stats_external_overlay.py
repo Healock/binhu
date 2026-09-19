@@ -129,10 +129,10 @@ async def test_external_overlay_uses_real_checker_names_and_merges_same_name():
     assert "外部腾讯表（只读）" not in rows
     assert rows["测试人员甲"]["数据总数"] == 4
     assert rows["测试人员甲"]["未核查"] == 2
-    assert rows["测试人员甲"]["数据来源"] == "本地业务数据 + 腾讯只读"
     assert rows["测试人员乙"]["数据总数"] == 1
     assert rows["测试人员乙"]["已完成"] == 1
-    assert rows["测试人员乙"]["数据来源"] == "腾讯只读"
+    assert "数据来源" not in actual["inspector"]["columns"]
+    assert all("数据来源" not in row for row in rows.values())
 
 
 @pytest.mark.asyncio
