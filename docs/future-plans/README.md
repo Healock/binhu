@@ -28,4 +28,4 @@
 | 当前已有拥堵治理文件 | [生产接口拥堵治理](production-congestion-observability.md) | 补总目录入口，原文保持不变 |
 
 恢复仅涉及文档。真实环境和历史测试未在本次重新验证；来源文件校验值及 PR 状态核对记录见事件总线项目顶部。
-- [Dev Python/Flink 双轨比对](dev-dual-track-comparison.md) — 任务元数据投影/计数双轨合同、比较器和 7 天验收门禁
+- [Dev Python/Flink 双轨比对](dev-dual-track-comparison.md) — 任务元数据投影/计数双轨合同、比较器和 6 小时强化观察门禁

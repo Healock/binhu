@@ -28,6 +28,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_SCALES = frozenset({1002, 10_000, 100_000})
 ACCEPT_TIMEOUTS = {1002: 420, 10_000: 3720, 100_000: 21_720}
+OBSERVATION = Path("/usr/local/libexec/binhu-dev-event-pipeline-observation.py")
+OBSERVATION_RE = re.compile(r"^obs-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
 
 
 def fail(message: str) -> None:
@@ -318,6 +320,20 @@ def stop(run_id: str) -> None:
                       "run_id": run_id, "stopped": stopped}, sort_keys=True))
 
 
+def observe(action: str, run_id: str, observation_id: str) -> None:
+    if action not in {"start", "status"} or not RUN_RE.fullmatch(run_id or "") or not OBSERVATION_RE.fullmatch(observation_id or ""):
+        fail("invalid Dev observation command")
+    if not OBSERVATION.is_file() or OBSERVATION.is_symlink():
+        fail("Dev observation controller missing")
+    result = subprocess.run(
+        [sys.executable, str(OBSERVATION), action, run_id, observation_id],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode:
+        fail("Dev observation command failed")
+    print(result.stdout.strip())
+
+
 def main() -> None:
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     action = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -331,8 +347,10 @@ def main() -> None:
         accept(sys.argv[2], sys.argv[3])
     elif action == "stop" and len(sys.argv) == 3:
         stop(sys.argv[2])
+    elif action in {"observe-start", "observe-status"} and len(sys.argv) == 4:
+        observe(action.removeprefix("observe-"), sys.argv[2], sys.argv[3])
     else:
-        fail("fixed prepare/measure/apply/accept contract required")
+        fail("fixed prepare/measure/apply/accept/observe contract required")
 
 
 if __name__ == "__main__":

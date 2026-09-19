@@ -1,6 +1,6 @@
 # Dev Python/Flink 双轨比对
 
-- 状态：第一真实派生域已在 Dev 完成 1002 和 10000 条受控双轨验收；100000 条与连续 7 天观察待执行，checkpoint/savepoint 恢复门禁尚未通过
+- 状态：第一真实派生域已在 Dev monitor40 完成 1002、10000、100000 三档零未归因差异验收；按项目管理人确认，原连续 7 天观察改为 6 小时强化观察，checkpoint/savepoint 恢复门禁仍未通过
 - 派生域：任务元数据投影与计数
 - 选择原因：只使用 Kafka v1 的脱敏元数据，能够从事件日志重建；结果可用事件数、变化字段数、最高 revision 和按事件类型计数完整描述，避免把地址正文、人员资料或研判正文带入链路。
 
@@ -34,16 +34,18 @@ Python worker 使用增量 reducer，不再保存完整事件正文；事件 ID 
 
 本次代码验证的是合同、去重、revision 冲突和差异脱敏；本机没有 Docker、
 Kafka、Flink 或真实 MySQL，不能把本地测试写成服务器验收。服务器运行时必须
-分别启动 Python worker 和 Flink 作业，确认输出命名空间独立，再开始 7 天、至少
-100,000 条唯一事件的连续比对。
+分别启动 Python worker 和 Flink 作业，确认输出命名空间独立，再执行至少
+100,000 条唯一事件的规模比对和固定 6 小时强化观察。
 
 ## 通过门槛
 
-只有连续 7 天、至少 100,000 条唯一事件，且差异台账中
-`unattributed_difference_count=0`，同时事件延迟、重复、乱序、worker 重启和
-checkpoint/savepoint 恢复均有证据，才能把该派生域标记为“已通过”并提交
-Staging 晋级评估。任何真实组件行为偏离预期、数据一致性失败或无法自动归因的
-差异都必须保留证据并暂停晋级。
+核心双轨规模门禁要求至少 100,000 条唯一事件且差异台账中
+`unattributed_difference_count=0`。持续运行门禁按项目管理人 2026-09-20 的明确决定，
+从原连续 7 天缩短为 6 小时强化观察；每 30 分钟记录资源、连接、lag、checkpoint、
+磁盘、日志轮换和差异，共 13 个采样点。6 小时无异常和增长趋势后可以进入 Staging
+晋级评估。checkpoint/savepoint 兼容恢复继续作为独立门禁记录，不得使用
+`allowNonRestoredState` 掩盖。任何真实组件行为偏离预期、数据一致性失败或无法自动
+归因的差异都必须保留证据并暂停晋级。
 
 后续迁移顺序暂定为：地址匹配只读派生 → 任务图 → 人员标签 → 日报/汇总。每个
 域都要建立独立事件字段、结果表、比对合同和退出门禁，不能把本域的通过结果
@@ -373,3 +375,22 @@ monitor 为 healthy、`monitor-status.json` 持续刷新、bridge 正常、Redis
 Flink checkpoint 无失败且 Kafka lag 收敛。100000 通过并观察至少两个心跳周期后，才
 登记“7 天观察已正常启动”；连续运行满 7 天前不得登记为通过。checkpoint/savepoint
 operator ID 兼容恢复仍是未通过的独立门禁。
+
+## 2026-09-20：monitor40 三档通过与 6 小时强化观察
+
+`dev-20260919-dualtrack-monitor40` 的 1002、10000、100000 三档均通过。100000 workflow
+`35428539169` 在北京时间 2026-09-19 15:09 至 19:53 完成，最终
+`delivery_published=100000`、Python/Flink projection、revision sink 和两边唯一事件均为
+100000，projection/revision mismatch、convergence pending 和未归因差异均为 0。
+
+项目管理人明确接受缩短长期观察，用 6 小时强化观察换取更快晋级，并把长期盲区单独登记。
+观察从新的不可覆盖 `obs-YYYYMMDD-<name>` 编号开始，每 30 分钟采样一次，共 13 次。
+开始时主动执行当前元数据域可安全手动触发的双轨对账、Schema 合同核对和状态汇总。
+日报刷新和业务清理并未迁入该派生域，隔离 Dev Backend 也默认关闭业务调度器，因此本阶段
+记录为当前域不适用；不通过 event-pipeline 网关越界调用生产或 Staging 业务任务。
+
+核心阻塞项为：三档规模通过、6 小时所有采样健康、无未归因差异、无 OOM 且容器重启
+计数不增加、Redis 驱逐和 OOM 计数无新增、MySQL 无当前锁等待或新增死锁、Kafka lag 收敛、Flink
+checkpoint 推进、内存/连接/磁盘无持续增长趋势。证书续签、七天 Kafka 保留、Redis
+自然 TTL、固定周期自然触发、跨天状态累积、长期内存和磁盘趋势明确列为未验证且不阻塞；
+后续在 Staging 或生产灰度补充。

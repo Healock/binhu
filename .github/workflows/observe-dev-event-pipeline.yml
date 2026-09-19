@@ -1,0 +1,55 @@
+name: Observe Dev event pipeline
+run-name: Observe Dev event pipeline ${{ inputs.run_id }} ${{ inputs.action }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Start or read the fixed six-hour Dev observation
+        required: true
+        type: choice
+        options:
+          - start
+          - status
+      run_id:
+        description: Current Dev event-pipeline run ID
+        required: true
+        type: string
+      observation_id:
+        description: Immutable observation ID, obs-YYYYMMDD-name
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: development
+    steps:
+      - name: Run fixed Dev observation command
+        shell: bash
+        env:
+          ACTION: ${{ inputs.action }}
+          RUN_ID: ${{ inputs.run_id }}
+          OBSERVATION_ID: ${{ inputs.observation_id }}
+          DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          DEV_PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
+          DEV_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_SSH_KEY }}
+          DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$ACTION" =~ ^(start|status)$ ]]
+          [[ "$RUN_ID" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]]
+          [[ "$OBSERVATION_ID" =~ ^obs-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]]
+          [[ -n "$DEV_HOST" && "$DEV_PORT" =~ ^[0-9]+$ && -n "$DEV_KEY" && -n "$DEV_KNOWN_HOSTS" ]]
+          install -d -m 700 "$RUNNER_TEMP/dev-ssh"
+          printf '%s\n' "$DEV_KEY" > "$RUNNER_TEMP/dev-ssh/key"
+          printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
+          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
+            "binhu-dev-deploy@$DEV_HOST" "observe-$ACTION $RUN_ID $OBSERVATION_ID"
+          rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"

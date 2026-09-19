@@ -247,9 +247,24 @@ lease token 和完成栅栏领取与完成事件；并发度和连接数是代�
 Production、Staging 或 Shadow。正常发布日志按每个 worker 每 1000 条输出一次安全计数，
 不记录 event ID、载荷或业务正文。
 
-1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。连续 7 天、
-至少 100000 条唯一事件、checkpoint/savepoint 恢复、完整第 6–11 项以及 Staging
-晋级仍须分别记录和签署，不能由该工作流自动标记完成。
+1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。monitor40 三档
+全部通过后，核心持续运行门禁使用独立的固定 6 小时观察：每 30 分钟记录 monitor、
+Python worker、relay、Redis、MySQL、Kafka、Flink、磁盘和日志轮换，共 13 个采样点；
+开始时额外执行一次元数据双轨对账和 Schema Registry 合同核对。部署账号只接受
+`observe-start <run_id> <observation_id>` 和
+`observe-status <run_id> <observation_id>`，观察进程由服务器 systemd 管理，SSH 连接
+立即结束，不维持后台连接。
+
+6 小时内要求无未归因差异、容器重启计数不增加且无 OOM、Redis 驱逐和 OOM 计数不增加、MySQL
+无当前锁等待或新增死锁、Kafka lag 最终连续三个采样为 0、Flink checkpoint 持续推进，
+并且内存、连接数和磁盘没有持续增长趋势。日报刷新和业务清理尚未迁入当前元数据派生域，
+Dev Backend 又明确关闭相应调度器，因此记录为“当前域不适用”，不能通过 event-pipeline
+网关跨到生产业务库伪造执行。
+
+证书续签、Kafka 七天保留自然过期、Redis 自然 TTL、固定周期的自然触发、跨天状态累积、
+长期内存泄漏和长期磁盘趋势在 6 小时内无法覆盖，作为不阻塞本次晋级的已知盲区，留到
+Staging 或生产灰度补充。checkpoint/savepoint 兼容恢复、完整第 6–11 项和 Staging
+晋级仍须分别记录和签署，不能由规模或观察工作流自动标记完成。
 
 ### Workflow environment contract
 All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.
