@@ -9,6 +9,7 @@ import {
   getTxDocsMonitorConfig,
   runTxDocsMonitorNow,
   updateTxDocsMonitorConfig,
+  updateTxDocsMonitorCredentials,
   type TxDocsMonitorConfig,
   type TxDocsMonitorTarget,
 } from '../api/client'
@@ -47,6 +48,7 @@ export default function TxDocsMonitorSettings() {
   const [openId, setOpenId] = useState('')
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState<number | null>(null)
+  const [savingCredentials, setSavingCredentials] = useState(false)
   const [running, setRunning] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -81,19 +83,36 @@ export default function TxDocsMonitorSettings() {
         parser_type: target.parser_type,
         header_row: target.header_row,
         interval_seconds: target.interval_seconds,
-        client_id: clientId,
-        access_token: accessToken,
-        open_id: openId,
         enabled: target.enabled,
       })
       setConfig(value)
       setTargets(value.targets || [])
-      setAccessToken('')
       setMessage('监控目标已保存（共 ' + (value.targets?.length || 0) + ' 个目标）。')
     } catch (cause: unknown) {
       setError(apiErrorMessage(cause, '保存失败，未修改现有配置'))
     } finally {
       setSavingId(null)
+    }
+  }
+
+  const saveCredentials = async () => {
+    setSavingCredentials(true); setMessage(''); setError('')
+    try {
+      const value = await updateTxDocsMonitorCredentials({
+        client_id: clientId.trim(),
+        access_token: accessToken.trim(),
+        open_id: openId.trim(),
+      })
+      setConfig(value)
+      setTargets(value.targets || [])
+      setClientId('')
+      setAccessToken('')
+      setOpenId('')
+      setMessage('只读连接凭据已保存。现在可以立即读取；凭据不会回显。')
+    } catch (cause: unknown) {
+      setError(apiErrorMessage(cause, '凭据保存失败，未修改现有连接'))
+    } finally {
+      setSavingCredentials(false)
     }
   }
 
@@ -143,10 +162,23 @@ export default function TxDocsMonitorSettings() {
       {message && <Alert type="success" showIcon message={message} />}
 
       <Panel title="只读连接凭据" description="凭据在服务器加密保存并由所有监控目标共享；Token 不会回显，也不会进入监控快照。">
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="settings-field"><span className="settings-field__label">Client ID</span><Input value={clientId} onChange={event => setClientId(event.target.value)} placeholder={config?.client_id_configured ? '已配置，留空表示保持不变' : ''} /></label>
-          <label className="settings-field"><span className="settings-field__label">Access Token</span><Input.Password value={accessToken} onChange={event => setAccessToken(event.target.value)} placeholder={config?.access_token_configured ? '已配置，留空表示保持不变' : ''} /></label>
-          <label className="settings-field"><span className="settings-field__label">Open ID</span><Input value={openId} onChange={event => setOpenId(event.target.value)} placeholder={config?.open_id_configured ? '已配置，留空表示保持不变' : ''} /></label>
+        <div className="grid gap-3">
+          <Alert type="info" showIcon message="三个字段必须来自同一次腾讯授权。修改时请完整填写并单独保存；保存后不会回显。" />
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="settings-field"><span className="settings-field__label">Client ID</span><Input value={clientId} onChange={event => setClientId(event.target.value)} placeholder={config?.client_id_configured ? '已配置；更新时重新完整填写' : ''} /></label>
+            <label className="settings-field"><span className="settings-field__label">Access Token</span><Input.Password value={accessToken} onChange={event => setAccessToken(event.target.value)} placeholder={config?.access_token_configured ? '已配置；更新时重新完整填写' : ''} /></label>
+            <label className="settings-field"><span className="settings-field__label">Open ID</span><Input value={openId} onChange={event => setOpenId(event.target.value)} placeholder={config?.open_id_configured ? '已配置；更新时重新完整填写' : ''} /></label>
+          </div>
+          <div>
+            <Button
+              type="primary"
+              loading={savingCredentials}
+              disabled={!config?.environment_allowed || !clientId.trim() || !accessToken.trim() || !openId.trim() || savingId !== null}
+              onClick={() => void saveCredentials()}
+            >
+              保存连接凭据
+            </Button>
+          </div>
         </div>
       </Panel>
 
@@ -159,7 +191,7 @@ export default function TxDocsMonitorSettings() {
                 <Space wrap>
                   <span className="text-sm text-[var(--app-text-muted)]">{target.status}</span>
                   <Switch checked={target.enabled} disabled={!config?.environment_allowed} onChange={enabled => updateTarget(target.id, { enabled })} checkedChildren="启用" unCheckedChildren="停用" />
-                  <Button type="primary" loading={savingId === target.id} onClick={() => void saveTarget(target)}>保存目标</Button>
+                  <Button type="primary" loading={savingId === target.id} disabled={savingCredentials} onClick={() => void saveTarget(target)}>保存目标</Button>
                   <Popconfirm title="移除此监控目标？" description="历史快照不会删除。" onConfirm={() => void removeTarget(target)} okText="移除" cancelText="取消">
                     <Button danger loading={savingId === target.id}>移除</Button>
                   </Popconfirm>
@@ -177,7 +209,7 @@ export default function TxDocsMonitorSettings() {
           {!targets.length && <div className="text-sm text-[var(--app-text-muted)]">尚未配置监控目标，请先添加一个业务表。</div>}
           <Space wrap>
             <Button onClick={() => setTargets(current => [...current, newTarget()])}>新增监控目标</Button>
-            <Button loading={running} disabled={!config?.environment_allowed || !config?.configured || !targets.some(target => target.enabled) || savingId !== null} onClick={() => void runNow()}>立即读取一次</Button>
+            <Button loading={running} disabled={!config?.environment_allowed || !config?.configured || !targets.some(target => target.enabled) || savingId !== null || savingCredentials} onClick={() => void runNow()}>立即读取一次</Button>
             <Button danger loading={savingId === 0} disabled={!targets.some(target => target.enabled) || savingId !== null} onClick={() => void disable()}>禁用全部监控</Button>
           </Space>
         </div>

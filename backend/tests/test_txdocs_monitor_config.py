@@ -8,8 +8,10 @@ from unittest.mock import patch
 
 from routers.stats import (
     _manual_txdocs_run_response,
+    _normalize_txdocs_credentials,
     _txdocs_config_payload,
     _txdocs_file_id,
+    TxDocsMonitorCredentialsUpdate,
 )
 
 
@@ -60,6 +62,55 @@ def test_non_production_configuration_is_not_writable():
     guard = body.index("if not monitoring_environment_allowed()")
     mutation = body.index("file_id = _txdocs_file_id", guard)
     assert guard < mutation
+
+
+def test_monitor_credentials_require_one_complete_authorization_triplet():
+    payload = TxDocsMonitorCredentialsUpdate(
+        client_id=" client-id ",
+        access_token=" access-token ",
+        open_id=" open-id ",
+    )
+    assert _normalize_txdocs_credentials(payload) == (
+        "client-id",
+        "access-token",
+        "open-id",
+    )
+
+    incomplete = TxDocsMonitorCredentialsUpdate(
+        client_id="client-id",
+        access_token="   ",
+        open_id="open-id",
+    )
+    try:
+        _normalize_txdocs_credentials(incomplete)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+        assert "同一次腾讯授权" in str(getattr(exc, "detail", ""))
+    else:
+        raise AssertionError("whitespace-only credentials must be rejected")
+
+
+def test_monitor_credentials_have_a_separate_redacted_save_endpoint():
+    source = Path(__file__).parents[1].joinpath("routers", "stats.py").read_text(encoding="utf-8")
+    marker = '@router.put("/txdocs-monitor/config/credentials")'
+    assert marker in source
+    body = source[source.index(marker):source.index('@router.put("/txdocs-monitor/config")', source.index(marker) + len(marker))]
+    assert "_store_txdocs_monitor_credentials" in body
+    assert '"txdocs.monitor.credentials.update"' in body
+    assert 'detail={"credential_fields": 3}' in body
+    assert 'detail={"client_id"' not in body
+    assert 'detail={"access_token"' not in body
+
+
+def test_target_save_does_not_rewrite_credentials_when_fields_are_omitted():
+    source = Path(__file__).parents[1].joinpath("routers", "stats.py").read_text(encoding="utf-8")
+    marker = 'async def update_txdocs_monitor_config('
+    body = source[source.index(marker):source.index('@router.post("/txdocs-monitor/config/disable")')]
+    assert "credentials_update_requested = bool(" in body
+    assert "if credentials_update_requested:" in body
+    assert body.index("if credentials_update_requested:") < body.index(
+        "await _store_txdocs_monitor_credentials("
+    )
 
 
 def test_manual_monitor_run_rejects_zero_successful_sources():
