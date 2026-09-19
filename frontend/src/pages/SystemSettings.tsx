@@ -77,29 +77,30 @@ function getResidenceReadiness(
       description: '请先到社区管理，为至少一个启用社区填写居住证完整登录账号。',
     }
   }
-  if (!config.login_community_id) {
+  const selectedIds = config.login_community_ids || (config.login_community_id ? [config.login_community_id] : [])
+  if (!selectedIds.length) {
     return {
       type: 'warning',
       message: '请选择登录社区',
       description: '完整登录账号在社区管理中维护；这里选择后台查询要使用的社区账号。',
     }
   }
-  const selected = config.community_options.find(option => option.id === config.login_community_id)
-  if (!selected) {
+  const selected = selectedIds.map(id => config.community_options.find(option => option.id === id))
+  if (selected.some(option => !option)) {
     return {
       type: 'warning',
       message: '所选登录社区已不存在',
       description: '请重新选择一个已启用且已配置居住证账号的社区。',
     }
   }
-  if (!selected.is_active) {
+  if (selected.some(option => !option?.is_active)) {
     return {
       type: 'warning',
       message: '所选登录社区已停用',
       description: '请到社区管理重新启用该社区，或改选其他社区。',
     }
   }
-  if (!selected.account_configured) {
+  if (selected.some(option => !option?.account_configured)) {
     return {
       type: 'warning',
       message: '所选社区尚未配置居住证账号',
@@ -122,7 +123,7 @@ function getResidenceReadiness(
   return {
     type: 'success',
     message: '自动查询已就绪',
-    description: `后台当前使用“${config.login_community_name}”的社区账号执行只读查询。`,
+    description: '后台将按已选社区账号执行只读查询。',
   }
 }
 
@@ -400,7 +401,7 @@ export default function SystemSettings() {
       const result = await updateResidencePlatformConfig({
         enabled: residenceConfig.enabled,
         base_url: residenceConfig.base_url,
-        login_community_id: residenceConfig.login_community_id,
+        login_community_ids: residenceConfig.login_community_ids,
         ...(residencePassword ? { password: residencePassword } : {}),
         mac_service_url: residenceConfig.mac_service_url,
         timeout_seconds: residenceConfig.timeout_seconds,
@@ -408,7 +409,7 @@ export default function SystemSettings() {
       })
       setResidenceConfig(result)
       setResidencePassword('')
-      setResidenceMsg('居住证平台配置已保存；后台将使用所选社区账号自动登录并查询')
+      setResidenceMsg('居住证平台配置已保存')
     } catch (error: any) {
       setResidenceMsg(error?.response?.data?.detail?.message || error?.response?.data?.detail || '居住证平台配置保存失败')
     } finally {
@@ -753,22 +754,30 @@ export default function SystemSettings() {
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
                 <span className="settings-field__label font-medium">登录社区</span>
                 <Select
-                  value={residenceConfig.login_community_id ?? undefined}
+                  mode="multiple"
+                  value={residenceConfig.login_community_ids}
                   onChange={value => setResidenceConfig(current => current ? {
                     ...current,
-                    login_community_id: value,
-                    login_community_name: current.community_options.find(option => option.id === value)?.name || '',
-                    selected_account_configured: Boolean(
-                      current.community_options.find(option => option.id === value)?.account_configured,
-                    ),
+                    login_community_ids: value,
+                    login_community_id: value[0] ?? null,
+                    login_community_names: value
+                      .map(id => current.community_options.find(option => option.id === id)?.name || '')
+                      .filter(Boolean),
+                    login_community_name: current.community_options.find(option => option.id === value[0])?.name || '',
+                    selected_account_configured: value.length > 0 && value.every(id => (
+                      current.community_options.find(option => option.id === id)?.account_configured
+                    )),
                     session_ready: false,
                   } : current)}
-                  placeholder="请选择登录社区"
+                  placeholder="请选择登录社区（可多选）"
                   className="w-full"
+                  maxTagCount="responsive"
                   disabled={savingResidence}
                   options={residenceConfig.community_options.map(option => ({
                     value: option.id,
-                    label: option.account_configured ? option.name : `${option.name}（未配置账号）`,
+                    label: !option.is_active
+                      ? `${option.name}（已停用）`
+                      : option.account_configured ? option.name : `${option.name}（未配置账号）`,
                     disabled: !option.is_active || !option.account_configured,
                   }))}
                 />
@@ -869,7 +878,7 @@ export default function SystemSettings() {
               column={{ xs: 1, sm: 2 }}
               items={[
                 { key: 'password', label: '统一密码', children: residenceConfig.password_configured ? '已配置（不回显）' : '未配置' },
-                { key: 'community', label: '登录社区', children: residenceConfig.login_community_name || '未选择' },
+                { key: 'community', label: '登录社区', children: residenceConfig.login_community_names.length ? residenceConfig.login_community_names.join('、') : '未选择' },
                 { key: 'account', label: '社区账号', children: residenceConfig.selected_account_configured ? '已配置（不回显）' : '未配置' },
                 { key: 'sessions', label: '已缓存社区会话', children: `${residenceConfig.active_session_count} 个` },
                 {

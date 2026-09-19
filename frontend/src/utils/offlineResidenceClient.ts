@@ -11,7 +11,6 @@ export interface OfflineResidenceConfig {
 export interface OnlineResidenceConfigSnapshot {
   enabled?: boolean
   base_url?: string
-  username?: string
   mac_service_url?: string
   timeout_seconds?: number
   community_codes?: string[]
@@ -70,7 +69,6 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
   const current = loadOfflineResidenceConfig()
   if (
     typeof snapshot.base_url !== 'string' || !snapshot.base_url.trim()
-    || typeof snapshot.username !== 'string' || !snapshot.username.trim()
     || typeof snapshot.mac_service_url !== 'string' || !snapshot.mac_service_url.trim()
   ) {
     return current
@@ -79,7 +77,6 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
     ...current,
     ...(typeof snapshot.enabled === 'boolean' ? { enabled: snapshot.enabled } : {}),
     ...(typeof snapshot.base_url === 'string' ? { base_url: snapshot.base_url } : {}),
-    ...(typeof snapshot.username === 'string' ? { username: snapshot.username } : {}),
     ...(typeof snapshot.mac_service_url === 'string' ? { mac_service_url: snapshot.mac_service_url } : {}),
     ...(typeof snapshot.timeout_seconds === 'number' ? { timeout_seconds: snapshot.timeout_seconds } : {}),
     ...(Array.isArray(snapshot.community_codes) ? { community_codes: snapshot.community_codes } : {}),
@@ -179,8 +176,8 @@ export class OfflineResidenceClient {
     if (!this.config.enabled) return { status: '查询未开启', error: 'disabled' }
     if (!this.config.password || !this.config.username || !this.config.base_url) return { status: '配置不完整', error: 'config_incomplete' }
     const codes = this.config.community_codes.map(value => value.trim().toUpperCase()).filter(Boolean)
-    // A full account is shared by the configured residence platform. Community
-    // codes remain an optional organization fallback for older installations.
+    // The full account is entered locally. Community codes remain an optional
+    // organization fallback for older installations and never derive credentials.
     const lookupCodes = codes.length ? codes : ['']
     let lastError = ''
     let sawNotFound = false

@@ -85,6 +85,7 @@ def registration_confirmation_scan_state(
 class ResidenceLookupTarget:
     identity: str
     community_code: str
+    community_id: int | None = None
 
 
 def _pool():
@@ -265,7 +266,7 @@ async def _claim_pending(limit: int) -> list[tuple[str, str, str]]:
     return rows
 
 
-async def _resolve_community_code(cur, source_community: str) -> str:
+async def _resolve_community(cur, source_community: str) -> tuple[int, str]:
     source_key = normalize_community_label(source_community)
     if not source_key:
         raise ResidencePlatformError("community_missing", "任务社区未填写")
@@ -287,9 +288,14 @@ async def _resolve_community_code(cur, source_community: str) -> str:
         raise ResidencePlatformError("community_not_found", "任务社区无法匹配社区管理")
     if len(matches) != 1:
         raise ResidencePlatformError("community_ambiguous", "任务社区匹配到多个社区")
-    code = next(iter(matches.values()))
+    community_id, code = next(iter(matches.items()))
     if not valid_qmf_community_code(code):
         raise ResidencePlatformError("community_code_missing", "社区尚未配置全民防社区代码")
+    return community_id, code
+
+
+async def _resolve_community_code(cur, source_community: str) -> str:
+    _community_id, code = await _resolve_community(cur, source_community)
     return code
 
 
@@ -314,21 +320,72 @@ async def _load_current_target(
             if not valid_identity(identity):
                 raise ResidencePlatformError("invalid_identity", "身份证号码无效")
             parser = get_parser(parser_type)
-            community_code = await _resolve_community_code(
+            community_id, community_code = await _resolve_community(
                 cur,
                 parser.community_value(values),
             )
-    return ResidenceLookupTarget(identity=identity, community_code=community_code)
+    return ResidenceLookupTarget(
+        identity=identity,
+        community_code=community_code,
+        community_id=community_id,
+    )
+
+
+def _community_config(
+    config: ResidencePlatformConfig,
+    community_id: int | None,
+) -> tuple[int, str, str, str]:
+    selected_ids = config.login_community_ids or (
+        (config.login_community_id,) if config.login_community_id else ()
+    )
+    if community_id is None:
+        if len(selected_ids) != 1:
+            raise ResidencePlatformError(
+                "login_community_missing",
+                "任务未解析出唯一的居住证平台登录社区",
+            )
+        community_id = selected_ids[0]
+    if community_id not in selected_ids:
+        raise ResidencePlatformError(
+            "community_out_of_scope",
+            "任务社区不在当前居住证查询范围内",
+        )
+    for community in config.login_communities:
+        if community.id == community_id:
+            if not community.is_active or not community.username:
+                raise ResidencePlatformError(
+                    "community_account_missing",
+                    "任务社区尚未配置可用的居住证账号",
+                )
+            return community.id, community.name, community.code, community.username
+    if (
+        len(selected_ids) == 1
+        and community_id == config.login_community_id
+        and config.username
+    ):
+        return (
+            community_id,
+            config.login_community_name,
+            config.login_community_code,
+            config.username,
+        )
+    raise ResidencePlatformError(
+        "community_account_missing",
+        "任务社区尚未配置可用的居住证账号",
+    )
 
 
 async def _community_client(
     config: ResidencePlatformConfig,
     *,
+    community_id: int | None = None,
     rejected_token: str = "",
 ) -> ResidencePlatformClient:
-    if not config.login_community_id:
-        raise ResidencePlatformError("login_community_missing", "尚未选择居住证平台登录社区")
-    session_scope = f"community_{config.login_community_id}"
+    selected_id, selected_name, selected_code, selected_username = _community_config(
+        config,
+        community_id,
+    )
+    session_scope = f"community_{selected_id}"
     pool = _pool()
     async with pool.acquire() as conn:
         session = await load_residence_session(conn, session_scope)
@@ -340,13 +397,17 @@ async def _community_client(
             if session is None or session.token == rejected_token:
                 login_config = replace(
                     config,
+                    username=selected_username,
+                    login_community_id=selected_id,
+                    login_community_name=selected_name,
+                    login_community_code=selected_code,
                     access_token="",
                     organization_code="",
                 )
                 token, detected_org = await ResidencePlatformClient(login_config).login()
                 organization_code = (
                     detected_org
-                    or config.login_community_code[:6]
+                    or selected_code[:6]
                     or config.organization_code[:6]
                 )
                 if len(organization_code) < 6:
@@ -362,6 +423,10 @@ async def _community_client(
                     await save_residence_session(conn, session_scope, session)
     return ResidencePlatformClient(replace(
         config,
+        username=selected_username,
+        login_community_id=selected_id,
+        login_community_name=selected_name,
+        login_community_code=selected_code,
         access_token=session.token,
         organization_code=session.organization_code,
     ))
@@ -371,7 +436,8 @@ async def _lookup_target(
     config: ResidencePlatformConfig,
     target: ResidenceLookupTarget,
 ) -> Any:
-    client = await _community_client(config)
+    _community_config(config, target.community_id)
+    client = await _community_client(config, community_id=target.community_id)
     try:
         return await client.lookup(target.identity)
     except ResidencePlatformError as exc:
@@ -379,6 +445,7 @@ async def _lookup_target(
             raise
     client = await _community_client(
         config,
+        community_id=target.community_id,
         rejected_token=client.config.access_token,
     )
     return await client.lookup(target.identity)
@@ -388,7 +455,8 @@ async def _lookup_detail_target(
     config: ResidencePlatformConfig,
     target: ResidenceLookupTarget,
 ) -> ResidenceRegistrationDetail:
-    client = await _community_client(config)
+    _community_config(config, target.community_id)
+    client = await _community_client(config, community_id=target.community_id)
     try:
         return await client.lookup_detail(target.identity)
     except ResidencePlatformError as exc:
@@ -396,6 +464,7 @@ async def _lookup_detail_target(
             raise
     client = await _community_client(
         config,
+        community_id=target.community_id,
         rejected_token=client.config.access_token,
     )
     return await client.lookup_detail(target.identity)
@@ -405,7 +474,8 @@ async def _lookup_registration_address_target(
     config: ResidencePlatformConfig,
     target: ResidenceLookupTarget,
 ) -> tuple[str, str, str]:
-    client = await _community_client(config)
+    _community_config(config, target.community_id)
+    client = await _community_client(config, community_id=target.community_id)
     try:
         return await client.lookup_registration_address(target.identity)
     except ResidencePlatformError as exc:
@@ -413,6 +483,7 @@ async def _lookup_registration_address_target(
             raise
     client = await _community_client(
         config,
+        community_id=target.community_id,
         rejected_token=client.config.access_token,
     )
     return await client.lookup_registration_address(target.identity)
@@ -430,7 +501,7 @@ async def residence_detail_for_values(
         raise ResidencePlatformError("invalid_identity", "身份证号码无效")
     parser = get_parser(parser_type)
     async with conn.cursor() as cur:
-        community_code = await _resolve_community_code(
+        community_id, community_code = await _resolve_community(
             cur,
             parser.community_value(values),
         )
@@ -440,7 +511,11 @@ async def residence_detail_for_values(
 
     detail = await _lookup_detail_target(
         config,
-        ResidenceLookupTarget(identity=identity, community_code=community_code),
+        ResidenceLookupTarget(
+            identity=identity,
+            community_code=community_code,
+            community_id=community_id,
+        ),
     )
     household_area = None
     reference_year = int(detail.birth_date[:4]) if detail.birth_date else int(identity[6:10])
