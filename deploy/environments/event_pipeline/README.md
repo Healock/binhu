@@ -166,15 +166,25 @@ Kafka、Flink、Schema Registry 或既有数据卷。
 Backend、Production、Staging 或 Kafka/Flink 控制面，也不写业务表。每轮检查在
 专用 `evidence` 命名卷中创建新的脱敏比较报告；任务 ID 只写 SHA-256，报告不含
 人员、地址、备注或事件正文。发现投影或事件计数差异时写入不可覆盖的告警，更新
-`status.json` 为 `paused` 并停止，防止容器重启后清除失败状态或继续计时。暂停后
+`monitor-status.json` 为 `paused` 并停止，防止容器重启后清除失败状态或继续计时。
+规模验收单独写入 `scale-status.json`，不能覆盖常驻 monitor 的心跳。Compose
+healthcheck 只接受当前 run ID、零未归因差异且 60 秒内更新的
+`monitor-status.json`；暂停后
 必须完成归因修复并使用新的双轨证据编号重新开始。服务使用只读根文件系统、
 `/tmp` tmpfs、128 MiB 内存、0.2 CPU、128 pids 上限和 5 MiB × 2 的 Docker
-日志轮换；证据卷不随 Compose 更新删除。
+日志轮换；证据卷不随 Compose 更新删除。常驻比较在 MySQL 内完成计数与等值判断，
+健康轮次不把两侧完整投影载入 Python；出现差异时最多读取 100 条脱敏详情，同时
+保留精确的差异总数和详情截断标记。
 
 当前 Dev worker 镜像可能早于该服务发布，因此 Compose 会把候选包中的
-`runtime.py` 和 `dual_track_monitor.py` 以只读文件挂入 monitor 容器。该挂载只
+`runtime.py`、`dual_track_monitor.py` 和 `monitor_health.py` 以只读文件挂入 monitor 容器。该挂载只
 覆盖 monitor 入口模块，不改变镜像、业务代码或其他服务；候选包清单和 Compose
-模型哈希会同时记录这两个文件。
+模型哈希会同时记录这些文件。
+
+Dev 派生 Redis 固定使用 192 MiB `maxmemory`、256 MiB 容器内存和 384 MiB
+内存加交换上限，策略保持 `noeviction`，避免静默丢弃 revision fence 或 snapshot。
+容量调整保留具名 Redis 数据卷；部署后必须确认 bridge 运行、Redis OOM 计数没有
+新增且 `used_memory` 低于 `maxmemory`。
 
 ### Flink JobGraph identity
 
@@ -226,7 +236,8 @@ controller 另写不可覆盖的私密失败证据。
 controller 先停止当前 Dev `dual-track-monitor`，
 由 runner 投递并有界等待 Kafka 台账、Python 投影、Flink 投影和 revision sink
 全部达到目标，再逐字段核对 revision、event count、changed field count 和各事件
-分类计数。零差异时写入不可覆盖的脱敏证据并恢复 monitor；超时或任何差异时写入
+分类计数。零差异时写入不可覆盖的脱敏证据并使用 `docker compose up --wait`
+恢复 monitor，只有新鲜健康心跳出现后 controller 才返回成功；超时或任何差异时写入
 `paused` 状态、保留证据并保持 monitor 停止，禁止继续下一级规模。
 
 Dev relay 当前固定使用 2 个并发 worker、4 条派生库连接和一个共享的幂等 Kafka

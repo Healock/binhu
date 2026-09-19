@@ -25,6 +25,7 @@ SAFE_FIELDS = (
     "saved_count", "claimed_count", "assigned_count", "reviewed_count",
     "archived_count", "deleted_count",
 )
+MISMATCH_DETAIL_LIMIT = 100
 RUN_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 EVIDENCE_RE = re.compile(r"^dual-track-[0-9A-Za-z][A-Za-z0-9_-]{3,63}$")
 _SAFE_FAILURE_STAGES = frozenset({
@@ -117,6 +118,168 @@ def build_report(
     }
 
 
+def _prefixed_safe_row(row: Mapping[str, Any], prefix: str) -> dict[str, Any] | None:
+    """Build one redacted comparison row from a bounded SQL mismatch result."""
+    if row.get(f"{prefix}_revision") is None:
+        return None
+    task_id = row.get("task_id")
+    source_id = row.get("source_id")
+    if not isinstance(task_id, str) or not task_id or type(source_id) is not int or source_id <= 0:
+        raise ValueError("invalid projection row identity")
+    values: dict[str, Any] = {}
+    for name in SAFE_FIELDS:
+        value = row.get(f"{prefix}_{name}")
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid projection metric")
+        values[name] = value
+    return {
+        "task_id_sha256": hashlib.sha256(task_id.encode()).hexdigest(),
+        "source_id": source_id,
+        **values,
+    }
+
+
+async def _count(cur: Any, statement: str, params: tuple[Any, ...]) -> int:
+    await cur.execute(statement, params)
+    row = await cur.fetchone()
+    value = row.get("count") if isinstance(row, Mapping) else row[0]
+    if isinstance(value, bool):
+        raise ValueError("invalid comparison count")
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("invalid comparison count") from None
+    if count < 0 or count != value:
+        raise ValueError("invalid comparison count")
+    return count
+
+
+async def query_report(
+    pool: Any,
+    run_id: str,
+    evidence_id: str,
+    dict_cursor: Any,
+) -> dict[str, Any]:
+    """Compare both projections with bounded application memory.
+
+    Counts and equality checks stay in MySQL.  Only a fixed number of redacted
+    mismatch rows cross into Python, so a 100,000-row healthy run does not
+    materialize two full snapshots and two dictionaries in the monitor.
+    """
+    if not RUN_RE.fullmatch(run_id) or not EVIDENCE_RE.fullmatch(evidence_id):
+        raise ValueError("Dev monitor identity required")
+    join = (
+        "f.run_id=p.run_id AND f.task_id=p.task_id AND f.source_id=p.source_id"
+    )
+    equal = " AND ".join(f"p.{name}<=>f.{name}" for name in SAFE_FIELDS)
+    columns = ",".join(
+        ["p.task_id AS task_id", "p.source_id AS source_id"]
+        + [f"p.{name} AS p_{name}" for name in SAFE_FIELDS]
+        + [f"f.{name} AS f_{name}" for name in SAFE_FIELDS]
+    )
+    flink_only_columns = ",".join(
+        ["f.task_id AS task_id", "f.source_id AS source_id"]
+        + [f"NULL AS p_{name}" for name in SAFE_FIELDS]
+        + [f"f.{name} AS f_{name}" for name in SAFE_FIELDS]
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor(dict_cursor) as cur:
+            python_tasks = await _count(
+                cur, "SELECT COUNT(*) AS count FROM dev_task_metadata_python WHERE run_id=%s", (run_id,)
+            )
+            flink_tasks = await _count(
+                cur, "SELECT COUNT(*) AS count FROM dev_task_metadata WHERE run_id=%s", (run_id,)
+            )
+            python_events = await _count(
+                cur,
+                "SELECT COUNT(*) AS count FROM dev_task_metadata_python_events WHERE run_id=%s",
+                (run_id,),
+            )
+            flink_events = await _count(
+                cur,
+                "SELECT COALESCE(SUM(event_count),0) AS count FROM dev_task_metadata WHERE run_id=%s",
+                (run_id,),
+            )
+            python_side_mismatches = await _count(
+                cur,
+                "SELECT COUNT(*) AS count FROM dev_task_metadata_python p "
+                f"LEFT JOIN dev_task_metadata f ON {join} "
+                f"WHERE p.run_id=%s AND (f.task_id IS NULL OR NOT ({equal}))",
+                (run_id,),
+            )
+            flink_only_mismatches = await _count(
+                cur,
+                "SELECT COUNT(*) AS count FROM dev_task_metadata f "
+                "LEFT JOIN dev_task_metadata_python p ON "
+                "p.run_id=f.run_id AND p.task_id=f.task_id AND p.source_id=f.source_id "
+                "WHERE f.run_id=%s AND p.task_id IS NULL",
+                (run_id,),
+            )
+            await cur.execute(
+                f"SELECT {columns} FROM dev_task_metadata_python p "
+                f"LEFT JOIN dev_task_metadata f ON {join} "
+                f"WHERE p.run_id=%s AND (f.task_id IS NULL OR NOT ({equal})) "
+                "ORDER BY p.task_id,p.source_id LIMIT %s",
+                (run_id, MISMATCH_DETAIL_LIMIT),
+            )
+            detail_rows = list(await cur.fetchall())
+            remaining = MISMATCH_DETAIL_LIMIT - len(detail_rows)
+            if remaining:
+                await cur.execute(
+                    f"SELECT {flink_only_columns} FROM dev_task_metadata f "
+                    "LEFT JOIN dev_task_metadata_python p ON "
+                    "p.run_id=f.run_id AND p.task_id=f.task_id AND p.source_id=f.source_id "
+                    "WHERE f.run_id=%s AND p.task_id IS NULL "
+                    "ORDER BY f.task_id,f.source_id LIMIT %s",
+                    (run_id, remaining),
+                )
+                detail_rows.extend(await cur.fetchall())
+    differences: list[dict[str, Any]] = []
+    for row in detail_rows:
+        expected = _prefixed_safe_row(row, "p")
+        actual = _prefixed_safe_row(row, "f")
+        changed = list(SAFE_FIELDS) if expected is None or actual is None else [
+            name for name in SAFE_FIELDS if expected[name] != actual[name]
+        ]
+        differences.append({
+            "task_id_sha256": (expected or actual)["task_id_sha256"],
+            "revision": (actual or expected)["revision"],
+            "fields": changed,
+            "expected": expected,
+            "actual": actual,
+            "attribution": (
+                "missing_in_track" if expected is None or actual is None else "projection_value_mismatch"
+            ),
+        })
+    if python_events != flink_events:
+        differences.append({
+            "task_id_sha256": None,
+            "revision": None,
+            "fields": ["unique_events"],
+            "expected": {"unique_events": python_events},
+            "actual": {"unique_events": flink_events},
+            "attribution": "event_count_mismatch",
+        })
+    projection_mismatch_count = python_side_mismatches + flink_only_mismatches
+    unattributed = projection_mismatch_count + int(python_events != flink_events)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "environment": "development",
+        "run_id": run_id,
+        "evidence_id": evidence_id,
+        "generated_at": now,
+        "python_tasks": python_tasks,
+        "flink_tasks": flink_tasks,
+        "unique_events_python": python_events,
+        "unique_events_flink": flink_events,
+        "projection_mismatch_count": projection_mismatch_count,
+        "differences": differences,
+        "difference_details_truncated": projection_mismatch_count > len(detail_rows),
+        "unattributed_difference_count": unattributed,
+        "passed": unattributed == 0,
+    }
+
+
 def _write_exclusive(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as handle:
@@ -133,8 +296,10 @@ def write_cycle(evidence_dir: Path, report: Mapping[str, Any], sequence: int) ->
               "updated_at": report["generated_at"],
               "unattributed_difference_count": report["unattributed_difference_count"]}
     # status is an operational pointer; each mismatch itself is immutable.
-    (evidence_dir / "status.json").write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (evidence_dir / "status.json").chmod(0o600)
+    (evidence_dir / "monitor-status.json").write_text(
+        json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    (evidence_dir / "monitor-status.json").chmod(0o600)
     if not report["passed"]:
         _write_exclusive(evidence_dir / f"alert-{stamp}-{sequence:08d}.json", {
             "type": "dual_track_mismatch", "status": "paused",
@@ -156,7 +321,7 @@ async def run(config: Mapping[str, str], evidence_dir: Path, evidence_id: str,
             raise MonitorRuntimeFailure(ValueError("monitor options"), "identity_options")
         stage = "evidence_directory"
         evidence_dir.mkdir(parents=True, exist_ok=True)
-        status_path = evidence_dir / "status.json"
+        status_path = evidence_dir / "monitor-status.json"
         if status_path.is_symlink():
             raise ValueError("monitor status must not be a symlink")
         if status_path.is_file():
@@ -185,22 +350,9 @@ async def run(config: Mapping[str, str], evidence_dir: Path, evidence_id: str,
         sequence = 0
         while True:
             stage = "projection_query"
-            async with pool.acquire() as conn:
-                async with conn.cursor(aiomysql.DictCursor) as cur:
-                    await cur.execute("SELECT task_id,source_id,revision,event_count,changed_field_count,"
-                                      "created_count,saved_count,claimed_count,assigned_count,reviewed_count,"
-                                      "archived_count,deleted_count FROM dev_task_metadata_python WHERE run_id=%s", (config["DEV_RUN_ID"],))
-                    python_rows = await cur.fetchall()
-                    await cur.execute("SELECT task_id,source_id,revision,event_count,changed_field_count,"
-                                      "created_count,saved_count,claimed_count,assigned_count,reviewed_count,"
-                                      "archived_count,deleted_count FROM dev_task_metadata WHERE run_id=%s", (config["DEV_RUN_ID"],))
-                    flink_rows = await cur.fetchall()
-                    await cur.execute("SELECT COUNT(*) AS count FROM dev_task_metadata_python_events WHERE run_id=%s", (config["DEV_RUN_ID"],))
-                    python_events = int((await cur.fetchone())["count"])
-                    await cur.execute("SELECT COALESCE(SUM(event_count),0) AS count FROM dev_task_metadata WHERE run_id=%s", (config["DEV_RUN_ID"],))
-                    flink_events = int((await cur.fetchone())["count"])
-            report = build_report(python_rows, flink_rows, python_events, flink_events,
-                                  config["DEV_RUN_ID"], evidence_id)
+            report = await query_report(
+                pool, config["DEV_RUN_ID"], evidence_id, aiomysql.DictCursor
+            )
             stage = "evidence_write"
             write_cycle(evidence_dir, report, sequence)
             sequence += 1

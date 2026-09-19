@@ -229,7 +229,7 @@ def _write_report(run_id: str, scale: int, report: Mapping[str, Any]) -> None:
         "updated_at": report["generated_at"],
         "unattributed_difference_count": report["unattributed_difference_count"],
     }
-    status_path = root / "status.json"
+    status_path = root / "scale-status.json"
     status_path.write_text(json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     status_path.chmod(0o600)
 

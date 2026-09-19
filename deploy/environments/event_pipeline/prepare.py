@@ -18,7 +18,7 @@ from .flink_sql import render
 PROJECT = "binhu-development-pipeline"
 PUBLIC_CANDIDATE_FILES = frozenset({
     "init.sql", "redis.conf", "pipeline.sql", "runtime.py",
-    "dual_track_monitor.py", "scale_acceptance.py", "kafka_delivery_store.py",
+    "dual_track_monitor.py", "monitor_health.py", "scale_acceptance.py", "kafka_delivery_store.py",
     "kafka_event_contract.py", "kafka_envelope.py", "kafka_relay.py",
     "delivery_schema_migrate.py", "python_metadata_worker.py",
 })
@@ -26,6 +26,23 @@ ROOT = Path("/srv/binhu-environments/development-pipeline")
 NETWORK = "binhu-development-eventbus_internal"
 BACKEND_NETWORK = "binhu-development_internal"
 SECRET_RE = re.compile(r"[0-9a-f]{48}\Z")
+DEV_REDIS_MAXMEMORY_MB = 192
+
+
+def redis_configuration(password: str) -> str:
+    if not SECRET_RE.fullmatch(password):
+        raise ValueError("independent runtime credential required")
+    return (
+        "bind 0.0.0.0\n"
+        "protected-mode yes\n"
+        f"requirepass {password}\n"
+        f"maxmemory {DEV_REDIS_MAXMEMORY_MB}mb\n"
+        "maxmemory-policy noeviction\n"
+        "appendonly yes\n"
+        "appendfsync everysec\n"
+        "auto-aof-rewrite-percentage 100\n"
+        "auto-aof-rewrite-min-size 16mb\n"
+    )
 EXPECTED_SERVICES = frozenset(
     {
         "dev-derived-mysql",
@@ -99,7 +116,8 @@ def compose(images):
                         "--innodb-file-per-table=OFF", "--innodb-data-file-path=ibdata1:12M:autoextend:max:4096M",
                         "--innodb-redo-log-capacity=64M", "--skip-log-bin"],
             "volumes": ["mysql:/var/lib/mysql", "./init.sql:/docker-entrypoint-initdb.d/01-pipeline.sql:ro"]},
-        "dev-derived-redis": {**common, "image": images["redis"], "mem_limit": "96m", "cpus": .25,
+        "dev-derived-redis": {**common, "image": images["redis"], "mem_limit": "256m",
+            "memswap_limit": "384m", "cpus": .25,
             "command": ["redis-server", "/usr/local/etc/redis/redis.conf"],
             "volumes": ["redis:/data", "./redis.conf:/usr/local/etc/redis/redis.conf:ro"]},
     }
@@ -150,9 +168,12 @@ def compose(images):
         "read_only": True, "tmpfs": ["/tmp:size=16m"],
         "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence",
                     "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
-                    "./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro"],
+                    "./dual_track_monitor.py:/opt/dev-pipeline/event_pipeline/dual_track_monitor.py:ro",
+                    "./monitor_health.py:/opt/dev-pipeline/event_pipeline/monitor_health.py:ro"],
         "command": ["python", "-m", "event_pipeline.runtime", "dual-track-monitor"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
+        "healthcheck": {"test": ["CMD", "python", "-m", "event_pipeline.monitor_health"],
+                        "interval": "15s", "timeout": "5s", "retries": 3, "start_period": "60s"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
     services["acceptance-runner"] = {**common, "image": images["worker"],
         "profiles": ["acceptance"], "restart": "no", "env_file": ["runtime.env"],
@@ -368,16 +389,17 @@ CREATE TABLE dev_task_metadata_python_events (
             f"BACKEND_REDIS_URL={backend_redis_url}", "BACKEND_REDIS_STREAM_KEY=binhu:events",
         ]) + "\n",
         "mysql.env": f"MYSQL_ROOT_PASSWORD={root_password}\nMYSQL_DATABASE=Dev_EventPipeline\nMYSQL_USER=dev_pipeline\nMYSQL_PASSWORD={db_password}\n",
-        "redis.conf": f"bind 0.0.0.0\nprotected-mode yes\nrequirepass {redis_password}\nmaxmemory 48mb\nmaxmemory-policy noeviction\nappendonly yes\nappendfsync everysec\nauto-aof-rewrite-percentage 100\nauto-aof-rewrite-min-size 16mb\n",
+        "redis.conf": redis_configuration(redis_password),
         "pipeline.sql": render(env),
         # The existing worker digest predates the resident monitor.  Mount the
-        # two small dispatcher modules read-only so this service is bound to
+        # the small dispatcher and health modules read-only so this service is bound to
         # the candidate source without rebuilding or mutating the worker image.
         # Mount the actual runtime dispatcher into the legacy worker image.
         # ``__file__`` is prepare.py here; reading it would make the mounted
         # runtime module self-import and fail with a circular import.
         "runtime.py": Path(__file__).with_name("runtime.py").read_text(encoding="utf-8"),
         "dual_track_monitor.py": Path(__file__).with_name("dual_track_monitor.py").read_text(encoding="utf-8"),
+        "monitor_health.py": Path(__file__).with_name("monitor_health.py").read_text(encoding="utf-8"),
         "scale_acceptance.py": Path(__file__).with_name("scale_acceptance.py").read_text(encoding="utf-8"),
         "kafka_delivery_store.py": (services_root / "kafka_delivery_store.py").read_text(encoding="utf-8"),
         "kafka_event_contract.py": (services_root / "kafka_event_contract.py").read_text(encoding="utf-8"),

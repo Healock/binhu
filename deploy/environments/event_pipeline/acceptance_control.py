@@ -76,7 +76,7 @@ def execute(run_id: str, scale: int) -> dict:
     ):
         raise ValueError("Dev scale acceptance report mismatch")
     restarted = subprocess.run(
-        [*compose, "up", "-d", "dual-track-monitor"],
+        [*compose, "up", "-d", "--wait", "--wait-timeout", "90", "dual-track-monitor"],
         capture_output=True, text=True, timeout=120,
     )
     if restarted.returncode:
