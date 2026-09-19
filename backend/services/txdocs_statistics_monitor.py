@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import hmac
 import json
@@ -21,6 +21,8 @@ from config import settings
 from services.qmf_config import decrypt_secret
 from services.business_time import get_business_date
 from services.parsers import PARSER_REGISTRY, get_parser
+from services.task_workflow import TASK_WORKFLOWS
+from services.watch_matching import parse_dispatch_time
 
 
 LOCK_NAME = "binhu:txdocs-statistics-monitor"
@@ -229,6 +231,62 @@ class MonitorDelta:
     changed: int
     removed: int
     communities: dict[str, dict[str, int]]
+
+
+@dataclass(frozen=True)
+class MonitorBusinessBucket:
+    """Privacy-safe business classification for one external snapshot.
+
+    Only a community label, a dispatch date and the workflow state are kept.
+    No person, address, source row or other external row content is stored.
+    """
+
+    community: str
+    dispatch_date: date | None
+    task_state: str
+
+
+def build_monitor_business_buckets(
+    parser_type: str,
+    rows: Iterable[dict[str, Any]],
+    business_date: date,
+) -> Counter[MonitorBusinessBucket]:
+    """Classify rows using the same state rules as the local overview."""
+    parser = get_parser(parser_type)
+    workflow = TASK_WORKFLOWS.get(parser_type)
+    result: Counter[MonitorBusinessBucket] = Counter()
+    fallback = datetime.combine(business_date, datetime.min.time())
+    for source_row in rows:
+        raw_values = source_row.get("values", source_row)
+        normalized = parser.normalize_source_row(
+            raw_values if isinstance(raw_values, dict) else {}
+        )
+        if workflow is None:
+            state = "unchecked"
+            dispatch_date = business_date
+        else:
+            state = workflow.state(
+                normalized,
+                registration_status=str(normalized.get("登记情况") or ""),
+            )
+            # ``TaskWorkflow.date_fields`` is ordered for display and often
+            # starts with a deadline.  Business classification must prefer
+            # the actual dispatch/creation date.
+            dispatch_fields = [
+                "下发日期", "下发时间", "创建时间", "日期",
+                *workflow.date_fields,
+            ]
+            dispatch_fields = list(dict.fromkeys(
+                field for field in dispatch_fields if field in normalized
+            ))
+            parsed = parse_dispatch_time(normalized, dispatch_fields, fallback)
+            dispatch_date = parsed.date() if parsed else business_date
+        result[MonitorBusinessBucket(
+            community=parser.community_value(normalized),
+            dispatch_date=dispatch_date,
+            task_state=state,
+        )] += 1
+    return result
 
 
 def monitoring_spreadsheet_ids(raw: str | None = None) -> tuple[int, ...]:
@@ -460,6 +518,21 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
         """
     )
+    await cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_run_buckets (
+            run_id BIGINT NOT NULL,
+            community_hash CHAR(64) NOT NULL,
+            community VARCHAR(200) NOT NULL DEFAULT '',
+            dispatch_date DATE NOT NULL,
+            task_state VARCHAR(20) NOT NULL,
+            row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            PRIMARY KEY (run_id, community_hash, dispatch_date, task_state),
+            INDEX idx_txdocs_monitor_bucket_date (dispatch_date, task_state)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
 
 
 async def _load_inputs(
@@ -602,6 +675,7 @@ async def _persist_success(
     started_at: datetime,
     current: Counter[MonitorVariant],
     unkeyed: int,
+    buckets: Counter[MonitorBusinessBucket],
 ) -> None:
     async with conn.cursor() as cur:
         await conn.begin()
@@ -667,6 +741,26 @@ async def _persist_success(
                             counts["changed"], counts["removed"],
                         )
                         for community, counts in delta.communities.items()
+                    ],
+                )
+            if buckets:
+                await cur.executemany(
+                    """
+                    INSERT INTO _txdocs_monitor_run_buckets (
+                        run_id, community_hash, community, dispatch_date,
+                        task_state, row_count
+                    ) VALUES (%s,%s,%s,%s,%s,%s)
+                    """,
+                    [
+                        (
+                            run_id,
+                            _hmac_digest("txdocs-monitor-community", bucket.community),
+                            bucket.community,
+                            bucket.dispatch_date,
+                            bucket.task_state,
+                            count,
+                        )
+                        for bucket, count in buckets.items()
                     ],
                 )
             await conn.commit()
@@ -799,9 +893,12 @@ async def run_txdocs_statistics_once(
                 snapshot, unkeyed = build_monitor_snapshot(
                     config["id"], config["parser_type"], rows
                 )
+                buckets = build_monitor_business_buckets(
+                    config["parser_type"], rows, business_date
+                )
                 await _persist_success(
                     report_conn, config, business_date, started_at,
-                    snapshot, unkeyed,
+                    snapshot, unkeyed, buckets,
                 )
                 succeeded += 1
             except asyncio.CancelledError:
@@ -892,6 +989,171 @@ async def _configured_monitor_source_ids() -> list[int]:
     finally:
         pool.release(conn)
     return ids
+
+
+async def get_txdocs_business_overlay(
+    start_date: str,
+    end_date: str,
+    parser_types: list[str],
+    communities: list[str] | None,
+) -> dict[str, Any]:
+    """Return external business counts for overlaying local statistics.
+
+    The query uses only the privacy-safe bucket table written by the monitor.
+    It never reads or reconstructs external row bodies.  The latest successful
+    snapshot at or before ``end_date`` supplies total/state counts; dispatch
+    dates are used to classify carryover and new rows for the requested range.
+    """
+    result = {
+        "available": False,
+        "total_tasks": 0,
+        "carryover_tasks": 0,
+        "new_tasks": 0,
+        "changed_tasks": 0,
+        "pending_tasks": 0,
+        "completed_tasks": 0,
+        "last_success_at": None,
+        "communities": {},
+    }
+    if not monitoring_environment_allowed():
+        return result
+    valid_types = [item for item in dict.fromkeys(parser_types) if item in TASK_WORKFLOWS]
+    if not valid_types:
+        return result
+    if communities is not None and not communities:
+        return result
+    source_ids = await _configured_monitor_source_ids()
+    if not source_ids:
+        return result
+
+    from database import db_manager
+
+    type_marks = ", ".join(["%s"] * len(valid_types))
+    source_marks = ", ".join(["%s"] * len(source_ids))
+    community_clause = ""
+    community_params: list[str] = []
+    if communities is not None:
+        community_marks = ", ".join(["%s"] * len(communities))
+        community_clause = f" AND bucket.community IN ({community_marks})"
+        community_params = list(communities)
+    pool = db_manager.get_pool("daily_report")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            try:
+                await cur.execute(
+                    f"""
+                    SELECT bucket.community, bucket.dispatch_date,
+                           bucket.task_state, SUM(bucket.row_count),
+                           MAX(run.finished_at)
+                    FROM _txdocs_monitor_run_buckets bucket
+                    JOIN _txdocs_monitor_runs run ON run.id=bucket.run_id
+                    JOIN (
+                        SELECT spreadsheet_id, parser_type, MAX(id) AS id
+                        FROM _txdocs_monitor_runs
+                        WHERE status='success' AND observed_date<=%s
+                          AND parser_type IN ({type_marks})
+                          AND spreadsheet_id IN ({source_marks})
+                        GROUP BY spreadsheet_id, parser_type
+                    ) latest ON latest.id=run.id
+                    WHERE run.status='success' {community_clause}
+                    GROUP BY bucket.community, bucket.dispatch_date,
+                             bucket.task_state
+                    """,
+                    (end_date, *valid_types, *source_ids, *community_params),
+                )
+                bucket_rows = await cur.fetchall()
+            except Exception:
+                # Older rolling deployments may not have created the bucket
+                # table yet.  The existing raw change monitor must continue to
+                # work and the overlay remains absent until the next startup.
+                return result
+
+            metrics: dict[str, dict[str, int]] = defaultdict(
+                lambda: {
+                    "total": 0, "carryover": 0, "new": 0,
+                    "pending": 0, "unchecked": 0, "checked": 0,
+                    "completed": 0, "changed": 0,
+                }
+            )
+            for community, dispatch_date, task_state, row_count, _finished in bucket_rows:
+                name = str(community or "")
+                count = int(row_count or 0)
+                item = metrics[name]
+                item["total"] += count
+                if str(task_state or "") == "completed":
+                    item["completed"] += count
+                else:
+                    item["pending"] += count
+                    if str(task_state or "") == "checked":
+                        item["checked"] += count
+                    else:
+                        item["unchecked"] += count
+                dispatch_text = str(dispatch_date or "")[:10]
+                if dispatch_text and dispatch_text < start_date:
+                    if str(task_state or "") != "completed":
+                        item["carryover"] += count
+                elif start_date <= dispatch_text <= end_date:
+                    item["new"] += count
+
+            await cur.execute(
+                f"""
+                SELECT run_community.community,
+                       COALESCE(SUM(run_community.changed_count),0)
+                FROM _txdocs_monitor_run_communities run_community
+                JOIN _txdocs_monitor_runs run ON run.id=run_community.run_id
+                WHERE run.status='success' AND run.is_baseline=0
+                  AND run.observed_date BETWEEN %s AND %s
+                  AND run.parser_type IN ({type_marks})
+                  AND run.spreadsheet_id IN ({source_marks})
+                  {community_clause.replace('bucket.', 'run_community.')}
+                GROUP BY run_community.community
+                """,
+                (start_date, end_date, *valid_types, *source_ids, *community_params),
+            )
+            for community, changed in await cur.fetchall():
+                metrics[str(community or "")]["changed"] += int(changed or 0)
+
+            await cur.execute(
+                f"""
+                SELECT MAX(run.finished_at)
+                FROM _txdocs_monitor_runs run
+                JOIN (
+                    SELECT spreadsheet_id, parser_type, MAX(id) AS id
+                    FROM _txdocs_monitor_runs
+                    WHERE status='success' AND observed_date<=%s
+                      AND parser_type IN ({type_marks})
+                      AND spreadsheet_id IN ({source_marks})
+                    GROUP BY spreadsheet_id, parser_type
+                ) latest ON latest.id=run.id
+                """,
+                (end_date, *valid_types, *source_ids),
+            )
+            last_success = (await cur.fetchone() or [None])[0]
+    finally:
+        pool.release(conn)
+
+    # A successful empty sheet (or a sheet whose rows have no usable business
+    # key) is still a valid zero-count overlay.  Only the absence of a
+    # successful source run means that the overlay is unavailable.
+    if last_success is None:
+        return result
+
+    totals = {key: 0 for key in ("total_tasks", "carryover_tasks", "new_tasks", "changed_tasks", "pending_tasks", "completed_tasks")}
+    for community, item in metrics.items():
+        result["communities"][community] = item
+        totals["total_tasks"] += item["total"]
+        totals["carryover_tasks"] += item["carryover"]
+        totals["new_tasks"] += item["new"]
+        totals["changed_tasks"] += item["changed"]
+        totals["pending_tasks"] += item["pending"]
+        totals["completed_tasks"] += item["completed"]
+    result.update(totals)
+    result["available"] = True
+    result["last_success_at"] = (
+        last_success.isoformat() + "Z" if last_success is not None else None
+    )
+    return result
 
 
 async def get_txdocs_statistics_overview(

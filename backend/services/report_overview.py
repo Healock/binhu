@@ -723,85 +723,57 @@ async def get_online_overview(
             available_start, available_end, available_days = (
                 await _load_available_range(cur, parser_types)
             )
-            runs = await _load_runs(
-                cur,
-                start_date,
-                end_date,
-                parser_types,
-            )
-            if not runs:
-                return {
-                    "exists": False,
-                    "parser_type": parser_type,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "available_start_date": (
-                        str(available_start)
-                        if available_start
-                        else None
-                    ),
-                    "available_end_date": (
-                        str(available_end)
-                        if available_end
-                        else None
-                    ),
-                    "available_data_days": available_days,
-                    "selected_data_days": 0,
-                    "total_tasks": 0,
-                    "carryover_tasks": 0,
-                    "new_tasks": 0,
-                    "changed_tasks": 0,
-                    "pending_tasks": 0,
-                    "completed_tasks": 0,
-                    "completion_rate": 0.0,
-                }
-
+            runs = await _load_runs(cur, start_date, end_date, parser_types)
             communities = await _resolve_communities(cur, community)
-            tasks = await _load_effective_tasks(
-                cur,
-                start_date,
-                end_date,
-                parser_types,
-                communities,
-                inspector,
-            )
-            new_keys = await _find_new_activity_keys(cur, tasks, runs)
-
-        total_tasks = len(tasks)
-        carryover_tasks = len(_filter_tasks_by_category(tasks, new_keys, "carryover"))
-        new_tasks = len(_filter_tasks_by_category(tasks, new_keys, "new"))
-        changed_tasks = len(_filter_tasks_by_category(tasks, new_keys, "changed"))
-        completed_tasks = sum(
-            1
-            for task in tasks
-            if str(task[2]) == "completed"
-        )
-        return {
-            "exists": True,
-            "parser_type": parser_type,
-            "start_date": start_date,
-            "end_date": end_date,
-            "available_start_date": (
-                str(available_start) if available_start else None
-            ),
-            "available_end_date": (
-                str(available_end) if available_end else None
-            ),
-            "available_data_days": available_days,
-            "selected_data_days": len({
-                str(run[0])
-                for run in runs
-            }),
-            "total_tasks": total_tasks,
-            "carryover_tasks": carryover_tasks,
-            "new_tasks": new_tasks,
-            "changed_tasks": changed_tasks,
-            "pending_tasks": total_tasks - completed_tasks,
-            "completed_tasks": completed_tasks,
-            "completion_rate": _ratio(completed_tasks, total_tasks),
-        }
+            tasks: list[tuple[Any, ...]] = []
+            new_keys: set[tuple[str, str]] = set()
+            if runs:
+                tasks = await _load_effective_tasks(
+                    cur, start_date, end_date, parser_types,
+                    communities, inspector,
+                )
+                new_keys = await _find_new_activity_keys(cur, tasks, runs)
     finally:
         pool.release(conn)
+
+    total_tasks = len(tasks)
+    carryover_tasks = len(_filter_tasks_by_category(tasks, new_keys, "carryover"))
+    new_tasks = len(_filter_tasks_by_category(tasks, new_keys, "new"))
+    changed_tasks = len(_filter_tasks_by_category(tasks, new_keys, "changed"))
+    completed_tasks = sum(1 for task in tasks if str(task[2]) == "completed")
+    result = {
+        "exists": bool(runs),
+        "parser_type": parser_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "available_start_date": str(available_start) if available_start else None,
+        "available_end_date": str(available_end) if available_end else None,
+        "available_data_days": available_days,
+        "selected_data_days": len({str(run[0]) for run in runs}),
+        "total_tasks": total_tasks,
+        "carryover_tasks": carryover_tasks,
+        "new_tasks": new_tasks,
+        "changed_tasks": changed_tasks,
+        "pending_tasks": total_tasks - completed_tasks,
+        "completed_tasks": completed_tasks,
+        "completion_rate": _ratio(completed_tasks, total_tasks),
+        "external_overlay": {"available": False},
+    }
+    from services.txdocs_statistics_monitor import get_txdocs_business_overlay
+    external = await get_txdocs_business_overlay(
+        start_date, end_date, parser_types, communities
+    )
+    if external["available"]:
+        for key in (
+            "total_tasks", "carryover_tasks", "new_tasks",
+            "changed_tasks", "pending_tasks", "completed_tasks",
+        ):
+            result[key] += int(external[key])
+        result["completion_rate"] = _ratio(
+            result["completed_tasks"], result["total_tasks"]
+        )
+    result["external_overlay"] = external
+    return result
 
 
 async def get_online_community_breakdown(
@@ -847,10 +819,53 @@ async def get_online_community_breakdown(
             requested_communities = None
         else:
             requested_communities = [community]
-        return _community_breakdown_from_tasks(
+        breakdown = _community_breakdown_from_tasks(
             tasks,
             alias_lookup,
             requested_communities,
         )
     finally:
         pool.release(conn)
+
+    # External Tencent monitoring has no inspector assignment.  It can be
+    # included in the community dashboard totals, but must never be attributed
+    # to an individual inspector view.
+    if inspector:
+        return breakdown
+    from services.txdocs_statistics_monitor import get_txdocs_business_overlay
+    external = await get_txdocs_business_overlay(
+        start_date,
+        end_date,
+        parser_types,
+        requested_communities,
+    )
+    if not external.get("available"):
+        return breakdown
+    by_community = {
+        str(item.get("community") or ""): item
+        for item in breakdown
+        if isinstance(item, dict)
+    }
+    for community_name, item in external.get("communities", {}).items():
+        row = by_community.get(str(community_name))
+        if row is None:
+            row = {
+                "community": str(community_name),
+                "total": 0,
+                "pending": 0,
+                "completed": 0,
+                "unable_to_verify": 0,
+                "completion_rate": 0.0,
+            }
+            breakdown.append(row)
+        row["total"] = int(row.get("total") or 0) + int(item.get("total") or 0)
+        row["pending"] = int(row.get("pending") or 0) + int(item.get("pending") or 0)
+        row["completed"] = int(row.get("completed") or 0) + int(item.get("completed") or 0)
+        row["completion_rate"] = _ratio(row["completed"], row["total"])
+    return sorted(
+        breakdown,
+        key=lambda item: (
+            -int(item.get("pending") or 0),
+            str(item.get("community") or ""),
+        ),
+    )
