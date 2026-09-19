@@ -6,7 +6,11 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from unittest.mock import patch
 
-from routers.stats import _txdocs_file_id, _txdocs_config_payload
+from routers.stats import (
+    _manual_txdocs_run_response,
+    _txdocs_config_payload,
+    _txdocs_file_id,
+)
 
 
 def test_monitor_url_only_accepts_https_qq_sheet_links():
@@ -56,3 +60,21 @@ def test_non_production_configuration_is_not_writable():
     guard = body.index("if not monitoring_environment_allowed()")
     mutation = body.index("file_id = _txdocs_file_id", guard)
     assert guard < mutation
+
+
+def test_manual_monitor_run_rejects_zero_successful_sources():
+    try:
+        _manual_txdocs_run_response(0)
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 502
+        assert "未取得任何成功快照" in str(getattr(exc, "detail", ""))
+    else:
+        raise AssertionError("zero successful sources must not be reported as success")
+
+
+def test_manual_monitor_run_reports_successful_source_count():
+    result = _manual_txdocs_run_response(2)
+    assert result == {
+        "successful_sources": 2,
+        "message": "已完成一次只读读取（成功目标 2 个）",
+    }

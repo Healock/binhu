@@ -151,6 +151,31 @@ def _txdocs_config_payload(
     }
 
 
+def _manual_txdocs_run_response(successful_sources: int) -> dict[str, object]:
+    """Build the result for a manually requested monitoring pass.
+
+    ``run_txdocs_statistics_once`` deliberately returns a count instead of
+    exposing remote error details.  A zero count is not a successful read,
+    though: it can mean that every enabled target failed, credentials could
+    not be loaded, or another process held the monitoring lock.  Returning the
+    old success message for that case made the settings page claim success
+    while the dashboard correctly continued to show that no snapshot existed.
+    """
+    count = int(successful_sources or 0)
+    if count <= 0:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "本次读取未取得任何成功快照，请检查监控目标、只读凭据和腾讯表访问权限，"
+                "稍后查看监控状态后重试"
+            ),
+        )
+    return {
+        "successful_sources": count,
+        "message": f"已完成一次只读读取（成功目标 {count} 个）",
+    }
+
+
 def _normalize_summary_types(raw_types: list[str]) -> list[str]:
     selected: list[str] = []
     for raw_type in raw_types:
@@ -565,8 +590,9 @@ async def run_txdocs_monitor_now(request: Request, user: dict = Depends(require_
         count = await run_txdocs_statistics_once()
     except Exception as exc:  # noqa: BLE001 - do not expose remote details
         raise HTTPException(status_code=502, detail="腾讯表读取失败，请查看监控状态后重试") from exc
+    result = _manual_txdocs_run_response(count)
     await record_admin_audit(user, "txdocs.monitor.run", target_type="txdocs_monitor_config", target_name="腾讯只读监控", detail={"successful_sources": count}, **request_audit_fields(request))
-    return {"successful_sources": count, "message": "已完成一次只读读取"}
+    return result
 
 
 @router.get("/overview/details")
