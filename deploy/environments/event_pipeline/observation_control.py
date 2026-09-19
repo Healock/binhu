@@ -302,7 +302,11 @@ def trigger_manual_tasks(run_id: str, observation_dir: Path) -> dict[str, Any]:
         "cleanup_task": "not_applicable_no_safe_manual_pipeline_task",
         "other_periodic_tasks": "not_applicable_current_domain",
     }
-    checked(["docker", "exec", PIPELINE_CONTAINERS["monitor"], "python", "-m",
+    # The immutable observation directory is created by the host controller as
+    # root with mode 0700. Run this one-shot reconciliation as container root so
+    # it can create its evidence subdirectory without making the parent
+    # world-writable. The command still uses the fixed Dev container and module.
+    checked(["docker", "exec", "--user", "0:0", PIPELINE_CONTAINERS["monitor"], "python", "-m",
              "event_pipeline.dual_track_monitor", "--evidence-dir", manual_dir,
              "--evidence-id", evidence_id, "--cycles", "1"], timeout=180)
     checked(["docker", "exec", PIPELINE_CONTAINERS["bridge"], "python", "-m",
@@ -453,9 +457,11 @@ def run(run_id: str, observation_id: str) -> None:
     started = utc_now()
     manual: dict[str, Any] = {}
     samples: list[dict[str, Any]] = []
+    stage = "manual_tasks"
     try:
         manual = trigger_manual_tasks(run_id, directory)
         _write_exclusive(directory / "manual-tasks.json", manual)
+        stage = "sampling"
         for sequence in range(SAMPLE_COUNT):
             target = started + timedelta(seconds=sequence * SAMPLE_SECONDS)
             delay = (target - utc_now()).total_seconds()
@@ -469,6 +475,7 @@ def run(run_id: str, observation_id: str) -> None:
                 "expected_complete_at": iso(started + timedelta(seconds=OBSERVATION_SECONDS)),
                 "samples_completed": len(samples), "samples_required": SAMPLE_COUNT,
                 "unattributed_difference_count": 0})
+        stage = "evaluation"
         outcome = evaluate(samples, manual)
         report = {"environment": "development", "run_id": run_id,
                   "observation_id": observation_id, "started_at": iso(started),
@@ -481,6 +488,7 @@ def run(run_id: str, observation_id: str) -> None:
                       "fixed_schedule_natural_trigger", "cross_day_state_accumulation",
                       "long_term_disk_growth",
                   ]}
+        stage = "final_report"
         _write_exclusive(directory / "final-report.json", report)
         _write_status(status_path, {"environment": "development", "run_id": run_id,
             "observation_id": observation_id, "status": "passed" if outcome["passed"] else "failed",
@@ -490,7 +498,7 @@ def run(run_id: str, observation_id: str) -> None:
         _write_status(status_path, {"environment": "development", "run_id": run_id,
             "observation_id": observation_id, "status": "failed", "failed_at": iso(),
             "samples_completed": len(samples), "samples_required": SAMPLE_COUNT,
-            "failure_reasons": [type(error).__name__]})
+            "failure_reasons": [stage + "_" + type(error).__name__]})
         raise
 
 

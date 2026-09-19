@@ -166,6 +166,17 @@ dev-20260919-dualtrack-monitor40-flink dev.task.events.v1 1 200 200 0 - - -
         self.assertNotIn("Production", workflow)
         self.assertNotIn("Staging", workflow)
 
+    def test_manual_reconciliation_uses_fixed_container_root_for_private_evidence(self):
+        with patch.object(observation, "checked", return_value="{}") as runner, \
+             patch.object(observation, "_monitor_status", return_value={"age_seconds": 1}), \
+             patch.object(observation, "_kafka_lag", return_value={"lag": 0}), \
+             patch.object(observation, "_json_command", return_value={"running_job_count": 1}):
+            result = observation.trigger_manual_tasks(RUN_ID, Path(OBSERVATION_ID))
+        self.assertEqual(result["tasks"]["metadata_reconciliation"], "passed")
+        first_command = runner.call_args_list[0].args[0]
+        self.assertEqual(first_command[:5], ["docker", "exec", "--user", "0:0",
+                                             observation.PIPELINE_CONTAINERS["monitor"]])
+
 
 if __name__ == "__main__":
     unittest.main()
