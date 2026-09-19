@@ -1093,12 +1093,20 @@ export async function updateTxDocsMonitorConfig(payload: {
   parser_type: string
   header_row: number
   interval_seconds: number
-  client_id: string
-  access_token: string
-  open_id: string
+  client_id?: string
+  access_token?: string
+  open_id?: string
   enabled: boolean
 }): Promise<TxDocsMonitorConfig> {
   return (await api.put('/stats/txdocs-monitor/config', payload)).data
+}
+
+export async function updateTxDocsMonitorCredentials(payload: {
+  client_id: string
+  access_token: string
+  open_id: string
+}): Promise<TxDocsMonitorConfig> {
+  return (await api.put('/stats/txdocs-monitor/config/credentials', payload)).data
 }
 
 export async function disableTxDocsMonitorConfig(): Promise<void> {

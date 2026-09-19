@@ -78,6 +78,54 @@ class TxDocsMonitorConfigUpdate(BaseModel):
     enabled: bool = False
 
 
+class TxDocsMonitorCredentialsUpdate(BaseModel):
+    client_id: str = Field(min_length=1, max_length=200)
+    access_token: str = Field(min_length=1, max_length=10000)
+    open_id: str = Field(min_length=1, max_length=200)
+
+
+def _normalize_txdocs_credentials(
+    payload: TxDocsMonitorCredentialsUpdate,
+) -> tuple[str, str, str]:
+    values = (
+        payload.client_id.strip(),
+        payload.access_token.strip(),
+        payload.open_id.strip(),
+    )
+    if not all(values):
+        raise HTTPException(
+            status_code=400,
+            detail="Client ID、Access Token 和 Open ID 必须完整填写，并来自同一次腾讯授权。",
+        )
+    return values
+
+
+async def _store_txdocs_monitor_credentials(
+    cur,
+    *,
+    client_id: str,
+    access_token: str,
+    open_id: str,
+    updated_by: int,
+) -> None:
+    encrypted_access_token = encrypt_secret(access_token)
+    await cur.execute("SELECT id FROM _txdocs_monitor_connection WHERE id=1")
+    if await cur.fetchone():
+        await cur.execute(
+            """UPDATE _txdocs_monitor_connection
+               SET client_id=%s, access_token=%s, open_id=%s, updated_by=%s
+               WHERE id=1""",
+            (client_id, encrypted_access_token, open_id, updated_by),
+        )
+    else:
+        await cur.execute(
+            """INSERT INTO _txdocs_monitor_connection
+               (id, client_id, access_token, open_id, updated_by)
+               VALUES (1,%s,%s,%s,%s)""",
+            (client_id, encrypted_access_token, open_id, updated_by),
+        )
+
+
 def _txdocs_file_id(url: str) -> str:
     parsed = urlparse(url.strip())
     if parsed.scheme != "https" or parsed.netloc.lower() != "docs.qq.com":
@@ -447,6 +495,42 @@ async def get_txdocs_monitor_config(_user: dict = Depends(require_super_admin), 
     return _txdocs_config_payload(targets, credentials)
 
 
+@router.put("/txdocs-monitor/config/credentials")
+async def update_txdocs_monitor_credentials(
+    payload: TxDocsMonitorCredentialsUpdate,
+    request: Request,
+    user: dict = Depends(require_super_admin),
+    conn=Depends(get_db),
+):
+    if not monitoring_environment_allowed():
+        raise HTTPException(
+            status_code=409,
+            detail="腾讯只读监控配置只允许在 Production 环境维护；Development、Staging 和 Shadow 已由后端禁止。",
+        )
+    client_id, access_token, open_id = _normalize_txdocs_credentials(payload)
+    async with conn.cursor() as cur:
+        await ensure_txdocs_monitor_config_schema(cur)
+        await _store_txdocs_monitor_credentials(
+            cur,
+            client_id=client_id,
+            access_token=access_token,
+            open_id=open_id,
+            updated_by=int(user["id"]),
+        )
+    await record_admin_audit(
+        user,
+        "txdocs.monitor.credentials.update",
+        target_type="txdocs_monitor_config",
+        target_name="腾讯只读监控连接凭据",
+        detail={"credential_fields": 3},
+        **request_audit_fields(request),
+    )
+    async with conn.cursor() as cur:
+        return _txdocs_config_payload(
+            await _load_monitor_targets(cur), await _load_monitor_credentials(cur)
+        )
+
+
 @router.put("/txdocs-monitor/config")
 async def update_txdocs_monitor_config(payload: TxDocsMonitorConfigUpdate, request: Request,
                                        user: dict = Depends(require_super_admin), conn=Depends(get_db)):
@@ -484,32 +568,24 @@ async def update_txdocs_monitor_config(payload: TxDocsMonitorConfigUpdate, reque
                 status_code=409,
                 detail="相同腾讯表、数据子表和业务类型的监控目标已存在，请编辑已有目标",
             )
-        client_id = payload.client_id.strip() or current_credentials["client_id"]
-        open_id = payload.open_id.strip() or current_credentials["open_id"]
-        access_token = (
-            encrypt_secret(payload.access_token.strip())
-            if payload.access_token.strip()
-            else encrypt_secret(current_credentials["access_token"])
+        requested_client_id = payload.client_id.strip()
+        requested_access_token = payload.access_token.strip()
+        requested_open_id = payload.open_id.strip()
+        credentials_update_requested = bool(
+            requested_client_id or requested_access_token or requested_open_id
         )
+        client_id = requested_client_id or current_credentials["client_id"]
+        access_token = requested_access_token or current_credentials["access_token"]
+        open_id = requested_open_id or current_credentials["open_id"]
         if payload.enabled and not (client_id and access_token and open_id):
             raise HTTPException(status_code=400, detail="启用监控前必须填写 client_id、access_token 和 open_id")
-        await cur.execute(
-            "SELECT id FROM _txdocs_monitor_connection WHERE id=1"
-        )
-        connection_exists = await cur.fetchone()
-        if connection_exists:
-            await cur.execute(
-            """UPDATE _txdocs_monitor_connection
-               SET client_id=%s, access_token=%s, open_id=%s, updated_by=%s
-               WHERE id=1""",
-            (client_id, access_token, open_id, int(user["id"])),
-            )
-        else:
-            await cur.execute(
-                """INSERT INTO _txdocs_monitor_connection
-                   (id, client_id, access_token, open_id, updated_by)
-                   VALUES (1,%s,%s,%s,%s)""",
-                (client_id, access_token, open_id, int(user["id"])),
+        if credentials_update_requested:
+            await _store_txdocs_monitor_credentials(
+                cur,
+                client_id=client_id,
+                access_token=access_token,
+                open_id=open_id,
+                updated_by=int(user["id"]),
             )
         if payload.target_id is None:
             await cur.execute(

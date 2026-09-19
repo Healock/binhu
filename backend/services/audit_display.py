@@ -81,6 +81,7 @@ ACTION_LABELS: dict[str, str] = {
     "spreadsheet.delete": "删除在线表格配置",
     "report.summary_config.update": "修改总汇总配置",
     "txdocs.monitor.config.update": "修改腾讯只读监控配置",
+    "txdocs.monitor.credentials.update": "更新腾讯只读监控连接凭据",
     "txdocs.monitor.config.disable": "禁用腾讯只读监控",
     "txdocs.monitor.config.delete": "删除腾讯只读监控目标",
     "txdocs.monitor.run": "手动读取腾讯只读监控",
