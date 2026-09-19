@@ -400,10 +400,14 @@ async def get_txdocs_monitor_config(_user: dict = Depends(require_super_admin), 
 @router.put("/txdocs-monitor/config")
 async def update_txdocs_monitor_config(payload: TxDocsMonitorConfigUpdate, request: Request,
                                        user: dict = Depends(require_super_admin), conn=Depends(get_db)):
-    if payload.enabled and not monitoring_environment_allowed():
+    # Keep non-Production environments completely free of Tencent monitoring
+    # configuration and credentials.  Checking only ``payload.enabled`` would
+    # still allow a disabled target to persist an access token or spreadsheet
+    # URL in Dev, Staging, or Shadow.
+    if not monitoring_environment_allowed():
         raise HTTPException(
             status_code=409,
-            detail="腾讯只读监控只允许在 Production 环境启用；Development、Staging 和 Shadow 已由后端禁止。",
+            detail="腾讯只读监控配置只允许在 Production 环境维护；Development、Staging 和 Shadow 已由后端禁止。",
         )
     file_id = _txdocs_file_id(payload.spreadsheet_url)
     if payload.parser_type not in PARSER_REGISTRY or payload.parser_type == "default":

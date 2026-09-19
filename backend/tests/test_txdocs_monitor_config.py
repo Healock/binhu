@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -46,3 +47,12 @@ def test_monitor_config_uses_environment_identity_as_hard_boundary():
     assert production["enabled"] is True
     assert staging["environment_allowed"] is False
     assert staging["enabled"] is False
+
+
+def test_non_production_configuration_is_not_writable():
+    source = Path(__file__).parents[1].joinpath("routers", "stats.py").read_text(encoding="utf-8")
+    marker = "async def update_txdocs_monitor_config"
+    body = source[source.index(marker):]
+    guard = body.index("if not monitoring_environment_allowed()")
+    mutation = body.index("file_id = _txdocs_file_id", guard)
+    assert guard < mutation
