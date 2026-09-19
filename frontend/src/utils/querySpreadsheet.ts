@@ -197,6 +197,9 @@ const QUERY_SHEET_TEXT_STYLE = {
   n: { pattern: '@' },
 } as const
 
+/** Univer's text number format for identifiers and contact numbers. */
+export const QUERY_SHEET_TEXT_FORMAT = '@'
+
 export function querySheetTextCell(value: unknown, column = ''): ICellData {
   const cell: ICellData = {
     v: stringifyCell(value),
