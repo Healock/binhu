@@ -731,6 +731,34 @@ async def _read_config(client: Any, config: dict[str, Any]):
     return rows
 
 
+async def get_txdocs_monitor_failure_codes_since(
+    started_at: datetime,
+) -> tuple[str, ...]:
+    """Return privacy-safe failure codes recorded during a monitoring pass."""
+    from database import db_manager
+
+    report_pool = db_manager.get_pool("daily_report")
+    report_conn = await report_pool.acquire()
+    try:
+        async with report_conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT error_code
+                FROM _txdocs_monitor_runs
+                WHERE status='failed' AND started_at >= %s AND error_code<>''
+                ORDER BY error_code
+                """,
+                (started_at,),
+            )
+            return tuple(
+                str(row[0]).strip()[:64]
+                for row in await cur.fetchall()
+                if row and str(row[0] or "").strip()
+            )
+    finally:
+        report_pool.release(report_conn)
+
+
 async def run_txdocs_statistics_once(
     target_ids: set[int] | None = None,
 ) -> int:

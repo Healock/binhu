@@ -111,6 +111,58 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(monitor.settings, "APP_ENVIRONMENT", "staging"):
             self.assertEqual(await monitor.run_txdocs_statistics_once(), 0)
 
+    async def test_manual_failure_diagnostics_return_only_safe_codes(self):
+        boundary = datetime(2026, 9, 19, 11, 46, 5)
+
+        class Cursor:
+            query = ""
+            params = None
+
+            async def execute(self, query, params=None):
+                self.query = query
+                self.params = params
+
+            async def fetchall(self):
+                return [
+                    ("txdocs_400006",),
+                    ("invalid_sheet_layout",),
+                    ("",),
+                    (None,),
+                ]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        class Connection:
+            def __init__(self):
+                self.cursor_instance = Cursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+        class Pool:
+            def __init__(self):
+                self.connection = Connection()
+                self.released = False
+
+            async def acquire(self):
+                return self.connection
+
+            def release(self, conn):
+                self.released = conn is self.connection
+
+        pool = Pool()
+        with patch("database.db_manager.get_pool", return_value=pool):
+            result = await monitor.get_txdocs_monitor_failure_codes_since(boundary)
+
+        self.assertEqual(result, ("txdocs_400006", "invalid_sheet_layout"))
+        self.assertIn("_txdocs_monitor_runs", pool.connection.cursor_instance.query)
+        self.assertEqual(pool.connection.cursor_instance.params, (boundary,))
+        self.assertTrue(pool.released)
+
     async def test_legacy_allowlist_is_not_a_runtime_configuration(self):
         class Cursor:
             def __init__(self, credentials, configs):

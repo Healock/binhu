@@ -72,6 +72,32 @@ def test_manual_monitor_run_rejects_zero_successful_sources():
         raise AssertionError("zero successful sources must not be reported as success")
 
 
+def test_manual_monitor_run_explains_invalid_authorization_triplet():
+    try:
+        _manual_txdocs_run_response(0, ["txdocs_400006"])
+    except Exception as exc:
+        detail = str(getattr(exc, "detail", ""))
+        assert getattr(exc, "status_code", None) == 502
+        assert "400006" in detail
+        assert "Client ID" in detail
+        assert "Access Token" in detail
+        assert "Open ID" in detail
+    else:
+        raise AssertionError("invalid Tencent authorization must be actionable")
+
+
+def test_manual_monitor_run_explains_sheet_layout_failure():
+    try:
+        _manual_txdocs_run_response(0, ["invalid_sheet_layout"])
+    except Exception as exc:
+        detail = str(getattr(exc, "detail", ""))
+        assert getattr(exc, "status_code", None) == 502
+        assert "表头行号" in detail
+        assert "列名" in detail
+    else:
+        raise AssertionError("invalid sheet layout must be actionable")
+
+
 def test_manual_monitor_run_reports_successful_source_count():
     result = _manual_txdocs_run_response(2)
     assert result == {
