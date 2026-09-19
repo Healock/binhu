@@ -1057,7 +1057,7 @@ export interface TxDocsMonitoringOverview {
 }
 
 export interface TxDocsMonitorConfig {
-  server_enabled: boolean
+  environment_allowed: boolean
   enabled: boolean
   configured: boolean
   targets: TxDocsMonitorTarget[]

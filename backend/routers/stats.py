@@ -7,7 +7,6 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from config import settings
 from database import get_db
 from deps import get_current_user, require_permission, require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
@@ -23,11 +22,12 @@ from services.report_overview import (
 from services.report_view import project_report_payload
 from services.txdocs_statistics_monitor import (
     get_txdocs_statistics_overview,
-    monitoring_configuration_ready,
-    _load_monitor_config,
     _load_monitor_credentials,
     _load_monitor_targets,
     ensure_txdocs_monitor_config_schema,
+    monitoring_configuration_state,
+    monitoring_environment_allowed,
+    get_monitoring_runtime_state,
     run_txdocs_statistics_once,
 )
 from services.qmf_config import encrypt_secret
@@ -134,17 +134,18 @@ def _txdocs_config_payload(
     credentials = credentials or {}
     target_payloads = [_txdocs_target_payload(target, credentials) for target in targets]
     configured = any(item["configured"] for item in target_payloads)
+    environment_allowed = monitoring_environment_allowed()
     return {
-        "server_enabled": bool(settings.TXDOCS_MONITORING_ENABLED),
-        "enabled": any(item["enabled"] for item in target_payloads),
+        "environment_allowed": environment_allowed,
+        "enabled": bool(environment_allowed and any(item["enabled"] for item in target_payloads)),
         "configured": configured,
         "targets": target_payloads,
         "client_id_configured": bool(credentials.get("client_id")),
         "access_token_configured": bool(credentials.get("access_token")),
         "open_id_configured": bool(credentials.get("open_id")),
         "status": (
-            "服务器未开启"
-            if not settings.TXDOCS_MONITORING_ENABLED
+            "当前环境不允许启用"
+            if not environment_allowed
             else ("已启用" if configured else ("未配置" if not target_payloads else "配置不完整"))
         ),
     }
@@ -370,14 +371,16 @@ async def get_txdocs_monitor_overview(
                 if parser_type == "总汇总表"
                 else [parser_type]
             )
-            configuration_ready = await monitoring_configuration_ready(cur)
+            configuration_state = await monitoring_configuration_state(cur)
         visible_communities = await _overview_community_names(conn, formal)
         return await get_txdocs_statistics_overview(
             start_date,
             end_date,
             parser_types,
             visible_communities,
-            configuration_ready=configuration_ready,
+            configuration_ready=configuration_state["configured"],
+            monitoring_enabled=configuration_state["enabled"],
+            environment_allowed=monitoring_environment_allowed(),
         )
     except HTTPException:
         raise
@@ -397,6 +400,15 @@ async def get_txdocs_monitor_config(_user: dict = Depends(require_super_admin), 
 @router.put("/txdocs-monitor/config")
 async def update_txdocs_monitor_config(payload: TxDocsMonitorConfigUpdate, request: Request,
                                        user: dict = Depends(require_super_admin), conn=Depends(get_db)):
+    # Keep non-Production environments completely free of Tencent monitoring
+    # configuration and credentials.  Checking only ``payload.enabled`` would
+    # still allow a disabled target to persist an access token or spreadsheet
+    # URL in Dev, Staging, or Shadow.
+    if not monitoring_environment_allowed():
+        raise HTTPException(
+            status_code=409,
+            detail="腾讯只读监控配置只允许在 Production 环境维护；Development、Staging 和 Shadow 已由后端禁止。",
+        )
     file_id = _txdocs_file_id(payload.spreadsheet_url)
     if payload.parser_type not in PARSER_REGISTRY or payload.parser_type == "default":
         raise HTTPException(status_code=400, detail="请选择受支持的只读监控业务类型")
@@ -539,14 +551,16 @@ async def delete_txdocs_monitor_config(
 
 @router.post("/txdocs-monitor/run")
 async def run_txdocs_monitor_now(request: Request, user: dict = Depends(require_super_admin)):
-    if not settings.TXDOCS_MONITORING_ENABLED:
+    runtime = await get_monitoring_runtime_state()
+    if not runtime["environment_allowed"]:
         raise HTTPException(
             status_code=409,
-            detail=(
-                "服务器未开启腾讯只读监控开关。请在生产后端环境配置 "
-                "TXDOCS_MONITORING_ENABLED=true 并重启 backend；页面目标开关不能替代服务器开关。"
-            ),
+            detail="腾讯只读监控只允许在 Production 环境启用；Development、Staging 和 Shadow 已由后端禁止。",
         )
+    if not runtime["enabled_target_count"]:
+        raise HTTPException(status_code=409, detail="请先在系统设置中启用至少一个腾讯只读监控目标。")
+    if not runtime["configured"]:
+        raise HTTPException(status_code=409, detail="已启用的腾讯只读监控目标或共享凭据配置不完整，请先补齐配置。")
     try:
         count = await run_txdocs_statistics_once()
     except Exception as exc:  # noqa: BLE001 - do not expose remote details

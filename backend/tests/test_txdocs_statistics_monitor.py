@@ -21,6 +21,13 @@ def variant(key: str, content: str, community: str = "社区甲") -> monitor.Mon
 
 
 class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
+    def test_monitoring_environment_is_production_only(self):
+        with patch.object(monitor.settings, "APP_ENVIRONMENT", "production"):
+            self.assertTrue(monitor.monitoring_environment_allowed())
+        for environment in ("development", "staging", "shadow"):
+            with patch.object(monitor.settings, "APP_ENVIRONMENT", environment):
+                self.assertFalse(monitor.monitoring_environment_allowed())
+
     def test_allowlist_is_fixed_positive_ids(self):
         self.assertEqual(monitor.monitoring_spreadsheet_ids("3, 2, 3"), (3, 2))
         for invalid in ("0", "-1", "1,abc"):
@@ -101,7 +108,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(next(iter(snapshot)), "physical_row"))
 
     async def test_disabled_switch_makes_no_database_or_network_access(self):
-        with patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", False):
+        with patch.object(monitor.settings, "APP_ENVIRONMENT", "staging"):
             self.assertEqual(await monitor.run_txdocs_statistics_once(), 0)
 
     async def test_legacy_allowlist_is_not_a_runtime_configuration(self):
@@ -121,7 +128,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
                 return self.configs
 
         with (
-            patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", True),
+            patch.object(monitor.settings, "APP_ENVIRONMENT", "production"),
             patch.object(
                 monitor.settings, "TXDOCS_MONITORING_SPREADSHEET_IDS", "7,8"
             ),
@@ -177,7 +184,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
 
         pool = Pool()
         with (
-            patch.object(monitor.settings, "TXDOCS_MONITORING_ENABLED", True),
+            patch.object(monitor.settings, "APP_ENVIRONMENT", "production"),
             patch.object(
                 monitor.settings, "TXDOCS_MONITORING_SPREADSHEET_IDS", "7"
             ),
@@ -225,7 +232,8 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
 
     def test_monitor_runtime_is_separate_from_retired_business_switch(self):
         source = inspect.getsource(monitor.run_txdocs_statistics_once)
-        self.assertIn("TXDOCS_MONITORING_ENABLED", source)
+        self.assertIn("monitoring_environment_allowed", source)
+        self.assertNotIn("TXDOCS_MONITORING_ENABLED", source)
         self.assertNotIn("TXDOCS_ENABLED", source)
 
     def test_schema_migration_does_not_use_deprecated_mysql_values_expression(self):
