@@ -39,6 +39,13 @@ case "${parts[0]:-}" in
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py \
       stop "${parts[1]}"
     ;;
+  observe-start|observe-status)
+    [[ "${#parts[@]}" -eq 3 ]] || exit 64
+    [[ "${parts[1]}" =~ ^dev-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]] || exit 64
+    [[ "${parts[2]}" =~ ^obs-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-event-pipeline-gateway.py \
+      "${parts[0]}" "${parts[1]}" "${parts[2]}"
+    ;;
   *)
     echo 'Only fixed Dev event-pipeline commands are allowed.' >&2
     exit 64

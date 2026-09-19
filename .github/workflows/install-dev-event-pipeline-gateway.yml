@@ -35,6 +35,7 @@ jobs:
           scp -P "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
             deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway \
             deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway.py \
+            deploy/environments/event_pipeline/observation_control.py \
             deploy/environments/event_pipeline/install-dev-gateway.sh \
             "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub" \
             "root@$DEV_HOST:/tmp/"

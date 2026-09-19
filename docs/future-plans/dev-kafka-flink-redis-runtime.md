@@ -1,6 +1,6 @@
 # Dev Kafka、Flink 与 Redis 架构升级
 
-- 当前状态：Dev 元数据事件链路已合入主线；monitor39 已完成 1002、10000、100000 条零未归因差异规模验收；常驻 monitor 与 Redis 容量修补后的 monitor40 和连续 7 天观察待执行；恢复门禁待完成，未切换 Production
+- 当前状态：Dev 元数据事件链路已合入主线；monitor40 已完成 1002、10000、100000 条零未归因差异规模验收；按项目管理人确认，连续 7 天改为 6 小时强化观察；恢复门禁待完成，未切换 Production
 - 目标：把容易与业务写入抢锁的可重建派生计算逐步移到 Dev 的 Kafka/Flink/Redis 链路，先验证事件合同、版本栅栏、恢复和回放，再决定是否进入 Staging
 - 边界：MySQL 继续是业务真相；Dev 只使用虚构或已脱敏数据；不复用 Shadow 数据目录、checkpoint、Redis/Kafka 卷、数据库卷或运行编号
 
@@ -129,5 +129,12 @@ monitor40 候选把常驻比较改为 MySQL 内聚合和等值判断，只有出
 修补合并、main CI 和固定 Dev 网关部署完成后，必须使用新的
 `dev-20260919-dualtrack-monitor40`，按 1002 → 10000 → 100000 重新验收；每档同时
 核对 monitor 心跳、bridge、Redis OOM 计数、Flink checkpoint 与 Kafka lag。100000
-通过后只能把连续 7 天状态标记为“已正常启动”，不能提前标记为“已通过”。旧
-savepoint operator ID 兼容恢复门禁仍未通过，不使用 `allowNonRestoredState`。
+通过后进入独立的 6 小时强化观察。观察每 30 分钟采样资源、Redis、MySQL、Kafka、
+Flink、磁盘、日志和差异，并主动执行当前元数据域可安全触发的对账、Schema 合同核对
+和状态汇总；13 个采样点全部健康才通过核心持续运行门禁。旧 savepoint operator ID
+兼容恢复门禁仍未通过，不使用 `allowNonRestoredState`。
+
+6 小时观察明确舍弃并记录长期盲区：证书续签、Kafka 七天保留自然过期、Redis 自然
+TTL、固定周期任务自然触发、跨天状态累积、长期内存泄漏和长期磁盘趋势。这些项目不
+阻塞当前 Staging 晋级评估，但必须在 Staging 或生产灰度补充。当前首个派生域不包含
+日报刷新或业务清理，不能为满足清单越过 Dev event-pipeline 网关边界调用生产业务任务。
