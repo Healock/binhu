@@ -1,5 +1,6 @@
 import asyncio
 import copy
+from decimal import Decimal
 import importlib.util
 import json
 import unittest
@@ -30,6 +31,7 @@ from deploy.environments.event_pipeline import flink_compose
 from deploy.environments.event_pipeline import kafka_compose
 from deploy.environments.event_pipeline import prepare as event_prepare
 from deploy.environments.event_pipeline import runtime as event_runtime
+from deploy.environments.event_pipeline import dual_track_monitor as monitor_runtime
 from deploy.environments.event_pipeline.dual_track_monitor import (
     build_report,
     runtime_failure_detail,
@@ -877,6 +879,12 @@ volumes:
         self.assertEqual(service["mem_limit"], "128m")
         self.assertEqual(service["pids_limit"], 128)
         self.assertEqual(service["logging"]["options"], {"max-size": "5m", "max-file": "2"})
+        self.assertEqual(service["healthcheck"]["test"],
+                         ["CMD", "python", "-m", "event_pipeline.monitor_health"])
+        self.assertIn(
+            "./monitor_health.py:/opt/dev-pipeline/event_pipeline/monitor_health.py:ro",
+            service["volumes"],
+        )
 
     def test_compose_includes_isolated_one_shot_scale_acceptance_runner(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
@@ -976,7 +984,10 @@ volumes:
         source = Path(event_prepare.__file__).with_name("acceptance_control.py").read_text(encoding="utf-8")
         self.assertIn('"stop", "dual-track-monitor"', source)
         self.assertIn('"acceptance-runner", "python", "-m", "event_pipeline.scale_acceptance"', source)
-        self.assertIn('"up", "-d", "dual-track-monitor"', source)
+        self.assertIn(
+            '"up", "-d", "--wait", "--wait-timeout", "90", "dual-track-monitor"',
+            source,
+        )
         for forbidden in ("down", "volume rm", "system prune", "production", "staging", "shadow"):
             self.assertNotIn(forbidden, source.lower())
         self.assertIn("acceptance-failure-", source)
@@ -986,6 +997,7 @@ volumes:
     def test_prepare_monitor_source_files_are_readable_by_worker_uid(self):
         self.assertIn("runtime.py", event_prepare.PUBLIC_CANDIDATE_FILES)
         self.assertIn("dual_track_monitor.py", event_prepare.PUBLIC_CANDIDATE_FILES)
+        self.assertIn("monitor_health.py", event_prepare.PUBLIC_CANDIDATE_FILES)
         self.assertNotIn("runtime.env", event_prepare.PUBLIC_CANDIDATE_FILES)
 
     def test_monitor_runtime_mount_contains_dispatcher_not_prepare_generator(self):
@@ -1011,7 +1023,132 @@ volumes:
             payload = (next(evidence.glob("comparison-*.json"))).read_text(encoding="utf-8")
             self.assertNotIn("must not be emitted", payload)
             self.assertTrue(next(evidence.glob("alert-*.json")).is_file())
-            self.assertIn('"status": "paused"', (evidence / "status.json").read_text(encoding="utf-8"))
+            self.assertIn('"status": "paused"',
+                          (evidence / "monitor-status.json").read_text(encoding="utf-8"))
+            self.assertFalse((evidence / "status.json").exists())
+
+    def test_resident_monitor_uses_bounded_database_comparison(self):
+        source = Path(monitor_runtime.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("python_rows = await cur.fetchall()", source)
+        self.assertNotIn("flink_rows = await cur.fetchall()", source)
+        self.assertIn("MISMATCH_DETAIL_LIMIT", source)
+        self.assertIn("LIMIT %s", source)
+
+    def test_resident_monitor_healthy_large_run_keeps_detail_reads_bounded(self):
+        class Cursor:
+            def __init__(self):
+                self.statements = []
+                self.counts = iter((100_000, 100_000, 100_000, Decimal("100000"), 0, 0))
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def execute(self, statement, params):
+                self.statements.append((statement, params))
+
+            async def fetchone(self):
+                return {"count": next(self.counts)}
+
+            async def fetchall(self):
+                return []
+
+        class Connection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.cursor_factory = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def cursor(self, cursor_factory=None):
+                self.cursor_factory = cursor_factory
+                return self._cursor
+
+        class Pool:
+            def __init__(self):
+                self.cursor = Cursor()
+                self.connection = Connection(self.cursor)
+
+            def acquire(self):
+                return self.connection
+
+        pool = Pool()
+        dict_cursor = object()
+        report = asyncio.run(monitor_runtime.query_report(
+            pool, "dev-monitor40", "dual-track-monitor40", dict_cursor
+        ))
+        self.assertIs(pool.connection.cursor_factory, dict_cursor)
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["python_tasks"], 100_000)
+        self.assertEqual(report["flink_tasks"], 100_000)
+        self.assertEqual(report["unattributed_difference_count"], 0)
+        detail_queries = [
+            (statement, params) for statement, params in pool.cursor.statements
+            if "ORDER BY" in statement
+        ]
+        self.assertEqual(len(detail_queries), 2)
+        self.assertTrue(all("LIMIT %s" in statement for statement, _ in detail_queries))
+        self.assertEqual(detail_queries[0][1][-1], monitor_runtime.MISMATCH_DETAIL_LIMIT)
+        self.assertEqual(detail_queries[1][1][-1], monitor_runtime.MISMATCH_DETAIL_LIMIT)
+
+    def test_scale_and_resident_monitor_use_separate_status_files(self):
+        module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")
+        spec = importlib.util.spec_from_file_location("scale_acceptance_status", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        report = {
+            "environment": "development", "run_id": "dev-test-1", "scale": 1002,
+            "generated_at": "2026-09-19T00:00:00Z", "passed": True,
+            "unattributed_difference_count": 0,
+        }
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            module.os.environ, {"DUAL_TRACK_EVIDENCE_DIR": root}
+        ):
+            module._write_report("dev-test-1", 1002, report)
+            evidence = Path(root) / "dev-test-1"
+            self.assertTrue((evidence / "scale-status.json").is_file())
+            self.assertFalse((evidence / "monitor-status.json").exists())
+            self.assertFalse((evidence / "status.json").exists())
+
+    def test_monitor_health_rejects_stale_status_and_accepts_fresh_heartbeat(self):
+        module_path = Path(event_prepare.__file__).with_name("monitor_health.py")
+        self.assertTrue(module_path.is_file())
+        spec = importlib.util.spec_from_file_location("monitor_health", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as root:
+            status = Path(root) / "dev-test-1" / "monitor-status.json"
+            status.parent.mkdir()
+            payload = {
+                "environment": "development", "run_id": "dev-test-1",
+                "status": "running", "unattributed_difference_count": 0,
+                "updated_at": "2026-09-19T00:00:00Z",
+            }
+            status.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertTrue(module.heartbeat_is_healthy(
+                status, "dev-test-1", now="2026-09-19T00:00:30Z"
+            ))
+            self.assertFalse(module.heartbeat_is_healthy(
+                status, "dev-test-1", now="2026-09-19T00:02:00Z"
+            ))
+            self.assertFalse(module.heartbeat_is_healthy(
+                status, "dev-other", now="2026-09-19T00:00:30Z"
+            ))
+
+    def test_dev_redis_capacity_covers_current_and_previous_scale_namespaces(self):
+        spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
+        service = spec["services"]["dev-derived-redis"]
+        self.assertEqual(service["mem_limit"], "256m")
+        self.assertEqual(service["memswap_limit"], "384m")
+        config = event_prepare.redis_configuration("b" * 48)
+        self.assertIn("maxmemory 192mb", config)
+        self.assertIn("maxmemory-policy noeviction", config)
 
     def test_text_and_external_events_cannot_enter_task_topic(self):
         for bad in ({**event(), "name": "synthetic-person"},

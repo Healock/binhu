@@ -346,3 +346,30 @@ Dev event-pipeline：派生 MySQL 受控 Compose 将系统表空间上限从 1 G
 禁用 binlog、固定内存上限和有限资源门禁，不删除现有卷或验收数据。
 修补合并并在服务器确认当前 Compose 只发生该预期变化后，必须使用新的运行编号从
 1002 → 10000 → 100000 重新验收。
+
+## 2026-09-19：monitor39 三档通过，monitor40 修复常驻观察
+
+`dev-20260919-dualtrack-monitor39` 已完成三档规模验收。1002、10000 和 100000 的
+delivery、Python/Flink projection、revision sink 与两边唯一事件均达到目标，
+`projection_mismatch_count=0`、`revision_mismatch_count=0`、
+`unattributed_difference_count=0`。100000 workflow `35380337042` 成功，证据保存在
+`/data/docker/volumes/binhu-development-pipeline_evidence/_data/dev-20260919-dualtrack-monitor39/scale-100000-20260918T224241429979Z.json`。
+
+三档通过不代表 7 天观察已经启动。常驻 monitor 随后因每轮完整载入两侧 100000 行，
+在 128 MiB 上限内反复 OOM；规模 runner 又与常驻 monitor 共写 `status.json`，导致状态
+文件可能显示运行中而容器已经退出。Dev 派生 Redis 的 48 MiB `maxmemory` 也出现 28 次
+OOM，`bridge` 因 `noeviction` 写入失败退出。这些是 Dev 运行时与验收合同缺口，没有
+发现双轨业务结果差异，Production、Staging、Shadow 未修改。
+
+monitor40 修补固定为：健康轮次只在 MySQL 内完成计数和投影等值判断，差异详情最多
+读取 100 条；常驻状态写 `monitor-status.json`，规模状态写 `scale-status.json`；Compose
+healthcheck 要求当前 run ID、零未归因差异和 60 秒内心跳；规模 controller 必须等待
+monitor 健康后才成功。Redis 使用 192 MiB 逻辑上限、256 MiB 容器上限和 384 MiB
+内存加交换上限，保留 `noeviction` 和原数据卷。
+
+修补经 PR CI、main CI 和固定 Dev 网关部署后，使用
+`dev-20260919-dualtrack-monitor40` 依次重跑 1002、10000、100000。每档通过还需确认
+monitor 为 healthy、`monitor-status.json` 持续刷新、bridge 正常、Redis OOM 计数无新增、
+Flink checkpoint 无失败且 Kafka lag 收敛。100000 通过并观察至少两个心跳周期后，才
+登记“7 天观察已正常启动”；连续运行满 7 天前不得登记为通过。checkpoint/savepoint
+operator ID 兼容恢复仍是未通过的独立门禁。

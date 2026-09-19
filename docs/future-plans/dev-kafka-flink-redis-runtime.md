@@ -1,6 +1,6 @@
 # Dev Kafka、Flink 与 Redis 架构升级
 
-- 当前状态：Dev 元数据事件链路已合入主线；任务元数据投影/计数已完成 1002 与 10000 条零未归因差异验收，100000 条和连续 7 天观察待执行；恢复门禁待完成，未切换 Production
+- 当前状态：Dev 元数据事件链路已合入主线；monitor39 已完成 1002、10000、100000 条零未归因差异规模验收；常驻 monitor 与 Redis 容量修补后的 monitor40 和连续 7 天观察待执行；恢复门禁待完成，未切换 Production
 - 目标：把容易与业务写入抢锁的可重建派生计算逐步移到 Dev 的 Kafka/Flink/Redis 链路，先验证事件合同、版本栅栏、恢复和回放，再决定是否进入 Staging
 - 边界：MySQL 继续是业务真相；Dev 只使用虚构或已脱敏数据；不复用 Shadow 数据目录、checkpoint、Redis/Kafka 卷、数据库卷或运行编号
 
@@ -104,3 +104,30 @@ Shadow 未修改。
 以干净状态启动或 `allowNonRestoredState` 代替恢复门禁；在 100000 条与连续 7 天、
 资源/lag/checkpoint 观察及恢复演练全部完成前，不提交 Staging 晋级或 Production
 切换结论。
+
+## 2026-09-19：monitor39 规模通过与 monitor40 运行时修补
+
+`dev-20260919-dualtrack-monitor39` 的 1002、10000、100000 三档规模验收均完成，
+delivery、Python/Flink projection、revision sink 和两边唯一事件均达到对应目标，
+projection/revision mismatch 与未归因差异均为 0。100000 workflow 为
+`35380337042`，私有证据为
+`/data/docker/volumes/binhu-development-pipeline_evidence/_data/dev-20260919-dualtrack-monitor39/scale-100000-20260918T224241429979Z.json`。
+
+规模验收通过后，连续观察未能正常开始。常驻 `dual-track-monitor` 每 15 秒分别
+`fetchall()` 两侧 100000 行并建立两套 Python 字典，在 128 MiB 容器上限内被 cgroup
+OOM 杀死；同时规模验收与常驻 monitor 共用 `status.json`，规模 runner 会覆盖掉
+monitor 已停止的事实。派生 Redis 仍使用 48 MiB `maxmemory`，在约 78413 个键时已记录
+28 次 OOM，旧 `bridge` 因写入被拒绝退出。该故障属于 Dev 运行时资源和验收状态合同，
+不是双轨计算差异；Production、Staging、Shadow 未受影响。
+
+monitor40 候选把常驻比较改为 MySQL 内聚合和等值判断，只有出现差异时才读取最多
+100 条脱敏详情；状态拆分为 `monitor-status.json` 与 `scale-status.json`，并新增只接受
+当前 run ID、零差异和新鲜心跳的 Compose healthcheck。Dev 派生 Redis 固定调整为
+192 MiB `maxmemory`、256 MiB 容器内存和 384 MiB 内存加交换上限，保持
+`noeviction` 和原具名卷。规模 controller 在每档结束后等待常驻 monitor 恢复健康。
+
+修补合并、main CI 和固定 Dev 网关部署完成后，必须使用新的
+`dev-20260919-dualtrack-monitor40`，按 1002 → 10000 → 100000 重新验收；每档同时
+核对 monitor 心跳、bridge、Redis OOM 计数、Flink checkpoint 与 Kafka lag。100000
+通过后只能把连续 7 天状态标记为“已正常启动”，不能提前标记为“已通过”。旧
+savepoint operator ID 兼容恢复门禁仍未通过，不使用 `allowNonRestoredState`。
