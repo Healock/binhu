@@ -14,6 +14,7 @@ import {
   isQuerySheetRangeEditable,
   parseQuerySheetClipboard,
   QUERY_SHEET_FEATURE_CONFIG,
+  QUERY_SHEET_TEXT_FORMAT,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
   querySheetScrollMovesHorizontally,
@@ -180,6 +181,7 @@ test('查询工作表关闭长数字文本误报并由 Univer 统一转换深浅
 })
 
 test('查询工作表用文本格式保存身份证和电话，编辑时不显示强制文本引号', () => {
+  assert.equal(QUERY_SHEET_TEXT_FORMAT, '@')
   assert.deepEqual(querySheetTextCell('7.30'), {
     v: '7.30',
     t: CellValueType.STRING,
@@ -201,6 +203,18 @@ test('查询工作表用文本格式保存身份证和电话，编辑时不显�
   })
   assert.equal(isQuerySheetExactTextColumn('姓名'), false)
   assert.equal(isQuerySheetExactTextColumn('联系方式'), true)
+})
+
+test('查询工作表在初始化、追加和粘贴后都显式重设文本数字格式', () => {
+  const componentSource = readFileSync(
+    new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(componentSource, /applyExactTextFormats\(0, initialValues\.length\)/)
+  assert.match(componentSource, /applyExactTextFormats\(previousLength \+ 1, added\)/)
+  assert.match(componentSource, /applyExactTextFormats\(/)
+  assert.match(componentSource, /setNumberFormat\(QUERY_SHEET_TEXT_FORMAT\)/)
+  assert.match(componentSource, /pendingPaste\.range\.startColumn/)
 })
 
 test('查询工作表使用 Univer 内部复制的精确单元格范围', () => {

@@ -49,11 +49,13 @@ import {
   QUERY_SHEET_FEATURE_CONFIG,
   QUERY_SHEET_UI_CONFIG,
   querySheetPalette,
+  isQuerySheetExactTextColumn,
   queryInspectorMismatch,
   queryInspectorOptions,
   querySheetEditGenerationMatches,
   querySheetScrollMovesHorizontally,
   querySheetTextCell,
+  QUERY_SHEET_TEXT_FORMAT,
   querySheetCellKey,
   resolveQuerySheetCommitFailureChanges,
   resolveQuerySheetColumnWidth,
@@ -473,11 +475,25 @@ export function QuerySpreadsheet({
       },
     })
     const worksheet = workbook.getActiveSheet()
+    const applyExactTextFormats = (startRow: number, rowCount: number, startColumn = 0, endColumn = columns.length - 1) => {
+      if (rowCount <= 0 || endColumn < startColumn) return
+      columns.forEach((column, columnIndex) => {
+        if (
+          columnIndex < startColumn
+          || columnIndex > endColumn
+          || !isQuerySheetExactTextColumn(column)
+        ) return
+        worksheet
+          .getRange(startRow, columnIndex, rowCount, 1)
+          .setNumberFormat(QUERY_SHEET_TEXT_FORMAT)
+      })
+    }
     const initialValues = [
       columns.map(column => querySheetTextCell(column)),
       ...sheetRows.map(row => columns.map(column => querySheetTextCell(row.data[column], column))),
     ]
     worksheet.getRange(0, 0, initialValues.length, columns.length).setValues(initialValues)
+    applyExactTextFormats(0, initialValues.length)
     worksheet.setFreeze({ startRow: 1, startColumn: 0, xSplit: 0, ySplit: 1 })
     worksheet.setRowHeight(0, 36)
     worksheet.setRowHeights(1, sheetRows.length, 32)
@@ -936,6 +952,7 @@ export function QuerySpreadsheet({
       worksheet.setRowHeights(previousLength + 1, added, 32)
       const appendedRange = worksheet.getRange(previousLength + 1, 0, added, columns.length)
       appendedRange.setWrap(true)
+      applyExactTextFormats(previousLength + 1, added)
       if (thinBorderStyle !== null) {
         appendedRange.setBorder(
           univerAPI.Enum.BorderType.ALL,
@@ -1208,6 +1225,12 @@ export function QuerySpreadsheet({
       }),
       univerAPI.addEvent(univerAPI.Event.ClipboardPasted, () => {
         if (pendingPaste) {
+          applyExactTextFormats(
+            pendingPaste.range.startRow,
+            pendingPaste.range.endRow - pendingPaste.range.startRow + 1,
+            pendingPaste.range.startColumn,
+            pendingPaste.range.endColumn,
+          )
           markEditedRange(pendingPaste.range, pendingPaste.values)
           pendingPaste = null
         }
