@@ -1,8 +1,8 @@
 """日报 API - 生成和查看分汇总表 + 总汇总表"""
 
 import json
-from datetime import date
-from typing import Literal, Optional
+from datetime import date, datetime, timezone
+from typing import Iterable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from services.report_overview import (
 from services.report_view import project_report_payload
 from services.txdocs_statistics_monitor import (
     get_txdocs_statistics_overview,
+    get_txdocs_monitor_failure_codes_since,
     _load_monitor_credentials,
     _load_monitor_targets,
     ensure_txdocs_monitor_config_schema,
@@ -151,7 +152,10 @@ def _txdocs_config_payload(
     }
 
 
-def _manual_txdocs_run_response(successful_sources: int) -> dict[str, object]:
+def _manual_txdocs_run_response(
+    successful_sources: int,
+    failure_codes: Iterable[str] = (),
+) -> dict[str, object]:
     """Build the result for a manually requested monitoring pass.
 
     ``run_txdocs_statistics_once`` deliberately returns a count instead of
@@ -163,12 +167,33 @@ def _manual_txdocs_run_response(successful_sources: int) -> dict[str, object]:
     """
     count = int(successful_sources or 0)
     if count <= 0:
-        raise HTTPException(
-            status_code=502,
-            detail=(
+        codes = {str(code or "").strip() for code in failure_codes}
+        if "txdocs_400006" in codes:
+            detail = (
+                "腾讯文档授权失败（400006）：请在腾讯只读监控配置中更新同一次授权产生的 "
+                "Client ID、Access Token 和 Open ID；Access Token 可能已过期。"
+            )
+        elif "txdocs_400005" in codes:
+            detail = (
+                "腾讯文档拒绝访问（400005）：请确认授权账号对目标腾讯表具有查看权限，"
+                "并确认应用已取得所需只读权限。"
+            )
+        elif "txdocs_400003" in codes:
+            detail = "腾讯文档资源不存在（400003）：请确认表格未被删除，且表链接和子表 ID 正确。"
+        elif "txdocs_400007" in codes:
+            detail = "腾讯文档请求超过限制（400007）：请稍后重试，或调大自动读取间隔。"
+        elif "invalid_sheet_layout" in codes:
+            detail = "腾讯表已连接，但表头或列结构与所选业务类型不匹配，请检查表头行号和列名。"
+        elif "read_timeout" in codes:
+            detail = "腾讯表读取超时，请稍后重试；若持续出现，请缩小表格规模或降低读取频率。"
+        else:
+            detail = (
                 "本次读取未取得任何成功快照，请检查监控目标、只读凭据和腾讯表访问权限，"
                 "稍后查看监控状态后重试"
-            ),
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=detail,
         )
     return {
         "successful_sources": count,
@@ -586,11 +611,21 @@ async def run_txdocs_monitor_now(request: Request, user: dict = Depends(require_
         raise HTTPException(status_code=409, detail="请先在系统设置中启用至少一个腾讯只读监控目标。")
     if not runtime["configured"]:
         raise HTTPException(status_code=409, detail="已启用的腾讯只读监控目标或共享凭据配置不完整，请先补齐配置。")
+    # MySQL DATETIME stores whole seconds here.  Floor the boundary so failures
+    # written during this request are not excluded by local microseconds.
+    run_started_at = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
     try:
         count = await run_txdocs_statistics_once()
     except Exception as exc:  # noqa: BLE001 - do not expose remote details
         raise HTTPException(status_code=502, detail="腾讯表读取失败，请查看监控状态后重试") from exc
-    result = _manual_txdocs_run_response(count)
+    failure_codes: tuple[str, ...] = ()
+    if count <= 0:
+        try:
+            failure_codes = await get_txdocs_monitor_failure_codes_since(run_started_at)
+        except Exception:
+            # Diagnostics must never hide the original safe failure response.
+            failure_codes = ()
+    result = _manual_txdocs_run_response(count, failure_codes)
     await record_admin_audit(user, "txdocs.monitor.run", target_type="txdocs_monitor_config", target_name="腾讯只读监控", detail={"successful_sources": count}, **request_audit_fields(request))
     return result
 
