@@ -13,8 +13,17 @@ from services.audit import record_admin_audit, request_audit_fields
 from services.business_time import get_business_date_from_db
 from services.stats_calculator import DailyReportBuilder
 from services.report_builders import IMPLEMENTED_TYPES
-from services.report_builders.summary import get_summary
-from services.report_range import get_report_range, get_summary_range
+from services.report_builders.summary import (
+    SUMMARY_INSPECTOR_OUTPUT_COLS,
+    SUMMARY_OUTPUT_COLS,
+    get_summary,
+)
+from services.report_range import (
+    COMMUNITY_COLUMNS,
+    INSPECTOR_COLUMNS,
+    get_report_range,
+    get_summary_range,
+)
 from services.report_overview import (
     get_online_overview,
     get_online_overview_details,
@@ -30,6 +39,7 @@ from services.txdocs_statistics_monitor import (
     monitoring_environment_allowed,
     get_monitoring_runtime_state,
     run_txdocs_statistics_once,
+    get_txdocs_business_overlay,
 )
 from services.qmf_config import encrypt_secret
 from services.parsers import PARSER_REGISTRY
@@ -59,6 +69,123 @@ REPORT_TYPES = ["全链条", "出租房屋核查", "寄递业", "疑似未注销
 # 分表已实现的类型
 IMPLEMENTED_SUBTYPES = [t for t in IMPLEMENTED_TYPES] + ["总汇总表"]
 ScopeMode = Literal["permission", "responsibility"]
+
+
+async def _overlay_external_report(
+    result: dict,
+    *,
+    start_date: str,
+    end_date: str,
+    parser_type: str,
+    communities: list[str] | None,
+) -> dict:
+    """Append privacy-safe external counts to the existing report tables.
+
+    External monitoring has no person assignment by design.  Community rows
+    are merged by community; inspector tables receive an explicit read-only
+    ``外部腾讯表`` row so the table totals include the same observed records
+    without pretending that an external row was assigned to a grid worker.
+    """
+    parser_types = (
+        await _read_summary_types_from_db()
+        if parser_type == "总汇总表"
+        else [parser_type]
+    )
+    overlay = await get_txdocs_business_overlay(
+        start_date, end_date, parser_types, communities
+    )
+    if not overlay.get("available") or not isinstance(result, dict):
+        return result
+
+    # A date may have no local ledger yet while an external snapshot already
+    # exists.  Build empty compatible tables so the same report endpoint can
+    # still show the read-only overlay instead of returning an empty report.
+    if not result.get("exists"):
+        community_columns = (
+            SUMMARY_OUTPUT_COLS
+            if parser_type == "总汇总表"
+            else COMMUNITY_COLUMNS
+        )
+        inspector_columns = (
+            SUMMARY_INSPECTOR_OUTPUT_COLS
+            if parser_type == "总汇总表"
+            else INSPECTOR_COLUMNS
+        )
+        result = {
+            **result,
+            "exists": True,
+            "community": {"columns": list(community_columns), "data": []},
+            "inspector": {"columns": list(inspector_columns), "data": []},
+        }
+
+    def external_counts(item: dict[str, int]) -> dict[str, int]:
+        total = int(item.get("total", 0))
+        completed = int(item.get("completed", 0))
+        checked = int(item.get("checked", 0))
+        unchecked = int(item.get("unchecked", 0))
+        return {
+            "数据总数": total,
+            "未核查": unchecked,
+            "已核查": checked,
+            "已完成": completed,
+            "无法见底数": 0,
+        }
+
+    def merge_counts(row: dict[str, object], item: dict[str, int], columns: list[str]) -> None:
+        """Merge external counts and recalculate ratios from combined totals."""
+        added = external_counts(item)
+        for key, value in added.items():
+            if key in columns:
+                row[key] = int(row.get(key) or 0) + value
+        total = int(row.get("数据总数") or 0)
+        completed = int(row.get("已完成") or 0)
+        unable = int(row.get("无法见底数") or 0)
+        if "核查完成率" in columns:
+            row["核查完成率"] = round(completed / total, 2) if total else 0
+        if "核查见底率" in columns:
+            row["核查见底率"] = (
+                round(completed / (completed + unable), 2)
+                if completed + unable else 0
+            )
+
+    community_table = result.get("community")
+    if isinstance(community_table, dict) and isinstance(community_table.get("data"), list):
+        rows = community_table["data"]
+        by_community = {
+            str(row.get("社区") or ""): row
+            for row in rows
+            if isinstance(row, dict)
+        }
+        for community, external_item in overlay.get("communities", {}).items():
+            row = by_community.get(str(community))
+            if row is None:
+                row = {column: 0 for column in community_table.get("columns", [])}
+                row["社区"] = str(community)
+                rows.append(row)
+            merge_counts(row, external_item, community_table.get("columns", []))
+
+    inspector_table = result.get("inspector")
+    if isinstance(inspector_table, dict) and isinstance(inspector_table.get("data"), list):
+        rows = inspector_table["data"]
+        for community, external_item in overlay.get("communities", {}).items():
+            row = {column: 0 for column in inspector_table.get("columns", [])}
+            row["社区"] = str(community)
+            row["姓名"] = "外部腾讯表（只读）"
+            merge_counts(row, external_item, inspector_table.get("columns", []))
+            rows.append(row)
+    result["external_overlay"] = overlay
+    return result
+
+
+async def _read_summary_types_from_db() -> list[str]:
+    from database import db_manager
+    pool = db_manager.get_pool("online_data")
+    conn = await pool.acquire()
+    try:
+        async with conn.cursor() as cur:
+            return await _read_summary_types(cur)
+    finally:
+        pool.release(conn)
 
 
 class SummaryConfigUpdate(BaseModel):
@@ -764,6 +891,13 @@ async def get_report(
         result, user, formal,
         [inspector] if inspector else None,
     )
+    result = await _overlay_external_report(
+        result,
+        start_date=report_date,
+        end_date=report_date,
+        parser_type=parser_type,
+        communities=formal,
+    )
     return project_report_payload(result, _column_mode(column_mode, user))
 
 
@@ -793,6 +927,13 @@ async def get_report_range_endpoint(
         result = filter_report_payload(
             result, user, formal,
             [inspector] if inspector else None,
+        )
+        result = await _overlay_external_report(
+            result,
+            start_date=start_date,
+            end_date=end_date,
+            parser_type=parser_type,
+            communities=formal,
         )
         return project_report_payload(result, _column_mode(column_mode, user))
     except HTTPException:
@@ -824,6 +965,13 @@ async def get_today_report(
         result = await get_summary(today)
     else:
         result = await builder.get_report(today, parser_type)
+    result = await _overlay_external_report(
+        result,
+        start_date=today,
+        end_date=today,
+        parser_type=parser_type,
+        communities=await allowed_community_names(user),
+    )
     result = filter_report_payload(
         result,
         user,
