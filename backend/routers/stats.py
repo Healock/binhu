@@ -78,13 +78,13 @@ async def _overlay_external_report(
     end_date: str,
     parser_type: str,
     communities: list[str] | None,
+    inspector: str | None = None,
 ) -> dict:
     """Append privacy-safe external counts to the existing report tables.
 
-    External monitoring has no person assignment by design.  Community rows
-    are merged by community; inspector tables receive an explicit read-only
-    ``外部腾讯表`` row so the table totals include the same observed records
-    without pretending that an external row was assigned to a grid worker.
+    Community rows are merged by community.  Inspector rows use the checker
+    recorded in the external sheet, so local and external counts for the same
+    community/name pair share one row while retaining a source summary.
     """
     parser_types = (
         await _read_summary_types_from_db()
@@ -92,7 +92,7 @@ async def _overlay_external_report(
         else [parser_type]
     )
     overlay = await get_txdocs_business_overlay(
-        start_date, end_date, parser_types, communities
+        start_date, end_date, parser_types, communities, inspector
     )
     if not overlay.get("available") or not isinstance(result, dict):
         return result
@@ -167,12 +167,37 @@ async def _overlay_external_report(
     inspector_table = result.get("inspector")
     if isinstance(inspector_table, dict) and isinstance(inspector_table.get("data"), list):
         rows = inspector_table["data"]
+        columns = inspector_table.get("columns", [])
+        if "数据来源" not in columns:
+            columns.append("数据来源")
+        by_assignee = {
+            (str(row.get("社区") or ""), str(row.get("姓名") or "")): row
+            for row in rows
+            if isinstance(row, dict)
+        }
+        for row in rows:
+            if isinstance(row, dict):
+                row["数据来源"] = "本地业务数据"
         for community, external_item in overlay.get("communities", {}).items():
-            row = {column: 0 for column in inspector_table.get("columns", [])}
-            row["社区"] = str(community)
-            row["姓名"] = "外部腾讯表（只读）"
-            merge_counts(row, external_item, inspector_table.get("columns", []))
-            rows.append(row)
+            assignees = external_item.get("assignees") or {
+                "": external_item,
+            }
+            for checker_name, checker_item in assignees.items():
+                display_name = str(checker_name or "").strip()
+                if not display_name:
+                    display_name = "未指定核查人（腾讯只读）"
+                key = (str(community), display_name)
+                row = by_assignee.get(key)
+                if row is None:
+                    row = {column: 0 for column in columns}
+                    row["社区"] = str(community)
+                    row["姓名"] = display_name
+                    row["数据来源"] = "腾讯只读"
+                    rows.append(row)
+                    by_assignee[key] = row
+                else:
+                    row["数据来源"] = "本地业务数据 + 腾讯只读"
+                merge_counts(row, checker_item, columns)
     result["external_overlay"] = overlay
     return result
 
@@ -897,6 +922,7 @@ async def get_report(
         end_date=report_date,
         parser_type=parser_type,
         communities=formal,
+        inspector=inspector,
     )
     return project_report_payload(result, _column_mode(column_mode, user))
 
@@ -934,6 +960,7 @@ async def get_report_range_endpoint(
             end_date=end_date,
             parser_type=parser_type,
             communities=formal,
+            inspector=inspector,
         )
         return project_report_payload(result, _column_mode(column_mode, user))
     except HTTPException:

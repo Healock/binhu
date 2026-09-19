@@ -111,11 +111,13 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         rows = [
             {"values": {
                 "下发日期": "2026-09-19", "截止日期": "2026-09-20",
+                "核查人": " 测试人员甲 ",
                 "社区": "虚构社区", "身份证号": "320000190001010000",
                 "电话号码": "13000000000", "核查结果": "",
             }},
             {"values": {
                 "下发日期": "2026-09-10", "截止日期": "2026-09-11",
+                "核查人": "测试人员乙",
                 "社区": "虚构社区", "身份证号": "320000190001010001",
                 "电话号码": "13000000001", "核查结果": "已登记",
             }},
@@ -124,11 +126,11 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             "全链条", rows, datetime(2026, 9, 19).date()
         )
         counts = {
-            (bucket.dispatch_date.isoformat(), bucket.task_state): count
+            (bucket.checker_name, bucket.dispatch_date.isoformat(), bucket.task_state): count
             for bucket, count in buckets.items()
         }
-        self.assertEqual(counts[("2026-09-19", "unchecked")], 1)
-        self.assertEqual(counts[("2026-09-10", "completed")], 1)
+        self.assertEqual(counts[("测试人员甲", "2026-09-19", "unchecked")], 1)
+        self.assertEqual(counts[("测试人员乙", "2026-09-10", "completed")], 1)
 
     async def test_disabled_switch_makes_no_database_or_network_access(self):
         with patch.object(monitor.settings, "APP_ENVIRONMENT", "staging"):

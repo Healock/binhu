@@ -761,7 +761,7 @@ async def get_online_overview(
     }
     from services.txdocs_statistics_monitor import get_txdocs_business_overlay
     external = await get_txdocs_business_overlay(
-        start_date, end_date, parser_types, communities
+        start_date, end_date, parser_types, communities, inspector
     )
     if external["available"]:
         for key in (
@@ -827,9 +827,9 @@ async def get_online_community_breakdown(
     finally:
         pool.release(conn)
 
-    # External Tencent monitoring has no inspector assignment.  It can be
-    # included in the community dashboard totals, but must never be attributed
-    # to an individual inspector view.
+    # The community breakdown is a community-level view.  A responsibility
+    # scoped inspector view returns before this overlay so another person's
+    # external read-only counts cannot leak into it.
     if inspector:
         return breakdown
     from services.txdocs_statistics_monitor import get_txdocs_business_overlay
