@@ -322,11 +322,25 @@ test('业务表切换为每个 Univer 实例使用独立挂载节点，避免异
     new URL('../src/components/QuerySpreadsheet.tsx', import.meta.url),
     'utf8',
   )
+  const styles = readFileSync(
+    new URL('../src/index.css', import.meta.url),
+    'utf8',
+  )
   assert.match(componentSource, /const mountNode = document\.createElement\('div'\)/)
+  assert.match(componentSource, /mountNode\.className = 'query-spreadsheet__instance'/)
+  assert.match(componentSource, /position: 'absolute'/)
+  assert.match(componentSource, /inset: '0'/)
   assert.match(componentSource, /container\.appendChild\(mountNode\)/)
   assert.match(componentSource, /createQueryUniver\(\s*mountNode,/s)
   assert.match(componentSource, /mountNode\.remove\(\)/)
   assert.doesNotMatch(componentSource, /container\.replaceChildren\(\)/)
+  assert.match(
+    styles,
+    /\.query-spreadsheet__instance\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*min-width:\s*0;[^}]*min-height:\s*0;/s,
+  )
+  assert.match(componentSource, /new ResizeObserver\(entries =>/)
+  assert.match(componentSource, /resizeObserver\?\.observe\(container\)/)
+  assert.match(componentSource, /resizeObserver\?\.disconnect\(\)/)
 })
 
 test('工作表自动列宽保留合理的最小值和最大值', () => {
