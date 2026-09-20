@@ -1,3 +1,10 @@
+export interface OfflineResidenceAccount {
+  community_id: number | null
+  community_name: string
+  username: string
+  community_code: string
+}
+
 export interface OfflineResidenceConfig {
   enabled: boolean
   base_url: string
@@ -6,6 +13,9 @@ export interface OfflineResidenceConfig {
   mac_service_url: string
   timeout_seconds: number
   community_codes: string[]
+  login_community_ids: number[]
+  login_community_names: string[]
+  accounts: OfflineResidenceAccount[]
 }
 
 export interface OnlineResidenceConfigSnapshot {
@@ -14,6 +24,9 @@ export interface OnlineResidenceConfigSnapshot {
   mac_service_url?: string
   timeout_seconds?: number
   community_codes?: string[]
+  login_community_ids?: number[]
+  login_community_names?: string[]
+  login_community_codes?: string[]
 }
 
 export interface OfflineResidenceQueryResult {
@@ -35,6 +48,19 @@ export const DEFAULT_OFFLINE_RESIDENCE_CONFIG: OfflineResidenceConfig = {
   mac_service_url: 'http://127.0.0.1:23333',
   timeout_seconds: 15,
   community_codes: [],
+  login_community_ids: [],
+  login_community_names: [],
+  accounts: [],
+}
+
+function normalizeAccount(value: Partial<OfflineResidenceAccount>): OfflineResidenceAccount {
+  const rawId = Number(value.community_id)
+  return {
+    community_id: Number.isInteger(rawId) && rawId > 0 ? rawId : null,
+    community_name: String(value.community_name || '').trim(),
+    username: String(value.username || '').trim(),
+    community_code: String(value.community_code || '').trim().toUpperCase(),
+  }
 }
 
 export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
@@ -42,11 +68,27 @@ export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULT_OFFLINE_RESIDENCE_CONFIG }
     const parsed = JSON.parse(raw) as Partial<OfflineResidenceConfig>
+    const storedAccounts = Array.isArray(parsed.accounts)
+      ? parsed.accounts.map(account => normalizeAccount(account)).filter(account => account.username || account.community_id)
+      : []
+    const legacyUsername = typeof parsed.username === 'string' ? parsed.username.trim() : ''
+    const legacyCodes = Array.isArray(parsed.community_codes) ? parsed.community_codes.map(String).filter(Boolean) : []
+    const accounts = storedAccounts.length ? storedAccounts : legacyUsername ? [normalizeAccount({
+      username: legacyUsername,
+      community_code: legacyCodes[0] || '',
+    })] : []
     return {
       ...DEFAULT_OFFLINE_RESIDENCE_CONFIG,
       ...parsed,
       username: typeof parsed.username === 'string' ? parsed.username.trim() : '',
       community_codes: Array.isArray(parsed.community_codes) ? parsed.community_codes.map(String).filter(Boolean) : [],
+      login_community_ids: Array.isArray(parsed.login_community_ids)
+        ? Array.from(new Set(parsed.login_community_ids.filter(id => Number.isInteger(id) && id > 0))).sort((a, b) => a - b)
+        : [],
+      login_community_names: Array.isArray(parsed.login_community_names)
+        ? parsed.login_community_names.map(String).filter(Boolean)
+        : [],
+      accounts,
       timeout_seconds: Math.min(120, Math.max(1, Number(parsed.timeout_seconds || 15))),
     }
   } catch {
@@ -55,12 +97,18 @@ export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
 }
 
 export function saveOfflineResidenceConfig(config: OfflineResidenceConfig): void {
+  const accounts = config.accounts.map(account => normalizeAccount(account))
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     ...config,
     base_url: config.base_url.trim().replace(/\/+$/, ''),
-    username: config.username.trim(),
     mac_service_url: config.mac_service_url.trim().replace(/\/+$/, ''),
-    community_codes: config.community_codes.map(item => item.trim().toUpperCase()).filter(Boolean),
+    login_community_ids: Array.from(new Set(config.login_community_ids.filter(id => Number.isInteger(id) && id > 0))).sort((a, b) => a - b),
+    login_community_names: config.login_community_names.map(item => item.trim()).filter(Boolean),
+    accounts,
+    // Retain a single-account projection so older installed clients can still
+    // read the device-local configuration without widening its scope.
+    username: accounts.length === 1 ? accounts[0].username : '',
+    community_codes: accounts.length === 1 && accounts[0].community_code ? [accounts[0].community_code] : [],
   }))
 }
 
@@ -73,13 +121,39 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
   ) {
     return current
   }
+  const selectedIds = Array.isArray(snapshot.login_community_ids)
+    ? Array.from(new Set(snapshot.login_community_ids.filter(id => Number.isInteger(id) && id > 0))).sort((a, b) => a - b)
+    : null
+  const selectedNames = Array.isArray(snapshot.login_community_names) ? snapshot.login_community_names.map(String) : []
+  const selectedCodes = Array.isArray(snapshot.login_community_codes)
+    ? snapshot.login_community_codes.map(code => String(code).trim().toUpperCase())
+    : Array.isArray(snapshot.community_codes) ? snapshot.community_codes.map(code => String(code).trim().toUpperCase()) : []
+  const currentById = new Map(current.accounts.filter(account => account.community_id).map(account => [account.community_id, account]))
+  const legacyAccount = current.accounts.length === 1 && current.accounts[0].community_id == null
+    ? current.accounts[0]
+    : null
+  const scopedAccounts = selectedIds === null ? current.accounts : selectedIds.map((id, index) => {
+    const existing = currentById.get(id)
+    return normalizeAccount({
+      community_id: id,
+      community_name: selectedNames[index] || existing?.community_name || '',
+      username: existing?.username || (selectedIds.length === 1 ? legacyAccount?.username : '') || '',
+      community_code: selectedCodes[index] || existing?.community_code || (selectedIds.length === 1 ? legacyAccount?.community_code : '') || '',
+    })
+  })
   const next: OfflineResidenceConfig = {
     ...current,
     ...(typeof snapshot.enabled === 'boolean' ? { enabled: snapshot.enabled } : {}),
     ...(typeof snapshot.base_url === 'string' ? { base_url: snapshot.base_url } : {}),
     ...(typeof snapshot.mac_service_url === 'string' ? { mac_service_url: snapshot.mac_service_url } : {}),
     ...(typeof snapshot.timeout_seconds === 'number' ? { timeout_seconds: snapshot.timeout_seconds } : {}),
-    ...(Array.isArray(snapshot.community_codes) ? { community_codes: snapshot.community_codes } : {}),
+    ...(selectedIds !== null
+      ? {
+          login_community_ids: selectedIds,
+          login_community_names: selectedNames.filter(Boolean),
+          accounts: scopedAccounts,
+        }
+      : {}),
   }
   saveOfflineResidenceConfig(next)
   return loadOfflineResidenceConfig()
@@ -132,7 +206,11 @@ export class OfflineResidenceClient {
     this.config = { ...config, base_url: config.base_url.trim().replace(/\/+$/, '') }
   }
 
-  private async login(communityCode: string): Promise<{ token: string; organizationCode: string }> {
+  private accountKey(account: OfflineResidenceAccount): string {
+    return account.community_id ? `community_${account.community_id}` : `local_${account.community_code || account.username}`
+  }
+
+  private async login(account: OfflineResidenceAccount): Promise<{ token: string; organizationCode: string }> {
     const base = baseUrl(this.config)
     const checkKey = String(Date.now())
     await jsonRequest(this.config, `${base}${CAPTCHA_PATH_PREFIX}${checkKey}`, { method: 'GET' })
@@ -143,7 +221,7 @@ export class OfflineResidenceClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json;charset=UTF-8' },
       body: JSON.stringify({
-        username: this.config.username,
+        username: account.username,
         password: this.config.password,
         mac,
         remember_me: true,
@@ -153,13 +231,16 @@ export class OfflineResidenceClient {
       }),
     })
     if (!payload?.success || !payload?.result?.token) throw new Error('居住证平台登录失败，请检查配置')
-    const organizationCode = String(payload.result.orgCode || payload.result.org_code || communityCode).trim()
+    const organizationCode = String(payload.result.orgCode || payload.result.org_code || account.community_code).trim()
+    if (account.community_code && organizationCode && organizationCode.toUpperCase() !== account.community_code) {
+      throw new Error('居住证账号返回的组织代码与所选社区不一致')
+    }
     const session = { token: String(payload.result.token), organizationCode }
-    this.tokens.set(communityCode, session)
+    this.tokens.set(this.accountKey(account), session)
     return session
   }
 
-  private async lookupWithToken(identity: string, communityCode: string, session: { token: string; organizationCode: string }): Promise<ReturnType<typeof classify>> {
+  private async lookupWithToken(identity: string, session: { token: string; organizationCode: string }): Promise<ReturnType<typeof classify>> {
     const headers = {
       'X-Access-Token': session.token,
       tenant_id: '0',
@@ -174,21 +255,20 @@ export class OfflineResidenceClient {
 
   async lookup(identity: string): Promise<OfflineResidenceQueryResult> {
     if (!this.config.enabled) return { status: '查询未开启', error: 'disabled' }
-    if (!this.config.password || !this.config.username || !this.config.base_url) return { status: '配置不完整', error: 'config_incomplete' }
-    const codes = this.config.community_codes.map(value => value.trim().toUpperCase()).filter(Boolean)
-    // The full account is entered locally. Community codes remain an optional
-    // organization fallback for older installations and never derive credentials.
-    const lookupCodes = codes.length ? codes : ['']
+    if (!this.config.password || !this.config.base_url || !this.config.accounts.length || this.config.accounts.some(account => !account.username)) {
+      return { status: '配置不完整', error: 'config_incomplete' }
+    }
     let lastError = ''
     let sawNotFound = false
-    for (const code of lookupCodes) {
+    for (const account of this.config.accounts) {
       try {
-        let session = this.tokens.get(code) || await this.login(code)
-        let result = await this.lookupWithToken(identity, code, session)
+        const key = this.accountKey(account)
+        let session = this.tokens.get(key) || await this.login(account)
+        let result = await this.lookupWithToken(identity, session)
         if (result.error === 'authentication_expired') {
-          this.tokens.delete(code)
-          session = await this.login(code)
-          result = await this.lookupWithToken(identity, code, session)
+          this.tokens.delete(key)
+          session = await this.login(account)
+          result = await this.lookupWithToken(identity, session)
         }
         if (result.state === 'registered') return { status: result.status || '状态待核对' }
         if (result.state === 'not_found') sawNotFound = true

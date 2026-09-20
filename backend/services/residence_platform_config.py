@@ -279,6 +279,12 @@ def serialize_residence_value(key: str, value: Any) -> str:
 
 
 def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
+    communities_by_id = {community.id: community for community in config.login_communities}
+    selected_codes = []
+    for community_id in config.login_community_ids:
+        community = communities_by_id.get(community_id)
+        code = community.code if community and community.is_active else ""
+        selected_codes.append(code if COMMUNITY_CODE_PATTERN.fullmatch(code) else "")
     return {
         "enabled": config.enabled,
         "base_url": config.base_url,
@@ -292,6 +298,7 @@ def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
         "login_community_name": config.login_community_name,
         "login_community_ids": list(config.login_community_ids),
         "login_community_names": list(config.login_community_names),
+        "login_community_codes": selected_codes,
         "login_community_count": len(config.login_community_ids),
         "selected_account_configured": (
             all(community.account_configured for community in config.login_communities)
