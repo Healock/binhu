@@ -42,7 +42,9 @@ def _timestamp(value: Any) -> str:
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def event_to_task_event(event: Mapping[str, Any], run_id: str) -> dict[str, Any] | None:
+def event_to_task_event(
+    event: Mapping[str, Any], run_id: str, environment: str = "development",
+) -> dict[str, Any] | None:
     event_type = str(event.get("event_type") or "")
     aggregate = str(event.get("aggregate_id") or "")
     parser_type, separator, row_key = aggregate.partition(":")
@@ -63,7 +65,7 @@ def event_to_task_event(event: Mapping[str, Any], run_id: str) -> dict[str, Any]
             "revision": revision, "operation_id": event_id,
             "changed_fields": CHANGED_FIELDS[event_type],
             "timestamp": _timestamp(event.get("occurred_at")),
-            "environment": "development", "run_id": run_id}
+            "environment": environment, "run_id": run_id}
 
 
 async def run(config: Mapping[str, str], pool) -> None:
@@ -71,8 +73,11 @@ async def run(config: Mapping[str, str], pool) -> None:
     from redis.asyncio import Redis
 
     url = config.get("BACKEND_REDIS_URL", "")
-    if not url or "production" in url.lower() or "staging" in url.lower():
-        raise ValueError("development backend Redis is required")
+    environment = config["APP_ENVIRONMENT"]
+    run_id = config.get("RUN_ID") or config.get("DEV_RUN_ID") or config.get("STAGING_RUN_ID")
+    forbidden = {"production", "shadow", "development", "staging"} - {environment}
+    if not url or any(value in url.lower() for value in forbidden):
+        raise ValueError("isolated non-Production backend Redis is required")
     # XREAD is deliberately held open for up to five seconds.  A read timeout
     # equal to the block interval turns an idle stream into a worker crash,
     # which can lose the next event while the container is restarting.  Keep
@@ -95,14 +100,14 @@ async def run(config: Mapping[str, str], pool) -> None:
                         event = json.loads(raw)
                     except (TypeError, ValueError):
                         continue
-                    converted = event_to_task_event(event, config["DEV_RUN_ID"])
+                    converted = event_to_task_event(event, run_id, environment)
                     if converted is None:
                         continue
                     async with pool.acquire() as conn:
                         try:
                             await conn.begin()
                             async with conn.cursor() as cur:
-                                await enqueue_delivery(cur, converted, run_id=config["DEV_RUN_ID"])
+                                await enqueue_delivery(cur, converted, run_id=run_id)
                             await conn.commit()
                         except BaseException:
                             await conn.rollback()

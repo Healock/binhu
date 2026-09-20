@@ -14,11 +14,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
+from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id, topic_for
 
-TOPIC = "dev.task.events.v1"
+
 EXPECTED_SINKS = frozenset(("dev_revisions", "dev_task_metadata"))
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
-RUN_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _one(pattern: str, text: str, label: str) -> str:
@@ -30,7 +30,7 @@ def _one(pattern: str, text: str, label: str) -> str:
 
 
 def parse_sql_identity(sql: str) -> dict[str, str]:
-    """Extract only the fixed identity fields needed for the Dev fence."""
+    """Extract only the fixed identity fields needed for the environment fence."""
     if not isinstance(sql, str):
         raise ValueError("Flink SQL is not text")
     run_id = _one(r"pipeline\.name'\s*=\s*'([^']+)'", sql, "run_id")
@@ -40,34 +40,37 @@ def parse_sql_identity(sql: str) -> dict[str, str]:
     environments = set(re.findall(r"environment\s*=\s*'([^']+)'", sql, flags=re.IGNORECASE))
     if filtered_runs != {run_id}:
         raise ValueError("Flink SQL run_id filter does not match pipeline identity")
-    if environments != {"development"}:
-        raise ValueError("Flink SQL environment filter is not development")
-    if topic != TOPIC:
-        raise ValueError("Flink Kafka topic is not the fixed Dev topic")
+    environment = environment_for_run_id(run_id)
+    if environments != {environment}:
+        raise ValueError("Flink SQL environment filter does not match run identity")
+    if topic != topic_for(environment):
+        raise ValueError("Flink Kafka topic does not match environment identity")
     return {"run_id": run_id, "consumer_group": group, "topic": topic,
-            "environment": "development"}
+            "environment": environment}
 
 
 def parse_runtime_identity(runtime: str) -> str:
-    """Read the exact Dev run id from the private runtime environment file."""
+    """Read the exact run id from the private runtime environment file."""
     values: dict[str, str] = {}
     for line in runtime.splitlines():
         if not line or line.lstrip().startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if separator and key in {"APP_ENVIRONMENT", "DEV_RUN_ID"}:
+        if separator and key in {"APP_ENVIRONMENT", "PIPELINE_RUN_ID", "DEV_RUN_ID", "STAGING_RUN_ID"}:
             values[key] = value
-    if values.get("APP_ENVIRONMENT") != "development":
-        raise ValueError("Dev runtime environment is not development")
-    run_id = values.get("DEV_RUN_ID", "")
-    if not RUN_RE.fullmatch(run_id):
-        raise ValueError("Dev runtime run_id is invalid")
+    environment = values.get("APP_ENVIRONMENT", "")
+    run_id = values.get("PIPELINE_RUN_ID") or values.get("DEV_RUN_ID") or values.get("STAGING_RUN_ID", "")
+    try:
+        run_environment = environment_for_run_id(run_id)
+    except ValueError:
+        raise ValueError("runtime run_id is invalid") from None
+    if run_environment != environment:
+        raise ValueError(f"runtime environment is not {run_environment}")
     return run_id
 
 
 def validate_sql_identity(sql: str, expected_run_id: str) -> dict[str, str]:
-    if not RUN_RE.fullmatch(expected_run_id or ""):
-        raise ValueError("invalid Dev run_id")
+    environment_for_run_id(expected_run_id)
     identity = parse_sql_identity(sql)
     if identity["run_id"] != expected_run_id:
         raise ValueError("Flink SQL run_id does not match manifest")
@@ -82,6 +85,7 @@ def _job_text(job: dict[str, Any]) -> str:
 
 
 def validate_job_graph(job: dict[str, Any], expected_run_id: str) -> dict[str, Any]:
+    environment = environment_for_run_id(expected_run_id)
     if job.get("state") != "RUNNING":
         raise ValueError("Flink job is not RUNNING")
     if expected_run_id not in str(job.get("name", "")):
@@ -89,14 +93,14 @@ def validate_job_graph(job: dict[str, Any], expected_run_id: str) -> dict[str, A
     text = _job_text(job)
     if expected_run_id not in text:
         raise ValueError("Flink JobGraph run_id filter does not match")
-    if not re.search(r"environment\s*=\s*['\"]development['\"]", text, flags=re.IGNORECASE):
+    if not re.search(r"environment\s*=\s*['\"]" + re.escape(environment) + r"['\"]", text, flags=re.IGNORECASE):
         raise ValueError("Flink JobGraph environment filter is missing")
     # Table plans in Flink 1.20 do not always include connector options.  The
     # SQL identity fence and Kafka group check cover that case; if a plan does
     # expose a topic marker, it must still be the fixed Dev topic.
     topic_markers = set(re.findall(r"(?:topic|topics)\s*[=:]\s*['\"]?([A-Za-z0-9._-]+)", text, flags=re.IGNORECASE))
-    if topic_markers and topic_markers != {TOPIC}:
-        raise ValueError("Flink JobGraph topic is not the fixed Dev topic")
+    if topic_markers and topic_markers != {topic_for(environment)}:
+        raise ValueError("Flink JobGraph topic does not match environment identity")
     sinks = {sink for sink in EXPECTED_SINKS if sink in text}
     if sinks != EXPECTED_SINKS:
         missing = ",".join(sorted(EXPECTED_SINKS - sinks))
@@ -113,11 +117,15 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
     """
     current: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
+    environment = environment_for_run_id(expected_run_id)
     for item in jobs:
         name = str(item.get("name", ""))
         if expected_run_id in name:
             current.append(item)
-        elif item.get("state") == "RUNNING" and DUAL_TRACK_PREFIX_RE.search(name):
+        elif item.get("state") == "RUNNING" and (
+            (environment == "development" and DUAL_TRACK_PREFIX_RE.search(name))
+            or (environment == "staging" and STAGING_RUN_RE.search(name))
+        ):
             stale.append(item)
     return current, stale
 
@@ -165,7 +173,7 @@ class FlinkRest:
 
     def upload_jar(self, container_path: str) -> str:
         """Upload the JAR compiled from the current candidate source."""
-        if container_path != "/tmp/dev-pipeline-job.jar":
+        if container_path not in {"/tmp/dev-pipeline-job.jar", "/opt/flink/private/pipeline-job.jar"}:
             raise ValueError("unexpected Dev Flink JAR path")
         command = ["docker", "exec", self.container, "curl", "-fsS", "--max-time", "30",
                    "-X", "POST", "http://127.0.0.1:8081/jars/upload",

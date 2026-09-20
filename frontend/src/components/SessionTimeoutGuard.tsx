@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Modal } from 'antd'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { createResilientPoller } from '../utils/resilientPolling'
 
 export default function SessionTimeoutGuard() {
   const { user, recordActivity, refreshUser, logout } = useAuth()
@@ -69,10 +70,20 @@ export default function SessionTimeoutGuard() {
 
   useEffect(() => {
     if (!user) return
-    const timer = window.setInterval(() => {
-      refreshUser().catch(() => {})
-    }, 60_000)
-    return () => window.clearInterval(timer)
+    const poller = createResilientPoller(refreshUser, {
+      intervalMs: 60_000,
+      maxDelayMs: 300_000,
+      failureThreshold: 4,
+      cooldownMs: 300_000,
+      shouldRun: () => document.visibilityState === 'visible',
+    })
+    poller.start()
+    const resume = () => poller.trigger()
+    window.addEventListener('online', resume)
+    return () => {
+      poller.stop()
+      window.removeEventListener('online', resume)
+    }
   }, [refreshUser, user])
 
   useEffect(() => {

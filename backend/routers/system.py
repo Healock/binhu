@@ -10,7 +10,7 @@ from services.personnel_positions import (
     serialize_position_config,
     serialize_rental_position_config,
 )
-from services.maintenance import validate_maintenance_config
+from services.maintenance import invalidate_maintenance_cache, validate_maintenance_config
 
 router = APIRouter(
     prefix="/api/system",
@@ -111,4 +111,6 @@ async def update_config(
         detail={"keys": sorted(str(key) for key in config)},
         **request_audit_fields(request),
     )
+    if maintenance_updates:
+        invalidate_maintenance_cache()
     return {"message": "配置已更新"}

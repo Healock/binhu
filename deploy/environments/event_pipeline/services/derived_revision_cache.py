@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib, json, math, re
 from datetime import datetime
 from .kafka_event_contract import _validate_task_id, EventContractError
+from ..identity import environment_for_run_id
 
 class CacheContractError(ValueError): pass
-_RUN=re.compile(r"^dev-[A-Za-z0-9_-]{1,64}$")
 _HASH=re.compile(r"^[0-9a-fA-F]{64}$")
 _FIELDS={"task_state","address_match","person_tags","task_graph","daily_count"}
-_SOURCES={"python-dev","flink-dev"}
+_SOURCES={"python-dev","flink-dev","python-staging","flink-staging"}
 _LUA="""local old=redis.call('HGET',KEYS[1],'revision')
 local incoming=ARGV[1]
 if old and (#incoming < #old or (#incoming == #old and incoming < old)) then return 0 end
@@ -41,15 +41,18 @@ def _hash_result(r):
 
 class RevisionCache:
     def __init__(self,redis,run_id,ttl_seconds=86400):
-        if not isinstance(run_id,str) or not _RUN.fullmatch(run_id) or type(ttl_seconds) is not int or not 60<=ttl_seconds<=604800: raise CacheContractError("scope")
-        self.redis,self.run_id,self.ttl=redis,run_id,ttl_seconds
+        try: environment=environment_for_run_id(run_id)
+        except ValueError: raise CacheContractError("scope") from None
+        if type(ttl_seconds) is not int or not 60<=ttl_seconds<=604800: raise CacheContractError("scope")
+        self.redis,self.run_id,self.environment,self.ttl=redis,run_id,environment,ttl_seconds
     def keys(self, task_id, source_id, source, revision):
         try: _validate_task_id(task_id)
         except EventContractError: raise CacheContractError("task_id") from None
         if type(source_id) is not int or not 0 < source_id < 2**63: raise CacheContractError("source_id")
-        if not isinstance(source,str) or source not in _SOURCES: raise CacheContractError("source")
+        expected_suffix="dev" if self.environment=="development" else "staging"
+        if not isinstance(source,str) or source not in _SOURCES or not source.endswith("-"+expected_suffix): raise CacheContractError("source")
         if type(revision) is not int or not 0 <= revision < 2**63: raise CacheContractError("revision")
-        tag=f"{{binhu:development:{self.run_id}:derived:{source}:{task_id}:{source_id}}}"
+        tag=f"{{binhu:{self.environment}:{self.run_id}:derived:{source}:{task_id}:{source_id}}}"
         return tag+":latest", tag+":revision:"+str(revision)
     async def put(self,result):
         if not isinstance(result,dict) or set(result)-{"task_id","source_id","revision","source_revision","generated_at","source","content_hash","fields"}: raise CacheContractError("envelope")
@@ -61,7 +64,7 @@ class RevisionCache:
         if not isinstance(fields,dict) or set(fields)-_FIELDS: raise CacheContractError("fields")
         for k,v in fields.items(): _scalar(v,k)
         result_hash=_hash_result(result)
-        payload={"environment":"development","run_id":self.run_id,"task_id":result["task_id"],"source_id":result["source_id"],"revision":str(result["revision"]),"source_revision":str(result["source_revision"]),"generated_at":result["generated_at"],"source":result["source"],"content_hash":result["content_hash"],"fields":fields,"result_hash":result_hash}
+        payload={"environment":self.environment,"run_id":self.run_id,"task_id":result["task_id"],"source_id":result["source_id"],"revision":str(result["revision"]),"source_revision":str(result["source_revision"]),"generated_at":result["generated_at"],"source":result["source"],"content_hash":result["content_hash"],"fields":fields,"result_hash":result_hash}
         raw=json.dumps(payload,ensure_ascii=False,separators=(",",":"),allow_nan=False)
         if len(raw.encode())>65536: raise CacheContractError("size")
         out=await self.redis.eval(_LUA,2,latest,snap,str(result["revision"]),str(self.ttl),result_hash,raw,result["generated_at"],str(result["source_id"]),result["source"])
@@ -78,7 +81,7 @@ class RevisionCache:
         raw=await self.redis.eval(_READ_LUA,2,latest,snap,str(expected_revision))
         if raw is None: return None
         value=json.loads(raw)
-        expected={"environment":"development","run_id":self.run_id,"task_id":task_id,
+        expected={"environment":self.environment,"run_id":self.run_id,"task_id":task_id,
                   "source_id":source_id,"source":source,"revision":str(expected_revision),
                   "source_revision":str(expected_revision)}
         if any(value.get(k)!=v for k,v in expected.items()) or value.get("result_hash")!=_hash_result(value):

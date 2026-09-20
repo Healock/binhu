@@ -1,0 +1,91 @@
+name: Prepare Staging event pipeline
+run-name: Prepare Staging event pipeline ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref: {description: "Merged main commit", required: true, type: string}
+      run_id: {description: "STG-YYYYMMDD-NN", required: true, type: string}
+      candidate_image_digest: {description: "Application image sha256 digest accepted in Dev", required: true, type: string}
+      configuration_sha256: {description: "Frozen Staging configuration SHA-256", required: true, type: string}
+      staging_snapshot_id: {description: "New sanitized Staging snapshot ID", required: true, type: string}
+      dev_acceptance_run_id: {description: "Dev acceptance run ID for the same candidate", required: true, type: string}
+      kafka_image: {description: "Dev-accepted Kafka digest", required: true, type: string}
+      schema_registry_image: {description: "Dev-accepted Schema Registry digest", required: true, type: string}
+      mysql_image: {description: "Dev-accepted MySQL digest", required: true, type: string}
+      redis_image: {description: "Dev-accepted Redis digest", required: true, type: string}
+      worker_image: {description: "Dev-accepted worker digest", required: true, type: string}
+      flink_image: {description: "Dev-accepted Flink digest", required: true, type: string}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-staging-event-pipeline
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Verify immutable main source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags origin main
+          commit="$(git rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$commit" origin/main
+          printf 'CANDIDATE_COMMIT=%s\n' "$commit" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Verify Staging contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m unittest deploy.tests.test_staging_event_pipeline deploy.tests.test_dev_event_pipeline deploy.tests.test_task_metadata_projection
+          python -m compileall -q deploy/environments/event_pipeline load-tests/staging
+          git diff --check
+      - name: Build immutable candidate
+        shell: bash
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          APP_DIGEST: ${{ inputs.candidate_image_digest }}
+          CONFIG_SHA: ${{ inputs.configuration_sha256 }}
+          SNAPSHOT_ID: ${{ inputs.staging_snapshot_id }}
+          DEV_RUN_ID: ${{ inputs.dev_acceptance_run_id }}
+          KAFKA_IMAGE: ${{ inputs.kafka_image }}
+          SCHEMA_REGISTRY_IMAGE: ${{ inputs.schema_registry_image }}
+          MYSQL_IMAGE: ${{ inputs.mysql_image }}
+          REDIS_IMAGE: ${{ inputs.redis_image }}
+          WORKER_IMAGE: ${{ inputs.worker_image }}
+          FLINK_IMAGE: ${{ inputs.flink_image }}
+        run: |
+          set -Eeuo pipefail
+          mvn -q -f deploy/environments/event_pipeline/pom.xml package
+          mkdir -p candidate
+          python -m deploy.environments.event_pipeline.staging_deploy build \
+            --repository . --output candidate/binhu-staging-event-pipeline.tar.gz \
+            --run-id "$RUN_ID" --commit "$CANDIDATE_COMMIT" \
+            --pipeline-jar deploy/environments/event_pipeline/target/dev-pipeline-job.jar \
+            --candidate-image-digest "$APP_DIGEST" --configuration-sha256 "$CONFIG_SHA" \
+            --staging-snapshot-id "$SNAPSHOT_ID" --dev-acceptance-run-id "$DEV_RUN_ID" \
+            --kafka-image "$KAFKA_IMAGE" --schema-registry-image "$SCHEMA_REGISTRY_IMAGE" \
+            --mysql-image "$MYSQL_IMAGE" --redis-image "$REDIS_IMAGE" \
+            --worker-image "$WORKER_IMAGE" --flink-image "$FLINK_IMAGE"
+          python -m deploy.environments.event_pipeline.staging_deploy verify \
+            --bundle candidate/binhu-staging-event-pipeline.tar.gz
+          sha256sum candidate/binhu-staging-event-pipeline.tar.gz > candidate/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binhu-staging-event-pipeline-${{ inputs.run_id }}-${{ github.run_id }}
+          path: candidate
+          if-no-files-found: error
+          retention-days: 14

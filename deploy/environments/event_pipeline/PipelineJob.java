@@ -25,8 +25,9 @@ public final class PipelineJob {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 0 || !"development".equals(System.getenv("APP_ENVIRONMENT"))) {
-            throw new IllegalArgumentException("Dev job identity required");
+        String environment = System.getenv("APP_ENVIRONMENT");
+        if (args.length != 0 || !("development".equals(environment) || "staging".equals(environment))) {
+            throw new IllegalArgumentException("Non-Production job identity required");
         }
         String sql = Files.readString(Path.of("/opt/flink/private/pipeline.sql"));
         TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
@@ -62,7 +63,7 @@ public final class PipelineJob {
             for (int depth = 0; depth < 12 && cause != null; depth++, cause = cause.getCause()) {
                 types.append(cause.getClass().getSimpleName()).append(" ");
             }
-            throw new IllegalStateException("Dev statement " + index + " failed: " + types);
+            throw new IllegalStateException("Non-Production statement " + index + " failed: " + types);
         }
     }
 }

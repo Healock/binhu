@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Badge,
@@ -35,6 +35,7 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { useNavigate } from 'react-router-dom'
+import { createResilientPoller, type ResilientPoller } from '../utils/resilientPolling'
 
 interface AnnouncementFormValues {
   title: string
@@ -61,8 +62,9 @@ export default function NotificationCenter({ placement = 'sidebar' }: Notificati
   const [form] = Form.useForm<AnnouncementFormValues>()
   const [modal, contextHolder] = Modal.useModal()
   const canPublishAnnouncements = Boolean(user?.permissions.includes('announcement.manage'))
+  const pollerRef = useRef<ResilientPoller | null>(null)
 
-  const load = useCallback(async (showLoading = false) => {
+  const load = useCallback(async (showLoading = false, propagateFailure = false) => {
     if (showLoading) setLoading(true)
     try {
       const result = await getNotifications(50)
@@ -71,34 +73,44 @@ export default function NotificationCenter({ placement = 'sidebar' }: Notificati
       setUnreadCount(result.unread_count)
       setPersonalUnread(result.personal_unread_count)
       setAnnouncementUnread(result.announcement_unread_count)
-    } catch {
+    } catch (error) {
       setLoadError('消息暂时加载失败，请点击重试；当前页面不会受到影响。')
+      if (propagateFailure) throw error
     } finally {
       if (showLoading) setLoading(false)
     }
   }, [])
 
-  const loadUnreadCount = useCallback(async () => {
+  const loadUnreadCount = useCallback(async (propagateFailure = false) => {
     try {
       const result = await getNotificationUnreadCount()
       setUnreadCount(result.unread_count)
       setPersonalUnread(result.personal_unread_count)
       setAnnouncementUnread(result.announcement_unread_count)
-    } catch {
+    } catch (error) {
       // 未读数轮询失败时保留当前显示，下一轮继续重试。
+      if (propagateFailure) throw error
     }
   }, [])
 
   useEffect(() => {
-    void loadUnreadCount()
-    const timer = window.setInterval(() => {
-      if (open) {
-        void load()
-      } else {
-        void loadUnreadCount()
-      }
-    }, 30000)
-    return () => window.clearInterval(timer)
+    pollerRef.current?.stop()
+    const poller = createResilientPoller(async () => {
+      if (open) await load(false, true)
+      else await loadUnreadCount(true)
+    }, {
+      intervalMs: 30_000,
+      maxDelayMs: 120_000,
+      failureThreshold: 4,
+      cooldownMs: 120_000,
+      shouldRun: () => document.visibilityState === 'visible',
+    })
+    pollerRef.current = poller
+    poller.start()
+    return () => {
+      poller.stop()
+      if (pollerRef.current === poller) pollerRef.current = null
+    }
   }, [load, loadUnreadCount, open])
 
   useEffect(() => {

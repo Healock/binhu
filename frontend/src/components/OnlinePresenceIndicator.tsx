@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext'
 import useMobileViewport from '../hooks/useMobileViewport'
 import type { PresenceUser } from '../types'
 import { AuthenticatedAvatar } from './AuthenticatedImage'
+import { createResilientPoller } from '../utils/resilientPolling'
 
 const CLIENT_STORAGE_KEY = 'binhu_presence_client_id'
 const HEARTBEAT_INTERVAL_MS = 30_000
@@ -90,7 +91,6 @@ export default function OnlinePresenceIndicator() {
   const [users, setUsers] = useState<PresenceUser[]>([])
   const [loadingUsers, setLoadingUsers] = useState(false)
   const heartbeatInFlight = useRef(false)
-  const heartbeatTimer = useRef<number | null>(null)
   const canViewDetails = Boolean(user?.permissions?.includes('presence.detail.view'))
 
   const refreshUsers = useCallback(async (showLoading = false) => {
@@ -133,40 +133,38 @@ export default function OnlinePresenceIndicator() {
         heartbeatInFlight.current = false
       }
     }
-    const scheduleHeartbeat = (delay = HEARTBEAT_INTERVAL_MS) => {
-      if (heartbeatTimer.current !== null) window.clearTimeout(heartbeatTimer.current)
-      heartbeatTimer.current = window.setTimeout(async () => {
-        const succeeded = await heartbeat()
-        if (!disposed) scheduleHeartbeat(succeeded ? HEARTBEAT_INTERVAL_MS : 5000)
-      }, delay)
-    }
-    heartbeat()
+    const poller = createResilientPoller(async () => {
+      const succeeded = await heartbeat()
+      if (!succeeded) throw new Error('presence heartbeat failed')
+    }, {
+      intervalMs: HEARTBEAT_INTERVAL_MS,
+      maxDelayMs: 120_000,
+      failureThreshold: 4,
+      cooldownMs: 120_000,
+      shouldRun: () => document.visibilityState === 'visible',
+    })
+    poller.start()
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        void heartbeat()
-        scheduleHeartbeat(HEARTBEAT_INTERVAL_MS)
+        poller.trigger()
       }
     }
     const onFocus = () => {
-      void heartbeat()
-      scheduleHeartbeat(HEARTBEAT_INTERVAL_MS)
+      poller.trigger()
     }
     const onOnline = () => {
-      void heartbeat()
-      scheduleHeartbeat(1000)
+      poller.trigger()
     }
     const onPageShow = () => {
-      void heartbeat()
-      scheduleHeartbeat(1000)
+      poller.trigger()
     }
-    scheduleHeartbeat(HEARTBEAT_INTERVAL_MS)
     document.addEventListener('visibilitychange', onVisibilityChange)
     window.addEventListener('focus', onFocus)
     window.addEventListener('online', onOnline)
     window.addEventListener('pageshow', onPageShow)
     return () => {
       disposed = true
-      if (heartbeatTimer.current !== null) window.clearTimeout(heartbeatTimer.current)
+      poller.stop()
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('focus', onFocus)
       window.removeEventListener('online', onOnline)

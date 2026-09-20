@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+parts=()
+read -r -a parts <<< "${SSH_ORIGINAL_COMMAND:-}"
+case "${parts[0]:-}" in
+  status)
+    [[ "${#parts[@]}" -eq 1 ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-event-pipeline-gateway.py status
+    ;;
+  prepare)
+    [[ "${#parts[@]}" -eq 5 ]] || exit 64
+    [[ "${parts[1]}" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]] || exit 64
+    [[ "${parts[2]}" =~ ^[0-9a-f]{40}$ ]] || exit 64
+    [[ "${parts[3]}" =~ ^[1-9][0-9]{0,8}$ ]] || exit 64
+    [[ "${parts[4]}" =~ ^[0-9a-f]{64}$ ]] || exit 64
+    (( parts[3] <= 134217728 )) || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-event-pipeline-gateway.py \
+      prepare "${parts[1]}" "${parts[2]}" "${parts[3]}" "${parts[4]}"
+    ;;
+  measure|apply|run|sample|rollback)
+    [[ "${#parts[@]}" -eq 2 ]] || exit 64
+    [[ "${parts[1]}" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-event-pipeline-gateway.py \
+      "${parts[0]}" "${parts[1]}"
+    ;;
+  verify)
+    [[ "${#parts[@]}" -eq 4 ]] || exit 64
+    [[ "${parts[1]}" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]] || exit 64
+    [[ "${parts[2]}" =~ ^[1-9][0-9]{0,7}$ ]] || exit 64
+    [[ "${parts[3]}" =~ ^[0-9a-f]{64}$ ]] || exit 64
+    (( parts[2] <= 33554432 )) || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-event-pipeline-gateway.py \
+      verify "${parts[1]}" "${parts[2]}" "${parts[3]}"
+    ;;
+  *)
+    echo 'Only fixed Staging event-pipeline commands are allowed.' >&2
+    exit 64
+    ;;
+esac

@@ -9,11 +9,13 @@ from database import db_manager
 from config import settings
 from deps import get_current_user, require_permission
 from services.permissions import PRESENCE_DETAIL_VIEW
+from services.bounded_cache import BoundedTTLCache
 
 
 ONLINE_WINDOW_SECONDS = 90
 
 router = APIRouter(prefix="/api/presence", tags=["在线状态"])
+_presence_count_cache = BoundedTTLCache[str, int](ttl_seconds=2, max_entries=1)
 
 
 class PresenceHeartbeatRequest(BaseModel):
@@ -75,7 +77,12 @@ async def presence_heartbeat(
                 """,
                 (payload.client_id, user["id"], session_id),
             )
-            count, server_time = await _presence_summary(cur)
+            count = _presence_count_cache.get("online")
+            if count is None:
+                count, server_time = await _presence_summary(cur)
+                _presence_count_cache.set("online", count)
+            else:
+                server_time = datetime.utcnow()
     finally:
         pool.release(conn)
     return {

@@ -1,0 +1,127 @@
+name: Run Staging realistic 75-user load
+run-name: Run Staging realistic load ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref: {description: "Merged main commit deployed to Staging", required: true, type: string}
+      run_id: {description: "Applied STG-YYYYMMDD-NN run", required: true, type: string}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-realistic-load
+  cancel-in-progress: false
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install fixed load generator
+        run: python -m pip install -r load-tests/requirements.txt
+      - name: Seed fictional fixtures and verify query smoke path
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
+          LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "$BASE_URL" =~ ^https://[^/]+/?$ ]]
+          [[ -n "$HOST" && "$PORT" =~ ^[0-9]+$ && -n "$KEY" && -n "$KNOWN_HOSTS" && -n "$LOAD_PASSWORD" ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh" "$RUNNER_TEMP/staging-load"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh_cmd=(ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "binhu-staging-deploy@$HOST")
+          "${ssh_cmd[@]}" "run $RUN_ID" > "$RUNNER_TEMP/staging-load/runtime-index.json"
+          python - <<'PY'
+          import json, os, requests, sys
+          from urllib.parse import quote
+          runtime=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','runtime-index.json'),encoding='utf-8'))
+          if runtime.get('run_id') != os.environ['RUN_ID'] or len(runtime.get('accounts',[])) < 75:
+              raise SystemExit('runtime index identity mismatch')
+          session=requests.Session()
+          login=session.post(os.environ['BASE_URL'].rstrip('/')+'/staging/api/auth/login',json={
+              'username':runtime['accounts'][0]['username'],'password':os.environ['LOAD_PASSWORD'],
+              'device_type':'staging-smoke','device_id':os.environ['RUN_ID'].lower()+'-smoke'},timeout=20)
+          if login.status_code >= 400: raise SystemExit('Staging smoke login failed')
+          query=session.get(os.environ['BASE_URL'].rstrip('/')+'/staging/api/query/'+quote('全链条',safe=''),params={'page':1,'page_size':200},timeout=30)
+          if query.status_code >= 400: raise SystemExit('Staging /api/query smoke failed')
+          print(json.dumps({'staging_query_smoke':'passed','status_code':query.status_code}))
+          PY
+      - name: Run 75 users with independent background polling and streams
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
+          LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
+          RUN_ID: ${{ inputs.run_id }}
+          APP_ENVIRONMENT: staging
+        run: |
+          set -Eeuo pipefail
+          export STAGING_LOAD_TEST_RUN_ID="$RUN_ID"
+          export COMPOSE_PROJECT_NAME="binhu-staging-load-${RUN_ID,,}"
+          export STAGING_BASE_URL="${BASE_URL%/}"
+          export STAGING_DB_NAME="StagingLoad_${RUN_ID//-/_}"
+          export STAGING_LOAD_TEST_PASSWORD="$LOAD_PASSWORD"
+          export STAGING_RUNTIME_INDEX="$RUNNER_TEMP/staging-load/runtime-index.json"
+          export STAGING_LOAD_REPORT="$RUNNER_TEMP/staging-load/load-report.json"
+          ssh_cmd=(ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "binhu-staging-deploy@$HOST")
+          "${ssh_cmd[@]}" "sample $RUN_ID" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+          locust -f load-tests/staging/locustfile.py --headless --users 75 --spawn-rate 5 \
+            --run-time 30m --stop-timeout 30 --csv "$RUNNER_TEMP/staging-load/locust" \
+            --only-summary &
+          load_pid=$!
+          while kill -0 "$load_pid" 2>/dev/null; do
+            sleep 30
+            "${ssh_cmd[@]}" "sample $RUN_ID" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+          done
+          wait "$load_pid"
+          drain_started=$(date +%s)
+          while true; do
+            sample=$("${ssh_cmd[@]}" "sample $RUN_ID")
+            printf '%s\n' "$sample" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+            pending=$(python -c 'import json,sys; print(int(json.load(sys.stdin)["derived_queue"]["pending"]))' <<< "$sample")
+            [[ "$pending" -eq 0 ]] && break
+            (( $(date +%s) - drain_started < 120 )) || break
+            sleep 5
+          done
+          export DRAIN_SECONDS=$(( $(date +%s) - drain_started ))
+          python - <<'PY'
+          import json, os
+          path=os.path.join(os.environ['RUNNER_TEMP'],'staging-load','staging-samples.jsonl')
+          rows=[json.loads(line) for line in open(path,encoding='utf-8') if line.strip()]
+          rows[-1]['derived_queue']['drain_seconds']=int(os.environ['DRAIN_SECONDS'])
+          with open(path,'w',encoding='utf-8') as stream:
+              for row in rows: stream.write(json.dumps(row,ensure_ascii=False,separators=(',',':'))+'\n')
+          PY
+          test -s "$STAGING_LOAD_REPORT"
+          rm -f "$STAGING_RUNTIME_INDEX" "$RUNNER_TEMP/staging-ssh/key" "$RUNNER_TEMP/staging-ssh/known_hosts"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-realistic-load-${{ inputs.run_id }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/staging-load/load-report.json
+            ${{ runner.temp }}/staging-load/staging-samples.jsonl
+            ${{ runner.temp }}/staging-load/locust_stats.csv
+            ${{ runner.temp }}/staging-load/locust_stats_history.csv
+            ${{ runner.temp }}/staging-load/locust_failures.csv
+            ${{ runner.temp }}/staging-load/locust_exceptions.csv
+          if-no-files-found: error
+          retention-days: 14

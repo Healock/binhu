@@ -1,16 +1,18 @@
-"""Render a bounded Dev metadata aggregation job with fixed connector targets."""
+"""Render a bounded, isolated Dev or Staging metadata aggregation job."""
 from .runtime import configuration
 
 
 def render(environ):
     config = configuration(environ)
-    run = config["DEV_RUN_ID"]
+    run = config["RUN_ID"]
+    environment = config["APP_ENVIRONMENT"]
+    checkpoint_scope = "dev" if environment == "development" else "staging"
     password = config["MYSQL_PASSWORD"]  # Validated hex; saved only server-private.
     return f"""SET 'execution.checkpointing.interval' = '10 s';
 SET 'execution.checkpointing.mode' = 'EXACTLY_ONCE';
 SET 'execution.checkpointing.externalized-checkpoint-retention' = 'RETAIN_ON_CANCELLATION';
-SET 'state.checkpoints.dir' = 'file:///opt/flink/checkpoints/dev-pipeline';
-SET 'state.savepoints.dir' = 'file:///opt/flink/checkpoints/dev-savepoints';
+SET 'state.checkpoints.dir' = 'file:///opt/flink/checkpoints/{checkpoint_scope}-pipeline';
+SET 'state.savepoints.dir' = 'file:///opt/flink/checkpoints/{checkpoint_scope}-savepoints';
 SET 'parallelism.default' = '1';
 SET 'pipeline.name' = '{run}';
 CREATE TABLE dev_events (
@@ -18,8 +20,8 @@ CREATE TABLE dev_events (
  source_id BIGINT, revision BIGINT, operation_id STRING,
  changed_fields ARRAY<STRING>, `timestamp` STRING, environment STRING, run_id STRING
 ) WITH (
- 'connector' = 'kafka', 'topic' = 'dev.task.events.v1',
- 'properties.bootstrap.servers' = 'kafka-1:9092,kafka-2:9092,kafka-3:9092',
+ 'connector' = 'kafka', 'topic' = '{config["TOPIC"]}',
+ 'properties.bootstrap.servers' = '{config["KAFKA_BOOTSTRAP_SERVERS"]}',
  'properties.group.id' = '{run}-flink', 'scan.startup.mode' = 'earliest-offset',
  'format' = 'json', 'json.fail-on-missing-field' = 'true',
  'json.ignore-parse-errors' = 'false'
@@ -29,15 +31,15 @@ CREATE TABLE dev_revisions (
  PRIMARY KEY (run_id, task_id, source_id) NOT ENFORCED
 ) WITH (
  'connector' = 'jdbc',
- 'url' = 'jdbc:mysql://dev-derived-mysql:3306/Dev_EventPipeline?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
- 'table-name' = 'dev_task_revisions', 'username' = 'dev_pipeline',
+ 'url' = 'jdbc:mysql://{config["MYSQL_HOST"]}:3306/{config["MYSQL_DATABASE"]}?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
+ 'table-name' = 'dev_task_revisions', 'username' = '{config["MYSQL_USER"]}',
  'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
 INSERT INTO dev_revisions
 SELECT run_id, task_id, source_id, MAX(revision)
 FROM dev_events
-WHERE environment = 'development' AND run_id = '{run}'
+WHERE environment = '{environment}' AND run_id = '{run}'
  AND schema_version = 1 AND source_id > 0 AND revision >= 0
 GROUP BY run_id, task_id, source_id;
 
@@ -50,8 +52,8 @@ CREATE TABLE dev_task_metadata (
  PRIMARY KEY (run_id, task_id, source_id) NOT ENFORCED
 ) WITH (
  'connector' = 'jdbc',
- 'url' = 'jdbc:mysql://dev-derived-mysql:3306/Dev_EventPipeline?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
- 'table-name' = 'dev_task_metadata', 'username' = 'dev_pipeline',
+ 'url' = 'jdbc:mysql://{config["MYSQL_HOST"]}:3306/{config["MYSQL_DATABASE"]}?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
+ 'table-name' = 'dev_task_metadata', 'username' = '{config["MYSQL_USER"]}',
  'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
@@ -59,7 +61,7 @@ CREATE VIEW dev_unique_events AS
 SELECT DISTINCT schema_version, event_id, event_type, task_id, source_id, revision,
        operation_id, changed_fields, `timestamp`, environment, run_id
 FROM dev_events
-WHERE environment = 'development' AND run_id = '{run}'
+WHERE environment = '{environment}' AND run_id = '{run}'
   AND schema_version = 1 AND source_id > 0 AND revision >= 0;
 INSERT INTO dev_task_metadata
 SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),

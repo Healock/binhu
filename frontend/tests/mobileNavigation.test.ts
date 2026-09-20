@@ -519,9 +519,19 @@ test('在线人数在前台聚焦、网络恢复和心跳周期都会刷新', ()
   assert.match(source, /window\.addEventListener\('focus', onFocus\)/)
   assert.match(source, /window\.addEventListener\('online', onOnline\)/)
   assert.match(source, /window\.addEventListener\('pageshow', onPageShow\)/)
-  assert.match(source, /scheduleHeartbeat\(HEARTBEAT_INTERVAL_MS\)/)
+  assert.match(source, /createResilientPoller/)
+  assert.match(source, /poller\.trigger\(\)/)
   assert.match(source, /if \(open && canViewDetails\) void refreshUsers\(\)/)
   assert.match(source, /void refreshUsers\(true\)/)
+})
+
+test('流口列表后台刷新使用退避调度并在页面恢复时错峰触发', () => {
+  const source = readFileSync(new URL('../src/pages/MobileTaskList.tsx', import.meta.url), 'utf8')
+  assert.match(source, /createResilientPoller\(refreshVisibleList/)
+  assert.match(source, /intervalMs: 30_000/)
+  assert.match(source, /failureThreshold: 4/)
+  assert.match(source, /window\.addEventListener\('online', online\)/)
+  assert.doesNotMatch(source, /setInterval\(refreshVisibleList, 30_000\)/)
 })
 
 test('工单流程配置只从设置页进入，不再出现在主侧边栏导航', () => {

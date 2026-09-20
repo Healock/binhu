@@ -31,6 +31,9 @@ class PlatformPerformanceTests(unittest.TestCase):
         self.assertEqual(endpoint_group("GET", "/api/query/task/{id}"), "task_list")
         self.assertEqual(endpoint_group("POST", "/api/tasks/bulk-assign"), "bulk_assignment")
         self.assertEqual(endpoint_group("POST", "/api/address-match/run"), "address_matching")
+        self.assertEqual(endpoint_group("POST", "/api/presence/heartbeat"), "polling")
+        self.assertEqual(endpoint_group("GET", "/api/query/全链条/version"), "polling")
+        self.assertEqual(endpoint_group("GET", "/api/events/stream"), "realtime")
 
     def test_409_conflicts_are_not_counted_as_server_errors(self):
         now = time.time()
@@ -62,6 +65,20 @@ class PlatformPerformanceTests(unittest.TestCase):
         self.assertEqual({item["code"] for item in signals}, {"latency", "db_pool"})
         self.assertTrue(all(item["recommended_action"] for item in signals))
         self.assertTrue(all(item["action_tab"] for item in signals))
+
+    def test_realtime_metrics_track_connections_reconnect_peak_and_resync(self):
+        metrics = PlatformPerformanceMetrics()
+        metrics.realtime_open("sse")
+        metrics.realtime_open("sse", reconnect=True)
+        metrics.realtime_open("websocket")
+        metrics.realtime_resync()
+        metrics.realtime_close("sse")
+        snapshot = metrics.realtime_snapshot(15)
+        self.assertEqual(snapshot["current_connections"], {"sse": 1, "websocket": 1})
+        self.assertEqual(snapshot["opened_since_start"], {"sse": 2, "websocket": 1})
+        self.assertEqual(snapshot["reconnects"], 1)
+        self.assertEqual(snapshot["reconnect_peak_per_minute"], 1)
+        self.assertEqual(snapshot["resync_required_since_start"], 1)
 
 
 if __name__ == "__main__":

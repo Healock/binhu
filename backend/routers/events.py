@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 
 from config import settings
 from deps import get_current_user
+from services.platform_performance import performance_metrics
 
 
 router = APIRouter(prefix="/api/events", tags=["实时事件"])
@@ -55,7 +56,7 @@ async def _event_generator(request: Request, user: dict) -> AsyncIterator[str]:
     client = redis.from_url(settings.REDIS_URL, decode_responses=True)
     seen: set[str] = set()
     try:
-        last_id = request.headers.get("last-event-id") or ""
+        last_id = request.headers.get("last-event-id") or request.query_params.get("last_event_id", "")
         # Redis may be temporarily unavailable when the browser first opens
         # the stream.  Keep the SSE connection alive and report a recoverable
         # state instead of raising before the read loop has started (which
@@ -108,8 +109,20 @@ async def _event_generator(request: Request, user: dict) -> AsyncIterator[str]:
 async def event_stream(request: Request, user: dict = Depends(get_current_user)):
     if not settings.REALTIME_EVENTS_ENABLED:
         raise HTTPException(status_code=503, detail="实时事件暂未启用")
+    cursor = request.headers.get("last-event-id") or request.query_params.get("last_event_id", "")
+    performance_metrics.realtime_open("sse", reconnect=bool(cursor))
+
+    async def measured_stream():
+        try:
+            async for item in _event_generator(request, user):
+                if item.startswith("event: resync_required"):
+                    performance_metrics.realtime_resync()
+                yield item
+        finally:
+            performance_metrics.realtime_close("sse")
+
     return StreamingResponse(
-        _event_generator(request, user),
+        measured_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

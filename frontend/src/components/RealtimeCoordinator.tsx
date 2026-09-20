@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { resolveRuntimeApiUrl } from '../utils/apiEnvironment.ts'
+import { connectResilientEventSource } from '../utils/resilientEventSource'
 
 const EVENT_NAME = 'binhu:domain-event'
 
 export default function RealtimeCoordinator() {
   const { user, environment } = useAuth()
-  const sourceRef = useRef<EventSource | null>(null)
+  const sourceRef = useRef<ReturnType<typeof connectResilientEventSource> | null>(null)
   const seenRef = useRef<string[]>([])
   const revisionsRef = useRef<Map<string, number>>(new Map())
 
@@ -14,10 +15,10 @@ export default function RealtimeCoordinator() {
     if (!user || typeof window === 'undefined' || typeof EventSource === 'undefined') return undefined
     const seen = seenRef.current
     const streamUrl = resolveRuntimeApiUrl('/api/events/stream')
-    const source = new EventSource(streamUrl, { withCredentials: true })
-    sourceRef.current = source
+    let connection: ReturnType<typeof connectResilientEventSource>
+    let streamConnected = false
     const fallbackTimer = window.setInterval(() => {
-      if (source.readyState !== EventSource.OPEN) {
+      if (!streamConnected) {
         window.dispatchEvent(new CustomEvent('binhu:realtime-poll'))
       }
     }, 60_000)
@@ -25,6 +26,7 @@ export default function RealtimeCoordinator() {
       try {
         const payload = JSON.parse(event.data || '{}') as Record<string, unknown>
         const eventId = String(payload.event_id || event.lastEventId || '')
+        if (event.lastEventId) connection.setLastEventId(event.lastEventId)
         if (eventId && seen.includes(eventId)) return
         if (eventId) {
           seen.push(eventId)
@@ -42,12 +44,15 @@ export default function RealtimeCoordinator() {
         // Ignore malformed events; the next normal query remains authoritative.
       }
     }
-    source.addEventListener('domain_event', handleEvent)
-    source.addEventListener('resync_required', () => {
-      window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { event_type: 'resync_required' } }))
-    })
+    connection = connectResilientEventSource(streamUrl, source => {
+      source.addEventListener('domain_event', handleEvent as EventListener)
+      source.addEventListener('resync_required', () => {
+        window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: { event_type: 'resync_required' } }))
+      })
+    }, { onState: state => { streamConnected = state === 'connected' } })
+    sourceRef.current = connection
     return () => {
-      source.close()
+      connection.close()
       window.clearInterval(fallbackTimer)
       sourceRef.current = null
     }

@@ -31,6 +31,8 @@ ENDPOINT_GROUP_LABELS = {
     "file_operation": "导入与导出",
     "operations": "运维读取",
     "other": "其他业务接口",
+    "polling": "前端自动轮询",
+    "realtime": "事件流与实时连接",
 }
 
 
@@ -63,6 +65,14 @@ def endpoint_group(method: str, route: str) -> str:
     path = route.lower()
     if path == "/api/auth/login":
         return "login"
+    if any(value in path for value in ("/presence/heartbeat", "/notifications/unread-count", "/maintenance/status", "/auth/me", "/inline-editors")):
+        return "polling"
+    if path.startswith("/api/query/") and path.endswith("/version"):
+        return "polling"
+    if path.endswith("/events/stream") or "/query/live/" in path:
+        return "realtime"
+    if "registry/properties/search" in path:
+        return "address_matching"
     if any(value in path for value in ("assign", "distribution", "allocate")):
         return "bulk_assignment"
     if any(value in path for value in ("small-communit", "address-match", "police-address")):
@@ -121,6 +131,43 @@ class PlatformPerformanceMetrics:
         self.peak_inflight = 0
         self._last_state = "normal"
         self._last_pressure_at: float | None = None
+        self.realtime_current: dict[str, int] = {"sse": 0, "websocket": 0}
+        self.realtime_opened: dict[str, int] = {"sse": 0, "websocket": 0}
+        self.realtime_reconnects: deque[tuple[float, str]] = deque(maxlen=10000)
+        self.realtime_resync_required = 0
+
+    def realtime_open(self, kind: str, *, reconnect: bool = False) -> None:
+        if kind not in self.realtime_current:
+            return
+        self.realtime_current[kind] += 1
+        self.realtime_opened[kind] += 1
+        if reconnect:
+            self.realtime_reconnects.append((time.time(), kind))
+
+    def realtime_close(self, kind: str) -> None:
+        if kind in self.realtime_current:
+            self.realtime_current[kind] = max(0, self.realtime_current[kind] - 1)
+
+    def realtime_reconnect(self, kind: str) -> None:
+        if kind in self.realtime_current:
+            self.realtime_reconnects.append((time.time(), kind))
+
+    def realtime_resync(self) -> None:
+        self.realtime_resync_required += 1
+
+    def realtime_snapshot(self, minutes: int) -> dict[str, Any]:
+        cutoff = time.time() - max(1, minutes) * 60
+        recent = [(observed, kind) for observed, kind in self.realtime_reconnects if observed >= cutoff]
+        buckets: dict[int, int] = defaultdict(int)
+        for observed, _kind in recent:
+            buckets[int(observed // 60)] += 1
+        return {
+            "current_connections": dict(self.realtime_current),
+            "opened_since_start": dict(self.realtime_opened),
+            "reconnects": len(recent),
+            "reconnect_peak_per_minute": max(buckets.values(), default=0),
+            "resync_required_since_start": self.realtime_resync_required,
+        }
 
     def begin_request(self) -> tuple[float, int]:
         self.inflight += 1
@@ -406,6 +453,7 @@ async def build_performance_snapshot(minutes: int = 15) -> dict[str, Any]:
         }[state],
         "summary": summary,
         "event_loop": loop_lag,
+        "realtime": performance_metrics.realtime_snapshot(minutes),
         "signals": signals,
         "timeline": _timeline(samples, minutes),
         "endpoint_groups": _endpoint_rows(samples),

@@ -69,6 +69,7 @@ import {
   type QueryRealtimeEvent,
 } from '../utils/queryRealtime'
 import { canEditOnlineQuery } from '../utils/mobileTaskRouting'
+import { createResilientPoller } from '../utils/resilientPolling'
 
 const MOBILE_CARD_PAGE_SIZE = 50
 
@@ -255,7 +256,7 @@ export default function DataQuery() {
     || draftRows.some(row => isQueryDraftTouched(row, columns))
   refreshBlockedRef.current = refreshBlocked
 
-  const checkForUpdates = useCallback(async () => {
+  const checkForUpdates = useCallback(async (propagateFailure = false) => {
     if (source !== 'online' || pollingRef.current || document.visibilityState === 'hidden') return
     const requestContext = `${selectedType}:${source}`
     pollingRef.current = true
@@ -269,8 +270,9 @@ export default function DataQuery() {
         if (refreshBlockedRef.current) setRefreshAvailable(true)
         else await fetchData(true)
       }
-    } catch {
+    } catch (requestError) {
       // Background freshness checks must not interrupt normal page use.
+      if (propagateFailure) throw requestError
     } finally {
       pollingRef.current = false
     }
@@ -280,15 +282,22 @@ export default function DataQuery() {
 
   useEffect(() => {
     if (source !== 'online') return
-    const interval = window.setInterval(checkForUpdates, 15_000)
-    const handleFocus = () => { void checkForUpdates() }
+    const poller = createResilientPoller(() => checkForUpdates(true), {
+      intervalMs: 15_000,
+      maxDelayMs: 120_000,
+      failureThreshold: 4,
+      cooldownMs: 120_000,
+      shouldRun: () => document.visibilityState === 'visible',
+    })
+    poller.start()
+    const handleFocus = () => { poller.trigger() }
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') void checkForUpdates()
+      if (document.visibilityState === 'visible') poller.trigger()
     }
     window.addEventListener('focus', handleFocus)
     document.addEventListener('visibilitychange', handleVisibility)
     return () => {
-      window.clearInterval(interval)
+      poller.stop()
       window.removeEventListener('focus', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibility)
     }

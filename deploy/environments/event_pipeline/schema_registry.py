@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import urllib.request
 
 from .services.kafka_event_contract import EVENT_FIELDS, EVENT_TYPES, CHANGED_FIELDS, SOURCE_TABLE_NAMES
+from .identity import topic_for
 
 # The deployed registry is Apicurio 2.x. Its Confluent-compatible API is
 # explicitly namespaced; 8081 belongs to neither this service nor this API.
@@ -13,7 +15,16 @@ BASE = "http://schema-registry:8080/apis/ccompat/v7"
 SUBJECT = "dev.task.events.v1-value"
 
 
-def schema():
+def subject_for(environment: str) -> str:
+    return topic_for(environment) + "-value"
+
+
+def schema(environment: str = "development"):
+    topic_for(environment)
+    run_pattern = (
+        "^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+        if environment == "development" else "^STG-[0-9]{8}-[0-9]{2}$"
+    )
     uuid = {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
     return {"$schema": "http://json-schema.org/draft-07/schema#", "title": "DevTaskMetadataV1",
             "type": "object", "additionalProperties": False, "required": list(EVENT_FIELDS),
@@ -27,8 +38,8 @@ def schema():
                 "changed_fields": {"type": "array", "uniqueItems": True, "maxItems": 64,
                                    "items": {"enum": sorted(CHANGED_FIELDS)}},
                 "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"},
-                "environment": {"const": "development"},
-                "run_id": {"type": "string", "pattern": "^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+                "environment": {"const": environment},
+                "run_id": {"type": "string", "pattern": run_pattern},
             }}
 
 
@@ -37,8 +48,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError("Schema Registry redirect refused")
 
 
-def request(path, method="GET", body=None):
-    allowed = {f"/subjects/{SUBJECT}/versions", f"/subjects/{SUBJECT}/versions/latest", f"/config/{SUBJECT}"}
+def request(path, method="GET", body=None, *, subject=SUBJECT):
+    allowed = {f"/subjects/{subject}/versions", f"/subjects/{subject}/versions/latest", f"/config/{subject}"}
     if path not in allowed:
         raise ValueError("unsupported schema route")
     payload = None if body is None else json.dumps(body).encode()
@@ -52,19 +63,25 @@ def request(path, method="GET", body=None):
     return json.loads(data)
 
 
-def verify():
-    result = request(f"/subjects/{SUBJECT}/versions/latest")
-    if result.get("schemaType") != "JSON" or json.loads(result.get("schema", "null")) != schema():
-        raise ValueError("Dev schema identity mismatch")
-    digest = hashlib.sha256(json.dumps(schema(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return {"environment": "development", "subject": SUBJECT, "schema_id": result["id"],
+def verify(environment: str | None = None):
+    environment = environment or os.environ.get("APP_ENVIRONMENT", "development")
+    subject = subject_for(environment)
+    expected = schema(environment)
+    result = request(f"/subjects/{subject}/versions/latest", subject=subject)
+    if result.get("schemaType") != "JSON" or json.loads(result.get("schema", "null")) != expected:
+        raise ValueError("non-Production schema identity mismatch")
+    digest = hashlib.sha256(json.dumps(expected, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {"environment": environment, "subject": subject, "schema_id": result["id"],
             "schema_version": result["version"], "contract_sha256": digest, "verified": True}
 
 
-def apply():
-    request(f"/config/{SUBJECT}", "PUT", {"compatibility": "FULL_TRANSITIVE"})
-    request(f"/subjects/{SUBJECT}/versions", "POST", {"schemaType": "JSON", "schema": json.dumps(schema())})
-    return verify()
+def apply(environment: str | None = None):
+    environment = environment or os.environ.get("APP_ENVIRONMENT", "development")
+    subject = subject_for(environment)
+    request(f"/config/{subject}", "PUT", {"compatibility": "FULL_TRANSITIVE"}, subject=subject)
+    request(f"/subjects/{subject}/versions", "POST",
+            {"schemaType": "JSON", "schema": json.dumps(schema(environment))}, subject=subject)
+    return verify(environment)
 
 
 if __name__ == "__main__":
