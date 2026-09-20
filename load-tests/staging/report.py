@@ -6,12 +6,17 @@ from typing import Any
 THRESHOLDS: dict[str, tuple[str, float | int | bool]] = {
     "layers.core.save.p95_ms": ("max", 3000),
     "core.success_rate": ("min", .99),
+    "layers.core.multi_client_pair.success_rate": ("min", .99),
     "layers.poll.heartbeat.p95_ms": ("max", 1000),
     "layers.poll.unread.p95_ms": ("max", 1000),
     "layers.poll.maintenance.p95_ms": ("max", 1000),
+    "layers.poll.auth_refresh.p95_ms": ("max", 1000),
+    "layers.poll.multi_client_auth_refresh.p95_ms": ("max", 1000),
     "layers.poll.heartbeat.success_rate": ("min", .995),
     "layers.poll.unread.success_rate": ("min", .995),
     "layers.poll.maintenance.success_rate": ("min", .995),
+    "layers.poll.auth_refresh.success_rate": ("min", .995),
+    "layers.poll.multi_client_auth_refresh.success_rate": ("min", .995),
     "layers.poll.query_data.success_rate": ("min", .995),
     "events.reconnect_success_rate": ("min", .99),
     # At 75 users, no more than 20% may reconnect within one minute.  This is

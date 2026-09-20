@@ -285,13 +285,17 @@ class StagingLoadTests(unittest.TestCase):
         source = (Path(__file__).parent / "staging" / "locustfile.py").read_text(encoding="utf-8")
         for marker in (
             "self._spawn_poll(30, self._heartbeat)", "self._spawn_poll(30, self._unread)",
-            "self._spawn_poll(60, self._identity)", "self._spawn_poll(30, self._query_data)",
+            "self._spawn_poll(60, self._auth_refresh)", "self._spawn_poll(30, self._query_data)",
             "self._spawn_poll(15, self._query_version)", 'name="poll.query_data"',
             "run_sse", "run_query_websocket", "source-rows/{source_id}", "bulk-assign",
+            '"device_type": "desktop"', '"device_type": "mobile"',
+            '"core.multi_client_pair"', '"poll.multi_client_auth_refresh"',
         ):
             self.assertIn(marker, source)
         self.assertNotIn("@task(6)\n    def polling_heartbeat", source)
         self.assertIn('API_PREFIX = "/staging/api"', source)
+        self.assertIn('"layers.poll.auth_refresh.success_rate": ("min", .995)',
+                      (Path(__file__).parent / "staging" / "report.py").read_text(encoding="utf-8"))
 
     def test_report_marks_missing_resource_and_queue_gates_unverified(self):
         report = StagingMetrics().report()
@@ -345,9 +349,12 @@ class StagingLoadTests(unittest.TestCase):
             "run_id": RUN_ID, "environment": "staging", "production_data": False,
             "layers": {
                 "core.save": {"p95_ms": 1000},
+                "core.multi_client_pair": {"success_rate": 1.0},
                 "poll.heartbeat": {"p95_ms": 100, "success_rate": 1.0},
                 "poll.unread": {"p95_ms": 100, "success_rate": 1.0},
                 "poll.maintenance": {"p95_ms": 100, "success_rate": 1.0},
+                "poll.auth_refresh": {"p95_ms": 100, "success_rate": 1.0},
+                "poll.multi_client_auth_refresh": {"p95_ms": 100, "success_rate": 1.0},
                 "poll.query_data": {"p95_ms": 800, "success_rate": 1.0},
             },
             "core": {"success_rate": 1.0},
