@@ -1,3 +1,5 @@
+import { resolveDesktopBridge, type ResidenceProbeResult } from '../desktop/bridge.ts'
+
 export interface OfflineResidenceAccount {
   community_id: number | null
   community_name: string
@@ -14,6 +16,9 @@ export interface OfflineMacProbeSnapshot {
   checked_at: string
   authorized_communities: OfflineMacAuthorizedCommunity[]
   tested_community_count: number
+  probe_version?: 1
+  rejected_community_count?: number
+  probe_failures?: Array<{ community_id: number | null; community_name: string; status: string; error_code?: string }>
 }
 
 export interface OfflineResidenceConfig {
@@ -50,6 +55,8 @@ export interface OfflineResidenceQueryResult {
 
 export interface OfflineMacProbeResult extends OfflineMacAuthorizedCommunity {
   allowed: boolean
+  status: ResidenceProbeResult['status']
+  error_code?: string
 }
 
 const SEARCH_RESIDENT_PATH = '/szjzz/searchIsck'
@@ -58,6 +65,18 @@ const LOGIN_PATH = '/sys/login'
 const CAPTCHA_PATH_PREFIX = '/sys/randomImage/'
 const STORAGE_KEY = 'binhu_offline_residence_config_v1'
 const LOCAL_MAC_SERVICE_URL = 'http://127.0.0.1:23333'
+
+class ResidenceProbeError extends Error {
+  readonly status: ResidenceProbeResult['status']
+  readonly code: string
+
+  constructor(status: ResidenceProbeResult['status'], code: string) {
+    super(code)
+    this.name = 'ResidenceProbeError'
+    this.status = status
+    this.code = code
+  }
+}
 
 export const DEFAULT_OFFLINE_RESIDENCE_CONFIG: OfflineResidenceConfig = {
   enabled: true,
@@ -112,10 +131,20 @@ export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
           return [[normalized, {
             checked_at: typeof value.checked_at === 'string' ? value.checked_at : '',
             tested_community_count: Number.isInteger(value.tested_community_count) ? Number(value.tested_community_count) : 0,
+            ...(value.probe_version === 1 ? { probe_version: 1 as const } : {}),
             authorized_communities: Array.isArray(value.authorized_communities)
               ? value.authorized_communities.map(item => ({
                   community_id: Number.isInteger(item?.community_id) && Number(item.community_id) > 0 ? Number(item.community_id) : null,
                   community_name: String(item?.community_name || '').trim(),
+                })).filter(item => item.community_name)
+              : [],
+            rejected_community_count: Number.isInteger(value.rejected_community_count) ? Number(value.rejected_community_count) : 0,
+            probe_failures: Array.isArray(value.probe_failures)
+              ? value.probe_failures.map(item => ({
+                  community_id: Number.isInteger(item?.community_id) && Number(item.community_id) > 0 ? Number(item.community_id) : null,
+                  community_name: String(item?.community_name || '').trim(),
+                  status: String(item?.status || 'network_error'),
+                  error_code: item?.error_code ? String(item.error_code) : undefined,
                 })).filter(item => item.community_name)
               : [],
           } satisfies OfflineMacProbeSnapshot]]
@@ -255,6 +284,13 @@ function macServiceUrl(config: OfflineResidenceConfig): string {
   return value
 }
 
+function organizationCodesMatch(expected: string, actual: string): boolean {
+  const left = expected.trim().toUpperCase()
+  const right = actual.trim().toUpperCase()
+  if (!left || !right) return true
+  return left === right || (left.length >= 6 && right.startsWith(left)) || (right.length >= 6 && left.startsWith(right))
+}
+
 async function jsonRequest(config: OfflineResidenceConfig, url: string, init: RequestInit): Promise<any> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), config.timeout_seconds * 1000)
@@ -323,12 +359,29 @@ export class OfflineResidenceClient {
       }),
     })
     if (!payload?.success || !payload?.result?.token) throw new Error('居住证平台登录失败，请检查配置')
-    const organizationCode = String(payload.result.orgCode || payload.result.org_code || account.community_code).trim()
-    if (account.community_code && organizationCode && organizationCode.toUpperCase() !== account.community_code) {
+    const organizationCode = String(payload.result.orgCode || payload.result.org_code || payload.result.userInfo?.orgCode || account.community_code).trim()
+    if (!organizationCodesMatch(account.community_code, organizationCode)) {
       throw new Error('居住证账号返回的组织代码与所选社区不一致')
     }
     const session = { token: String(payload.result.token), organizationCode }
     return session
+  }
+
+  private async probeAccountAccess(account: OfflineResidenceAccount, mac: string): Promise<void> {
+    const desktop = resolveDesktopBridge()
+    if (desktop) {
+      const result = await desktop.probeResidenceLogin({
+        baseUrl: baseUrl(this.config),
+        username: account.username,
+        password: this.config.password,
+        mac,
+        timeoutSeconds: this.config.timeout_seconds,
+        communityCode: account.community_code,
+      })
+      if (result.status !== 'allowed') throw new ResidenceProbeError(result.status, result.errorCode || 'login_rejected')
+      return
+    }
+    await this.authenticate(account, mac)
   }
 
   private async login(account: OfflineResidenceAccount): Promise<{ token: string; organizationCode: string }> {
@@ -350,16 +403,34 @@ export class OfflineResidenceClient {
     for (const account of accounts) {
       if (shouldContinue && !shouldContinue()) break
       let allowed = false
+      let status: OfflineMacProbeResult['status'] = 'rejected'
+      let error_code = ''
       try {
-        await this.authenticate(account, mac)
+        await this.probeAccountAccess(account, mac)
         allowed = true
-      } catch {
+        status = 'allowed'
+      } catch (error) {
         allowed = false
+        if (error instanceof ResidenceProbeError) {
+          status = error.status
+          error_code = error.code
+        } else if (/格式|配置|账号|密码/.test(error instanceof Error ? error.message : '')) {
+          status = 'config_error'
+          error_code = 'config_error'
+        } else if (/登录失败|组织代码/.test(error instanceof Error ? error.message : '')) {
+          status = 'rejected'
+          error_code = 'login_rejected'
+        } else {
+          status = 'network_error'
+          error_code = 'request_failed'
+        }
       }
       const result = {
         community_id: account.community_id,
         community_name: account.community_name || account.community_code || account.username,
         allowed,
+        status,
+        ...(error_code ? { error_code } : {}),
       }
       results.push(result)
       onProgress?.(results.length, accounts.length, result)

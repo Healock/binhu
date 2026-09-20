@@ -153,6 +153,42 @@ test('候选 MAC 探测最多使用前 12 个已填写完整账号的社区', as
   assert.deepEqual(usernames, accounts.slice(0, 12).map(account => account.username))
 })
 
+test('MAC 探测不会把网络失败伪装成未授权', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => { throw new TypeError('Failed to fetch') },
+  })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid',
+    password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '测试社区', username: 'fixture-user', community_code: '' }],
+  }).probeMacAccess('02:11:22:33:44:66')
+  assert.equal(result[0].allowed, false)
+  assert.equal(result[0].status, 'network_error')
+  assert.equal(result[0].error_code, 'request_failed')
+  assert.match(clientSource, /status: OfflineMacProbeResult\['status'\]/)
+})
+
+test('登录成功后允许社区代码与返回组织代码的层级后缀兼容', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (url: string) => new Response(JSON.stringify(url.includes('/sys/randomImage/')
+      ? { success: true }
+      : { success: true, result: { token: 'fixture-token', userInfo: { orgCode: '320584037700' } } }), { status: 200 }),
+  })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid',
+    password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '测试社区', username: 'fixture-user', community_code: '3205840377' }],
+  }).probeMacAccess('02:11:22:33:44:66')
+  assert.equal(result[0].allowed, true)
+  assert.equal(result[0].status, 'allowed')
+})
+
 test('在线配置同步不要求密码明文', () => {
   assert.match(pageSource, /getResidencePlatformConfig\(\)/)
   assert.doesNotMatch(pageSource, /online\.username/)

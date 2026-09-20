@@ -230,10 +230,18 @@ export default function OfflineMode() {
             ...nextConfig.mac_probe_results,
             [mac]: {
               checked_at: new Date().toISOString(),
+              probe_version: 1,
               tested_community_count: perMac,
+              rejected_community_count: results.filter(result => result.status === 'rejected').length,
               authorized_communities: results.filter(result => result.allowed).map(result => ({
                 community_id: result.community_id,
                 community_name: result.community_name,
+              })),
+              probe_failures: results.filter(result => result.status !== 'allowed' && result.status !== 'rejected').map(result => ({
+                community_id: result.community_id,
+                community_name: result.community_name,
+                status: result.status,
+                error_code: result.error_code,
               })),
             },
           },
@@ -404,12 +412,17 @@ export default function OfflineMode() {
                   {config.mac_addresses.map(mac => {
                     const snapshot = config.mac_probe_results[mac]
                     const authorized = snapshot?.authorized_communities || []
+                    const failures = snapshot?.probe_failures || []
                     return <div key={mac} className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--app-text-strong)]"><span>{mac}</span>{mac === activeMac && <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">当前使用</span>}</div>
                         <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
-                          {snapshot
-                            ? `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无'}；检测时间：${new Date(snapshot.checked_at).toLocaleString()}`
+                          {snapshot && snapshot.probe_version !== 1
+                            ? '这是旧版本探测结果，无法区分未授权和网络失败，请重新检测'
+                            : snapshot
+                            ? failures.length
+                              ? `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无法判定'}；${failures.length} 个账号探测失败（网络、证书或配置异常），请先排查桌面客户端网络权限；检测时间：${new Date(snapshot.checked_at).toLocaleString()}`
+                              : `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无'}；未授权：${snapshot.rejected_community_count || 0}；检测时间：${new Date(snapshot.checked_at).toLocaleString()}`
                             : '尚未检测可登录的社区账号'}
                         </div>
                       </div>

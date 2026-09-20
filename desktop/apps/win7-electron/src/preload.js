@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('binhuDesktop', {
   restartAndApply: () => ipcRenderer.invoke('desktop:restart-and-apply'),
   getLocalMac: () => ipcRenderer.invoke('desktop:get-local-mac'),
   setLocalMac: (mac) => ipcRenderer.invoke('desktop:set-local-mac', mac),
+  probeResidenceLogin: (request) => ipcRenderer.invoke('desktop:probe-residence-login', request),
   subscribeUpdateState: (listener) => {
     const handler = (_event, state) => listener(state)
     ipcRenderer.on('desktop:update-state', handler)

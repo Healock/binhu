@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use velopack::{
     sources::HttpSource, UpdateCheck, UpdateInfo, UpdateManager, UpdateOptions, VelopackAsset,
@@ -215,6 +215,201 @@ struct UpdateRuntime {
 struct UpdateRuntimeState(Mutex<UpdateRuntime>);
 
 const DEFAULT_LOCAL_MAC: &str = "02:00:00:00:00:01";
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResidenceProbeRequest {
+    base_url: String,
+    username: String,
+    password: String,
+    mac: String,
+    timeout_seconds: u64,
+    community_code: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResidenceProbeResult {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    organization_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_code: Option<String>,
+}
+
+fn probe_residence_result(
+    status: &str,
+    error_code: Option<&str>,
+    organization_code: Option<String>,
+) -> ResidenceProbeResult {
+    ResidenceProbeResult {
+        status: status.to_string(),
+        organization_code,
+        error_code: error_code.map(str::to_string),
+    }
+}
+
+fn residence_org_matches(expected: &str, actual: &str) -> bool {
+    let left = expected.trim().to_ascii_uppercase();
+    let right = actual.trim().to_ascii_uppercase();
+    left.is_empty()
+        || right.is_empty()
+        || left == right
+        || (left.len() >= 6 && right.starts_with(&left))
+        || (right.len() >= 6 && left.starts_with(&right))
+}
+
+fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeResult {
+    let base = request.base_url.trim().trim_end_matches('/');
+    let parsed = match base.parse::<ureq::http::Uri>() {
+        Ok(value)
+            if matches!(value.scheme_str(), Some("http") | Some("https"))
+                && value.authority().is_some()
+                && value.path() == "" =>
+        {
+            value
+        }
+        Ok(value)
+            if matches!(value.scheme_str(), Some("http") | Some("https"))
+                && value.authority().is_some()
+                && value.path() == "/" =>
+        {
+            value
+        }
+        _ => return probe_residence_result("config_error", Some("invalid_base_url"), None),
+    };
+    if request.username.trim().is_empty() || request.password.is_empty() {
+        return probe_residence_result("config_error", Some("missing_credentials"), None);
+    }
+    let mac = match normalize_local_mac(&request.mac) {
+        Ok(value) => value,
+        Err(_) => return probe_residence_result("config_error", Some("invalid_mac"), None),
+    };
+    let timeout = Duration::from_secs(request.timeout_seconds.clamp(1, 120));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .disable_verification(true)
+                .build(),
+        )
+        .build()
+        .into();
+    let origin = format!(
+        "{}://{}",
+        parsed.scheme_str().unwrap(),
+        parsed.authority().unwrap()
+    );
+    let check_key = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let captcha_url = format!("{}/sys/randomImage/{}", origin, check_key);
+    let mut captcha = match agent.get(&captcha_url).call() {
+        Ok(value) => value,
+        Err(_) => {
+            return probe_residence_result("network_error", Some("captcha_request_failed"), None)
+        }
+    };
+    if !captcha.status().is_success() {
+        return probe_residence_result("rejected", Some("captcha_http_error"), None);
+    }
+    let captcha_body = match captcha
+        .body_mut()
+        .with_config()
+        .limit(1024 * 1024)
+        .read_to_string()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return probe_residence_result("network_error", Some("captcha_response_failed"), None)
+        }
+    };
+    let captcha_payload: serde_json::Value = match serde_json::from_str(&captcha_body) {
+        Ok(value) => value,
+        Err(_) => return probe_residence_result("network_error", Some("invalid_response"), None),
+    };
+    if captcha_payload.get("success") != Some(&serde_json::Value::Bool(true)) {
+        return probe_residence_result("rejected", Some("captcha_rejected"), None);
+    }
+    let login_url = format!("{}/sys/login", origin);
+    let login_body = serde_json::json!({
+        "username": request.username.trim(), "password": request.password, "mac": mac,
+        "remember_me": true, "captcha": "", "checkKey": check_key, "terminalType": 1,
+    })
+    .to_string();
+    let mut login = match agent
+        .post(&login_url)
+        .header("Content-Type", "application/json;charset=UTF-8")
+        .send(login_body)
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return probe_residence_result("network_error", Some("login_request_failed"), None)
+        }
+    };
+    if !login.status().is_success() {
+        return probe_residence_result("rejected", Some("login_http_error"), None);
+    }
+    let login_body = match login
+        .body_mut()
+        .with_config()
+        .limit(1024 * 1024)
+        .read_to_string()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            return probe_residence_result("network_error", Some("login_response_failed"), None)
+        }
+    };
+    let payload: serde_json::Value = match serde_json::from_str(&login_body) {
+        Ok(value) => value,
+        Err(_) => return probe_residence_result("network_error", Some("invalid_response"), None),
+    };
+    let result = payload.get("result");
+    let token = result
+        .and_then(|value| value.get("token"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if payload.get("success") != Some(&serde_json::Value::Bool(true)) || token.is_empty() {
+        return probe_residence_result("rejected", Some("login_rejected"), None);
+    }
+    let organization_code = result
+        .and_then(|value| value.get("orgCode").or_else(|| value.get("org_code")))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            result
+                .and_then(|value| value.get("userInfo"))
+                .and_then(|value| value.get("orgCode"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !residence_org_matches(
+        request.community_code.as_deref().unwrap_or(""),
+        &organization_code,
+    ) {
+        return probe_residence_result(
+            "rejected",
+            Some("organization_mismatch"),
+            Some(organization_code),
+        );
+    }
+    probe_residence_result("allowed", None, Some(organization_code))
+}
+
+#[tauri::command]
+async fn probe_residence_login(
+    request: ResidenceProbeRequest,
+) -> Result<ResidenceProbeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || probe_residence_login_sync(request))
+        .await
+        .map_err(|_| "居住证探测任务异常结束".to_string())
+}
 
 #[derive(Clone)]
 struct LocalMacRuntimeState {
@@ -905,7 +1100,8 @@ pub fn run(restarted: bool) {
             download_update,
             restart_and_apply,
             get_local_mac,
-            set_local_mac
+            set_local_mac,
+            probe_residence_login
         ])
         .run(tauri::generate_context!())
         .expect("error while running Binhu Tauri application");

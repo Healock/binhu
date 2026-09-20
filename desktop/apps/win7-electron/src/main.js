@@ -24,6 +24,8 @@ VelopackApp.build()
 const path = require('node:path')
 const fs = require('node:fs')
 const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require('electron')
+const http = require('node:http')
+const https = require('node:https')
 const { ElectronUpdateController } = require('./updater')
 const { LocalMacService } = require('./local-mac-service')
 
@@ -35,6 +37,79 @@ const smokeTest = process.argv.includes('--smoke-test')
 let updateController = null
 let upgradeInfo = null
 let localMacService = null
+
+function probeResidenceUrl(baseUrl, pathName) {
+  let base
+  try { base = new URL(String(baseUrl || '').trim()) } catch (_error) { throw new Error('config_error') }
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || (base.pathname && base.pathname !== '/')) {
+    throw new Error('config_error')
+  }
+  return new URL(pathName, base)
+}
+
+function residenceRequest(url, { method = 'GET', body, timeoutSeconds }) {
+  const transport = url.protocol === 'https:' ? https : http
+  return new Promise((resolve, reject) => {
+    const request = transport.request(url, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        ...(body ? { 'Content-Type': 'application/json;charset=UTF-8', 'Content-Length': Buffer.byteLength(body) } : {}),
+        Connection: 'close',
+      },
+      timeout: Math.min(120, Math.max(1, Number(timeoutSeconds || 15))) * 1000,
+      ...(url.protocol === 'https:' ? { rejectUnauthorized: false } : {}),
+    }, response => {
+      let text = ''
+      let size = 0
+      response.setEncoding('utf8')
+      response.on('data', chunk => {
+        size += Buffer.byteLength(chunk)
+        if (size <= 1024 * 1024) text += chunk
+      })
+      response.on('end', () => {
+        if (size > 1024 * 1024) return reject(new Error('response_too_large'))
+        let payload = null
+        try { payload = JSON.parse(text) } catch (_error) { return reject(new Error('invalid_response')) }
+        resolve({ statusCode: response.statusCode || 0, payload })
+      })
+      response.on('error', () => reject(new Error('network_error')))
+    })
+    request.on('timeout', () => request.destroy(new Error('timeout')))
+    request.on('error', error => reject(new Error(error?.message === 'timeout' ? 'timeout' : 'network_error')))
+    if (body) request.write(body)
+    request.end()
+  })
+}
+
+function probeResidenceLogin(request) {
+  const username = String(request?.username || '').trim()
+  const password = String(request?.password || '')
+  const mac = String(request?.mac || '').trim().toUpperCase()
+  if (!username || !password || !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) return { status: 'config_error', errorCode: 'missing_credentials' }
+  let captchaUrl
+  try { captchaUrl = probeResidenceUrl(request.baseUrl, `/sys/randomImage/${Date.now()}`) } catch (_error) { return { status: 'config_error', errorCode: 'invalid_base_url' } }
+  const timeoutSeconds = Number(request.timeoutSeconds || 15)
+  return residenceRequest(captchaUrl, { timeoutSeconds })
+    .then(captcha => {
+      if (captcha.statusCode < 200 || captcha.statusCode >= 300 || captcha.payload?.success !== true) return { status: 'rejected', errorCode: 'captcha_rejected' }
+      const loginUrl = probeResidenceUrl(request.baseUrl, '/sys/login')
+      return residenceRequest(loginUrl, {
+        method: 'POST', timeoutSeconds,
+        body: JSON.stringify({ username, password, mac, remember_me: true, captcha: '', checkKey: captchaUrl.pathname.split('/').pop(), terminalType: 1 }),
+      }).then(login => {
+        const result = login.payload?.result
+        const token = result?.token
+        if (login.statusCode < 200 || login.statusCode >= 300 || login.payload?.success !== true || !token) return { status: 'rejected', errorCode: 'login_rejected' }
+        const organizationCode = String(result?.orgCode || result?.org_code || result?.userInfo?.orgCode || '').trim()
+        const expected = String(request.communityCode || '').trim().toUpperCase()
+        const actual = organizationCode.toUpperCase()
+        if (expected && actual && !(expected === actual || (expected.length >= 6 && actual.startsWith(expected)) || (actual.length >= 6 && expected.startsWith(actual)))) return { status: 'rejected', errorCode: 'organization_mismatch' }
+        return { status: 'allowed', organizationCode }
+      })
+    })
+    .catch(error => ({ status: error?.message === 'config_error' ? 'config_error' : 'network_error', errorCode: error?.message || 'network_error' }))
+}
 
 function upgradeStatePath() {
   return path.join(app.getPath('userData'), 'upgrade-state.json')
@@ -219,6 +294,7 @@ ipcMain.handle('desktop:download-update', () => updateController?.downloadUpdate
 ipcMain.handle('desktop:restart-and-apply', () => updateController?.restartAndApply())
 ipcMain.handle('desktop:get-local-mac', () => localMacService?.getMac())
 ipcMain.handle('desktop:set-local-mac', (_event, mac) => localMacService?.setMac(mac))
+ipcMain.handle('desktop:probe-residence-login', async (_event, request) => probeResidenceLogin(request))
 
 app.whenReady().then(async () => {
   protocol.handle('binhu', handleLocalAsset)

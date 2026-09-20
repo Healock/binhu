@@ -28,6 +28,23 @@ export interface DesktopUpgradeInfo {
   upgradeDetected?: boolean
 }
 
+export interface ResidenceProbeRequest {
+  baseUrl: string
+  username: string
+  password: string
+  mac: string
+  timeoutSeconds: number
+  communityCode?: string
+}
+
+export type ResidenceProbeStatus = 'allowed' | 'rejected' | 'network_error' | 'config_error'
+
+export interface ResidenceProbeResult {
+  status: ResidenceProbeStatus
+  organizationCode?: string
+  errorCode?: string
+}
+
 export interface ClientUpdateBridge {
   getUpdateStatus: () => Promise<ClientUpdateState>
   checkForUpdates: () => Promise<ClientUpdateState>
@@ -47,6 +64,7 @@ export interface DesktopBridge extends ClientUpdateBridge {
   acknowledgeUpgrade: () => Promise<DesktopUpgradeInfo | null>
   getLocalMac: () => Promise<string>
   setLocalMac: (mac: string) => Promise<string>
+  probeResidenceLogin: (request: ResidenceProbeRequest) => Promise<ResidenceProbeResult>
 }
 
 interface TauriEvent<T> {
@@ -125,6 +143,7 @@ export function resolveDesktopBridge(): DesktopBridge | null {
     acknowledgeUpgrade: () => invoke<DesktopUpgradeInfo>('acknowledge_upgrade'),
     getLocalMac: () => invoke<string>('get_local_mac'),
     setLocalMac: mac => invoke<string>('set_local_mac', { mac }),
+    probeResidenceLogin: request => invoke<ResidenceProbeResult>('probe_residence_login', { request }),
     checkForUpdates: () => invoke<DesktopUpdateState>('check_for_updates'),
     downloadUpdate: () => invoke<DesktopUpdateState>('download_update'),
     restartAndApply: () => invoke<DesktopUpdateState>('restart_and_apply'),
