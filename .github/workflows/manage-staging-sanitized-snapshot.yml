@@ -49,11 +49,13 @@ jobs:
       - name: Execute fixed snapshot action
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
           ACTION: ${{ inputs.action }}
           SNAPSHOT_ID: ${{ inputs.snapshot_id }}
         run: |
           set -euo pipefail
-          ssh_command=(ssh -i ~/.ssh/staging-data -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-data-deploy@$HOST")
+          [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
+          ssh_command=(ssh -p "$PORT" -i ~/.ssh/staging-data -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-data-deploy@$HOST")
           case "$ACTION" in
             status|measure) "${ssh_command[@]}" "$ACTION" ;;
             export) "${ssh_command[@]}" 'export approved-sanitized-scope-v1' ;;
