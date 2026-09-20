@@ -239,8 +239,10 @@ class MonitorBusinessBucket:
     """Privacy-safe business classification for one external snapshot.
 
     Only the fields required by the aggregate report are kept: community,
-    checker name, dispatch date and workflow state.  No identity number,
-    phone, address, physical row or other external row content is stored.
+    checker name, dispatch date and workflow state. The checker is an internal
+    staff label required for inspector statistics; no subject identity number,
+    phone, address, notes, analysis text, photograph, attachment, physical row
+    or other external row content is stored.
     """
 
     community: str
@@ -250,7 +252,7 @@ class MonitorBusinessBucket:
 
 
 def _normalize_checker_name(value: Any) -> str:
-    """Normalize the external checker label without inventing an assignee."""
+    """Normalize the internal checker label without inventing an assignee."""
     return re.sub(r"\s+", " ", str(value or "").strip())[:200]
 
 
@@ -545,9 +547,9 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
         """
     )
-    # PR #750 created the bucket table without the checker dimension.  Upgrade
-    # it in place so existing snapshots remain readable as unassigned external
-    # rows and the next successful read can persist one bucket per checker.
+    # Upgrade older installations that created the privacy bucket before the
+    # internal checker dimension was approved. Existing rows remain readable
+    # as unassigned; subsequent successful reads populate checker_name.
     await cur.execute(
         """
         SELECT COUNT(*)

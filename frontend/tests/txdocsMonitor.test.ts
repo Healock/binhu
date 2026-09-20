@@ -27,3 +27,7 @@ test('连接凭据说明要求三个字段来自同一次授权', () => {
   assert.match(pageSource, /三个字段必须来自同一次腾讯授权/)
   assert.match(pageSource, /保存后不会回显/)
 })
+
+test('外部监控配置允许疑似未注销模型三', () => {
+  assert.match(pageSource, /疑似未注销模型三/)
+})

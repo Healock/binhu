@@ -69,6 +69,28 @@ OPTIONAL_DB_KEYS = {"platform", "visit", "dispatch", "registry", "workflow"}
 ARCHIVE_SOURCE_TABLES = tuple(dict.fromkeys(TABLE_NAMES.values()))
 
 
+async def ensure_suspect_missing_registration_schema(cur) -> None:
+    """Create the PR1 local business table on existing installations."""
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS t_suspect_missing_registration (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            _row_key VARCHAR(200) NOT NULL,
+            `下发日期` VARCHAR(50), `截止日期` VARCHAR(50),
+            `社区` VARCHAR(200), `姓名` VARCHAR(100),
+            `身份证号` VARCHAR(50), `联系方式` VARCHAR(500),
+            `地址` VARCHAR(500), `核查人` VARCHAR(100),
+            `登记情况` VARCHAR(500), `现住址` VARCHAR(500),
+            `核查结果` VARCHAR(500), `备注` VARCHAR(500),
+            `研判` VARCHAR(500), `二次反馈` VARCHAR(500),
+            _first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_row_key (_row_key),
+            INDEX idx_smr_community (`社区`),
+            INDEX idx_smr_dispatch_date (`下发日期`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+
+
 @contextmanager
 def suppress_expected_bootstrap_warnings():
     """只在单线程启动建表阶段忽略明确可接受的 MySQL 幂等提示。
@@ -2936,6 +2958,7 @@ class DatabaseManager:
                 """)
                 await ensure_permission_schema(cur)
                 await ensure_online_editor_schema(cur)
+                await ensure_suspect_missing_registration_schema(cur)
                 await ensure_local_source_schema(cur)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)

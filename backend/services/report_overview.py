@@ -772,6 +772,9 @@ async def get_online_overview(
         result["completion_rate"] = _ratio(
             result["completed_tasks"], result["total_tasks"]
         )
+        # A successful external snapshot is itself a valid observation even
+        # when no local daily ledger has been generated for this date range.
+        result["exists"] = True
     result["external_overlay"] = external
     return result
 

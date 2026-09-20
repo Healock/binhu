@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable
 
-from services.parsers import get_parser
+from services.parsers import PARSER_REGISTRY, get_parser
 
 
 LOCAL_SPREADSHEET_ID = 0
@@ -145,10 +145,14 @@ async def create_local_source_row(
     不会悄悄覆盖网格员已经填写的字段。
     """
     parser = get_parser(parser_type)
-    normalized = {
-        column: str(values.get(column, "") or "").strip()
-        for column in parser.COLUMNS
-    }
+    normalized = (
+        parser.normalize_source_row(values)
+        if hasattr(parser, "normalize_source_row")
+        else {
+            column: str(values.get(column, "") or "").strip()
+            for column in parser.COLUMNS
+        }
+    )
     parser.validate_new_row(normalized)
     row_key = parser.make_row_key(normalized)
     content_hash = local_row_hash(normalized)
@@ -305,10 +309,9 @@ async def mirror_business_tables_to_local_sources(
     该过程不访问任何外部服务，可在维护窗口反复执行。业务表的自增 id
     作为稳定的本地来源位置，仅用于兼容旧任务流程，不再表示腾讯物理行号。
     """
-    selected = list(parser_types or [
-        "全链条", "出租房屋核查", "涉警统计", "疑似未注销模型三",
-        "疑似返苏", "寄递业", "群租房核查", "苏州涉警", "交通涉警",
-    ])
+    selected = list(parser_types or (
+        parser_type for parser_type in PARSER_REGISTRY if parser_type != "default"
+    ))
     counts: dict[str, int] = {}
     async with conn.cursor() as cur:
         for parser_type in selected:

@@ -132,6 +132,25 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counts[("测试人员甲", "2026-09-19", "unchecked")], 1)
         self.assertEqual(counts[("测试人员乙", "2026-09-10", "completed")], 1)
 
+    def test_model_three_is_supported_as_a_read_only_monitor_target(self):
+        rows = [{"values": {
+            "截止时间": "2026-09-20",
+            "核查人": "虚构核查人",
+            "姓名": "虚构人员",
+            "身份证号": "SYNTHETIC-ID-002",
+            "联系方式": "SYNTHETIC-CONTACT-002",
+            "地址": "虚构地址",
+            "下发社区": "虚构社区",
+            "核查结果": "在吴",
+        }}]
+        buckets = monitor.build_monitor_business_buckets(
+            "疑似未注销模型三", rows, datetime(2026, 9, 20).date()
+        )
+        bucket = next(iter(buckets))
+        assert bucket.community == "虚构社区"
+        assert bucket.checker_name == "虚构核查人"
+        assert bucket.task_state == "completed"
+
     async def test_disabled_switch_makes_no_database_or_network_access(self):
         with patch.object(monitor.settings, "APP_ENVIRONMENT", "staging"):
             self.assertEqual(await monitor.run_txdocs_statistics_once(), 0)
@@ -292,6 +311,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("business_key_hash", source)
         self.assertIn("content_hash", source)
         self.assertNotIn("first_seen_at", source)
+        self.assertIn("checker_name", source)
         for forbidden in (
             "identity_number", "phone", "address", "values_json",
             "physical_row", "access_token", "client_secret",

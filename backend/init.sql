@@ -1611,8 +1611,33 @@ CREATE TABLE IF NOT EXISTS t_group_rental (
     INDEX idx_gr_community (社区)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 10. 疑似漏登记（PR1：在线查询与本地来源）
+CREATE TABLE IF NOT EXISTS t_suspect_missing_registration (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    _row_key        VARCHAR(200) NOT NULL,
+    下发日期        VARCHAR(50),
+    截止日期        VARCHAR(50),
+    社区            VARCHAR(200),
+    姓名            VARCHAR(100),
+    身份证号        VARCHAR(50),
+    联系方式        VARCHAR(500),
+    地址            VARCHAR(500),
+    核查人          VARCHAR(100),
+    登记情况        VARCHAR(500),
+    现住址          VARCHAR(500),
+    核查结果        VARCHAR(500),
+    备注            VARCHAR(500),
+    研判            VARCHAR(500),
+    二次反馈        VARCHAR(500),
+    _first_seen_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    _last_updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_row_key (_row_key),
+    INDEX idx_smr_community (社区),
+    INDEX idx_smr_dispatch_date (下发日期)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ============================================================
--- OnlineDataArchive 库：9张归档表（结构同业务表 + 归档元数据）
+-- OnlineDataArchive 库：10张归档表（结构同业务表 + 归档元数据）
 -- ============================================================
 USE OnlineDataArchive;
 
@@ -1669,6 +1694,12 @@ ALTER TABLE t_traffic_police_archive ADD COLUMN _archived_at DATETIME DEFAULT CU
                                      ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
                                      DROP INDEX uk_row_key,
                                      ADD INDEX idx_row_key (_row_key);
+
+CREATE TABLE IF NOT EXISTS t_suspect_missing_registration_archive LIKE OnlineData.t_suspect_missing_registration;
+ALTER TABLE t_suspect_missing_registration_archive ADD COLUMN _archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                                     ADD COLUMN _archive_reason VARCHAR(100) DEFAULT 'online_removed',
+                                                     DROP INDEX uk_row_key,
+                                                     ADD INDEX idx_row_key (_row_key);
 
 -- ============================================================
 -- daily_report 库：元数据表（日报表后续动态创建）
