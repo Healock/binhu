@@ -29,6 +29,21 @@ export function environmentForUsername(username: string): AppEnvironment {
   return ENVIRONMENT_SUFFIXES.find(([suffix]) => normalized.endsWith(suffix))?.[1] || 'production'
 }
 
+export function assertLoginEnvironmentEntry(
+  targetEnvironment: AppEnvironment,
+  prefix: string,
+  isDesktopClient = false,
+): void {
+  if ((prefix === '/dev' && targetEnvironment !== 'development')
+    || (prefix === '/staging' && targetEnvironment !== 'staging')) {
+    throw new Error('账号不属于当前环境，请使用对应的环境账号')
+  }
+  if (!prefix && (targetEnvironment === 'development'
+    || (targetEnvironment === 'staging' && !isDesktopClient))) {
+    throw new Error(`请先打开 ${targetEnvironment === 'development' ? '/dev/' : '/staging/'} 入口，再登录环境账号`)
+  }
+}
+
 export function getApiEnvironment(): AppEnvironment {
   if (typeof window !== 'undefined') {
     const path = window.location.pathname.toLowerCase()

@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   assertApiEnvironmentIdentity,
+  assertLoginEnvironmentEntry,
   environmentForUsername,
   getApiBaseUrl,
   getApiEnvironment,
@@ -40,20 +41,48 @@ function installSessionStorage() {
   return values
 }
 
-test('shadow suffix selects the shadow environment without fuzzy matching', () => {
+test('account suffix selects an environment without fuzzy matching', () => {
   assert.equal(environmentForUsername('observer@shadow'), 'shadow')
   assert.equal(environmentForUsername(' Observer@Shadow '), 'shadow')
   assert.equal(environmentForUsername('observer@staging'), 'staging')
   assert.equal(environmentForUsername('observer@dev'), 'development')
   assert.equal(environmentForUsername('shadow-observer'), 'production')
+  assert.equal(environmentForUsername('observer@staging.example'), 'production')
 })
 
-test('desktop login exposes a fixed staging entry without accepting arbitrary URLs', () => {
+test('login page has no manual staging environment entry', () => {
   const loginSource = readFileSync(new URL('../src/pages/Login.tsx', import.meta.url), 'utf8')
-  assert.match(loginSource, /id="staging-environment-button"/)
-  assert.match(loginSource, /navigate\('\/staging\/login'\)/)
-  assert.match(loginSource, /window\.location\.assign\('\/login'\)/)
+  assert.doesNotMatch(loginSource, /staging-environment-button/)
+  assert.doesNotMatch(loginSource, /进入预发布环境/)
+  assert.doesNotMatch(loginSource, /返回正式环境/)
   assert.doesNotMatch(loginSource, /window\.location\.(?:href|assign)\(?.*username/)
+})
+
+test('staging login depends on the account suffix while isolated paths reject mismatches', () => {
+  assert.doesNotThrow(() => assertLoginEnvironmentEntry('staging', '', true))
+  assert.doesNotThrow(() => assertLoginEnvironmentEntry('staging', '/staging'))
+  assert.doesNotThrow(() => assertLoginEnvironmentEntry('development', '/dev'))
+  assert.doesNotThrow(() => assertLoginEnvironmentEntry('production', ''))
+
+  assert.throws(
+    () => assertLoginEnvironmentEntry('staging', ''),
+    /请先打开 \/staging\/ 入口/,
+  )
+  assert.throws(
+    () => assertLoginEnvironmentEntry('development', ''),
+    /请先打开 \/dev\/ 入口/,
+  )
+  assert.throws(
+    () => assertLoginEnvironmentEntry('production', '/staging'),
+    /账号不属于当前环境/,
+  )
+  assert.throws(
+    () => assertLoginEnvironmentEntry('staging', '/dev'),
+    /账号不属于当前环境/,
+  )
+
+  const authSource = readFileSync(new URL('../src/context/AuthContext.tsx', import.meta.url), 'utf8')
+  assert.match(authSource, /VITE_DESKTOP_MODE === 'true'/)
 })
 
 test('shadow environment stays in session storage and resolves only the fixed path', () => {
