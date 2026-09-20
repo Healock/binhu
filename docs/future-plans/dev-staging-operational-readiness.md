@@ -99,7 +99,7 @@ Dev 运行编号 `dev-20260919-dualtrack-monitor40` 已完成 1002、10000、100
 
 仍需单独关闭的门禁包括：旧 Flink savepoint 的 operator ID 兼容恢复、Staging 脱敏关系校验、浏览器业务流程、75 人趋势复测、跨环境访问拒绝和回滚演练。六小时观察明确未覆盖的长期内存趋势、证书续签、Kafka/Redis 自然保留过期、跨天状态累积和长期磁盘增长，列为后续 Staging/生产灰度补充验证项。
 
-## 2026-09-20：Staging 晋级固定网关（实现中）
+## 2026-09-20：Staging 晋级固定网关（已安装，数据预检受资源门禁阻止）
 
 项目管理人已批准新增两套最小权限入口。应用入口只允许
 `prepare → measure → apply → accept`，数据入口只允许
@@ -116,6 +116,22 @@ HMAC 派生验证地址；照片、附件、密码、会话和令牌不导出，
 行数、关系、敏感命中和幂等记录。切换前备份 Staging 八库与配置并记录 SHA-256，
 连续 3 次健康或关键接口失败时恢复旧应用配置，失败证据不覆盖。
 
-当前仅表示代码和合同正在实现，尚未安装服务器网关、创建新脱敏副本、切换
-Staging、执行全量回归、75 人压测、回滚演练或页面人工验收。完成这些证据前，
-Staging 晋级评估仍为未通过，也不得进入 Production 架构切换。
+两套网关已通过安装 Action `35502218991` 安装。应用与数据账号都使用
+forced-command wrapper、独立 SSH 密钥和独立 sudo 白名单；`status` 成功，针对
+Production 路径、Docker、MySQL、Dev、Shadow 和任意 shell 的 12 项独立越界
+尝试全部被拒绝。安装台账保存在服务器私有目录
+`/var/log/binhu-staging-gateways/installation-20260920T092446Z.json`，没有记录密钥、
+数据库凭据或业务正文。
+
+首次只读数据 `measure` Action `35502550769` 在创建本轮快照目录前失败。只读
+诊断确认当前可用内存为 `2,869,676 KiB`，低于固定的 `3,145,728 KiB` 门槛；
+两个目标磁盘余量充足，Production Backend 仍在运行。此前关联到本轮的
+`staging-295e975fc6a38be9` 实为约 9 天前的历史失败目录，不能作为本轮数据
+一致性结论。本轮没有执行 export、create、import、verify 或 switch，也没有
+修改 Production 或 Staging 数据。工具需要先保证 preflight 失败也生成新的、
+不可覆盖的脱敏证据，并保留成功安装的 `control-commit` 身份；不得通过降低
+内存门槛或清理其他环境容器来绕过资源门禁。
+
+因此当前状态是：网关安装和最小权限隔离已通过，Staging 脱敏副本仍未创建，
+应用制品仍未晋级，完整回归、75 人压测、回滚演练和页面人工验收均未执行。
+完成这些证据前，Staging 晋级评估仍为未通过，也不得进入 Production 架构切换。

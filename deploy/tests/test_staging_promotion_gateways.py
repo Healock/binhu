@@ -76,6 +76,14 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway apply *', installer)
         self.assertIn('staging_gateway_authorization_boundary_installed', installer)
         self.assertIn('control-commit', installer)
+        self.assertIn(
+            'if [[ "$installation_complete" -ne 1 && "$control_commit_replaced" -eq 1 ]]',
+            installer,
+        )
+        self.assertIn(
+            'if [[ "$installation_complete" -ne 1 && "$deploy_init_replaced" -eq 1 ]]',
+            installer,
+        )
         self.assertIn('mktemp -d "$deploy_root/.environments.new.', installer)
         self.assertIn('python3 -m compileall -q "$staged_environments"', installer)
         self.assertIn('mv "$staged_environments" "$deploy_root/environments"', installer)

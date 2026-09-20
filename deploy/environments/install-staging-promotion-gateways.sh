@@ -33,14 +33,14 @@ cleanup_installation() {
   elif [[ "$installation_complete" -ne 1 && -z "$previous_environments" ]]; then
     rm -rf "$deploy_root/environments"
   fi
-  if [[ "$control_commit_replaced" -eq 1 ]]; then
+  if [[ "$installation_complete" -ne 1 && "$control_commit_replaced" -eq 1 ]]; then
     if [[ -n "$control_commit_backup" && -f "$control_commit_backup" ]]; then
       mv "$control_commit_backup" "$control_commit_path"
     else
       rm -f "$control_commit_path"
     fi
   fi
-  if [[ "$deploy_init_replaced" -eq 1 ]]; then
+  if [[ "$installation_complete" -ne 1 && "$deploy_init_replaced" -eq 1 ]]; then
     if [[ -n "$deploy_init_backup" && -f "$deploy_init_backup" ]]; then
       mv "$deploy_init_backup" "$deploy_init_path"
     else

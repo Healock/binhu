@@ -144,19 +144,20 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
     safe_directory(ROOT, create=True)
     with (ROOT / 'snapshot.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        before = preflight()
         snapshot_id = 'staging-' + secrets.token_hex(8)
         path = ROOT / snapshot_id
         path.mkdir(mode=0o700)
         safe_directory(path)
-        private_json(path / 'before.json', before)
         started = time.monotonic()
         diagnostics = {}
+        before = None
         private_json(path / 'policy.json', {'exclude_orphan_property_links':exclude_orphan_property_links,
             'recover_model_three_sources': recover_model_three_sources,
             'maximum_excluded_links':3 if exclude_orphan_property_links else 0,
             'maximum_recovered_sources':261 if recover_model_three_sources else 0})
         try:
+            before = preflight()
+            private_json(path / 'before.json', before)
             program, hashes = source_program(snapshot_id, secrets.token_bytes(32), measure=action == 'measure',
                 exclude_orphan_property_links=exclude_orphan_property_links,
                 recover_model_three_sources=recover_model_three_sources)
@@ -188,7 +189,7 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
         except Exception as exc:
             code = str(exc) if isinstance(exc, SnapshotError) else 'snapshot_operation_failed'
             private_json(path / 'failure.json', {'reason': code, 'snapshot_id': snapshot_id,
-                'diagnostics': diagnostics})
+                'phase': 'preflight' if before is None else 'source', 'diagnostics': diagnostics})
             raise SnapshotError(code) from None
 
 

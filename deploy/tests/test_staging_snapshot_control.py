@@ -11,6 +11,35 @@ from deploy.environments.staging_data.control import private_json, source_progra
 
 
 class ControlTests(unittest.TestCase):
+    def test_preflight_failure_gets_unique_private_evidence(self):
+        from deploy.environments.staging_data import control
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_fcntl = SimpleNamespace(flock=Mock(), LOCK_EX=1, LOCK_NB=2)
+            with patch.dict(sys.modules, {'fcntl': fake_fcntl}), \
+                    patch.object(control, 'ROOT', root), \
+                    patch.object(control.os, 'umask'), \
+                    patch.object(control, 'safe_directory'), \
+                    patch.object(control, 'preflight', side_effect=control.SnapshotError(
+                        'insufficient_memory_for_snapshot')):
+                with self.assertRaisesRegex(control.SnapshotError,
+                                             '^insufficient_memory_for_snapshot$'):
+                    control.execute('measure', exclude_orphan_property_links=True,
+                                    recover_model_three_sources=True)
+                attempts = list(root.glob('staging-*'))
+                self.assertEqual(len(attempts), 1)
+                self.assertFalse((attempts[0] / 'before.json').exists())
+                self.assertEqual(json.loads((attempts[0] / 'policy.json').read_text()), {
+                    'exclude_orphan_property_links': True,
+                    'recover_model_three_sources': True,
+                    'maximum_excluded_links': 3,
+                    'maximum_recovered_sources': 261,
+                })
+                failure = json.loads((attempts[0] / 'failure.json').read_text())
+                self.assertEqual(failure['reason'], 'insufficient_memory_for_snapshot')
+                self.assertEqual(failure['phase'], 'preflight')
+                self.assertEqual(failure['diagnostics'], {})
+
     def test_package_read_failure_is_recorded_without_exception_text(self):
         from deploy.environments.staging_data import control
         with tempfile.TemporaryDirectory() as directory:
@@ -28,7 +57,9 @@ class ControlTests(unittest.TestCase):
                 failures = list(root.glob('staging-*/failure.json'))
                 self.assertEqual(len(failures), 1)
                 self.assertNotIn('private-path', failures[0].read_text())
-                self.assertEqual(json.loads(failures[0].read_text())['reason'], 'snapshot_operation_failed')
+                failure = json.loads(failures[0].read_text())
+                self.assertEqual(failure['reason'], 'snapshot_operation_failed')
+                self.assertEqual(failure['phase'], 'source')
                 run.assert_not_called()
 
     def test_diagnostic_parser_contract_matches_current_business_fields(self):
