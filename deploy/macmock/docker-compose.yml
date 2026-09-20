@@ -1,0 +1,24 @@
+services:
+  macmock:
+    container_name: mac_faker
+    build: .
+    image: macmock:controlled-write
+    restart: unless-stopped
+    environment:
+      MAC_ADDRESS: ${MAC_ADDRESS:?Set MAC_ADDRESS}
+      MACMOCK_WRITE_TOKEN: ${MACMOCK_WRITE_TOKEN:?Set MACMOCK_WRITE_TOKEN}
+      MACMOCK_STATE_FILE: /data/mac-address
+    ports:
+      - "${MACMOCK_PUBLISH_HOST:-0.0.0.0}:23333:23333"
+    volumes:
+      - macmock_state:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  macmock_state:

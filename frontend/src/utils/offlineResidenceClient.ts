@@ -11,6 +11,8 @@ export interface OfflineResidenceConfig {
   username: string
   password: string
   mac_service_url: string
+  mac_address: string
+  mac_write_token: string
   timeout_seconds: number
   community_codes: string[]
   login_community_ids: number[]
@@ -46,6 +48,8 @@ export const DEFAULT_OFFLINE_RESIDENCE_CONFIG: OfflineResidenceConfig = {
   username: '',
   password: '',
   mac_service_url: 'http://127.0.0.1:23333',
+  mac_address: '',
+  mac_write_token: '',
   timeout_seconds: 15,
   community_codes: [],
   login_community_ids: [],
@@ -81,6 +85,8 @@ export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
       ...DEFAULT_OFFLINE_RESIDENCE_CONFIG,
       ...parsed,
       username: typeof parsed.username === 'string' ? parsed.username.trim() : '',
+      mac_address: typeof parsed.mac_address === 'string' ? parsed.mac_address.trim().toUpperCase() : '',
+      mac_write_token: typeof parsed.mac_write_token === 'string' ? parsed.mac_write_token : '',
       community_codes: Array.isArray(parsed.community_codes) ? parsed.community_codes.map(String).filter(Boolean) : [],
       login_community_ids: Array.isArray(parsed.login_community_ids)
         ? Array.from(new Set(parsed.login_community_ids.filter(id => Number.isInteger(id) && id > 0))).sort((a, b) => a - b)
@@ -102,6 +108,8 @@ export function saveOfflineResidenceConfig(config: OfflineResidenceConfig): void
     ...config,
     base_url: config.base_url.trim().replace(/\/+$/, ''),
     mac_service_url: config.mac_service_url.trim().replace(/\/+$/, ''),
+    mac_address: typeof config.mac_address === 'string' ? config.mac_address.trim().toUpperCase() : '',
+    mac_write_token: typeof config.mac_write_token === 'string' ? config.mac_write_token : '',
     login_community_ids: Array.from(new Set(config.login_community_ids.filter(id => Number.isInteger(id) && id > 0))).sort((a, b) => a - b),
     login_community_names: config.login_community_names.map(item => item.trim()).filter(Boolean),
     accounts,
@@ -165,6 +173,30 @@ function baseUrl(config: OfflineResidenceConfig): string {
   return value
 }
 
+const MAC_ADDRESS_RE = /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/
+
+/** Normalize the formats accepted by macmock without accepting arbitrary text. */
+export function normalizeMacAddress(value: string): string {
+  const compact = String(value || '').trim().replace(/[.\-:\s]/g, '').toUpperCase()
+  if (!/^[0-9A-F]{12}$/.test(compact)) throw new Error('MAC 地址必须是 12 位十六进制字符')
+  const normalized = compact.match(/.{2}/g)?.join(':') || ''
+  const firstOctet = Number.parseInt(normalized.slice(0, 2), 16)
+  if (!MAC_ADDRESS_RE.test(normalized) || normalized === '00:00:00:00:00:00' || (firstOctet & 1) === 1) {
+    throw new Error('MAC 地址格式无效')
+  }
+  return normalized
+}
+
+function macServiceUrl(config: OfflineResidenceConfig): string {
+  const value = config.mac_service_url.trim().replace(/\/+$/, '')
+  let parsed: URL
+  try { parsed = new URL(value) } catch { throw new Error('MAC 服务地址格式无效') }
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('MAC 服务地址格式无效')
+  }
+  return value
+}
+
 async function jsonRequest(config: OfflineResidenceConfig, url: string, init: RequestInit): Promise<any> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), config.timeout_seconds * 1000)
@@ -177,6 +209,36 @@ async function jsonRequest(config: OfflineResidenceConfig, url: string, init: Re
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     return await response.json()
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+export async function readMacAddress(config: OfflineResidenceConfig): Promise<string> {
+  const payload = await jsonRequest(config, macServiceUrl(config), { method: 'GET' })
+  try { return normalizeMacAddress(String(payload?.mac || '')) } catch { throw new Error('MAC 服务未返回有效设备地址') }
+}
+
+export async function pushMacAddress(config: OfflineResidenceConfig, value: string, writeToken = ''): Promise<string> {
+  const mac = normalizeMacAddress(value)
+  const url = macServiceUrl(config)
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (writeToken.trim()) headers['X-Macmock-Token'] = writeToken.trim()
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), config.timeout_seconds * 1000)
+  try {
+    const response = await fetch(url, {
+      method: 'POST', headers, body: JSON.stringify({ mac }), credentials: 'omit', mode: 'cors', signal: controller.signal,
+    })
+    if (response.status === 401 || response.status === 403) throw new Error('MAC 服务拒绝写入，请检查 MAC 写入令牌')
+    if (response.status === 405) throw new Error('MAC 服务尚未支持 MAC 写入，请先更新 macmock')
+    if (response.status === 422) throw new Error('MAC 服务拒绝了无效 MAC 地址')
+    if (!response.ok) throw new Error(`MAC 服务写入失败（HTTP ${response.status}）`)
+    let payload: any
+    try { payload = await response.json() } catch { throw new Error('MAC 服务写入响应无法解析') }
+    const verified = await readMacAddress(config)
+    if (verified !== mac || payload?.mac && normalizeMacAddress(String(payload.mac)) !== mac) throw new Error('MAC 服务写入后回读不一致')
+    return verified
   } finally {
     window.clearTimeout(timer)
   }
@@ -214,9 +276,7 @@ export class OfflineResidenceClient {
     const base = baseUrl(this.config)
     const checkKey = String(Date.now())
     await jsonRequest(this.config, `${base}${CAPTCHA_PATH_PREFIX}${checkKey}`, { method: 'GET' })
-    const macPayload = await jsonRequest(this.config, this.config.mac_service_url, { method: 'GET' })
-    const mac = String(macPayload?.mac || '').trim()
-    if (!mac) throw new Error('MAC 服务未返回设备地址')
+    const mac = await readMacAddress(this.config)
     const payload = await jsonRequest(this.config, `${base}${LOGIN_PATH}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json;charset=UTF-8' },

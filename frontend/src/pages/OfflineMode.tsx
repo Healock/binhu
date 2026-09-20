@@ -10,6 +10,9 @@ import {
   OfflineResidenceClient,
   cacheOnlineResidenceConfig,
   loadOfflineResidenceConfig,
+  normalizeMacAddress,
+  pushMacAddress,
+  readMacAddress,
   saveOfflineResidenceConfig,
   type OfflineResidenceConfig,
 } from '../utils/offlineResidenceClient'
@@ -43,6 +46,9 @@ export default function OfflineMode() {
   const [configMessage, setConfigMessage] = useState('')
   const [exporting, setExporting] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [macBusy, setMacBusy] = useState(false)
+  const [macMessage, setMacMessage] = useState('')
+  const [macMessageType, setMacMessageType] = useState<'info' | 'success' | 'error'>('info')
 
   const running = queryState === 'running'
   const total = workbook?.rows.length ?? 0
@@ -59,6 +65,7 @@ export default function OfflineMode() {
   const updateConfig = (change: Partial<OfflineResidenceConfig>) => {
     setConfig(current => ({ ...current, ...change }))
     setConfigMessage('')
+    setMacMessage('')
   }
 
   const persistConfig = () => {
@@ -71,6 +78,43 @@ export default function OfflineMode() {
     saveOfflineResidenceConfig(next)
     setConfig(next)
     setConfigMessage('离线配置已保存到当前客户端。密码不会上传到滨湖平台。')
+  }
+
+  const readCurrentMac = async () => {
+    setMacBusy(true)
+    setMacMessage('')
+    try {
+      const mac = await readMacAddress(config)
+      const next = { ...config, mac_address: mac }
+      saveOfflineResidenceConfig(next)
+      setConfig(next)
+      setMacMessage(`当前 MAC：${mac}`)
+      setMacMessageType('info')
+    } catch (reason) {
+      setMacMessage(reason instanceof Error ? reason.message : '读取 MAC 失败')
+      setMacMessageType('error')
+    } finally {
+      setMacBusy(false)
+    }
+  }
+
+  const pushConfiguredMac = async () => {
+    setMacBusy(true)
+    setMacMessage('')
+    try {
+      const mac = normalizeMacAddress(config.mac_address)
+      const verified = await pushMacAddress(config, mac, config.mac_write_token)
+      const next = { ...config, mac_address: verified }
+      saveOfflineResidenceConfig(next)
+      setConfig(next)
+      setMacMessage(`MAC 已保存并回读确认：${verified}`)
+      setMacMessageType('success')
+    } catch (reason) {
+      setMacMessage(reason instanceof Error ? reason.message : '保存 MAC 失败')
+      setMacMessageType('error')
+    } finally {
+      setMacBusy(false)
+    }
   }
 
   const syncOnlineConfig = async () => {
@@ -182,7 +226,7 @@ export default function OfflineMode() {
             </div>
           </section>
 
-          <Panel title="居住证系统配置" description="配置保存在当前客户端。在线平台同步接口、MAC 和超时；账号、统一密码和会话不会从平台配置接口回传。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>刷新在线配置</Button>}>
+          <Panel title="居住证系统配置" description="配置保存在当前客户端。在线平台同步接口、MAC 服务地址和超时；账号、统一密码、MAC 写入令牌和会话不会从平台配置接口回传。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>刷新在线配置</Button>}>
             <div className="grid gap-4">
               {configWarning && <Alert type="warning" showIcon message={configWarning} />}
               {configMessage && <Alert type="info" showIcon message={configMessage} />}
@@ -191,6 +235,8 @@ export default function OfflineMode() {
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">居住证接口地址</span><Input value={config.base_url} onChange={event => updateConfig({ base_url: event.target.value })} /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">统一登录密码</span><Input.Password value={config.password} onChange={event => updateConfig({ password: event.target.value })} autoComplete="new-password" /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">MAC 服务地址</span><Input value={config.mac_service_url} onChange={event => updateConfig({ mac_service_url: event.target.value })} /></label>
+                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">要使用的 MAC 地址</span><Input value={config.mac_address} onChange={event => updateConfig({ mac_address: event.target.value })} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" /></label>
+                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">MAC 写入令牌（如服务端要求）</span><Input.Password value={config.mac_write_token} onChange={event => updateConfig({ mac_write_token: event.target.value })} placeholder="不会上传到滨湖平台" autoComplete="off" /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">请求超时（秒）</span><InputNumber min={1} max={120} value={config.timeout_seconds} onChange={value => updateConfig({ timeout_seconds: Number(value || 15) })} className="w-full" /></label>
               </div>
               {config.login_community_names.length > 0 && <Alert type="info" showIcon message={`在线查询范围：${config.login_community_names.join('、')}`} />}
@@ -203,6 +249,14 @@ export default function OfflineMode() {
                 </div>)}
               </div>
               <div className="text-xs text-[var(--app-text-secondary)]">每个选中社区必须在当前客户端填写自己的完整登录账号，共用本机统一密码；账号不会根据组织代码自动拼接。这里不保存居住证会话令牌，远端同步也不会返回账号或密码。</div>
+              <div className="grid gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
+                <div className="text-sm text-[var(--app-text-secondary)]">MAC 地址推送只修改配置的 MAC mock 服务，不修改滨湖平台配置。保存后会立即 GET 回读校验；生产服务应启用写入令牌。</div>
+                {macMessage && <Alert type={macMessageType} showIcon message={macMessage} />}
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button onClick={() => void readCurrentMac()} loading={macBusy}>读取当前 MAC</Button>
+                  <Button type="primary" onClick={() => void pushConfiguredMac()} loading={macBusy} disabled={!config.mac_address.trim()}>保存并推送 MAC</Button>
+                </div>
+              </div>
               <div className="flex justify-end"><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
             </div>
           </Panel>
