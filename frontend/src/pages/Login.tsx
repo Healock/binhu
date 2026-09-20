@@ -18,7 +18,6 @@ import {
 } from '../utils/rememberedUsername'
 import { getSafeLocalStorage } from '../utils/themeMode'
 import { createResilientPoller } from '../utils/resilientPolling'
-import { environmentPath } from '../utils/apiEnvironment'
 
 export default function Login() {
   const { login, clientVersion, environment } = useAuth()
@@ -36,8 +35,6 @@ export default function Login() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [maintenance, setMaintenance] = useState<MaintenanceStatus | null>(null)
-  const currentEnvironmentPath = environmentPath()
-  const isDesktop = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
   useEffect(() => {
     const raw = sessionStorage.getItem('auth_exit_reason')
@@ -242,19 +239,6 @@ export default function Login() {
                 >
                   离线模式
                 </Button>
-                {isDesktop && (
-                  <Button
-                    id="staging-environment-button"
-                    size="large"
-                    block
-                    onClick={() => {
-                      if (currentEnvironmentPath === '/staging') window.location.assign('/login')
-                      else navigate('/staging/login')
-                    }}
-                  >
-                    {currentEnvironmentPath === '/staging' ? '返回正式环境' : '进入预发布环境'}
-                  </Button>
-                )}
               </div>
             </form>
             <div className="login-form-card__version" aria-label={`客户端版本 v${clientVersion}`}>

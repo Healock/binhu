@@ -15,6 +15,7 @@ import { detectClientDeviceType, getDeviceId } from '../utils/device.ts'
 import { cacheOnlineResidenceConfig } from '../utils/offlineResidenceClient'
 import {
   assertApiEnvironmentIdentity,
+  assertLoginEnvironmentEntry,
   environmentPath,
   environmentForUsername,
   getApiEnvironment,
@@ -120,13 +121,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (username: string, password: string) => {
     const targetEnvironment = environmentForUsername(username)
     const prefix = environmentPath()
-    if ((prefix === '/dev' && targetEnvironment !== 'development')
-      || (prefix === '/staging' && targetEnvironment !== 'staging')) {
-      throw new Error('账号不属于当前环境，请使用对应的环境账号')
-    }
-    if (!prefix && (targetEnvironment === 'development' || targetEnvironment === 'staging')) {
-      throw new Error(`请先打开 ${targetEnvironment === 'development' ? '/dev/' : '/staging/'} 入口，再登录环境账号`)
-    }
+    assertLoginEnvironmentEntry(
+      targetEnvironment,
+      prefix,
+      import.meta.env.VITE_DESKTOP_MODE === 'true',
+    )
     setApiEnvironment(targetEnvironment)
     setEnvironment(targetEnvironment)
     try {
