@@ -44,6 +44,48 @@ The Staging JSONL sanitizer is not a complete database snapshot/import tool.
 Passing its tests does not establish production data sanitization, relational
 integrity, database identity, login acceptance or 75-user capacity.
 
+## Fixed Staging promotion gateways
+
+Staging application and sanitized data promotion use two separate SSH accounts,
+forced-command wrappers and sudo allowlists. Install them only through
+`install-staging-promotion-gateways.yml` after the exact main revision passes CI.
+The installer creates `binhu-staging-app-deploy` and `binhu-staging-data-deploy`;
+neither key is shared with Production, Development or the Staging event-pipeline.
+
+The application account accepts only:
+
+```text
+prepare <staging-app-run-id> <40-hex-main-commit> <version> <artifact-id> <dev-update-run-id>
+measure <run-id> <artifact-id>
+apply <run-id> <artifact-id>
+accept <run-id> <artifact-id> <dev-update-run-id>
+```
+
+`prepare` accepts an archive with exactly `artifact.json`, `source.tar` and
+`frontend.tar`, verifies that its ID is the already accepted Dev artifact, and
+adopts the exact Backend image ID from the bound Dev update record without a
+Docker build. It also verifies that image's labels and full `/app` file hashes.
+`measure`, `apply` and `accept` each require the successful Dev update record and
+the live Dev manifest to continue containing those exact IDs before Staging can
+advance.
+Every step records commit, version, artifact ID, image ID, time and safe outcome.
+
+The data account accepts only `status`, `measure`, the fixed
+`export approved-sanitized-scope-v1`, and `create/import/verify/switch` with a
+`staging-<16hex>` ID. Production access exists only inside the reviewed read-only
+exporter. The target actions can address only `Staging_s<id>_*` databases on
+`binhu-staging_internal`; there is no path, environment, network, database or
+shell argument. Repeated successful import reads the immutable result record and
+does not execute inserts again. Arbitrary commands, Production writes, Dev or
+Shadow targets and cross-environment network selection are rejected by both the
+forced shell and Python boundary.
+
+Private audit logs contain action, fixed run identity, immutable digests, time,
+outcome and bounded reason codes only. They never contain database credentials,
+passwords, source rows, names, phones, identity numbers, addresses, notes or
+driver output. A workflow failure and the corresponding private `*-alert-*.json`
+record are the alert channels for switch, rollback and validation failures.
+
 For existing isolated databases, run `database_identity.py measure --environment
 staging` (or `development`), preserve its result outside the environment folder,
 then `apply` and `verify` with the same environment. The command checks Docker

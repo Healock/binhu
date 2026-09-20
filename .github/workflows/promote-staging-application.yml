@@ -1,0 +1,101 @@
+name: Promote immutable Staging application
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Fixed gateway action
+        required: true
+        type: choice
+        options: [prepare, measure, apply, accept]
+      run_id:
+        description: staging-app plus 16 lowercase hex characters
+        required: true
+        type: string
+      commit:
+        description: Exact merged main commit for prepare
+        required: false
+        type: string
+      artifact_id:
+        description: Prepared 64-hex artifact ID
+        required: false
+        type: string
+      dev_acceptance_run_id:
+        description: Matching dev-update run for accept
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-application-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate fixed inputs
+        env:
+          ACTION: ${{ inputs.action }}
+          RUN_ID: ${{ inputs.run_id }}
+          COMMIT: ${{ inputs.commit }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          DEV_RUN: ${{ inputs.dev_acceptance_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ ]]
+          case "$ACTION" in
+            prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
+            measure|apply) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
+            accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]] ;;
+          esac
+      - name: Configure deploy SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.BINHU_STAGING_APP_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/staging-app
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/staging-app ~/.ssh/known_hosts
+      - name: Build exact immutable artifact
+        if: inputs.action == 'prepare'
+        env:
+          COMMIT: ${{ inputs.commit }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          python -m deploy.environments.artifact build --repository . --commit "$COMMIT" --output "$RUNNER_TEMP/artifact"
+          python - "$RUNNER_TEMP/artifact/artifact.json" "$ARTIFACT_ID" <<'PY'
+          import json, pathlib, sys
+          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+          if manifest.get('artifact_id') != sys.argv[2]:
+              raise SystemExit('rebuilt transport does not match the accepted Dev artifact')
+          PY
+          tar -C "$RUNNER_TEMP/artifact" -czf "$RUNNER_TEMP/artifact.tar.gz" artifact.json source.tar frontend.tar
+          cat "$RUNNER_TEMP/artifact/artifact.json"
+      - name: Execute fixed action
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          ACTION: ${{ inputs.action }}
+          RUN_ID: ${{ inputs.run_id }}
+          COMMIT: ${{ inputs.commit }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          DEV_RUN: ${{ inputs.dev_acceptance_run_id }}
+        run: |
+          set -euo pipefail
+          ssh_command=(ssh -i ~/.ssh/staging-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-app-deploy@$HOST")
+          case "$ACTION" in
+            prepare)
+              version="$(git show "${COMMIT}:VERSION" | tr -d '\r\n')"
+              cat "$RUNNER_TEMP/artifact.tar.gz" | "${ssh_command[@]}" "prepare $RUN_ID $COMMIT $version $ARTIFACT_ID $DEV_RUN" ;;
+            measure|apply) "${ssh_command[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
+            accept) "${ssh_command[@]}" "accept $RUN_ID $ARTIFACT_ID $DEV_RUN" ;;
+          esac

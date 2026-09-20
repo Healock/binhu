@@ -26,6 +26,20 @@ class Cursor:
         return False
     async def execute(self, sql, params=()):
         self.commands.append(sql)
+        if 'information_schema.tables' in sql:
+            database = params[0]
+            self.result = [(name.split('.', 1)[1],) for name in sorted(self.tables)
+                           if name.startswith(database + '.')]
+            return
+        if 'information_schema.columns' in sql:
+            self.result = [('id', 'bigint', 'NO', None, '', '')]
+            return
+        if 'information_schema.statistics' in sql:
+            self.result = [('PRIMARY', 0, 1, 'id', None, 'BTREE')]
+            return
+        if 'information_schema.table_constraints' in sql:
+            self.result = [('PRIMARY', 'PRIMARY KEY')]
+            return
         if sql.startswith('SELECT'):
             match = re.search(r'FROM `([^`]+)`\.`([^`]+)`', sql)
             table = '.'.join(match.groups())
@@ -44,8 +58,11 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         settings = SimpleNamespace(APP_ENVIRONMENT='production', MYSQL_DOMAIN_DATABASES_ENABLED=True,
             PLATFORM_DOMAIN_ACTIVE=True, REGISTRY_ADDRESS_DOMAIN_ACTIVE=True,
             MYSQL_ONLINE_DATA_DB='OnlineData', MYSQL_PLATFORM_DB='PlatformData', MYSQL_REGISTRY_DB='RegistryData',
-            MYSQL_ARCHIVE_DB='OnlineDataArchive')
+            MYSQL_ARCHIVE_DB='OnlineDataArchive', MYSQL_DAILY_REPORT_DB='daily_report',
+            MYSQL_VISIT_DB='VisitData', MYSQL_DISPATCH_DB='DispatchData', MYSQL_WORKFLOW_DB='WorkflowData')
         tables = {name: [] for name in [*FIELDS, *ORG_FIELDS]}
+        for domain in ('daily_report', 'VisitData', 'DispatchData', 'WorkflowData'):
+            tables[domain + '._synthetic_schema_table'] = []
         tables['PlatformData._areas'] = [{'id': 1, 'name': '虚构片区'}]
         tables['PlatformData._communities'] = [{'id': 1, 'name': '虚构社区', 'area_id': 1, 'is_active': 1}]
         tables['PlatformData._community_aliases'] = []
@@ -90,6 +107,9 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         conn.rollback.assert_awaited_once()
         self.assertEqual(result['report']['current_task_count'], 1)
         self.assertFalse(result['report']['ready_for_application_switch'])
+        self.assertEqual(set(result['schema_contract']), {
+            'OnlineData', 'OnlineDataArchive', 'daily_report', 'PlatformData',
+            'VisitData', 'DispatchData', 'RegistryData', 'WorkflowData'})
         encoded = json.dumps(result, ensure_ascii=False)
         self.assertNotIn('fictional-id', encoded)
         self.assertNotIn('虚构路', encoded)
@@ -176,4 +196,3 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

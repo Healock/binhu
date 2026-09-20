@@ -36,6 +36,16 @@ class ApplyControlTests(unittest.TestCase):
         self.assertNotIn('-v',args)
         self.assertIn('--read-only',args)
 
+    def test_measure_and_verify_require_production_schema_contract(self):
+        measure,_=program('staging-'+'a'*16,'measure')
+        verify,_=program('staging-'+'a'*16,'verify')
+        for code in (measure,verify):
+            self.assertIn("source_schema_contract_missing",code)
+            self.assertIn("production_staging_schema_mismatch",code)
+            self.assertIn("information_schema.statistics",code)
+            self.assertIn("information_schema.table_constraints",code)
+        self.assertIn("ready_for_application_switch':True",verify)
+
     def test_import_data_is_json_on_stdin_not_python_source_or_arguments(self):
         data={'tables':{'fixture_only_payload_marker':[{'text':'虚构\\n\"sample', 'active':True, 'value':None}]*10000}}
         code,_=program('staging-'+'a'*16,'import')

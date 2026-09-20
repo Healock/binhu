@@ -20,6 +20,10 @@ FLOW_FIELDS = ("id", "parser_type", "row_key", "cycle_no", "source_id", "source_
 REGISTRATION_FIELDS = ("parser_type", "row_key", "source_id", "source_revision", "source_row_hash", "identity_hmac", "last_address_hmac", "task_community", "property_id", "property_version", "status", "match_count", "selected_by", "selected_at", "confirmed_by", "manual_confirmed_at", "confirmed_at", "created_at", "updated_at")
 FLOW_STATES = {"initial_pending", "initial_extension", "deep_pending", "deep_extension", "final_unverifiable", "resolved", "archived", "source_exception"}
 REGISTRATION_STATES = {"awaiting_match", "matched_once", "review_required", "confirmation_pending", "confirmed", "cancelled", "legacy_completed", "pending_establishment"}
+SCHEMA_DOMAINS = ("OnlineData", "OnlineDataArchive", "daily_report", "PlatformData",
+                  "VisitData", "DispatchData", "RegistryData", "WorkflowData")
+SCHEMA_KEYS = ("ONLINE_DATA", "ARCHIVE", "DAILY_REPORT", "PLATFORM", "VISIT",
+               "DISPATCH", "REGISTRY", "WORKFLOW")
 
 
 def source_settings(settings):
@@ -45,6 +49,35 @@ async def select(cur, qualified, columns, where="", params=()):
     return [dict(zip(columns,row)) for row in await cur.fetchall()]
 
 
+async def source_schema_contract(cur, settings):
+    """Return structural metadata only; no row value or credential is read."""
+    contract = {}
+    for key, domain in zip(SCHEMA_KEYS, SCHEMA_DOMAINS):
+        database = getattr(settings, "MYSQL_" + key + "_DB")
+        if database != domain:
+            raise SnapshotError("source_database_name_mismatch")
+        await cur.execute("SELECT table_name FROM information_schema.tables "
+                          "WHERE table_schema=%s AND table_type='BASE TABLE' ORDER BY table_name", (database,))
+        tables = [row[0] for row in await cur.fetchall()]
+        if not tables:
+            raise SnapshotError("source_schema_empty")
+        contract[domain] = {}
+        for table in tables:
+            await cur.execute("SELECT column_name,column_type,is_nullable,column_default,extra,generation_expression "
+                              "FROM information_schema.columns WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position",
+                              (database, table))
+            columns = [list(row) for row in await cur.fetchall()]
+            await cur.execute("SELECT index_name,non_unique,seq_in_index,column_name,sub_part,index_type "
+                              "FROM information_schema.statistics WHERE table_schema=%s AND table_name=%s "
+                              "ORDER BY index_name,seq_in_index", (database, table))
+            indexes = [list(row) for row in await cur.fetchall()]
+            await cur.execute("SELECT constraint_name,constraint_type FROM information_schema.table_constraints "
+                              "WHERE table_schema=%s AND table_name=%s ORDER BY constraint_name", (database, table))
+            constraints = [list(row) for row in await cur.fetchall()]
+            contract[domain][table] = {"columns": columns, "indexes": indexes, "constraints": constraints}
+    return contract
+
+
 async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_links=False,
                 recover_model_three_sources=False):
     # Required at the public boundary, before obtaining a cursor or reading data.
@@ -58,6 +91,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
         async with conn.cursor() as cur:
             await cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             await cur.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+            schema_contract = await source_schema_contract(cur, settings)
             raw_organization = {table: await select(cur, table, columns) for table, columns in ORGANIZATION_FIELDS.items()}
             raw_registry = {table: await select(cur, table, columns) for table, columns in FIELDS.items()}
             sources = await select(cur, "OnlineData._online_source_rows",
@@ -258,6 +292,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 "pending_gates":["registration_hmac_rebuild","candidate_database_import","target_verification"],
                 "recovered_model_three_source_count": recovered_source_count,
                 "scope":"current_tasks_organization_and_registry_graph","ready_for_application_switch":False})
+            result["schema_contract"] = schema_contract
             return result
     finally:
         await conn.rollback()

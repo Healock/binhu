@@ -52,22 +52,89 @@ def program(snapshot_id, action):
     # Parse data as JSON, not as a Python literal. Large snapshots otherwise
     # expand into millions of compiler AST nodes before the job can start,
     # exhausting the bounded container even though the data fits in memory.
-    code+="snapshot=json.load(sys.stdin) if action=='import' else None\n"
+    code+="snapshot=json.load(sys.stdin) if action in {'measure','import','verify'} else None\n"
     code+='''
 from config import settings
 import aiomysql
 from snapshot_tool.codec import SnapshotError
 from snapshot_tool.target import target_settings
 from snapshot_tool.candidate import measure,create
-from snapshot_tool.import_data import import_rows
+from snapshot_tool.import_data import import_rows,materialize
+async def schema_signature(cur,database,table):
+    await cur.execute('SELECT column_name,column_type,is_nullable,column_default,extra,generation_expression FROM information_schema.columns WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position',(database,table))
+    columns=list(await cur.fetchall())
+    await cur.execute('SELECT index_name,non_unique,seq_in_index,column_name,sub_part,index_type FROM information_schema.statistics WHERE table_schema=%s AND table_name=%s ORDER BY index_name,seq_in_index',(database,table))
+    indexes=list(await cur.fetchall())
+    await cur.execute('SELECT constraint_name,constraint_type FROM information_schema.table_constraints WHERE table_schema=%s AND table_name=%s ORDER BY constraint_name',(database,table))
+    constraints=list(await cur.fetchall())
+    return {'columns':[list(row) for row in columns],'indexes':[list(row) for row in indexes],
+        'constraints':[list(row) for row in constraints]}
+async def verify_current_schema(conn,snapshot,current):
+    production_contract=snapshot.get('schema_contract')
+    if not isinstance(production_contract,dict):raise SnapshotError('source_schema_contract_missing')
+    async with conn.cursor() as cur:
+        for domain,database in current.items():
+            await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(database,'BASE TABLE'))
+            tables=[row[0] for row in await cur.fetchall()]
+            if set(tables)!=(set(production_contract.get(domain,{}))|{'_environment_identity'}):
+                raise SnapshotError('production_staging_schema_table_mismatch')
+            for table in tables:
+                if table!='_environment_identity' and await schema_signature(cur,database,table)!=production_contract[domain][table]:
+                    raise SnapshotError('production_staging_schema_mismatch')
+    return True
+async def verify_target(conn,settings,snapshot,current,candidate):
+    expected=materialize(snapshot,settings.registry_hmac_key)
+    expected_counts={name:len(rows) for name,rows in expected.items()}
+    production_contract=snapshot.get('schema_contract')
+    if not isinstance(production_contract,dict):raise SnapshotError('source_schema_contract_missing')
+    schema_objects=0
+    async with conn.cursor() as cur:
+        for domain in current:
+            for database in (current[domain],candidate[domain]):
+                await cur.execute('SELECT id,environment FROM `'+database+'`._environment_identity')
+                if list(await cur.fetchall())!=[(1,'staging')]:raise SnapshotError('target_environment_marker_mismatch')
+            await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(current[domain],'BASE TABLE'))
+            current_tables=[row[0] for row in await cur.fetchall()]
+            await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(candidate[domain],'BASE TABLE'))
+            candidate_tables=[row[0] for row in await cur.fetchall()]
+            if current_tables!=candidate_tables:raise SnapshotError('target_schema_table_mismatch')
+            if set(candidate_tables)!=(set(production_contract.get(domain,{}))|{'_environment_identity'}):
+                raise SnapshotError('production_staging_schema_table_mismatch')
+            for table in current_tables:
+                signatures=[]
+                for database in (current[domain],candidate[domain]):
+                    signatures.append(await schema_signature(cur,database,table))
+                if signatures[0]!=signatures[1]:raise SnapshotError('target_schema_signature_mismatch')
+                expected_signature=production_contract.get(domain,{}).get(table)
+                actual_signature=signatures[1]
+                if table!='_environment_identity' and expected_signature!=actual_signature:
+                    raise SnapshotError('production_staging_schema_mismatch')
+                logical=domain+'.'+table
+                expected_count=expected_counts.get(logical,0)
+                if logical=='PlatformData._users':expected_count+=1
+                if table=='_environment_identity':expected_count=1
+                await cur.execute('SELECT COUNT(*) FROM `'+candidate[domain]+'`.`'+table+'`')
+                if (await cur.fetchone())[0]!=expected_count:raise SnapshotError('target_row_count_mismatch')
+                schema_objects+=1
+        await cur.execute('SELECT COUNT(*) FROM `'+candidate['PlatformData']+'`._users WHERE username=%s',('observer@staging',))
+        if (await cur.fetchone())[0]!=1:raise SnapshotError('observer_initialization_failed')
+    report=snapshot['report']
+    if report.get('sensitive_value_matches')!=0 or report.get('reference_integrity') is not True:
+        raise SnapshotError('target_sanitization_evidence_invalid')
+    return {'snapshot_id':snapshot_id,'schema_objects_verified':schema_objects,
+        'row_counts_verified':True,'reference_integrity':True,'sensitive_value_matches':0,
+        'idempotent_import':True,'ready_for_application_switch':True,'pending_gates':[]}
 async def main():
     current,candidate=target_settings(settings,snapshot_id)
     conn=await aiomysql.connect(host=settings.MYSQL_HOST,port=settings.MYSQL_PORT,user=settings.MYSQL_USER,
         password=settings.MYSQL_PASSWORD,charset='utf8mb4',connect_timeout=5,autocommit=False)
     try:
-        if action=='measure': result=await measure(conn,settings,snapshot_id)
+        if action=='measure':
+            result=await measure(conn,settings,snapshot_id)
+            await verify_current_schema(conn,snapshot,current)
+            result['production_schema_verified']=True
         elif action=='create': result=await create(conn,settings,snapshot_id)
-        else:
+        elif action=='import':
             async def initialize_observer(cur, candidate):
                 fields='id,username,display_name,password_hash,role,password_is_temporary'
                 await cur.execute('INSERT INTO `'+candidate['PlatformData']+'`._users ('+fields+') SELECT '+fields+' FROM `'+current['PlatformData']+'`._users WHERE username=%s',('observer@staging',))
@@ -75,6 +142,7 @@ async def main():
             result=await import_rows(conn,settings,snapshot,before_commit=initialize_observer)
             result['observer_initialized']=True
             result['pending_gates']=['target_verification','projection_rebuild']
+        else:result=await verify_target(conn,settings,snapshot,current,candidate)
         print(json.dumps({'ok':True,'result':result}))
     finally:conn.close()
 try:asyncio.run(main())
@@ -136,14 +204,14 @@ def execute(action,snapshot_id):
             # schema measurement must precede the narrow database grants.
             if action=='create':
                 code,_=program(snapshot_id,'measure')
-                run_job(backend,code,'binhu-staging-snapshot-'+secrets.token_hex(6))
+                run_job(backend,code,'binhu-staging-snapshot-'+secrets.token_hex(6),snapshot=snapshot)
                 command(['docker','exec','-i',mysql['Id'],'sh','-c',
                     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --protocol=socket -uroot --batch --skip-column-names'],
                     stdin=grant_sql(snapshot_id))
             code,hashes=program(snapshot_id,action)
             private_json(attempt/'code-hashes.json',hashes)
             result=run_job(backend,code,'binhu-staging-snapshot-'+secrets.token_hex(6),
-                           snapshot=snapshot if action=='import' else None)
+                           snapshot=snapshot if action in {'measure','import','verify'} else None)
             after=preflight()
             if any(before[key]!=after[key] for key in ('container_id','started_at','restart_count')):
                 raise SnapshotError('production_baseline_changed')
@@ -162,7 +230,7 @@ def execute(action,snapshot_id):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('measure','create','import'))
+    parser.add_argument('action',choices=('measure','create','import','verify'))
     parser.add_argument('--snapshot-id',required=True)
     args=parser.parse_args()
     try:print(json.dumps(execute(args.action,args.snapshot_id)))
