@@ -1,7 +1,7 @@
 import copy
 import unittest
 from deploy.tests import test_staging_snapshot_build as build_tests
-from deploy.environments.staging_data.recovery import reconstruct, PARSER
+from deploy.environments.staging_data.recovery import reconstruct, recovery_scope, PARSER
 from deploy.environments.staging_data.codec import SnapshotError
 from services.parsers import get_parser
 
@@ -29,7 +29,7 @@ class RecoveryTests(unittest.TestCase):
         output = reconstruct(*args)
         self.assertEqual(output[0]['source_kind'], 'local_dispatch')
 
-    def test_reject_other_parser_duplicate_business_and_scope_expansion(self):
+    def test_reject_other_parser_and_duplicate_business(self):
         args = list(self.fixture())
         args[0] = get_parser('全链条')
         with self.assertRaisesRegex(SnapshotError, 'source_recovery_parser_not_approved'):
@@ -38,10 +38,22 @@ class RecoveryTests(unittest.TestCase):
         args[1] *= 2
         with self.assertRaisesRegex(SnapshotError, 'duplicate_current_business_key'):
             reconstruct(*args)
+    def test_scope_is_deterministic_and_excludes_only_aggregate_evidence(self):
         args = list(self.fixture())
-        args[1] = [dict(args[1][0], id=i+1, _row_key=str(i)) for i in range(262)]
-        with self.assertRaisesRegex(SnapshotError, 'source_recovery_scope_exceeded'):
-            reconstruct(*args)
+        parser = args[0]
+        args[1] = [dict(args[1][0], id=i + 1, _row_key=str(i)) for i in range(300)]
+        selected, scope = recovery_scope(parser, args[1], args[2], limit=261,
+                                         community_digest=lambda value: 'community-hmac')
+        self.assertEqual(len(selected), 261)
+        self.assertEqual(scope['candidate_missing_count'], 300)
+        self.assertEqual(scope['recovered_count'], 261)
+        self.assertEqual(scope['excluded_count'], 39)
+        self.assertEqual(scope['excluded_by_community'][0]['community_key'], 'community-hmac')
+        self.assertEqual(set(scope), {
+            'parser_type', 'maximum_recovered_sources', 'candidate_missing_count',
+            'recovered_count', 'excluded_count', 'excluded_date_min',
+            'excluded_date_max', 'excluded_by_community',
+        })
 
     def test_bad_json_and_partial_duplicate_ledger_never_recover(self):
         args = list(self.fixture())

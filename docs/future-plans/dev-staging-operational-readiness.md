@@ -136,6 +136,21 @@ Production 路径、Docker、MySQL、Dev、Shadow 和任意 shell 的 12 项独�
 应用制品仍未晋级，完整回归、75 人压测、回滚演练和页面人工验收均未执行。
 完成这些证据前，Staging 晋级评估仍为未通过，也不得进入 Production 架构切换。
 
+### 2026-09-20：模型三固定范围决策与实施状态
+
+项目管理人确认采用方向 B：保持 `maximum_recovered_sources=261`，不扩大脱敏副本范围。
+实现规则为按业务 `id`、`row_key` 的稳定顺序选择 261 条“疑似未注销模型三”来源；
+超出部分不进入 Staging 快照、候选数据库、业务表或日报。超出记录只在快照私有
+`recovery-overflow.json` 中保留聚合证据：候选总数、恢复数、未纳入数、快照内 HMAC
+社区标识分布和截止日期范围，不保存姓名、身份证号、手机号、地址、任务 ID、row_key
+或其他业务正文。
+
+当前限制必须在后续报告中原样保留：Staging 验证只覆盖最多 261 条模型三来源，
+不代表 Production 全量验证；超出部分属于未验证范围；生产数据量继续增长时必须
+重新评估脱敏副本范围。当前代码已通过 Staging 快照专项测试（103 passed，41 个子场景），
+服务器安装和真实 `measure` 重跑尚待完成。`export → create → import → verify → switch`、
+全量回归、75 人压测、回滚演练和页面验收在 `measure` 通过后继续执行。
+
 ### 2026-09-20：Staging preflight 证据
 
 PR #768 已修复 preflight 失败证据和网关安装身份保留，主线 CI 与网关重装均通过。新的只读 `measure` Action `35504450683` 创建了不可覆盖目录 `staging-10b71cf9285a32df`；私有证据确认 `phase=preflight`、`reason=insufficient_memory_for_snapshot`，固定脱敏策略完整，安装控制提交为 `93f676795837a34e1e591afff35a2de0cd0a87a6`。随后只读复测的 `MemAvailable=2,949,312 KiB`，仍低于固定 `3,145,728 KiB` 门槛约 192 MiB。本轮没有执行 export/create/import/verify/switch，也没有新的数据一致性失败。不得降低门槛或清理其他环境资源来制造通过；内存自然恢复前继续保留该资源阻塞。

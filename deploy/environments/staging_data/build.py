@@ -116,8 +116,9 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
             registrations = await select(cur,"OnlineData._task_registration_links",REGISTRATION_FIELDS)
             observed_source_count = len(sources)
             recovered_source_count = 0
+            recovery_scope = None
             if recover_model_three_sources:
-                from .recovery import PARSER, LEDGER_FIELDS, reconstruct
+                from .recovery import PARSER, LEDGER_FIELDS, reconstruct, recovery_scope as select_recovery_scope
                 parser = get_parser(PARSER)
                 business = await select(cur, 'OnlineData.' + parser.table_name,
                     ('id', '_row_key', *parser.COLUMNS))
@@ -131,7 +132,12 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 all_ids = await select(cur, 'OnlineData._online_source_rows', ('id',))
                 reserved = [r['id'] for r in all_ids]
                 reserved.extend(r['source_id'] for r in [*flows, *registrations] if r['source_id'] is not None)
-                recovered = reconstruct(parser, business, sources, ledgers, reserved)
+                selected_business, recovery_scope = select_recovery_scope(
+                    parser, business, sources,
+                    community_digest=lambda value: codec.digest('recovery_community', normalized(value))[:16],
+                )
+                recovered = reconstruct(parser, selected_business, sources, ledgers, reserved,
+                                        community_digest=lambda value: codec.digest('recovery_community', normalized(value)))
                 recovered_source_count = len(recovered)
                 sources = [*sources, *recovered]
             current = {(row["parser_type"], row["row_key"]): row for row in sources}
@@ -180,6 +186,9 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 parser=get_parser(parser_type)
                 business=await select(cur,"OnlineData."+parser.table_name,("id","_row_key"))
                 selected=[row for row in sources if row["parser_type"]==parser_type]
+                if recover_model_three_sources and parser_type == '疑似未注销模型三':
+                    selected_business_keys = {(row['physical_row'], row['row_key']) for row in selected}
+                    business = [row for row in business if (row['id'], row['_row_key']) in selected_business_keys]
                 business_keys = {(row['id'], row['_row_key']) for row in business}
                 source_keys = {(row['physical_row'], row['row_key']) for row in selected}
                 if business_keys != source_keys:
@@ -291,6 +300,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                     "OnlineData._task_registration_links":len(registrations)},
                 "pending_gates":["registration_hmac_rebuild","candidate_database_import","target_verification"],
                 "recovered_model_three_source_count": recovered_source_count,
+                "recovery_scope": recovery_scope,
                 "scope":"current_tasks_organization_and_registry_graph","ready_for_application_switch":False})
             result["schema_contract"] = schema_contract
             return result

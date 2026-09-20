@@ -180,6 +180,12 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
                 raise SnapshotError('production_baseline_changed')
             private_json(path / 'after.json', after)
             private_json(path / 'report.json', result['report'])
+            scope = result['report'].get('recovery_scope')
+            if isinstance(scope, dict) and int(scope.get('excluded_count') or 0) > 0:
+                # Keep the overflow manifest separate from the sanitized data
+                # payload. It contains aggregate counts, HMAC community keys,
+                # and date bounds only; no task identifiers or source values.
+                private_json(path / 'recovery-overflow.json', scope)
             if action == 'export':
                 private_json(path / 'snapshot.json', result)
                 private_json(path / 'snapshot-sha256.json', {'sha256': hashlib.sha256((path / 'snapshot.json').read_bytes()).hexdigest()})
