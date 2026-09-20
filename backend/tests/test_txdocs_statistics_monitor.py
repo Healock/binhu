@@ -132,6 +132,25 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counts[("测试人员甲", "2026-09-19", "unchecked")], 1)
         self.assertEqual(counts[("测试人员乙", "2026-09-10", "completed")], 1)
 
+    def test_external_overlay_uses_formal_community_for_alias_buckets(self):
+        aliases = {
+            "长板社区": "长板社区",
+            "长板村": "长板社区",
+        }
+
+        self.assertEqual(
+            monitor.canonical_monitor_community(" 长板村 ", aliases),
+            "长板社区",
+        )
+        self.assertEqual(
+            monitor.canonical_monitor_community("长板社区", aliases),
+            "长板社区",
+        )
+        self.assertEqual(
+            monitor.canonical_monitor_community("未配置来源", aliases),
+            "未配置来源",
+        )
+
     def test_model_three_is_supported_as_a_read_only_monitor_target(self):
         rows = [{"values": {
             "截止时间": "2026-09-20",
