@@ -206,6 +206,10 @@ def _staging_backend(run_id: str) -> tuple[str, Path]:
 def seed(run_id: str) -> None:
     if not RUN_RE.fullmatch(run_id) or not (CANDIDATES / run_id).is_dir():
         fail("prepared Staging candidate required")
+    evidence = STATE / "evidence" / run_id
+    index = evidence / "runtime-index.json"
+    if evidence.is_symlink() or index.exists() or index.is_symlink():
+        fail("Staging fixture run already exists")
     image, environment_root = _staging_backend(run_id)
     env = environment()
     password = env.get("STAGING_LOAD_TEST_PASSWORD", "")
@@ -243,11 +247,7 @@ def seed(run_id: str) -> None:
             or payload.get("production_data") is not False or payload.get("fictional_only") is not True
             or len(payload.get("accounts") or []) < 75):
         fail("Staging fixture runtime identity mismatch")
-    evidence = STATE / "evidence" / run_id
     evidence.mkdir(parents=True, mode=0o700, exist_ok=True)
-    index = evidence / "runtime-index.json"
-    if index.exists() or index.is_symlink():
-        fail("Staging fixture run already exists")
     index.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     index.chmod(0o600)
     # stdout is designed to be redirected directly to a private runner file.

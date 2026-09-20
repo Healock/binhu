@@ -249,6 +249,17 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertNotIn("binhu-dev-deploy", installer)
         self.assertNotIn("binhu-production", wrapper + gateway + installer)
 
+    def test_staging_gateway_rejects_reseeding_before_starting_seed_container(self):
+        gateway = (
+            Path(__file__).parents[1]
+            / "environments" / "event_pipeline" / "binhu-staging-event-pipeline-gateway.py"
+        ).read_text(encoding="utf-8")
+        seed = gateway[gateway.index("def seed("):gateway.index("\ndef verify(")]
+        self.assertLess(
+            seed.index('fail("Staging fixture run already exists")'),
+            seed.index('"docker", "run"'),
+        )
+
     def test_realistic_load_workflow_runs_75_users_and_keeps_production_outside_gateway(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
                     "run-staging-realistic-load.yml").read_text(encoding="utf-8")
