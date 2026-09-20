@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+command_line="${SSH_ORIGINAL_COMMAND:-}"
+read -r -a parts <<< "$command_line"
+case "${parts[0]:-}" in
+  status|measure)
+    [[ ${#parts[@]} -eq 1 ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-data-gateway "${parts[0]}" ;;
+  export)
+    [[ ${#parts[@]} -eq 2 && "${parts[1]}" == 'approved-sanitized-scope-v1' ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-data-gateway export approved-sanitized-scope-v1 ;;
+  create|import|verify|switch)
+    [[ ${#parts[@]} -eq 2 && "${parts[1]}" =~ ^staging-[0-9a-f]{16}$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-data-gateway "${parts[0]}" "${parts[1]}" ;;
+  *) echo 'fixed Staging data measure/export/create/import/verify/switch contract required' >&2; exit 64 ;;
+esac

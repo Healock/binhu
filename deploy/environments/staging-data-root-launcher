@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /usr/local/libexec/binhu-staging-promotion
+exec /usr/bin/python3 -m deploy.environments.staging_data_gateway "$@"

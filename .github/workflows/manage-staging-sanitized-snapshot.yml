@@ -1,0 +1,63 @@
+name: Manage Staging sanitized snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Fixed snapshot action
+        required: true
+        type: choice
+        options: [status, measure, export, create, import, verify, switch]
+      snapshot_id:
+        description: staging plus 16 lowercase hex characters for target actions
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-sanitized-snapshot
+  cancel-in-progress: false
+
+jobs:
+  manage:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Validate fixed inputs
+        env:
+          ACTION: ${{ inputs.action }}
+          SNAPSHOT_ID: ${{ inputs.snapshot_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$ACTION" =~ ^(create|import|verify|switch)$ ]]; then
+            [[ "$SNAPSHOT_ID" =~ ^staging-[0-9a-f]{16}$ ]]
+          else
+            [[ -z "$SNAPSHOT_ID" ]]
+          fi
+      - name: Configure deploy SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.BINHU_STAGING_DATA_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/staging-data
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/staging-data ~/.ssh/known_hosts
+      - name: Execute fixed snapshot action
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ACTION: ${{ inputs.action }}
+          SNAPSHOT_ID: ${{ inputs.snapshot_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
+          ssh_command=(ssh -p "$PORT" -i ~/.ssh/staging-data -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-data-deploy@$HOST")
+          case "$ACTION" in
+            status|measure) "${ssh_command[@]}" "$ACTION" ;;
+            export) "${ssh_command[@]}" 'export approved-sanitized-scope-v1' ;;
+            create|import|verify|switch) "${ssh_command[@]}" "$ACTION $SNAPSHOT_ID" ;;
+          esac
