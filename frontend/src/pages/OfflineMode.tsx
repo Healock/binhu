@@ -19,7 +19,14 @@ const { Dragger } = Upload
 type QueryState = 'idle' | 'running' | 'completed' | 'partial' | 'failed'
 
 function configIsUsable(config: OfflineResidenceConfig): boolean {
-  return Boolean(config.enabled && config.base_url.trim() && config.username.trim() && config.password && config.mac_service_url.trim())
+  return Boolean(
+    config.enabled
+    && config.base_url.trim()
+    && config.password
+    && config.mac_service_url.trim()
+    && config.accounts.length > 0
+    && config.accounts.every(account => account.username.trim()),
+  )
 }
 
 export default function OfflineMode() {
@@ -43,7 +50,9 @@ export default function OfflineMode() {
     if (!config.enabled) return '离线居住证查询已关闭。'
     if (!config.base_url.trim() || !config.mac_service_url.trim()) return '请填写居住证接口地址和 MAC 服务地址。'
     if (!config.password) return '未填写统一登录密码。在线平台不会回传密码，请在此处手动填写。'
-    if (!config.username.trim()) return '未填写完整居住证登录账号，请填写账号原值。'
+    if (!config.accounts.length) return '没有可用的社区账号配置，请先刷新在线范围或在本机填写账号。'
+    const incomplete = config.accounts.filter(account => !account.username.trim())
+    if (incomplete.length) return `请填写完整居住证登录账号：${incomplete.map(account => account.community_name || '本地账号').join('、')}`
     return ''
   }, [config])
 
@@ -74,8 +83,8 @@ export default function OfflineMode() {
       if (!online.base_url?.trim() || !online.mac_service_url?.trim()) {
         setConfigMessage('在线配置尚不完整，已保留当前客户端的离线配置。')
       } else setConfigMessage(online.password_configured && !next.password
-        ? '已同步接口、MAC 和超时；账号和统一密码不会从平台返回，请在当前客户端手动填写。'
-        : '已同步接口、MAC 和超时；本地已有账号和密码已保留。')
+        ? '已同步接口、MAC、超时和选中社区范围；账号和统一密码不会从平台返回，请在当前客户端手动填写。'
+        : '已同步接口、MAC、超时和选中社区范围；本地已有账号和密码已保留。')
     } catch {
       setConfigMessage('无法连接滨湖平台，未同步在线配置；可以直接手动修改离线配置。')
     } finally {
@@ -180,13 +189,20 @@ export default function OfflineMode() {
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">离线查询开关</span><div className="flex min-h-9 items-center gap-3"><Switch checked={config.enabled} onChange={enabled => updateConfig({ enabled })} /><span>{config.enabled ? '已开启' : '已关闭'}</span></div></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">居住证接口地址</span><Input value={config.base_url} onChange={event => updateConfig({ base_url: event.target.value })} /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">完整登录账号</span><Input value={config.username} onChange={event => updateConfig({ username: event.target.value })} autoComplete="username" /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">统一登录密码</span><Input.Password value={config.password} onChange={event => updateConfig({ password: event.target.value })} autoComplete="new-password" /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">MAC 服务地址</span><Input value={config.mac_service_url} onChange={event => updateConfig({ mac_service_url: event.target.value })} /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">请求超时（秒）</span><InputNumber min={1} max={120} value={config.timeout_seconds} onChange={value => updateConfig({ timeout_seconds: Number(value || 15) })} className="w-full" /></label>
               </div>
-              <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">查询组织代码（可选）</span><Input.TextArea rows={3} value={config.community_codes.join('\n')} onChange={event => updateConfig({ community_codes: Array.from(new Set(event.target.value.split(/[\n,，;；\s]+/).map(item => item.trim().toUpperCase()).filter(Boolean))) })} placeholder="接口未返回组织编码时，用于查询辖区回退" /><span className="text-xs text-[var(--app-text-secondary)]">仅作为查询辖区回退，不参与账号生成。</span></label>
-              <div className="text-xs text-[var(--app-text-secondary)]">账号必须填写居住证系统中的完整登录账号，不再根据社区代码自动拼接。这里不保存居住证会话令牌；在线同步只更新接口、MAC 和超时，账号和统一密码需在当前客户端维护。</div>
+              {config.login_community_names.length > 0 && <Alert type="info" showIcon message={`在线查询范围：${config.login_community_names.join('、')}`} />}
+              <div className="grid gap-3">
+                {!config.login_community_ids.length && <div className="flex justify-end"><Button onClick={() => updateConfig({ accounts: [...config.accounts, { community_id: null, community_name: '', username: '', community_code: '' }] })}>添加本地社区账号</Button></div>}
+                {config.accounts.map((account, index) => <div key={account.community_id || `local-${index}`} className="grid gap-3 rounded-xl border border-[var(--app-border)] p-4 md:grid-cols-2">
+                  <div className="flex items-center justify-between gap-3 md:col-span-2"><span className="text-sm font-medium text-[var(--app-text-strong)]">{account.community_name || `本地社区账号 ${index + 1}`}</span>{!config.login_community_ids.length && <Button size="small" danger onClick={() => updateConfig({ accounts: config.accounts.filter((_, itemIndex) => itemIndex !== index) })}>移除</Button>}</div>
+                  <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">完整登录账号</span><Input value={account.username} onChange={event => updateConfig({ accounts: config.accounts.map((item, itemIndex) => itemIndex === index ? { ...item, username: event.target.value } : item) })} autoComplete="username" /></label>
+                  <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">组织代码（可选）</span><Input value={account.community_code} onChange={event => updateConfig({ accounts: config.accounts.map((item, itemIndex) => itemIndex === index ? { ...item, community_code: event.target.value.toUpperCase() } : item) })} placeholder="接口未返回组织代码时使用" /></label>
+                </div>)}
+              </div>
+              <div className="text-xs text-[var(--app-text-secondary)]">每个选中社区必须在当前客户端填写自己的完整登录账号，共用本机统一密码；账号不会根据组织代码自动拼接。这里不保存居住证会话令牌，远端同步也不会返回账号或密码。</div>
               <div className="flex justify-end"><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
             </div>
           </Panel>

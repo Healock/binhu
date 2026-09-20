@@ -13,7 +13,6 @@ from deps import require_super_admin
 from services.audit import record_admin_audit, request_audit_fields
 from services.external_acquisition_jobs import create_job
 from services.residence_platform_config import (
-    COMMUNITY_CODE_PATTERN,
     RESIDENCE_CONFIG_KEYS,
     clear_residence_sessions,
     load_residence_config,
@@ -79,13 +78,9 @@ async def _public_config(conn) -> dict[str, Any]:
         payload["community_account_count"] = sum(
             1 for row in community_rows if bool(row[2]) and bool(row[4])
         )
-        payload["community_codes"] = [
-            str(row[3] or "").strip().upper()
-            for row in community_rows
-            if bool(row[2]) and COMMUNITY_CODE_PATTERN.fullmatch(
-                str(row[3] or "").strip().upper()
-            )
-        ]
+        # The offline client must never receive every active community code.
+        # Only the selected online lookup scope is safe to cache locally.
+        payload["community_codes"] = list(payload.get("login_community_codes") or [])
         payload["session_ready"] = bool(
             payload["session_ready"] and payload["community_account_count"]
         )

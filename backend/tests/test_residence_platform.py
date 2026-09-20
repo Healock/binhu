@@ -228,10 +228,15 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         public = public_residence_config(config(
             login_community_ids=(12, 18),
             login_community_names=("测试社区", "第二社区"),
+            login_communities=(
+                ResidenceCommunityAccount(12, "测试社区", "A123456789", "fixture-account-a"),
+                ResidenceCommunityAccount(18, "第二社区", "B123456789", "fixture-account-b"),
+            ),
         ))
         self.assertEqual(public["login_community_ids"], [12, 18])
         self.assertEqual(public["login_community_names"], ["测试社区", "第二社区"])
         self.assertEqual(public["login_community_count"], 2)
+        self.assertEqual(public["login_community_codes"], ["A123456789", "B123456789"])
         self.assertNotIn("usernames", public)
 
     def test_invalid_multi_community_values_fail_closed(self):
