@@ -147,9 +147,19 @@ def assignment_projection_fields(
     key is intentionally conservative: case-folding and whitespace removal are
     stable across MySQL collations and match the previous UI ordering closely.
     """
-    summary = TASK_WORKFLOWS[parser_type].summary(values)
-    source_label = str(summary.get("source") or TASK_WORKFLOWS[parser_type].label).strip()
-    address_display = str(summary.get("address") or "未填写地址").strip()
+    workflow = TASK_WORKFLOWS.get(parser_type)
+    if workflow is not None:
+        summary = workflow.summary(values)
+        source_label = str(summary.get("source") or workflow.label).strip()
+        address_display = str(summary.get("address") or "未填写地址").strip()
+    else:
+        # PR1 parser types can be queried before their task workflow is
+        # registered in PR2. Keep the indexed projection usable without
+        # inventing task-state or assignment semantics for the new business.
+        source_label = parser_type
+        address_display = str(
+            values.get("现住址") or values.get("地址") or "未填写地址"
+        ).strip()
     sort_key = "".join(address_display.casefold().split())
     queue_ready = int(
         not str(values.get("核查人") or "").strip()

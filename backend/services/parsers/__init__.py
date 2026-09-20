@@ -10,6 +10,7 @@ from .delivery_industry import DeliveryIndustryParser
 from .group_rental import GroupRentalParser
 from .suzhou_police import SuzhouPoliceParser
 from .traffic_police import TrafficPoliceParser
+from .suspect_missing_registration import SuspectMissingRegistrationParser
 
 # 解析器注册表：parser_type → 解析器类
 PARSER_REGISTRY: dict[str, type[BaseParser]] = {
@@ -23,6 +24,7 @@ PARSER_REGISTRY: dict[str, type[BaseParser]] = {
     "群租房核查": GroupRentalParser,
     "苏州涉警": SuzhouPoliceParser,
     "交通涉警": TrafficPoliceParser,
+    "疑似漏登记": SuspectMissingRegistrationParser,
 }
 
 SUPPORTED_TYPES = list(PARSER_REGISTRY.keys())

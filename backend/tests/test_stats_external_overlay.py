@@ -101,7 +101,7 @@ async def test_external_overlay_merges_counts_and_recalculates_rates():
 
 
 @pytest.mark.asyncio
-async def test_external_overlay_uses_real_checker_names_and_merges_same_name():
+async def test_external_overlay_uses_checker_names_and_merges_same_name():
     result = {
         "exists": True,
         "community": {"columns": ["社区", "数据总数"], "data": []},
@@ -133,6 +133,33 @@ async def test_external_overlay_uses_real_checker_names_and_merges_same_name():
     assert rows["测试人员乙"]["已完成"] == 1
     assert "数据来源" not in actual["inspector"]["columns"]
     assert all("数据来源" not in row for row in rows.values())
+
+
+@pytest.mark.asyncio
+async def test_model_three_external_overlay_is_included_in_checker_statistics():
+    result = {
+        "exists": True,
+        "community": {"columns": ["社区", "数据总数"], "data": []},
+        "inspector": {
+            "columns": ["社区", "姓名", "数据总数", "未核查", "已核查", "已完成"],
+            "data": [],
+        },
+    }
+    read_overlay = AsyncMock(return_value=_overlay_payload())
+
+    with patch.object(stats, "get_txdocs_business_overlay", new=read_overlay):
+        actual = await stats._overlay_external_report(
+            result,
+            start_date="2026-09-20",
+            end_date="2026-09-20",
+            parser_type="疑似未注销模型三",
+            communities=None,
+        )
+
+    assert read_overlay.await_args.args[2] == ["疑似未注销模型三"]
+    rows = {row["姓名"]: row for row in actual["inspector"]["data"]}
+    assert rows["测试人员甲"]["数据总数"] == 1
+    assert rows["测试人员乙"]["已完成"] == 1
 
 
 @pytest.mark.asyncio

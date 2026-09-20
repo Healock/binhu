@@ -82,9 +82,9 @@ async def _overlay_external_report(
 ) -> dict:
     """Append privacy-safe external counts to the existing report tables.
 
-    Community rows are merged by community.  Inspector rows use the checker
-    recorded in the external sheet, so local and external counts for the same
-    community/name pair share one row while retaining a source summary.
+    Community rows are merged by community. Inspector rows use the internal
+    checker label recorded in the external sheet, so local and external counts
+    for the same community/name pair share one display row.
     """
     parser_types = (
         await _read_summary_types_from_db()

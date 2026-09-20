@@ -168,10 +168,14 @@ async def _create_local_source_rows_bulk(
         seen: dict[str, int] = {}
         async with conn.cursor() as cur:
             for index, item in enumerate(items):
-                values = {
-                    column: str(item.values.get(column, "") or "").strip()
-                    for column in parser.COLUMNS
-                }
+                values = (
+                    parser.normalize_source_row(item.values)
+                    if hasattr(parser, "normalize_source_row")
+                    else {
+                        column: str(item.values.get(column, "") or "").strip()
+                        for column in parser.COLUMNS
+                    }
+                )
                 try:
                     missing_required = [
                         key for key in parser.get_business_key()
