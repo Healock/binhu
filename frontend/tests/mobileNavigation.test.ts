@@ -548,6 +548,18 @@ test('工单流程配置只从设置页进入，不再出现在主侧边栏导�
   assert.match(settings, /path: '\/settings\/workflow', label: '工单流程配置'/)
 })
 
+test('服务器 MAC 使用独立权限进入设置页', () => {
+  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+  const settings = readFileSync(
+    new URL('../src/components/SettingsLayout.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(settings, /path: '\/settings\/server-mac', label: '服务器 MAC'[^\n]+permission: 'system\.server_mac\.manage'/)
+  assert.match(app, /<ProtectedRoute requirePermission="system\.server_mac\.manage" \/>/)
+  assert.match(app, /<Route path="server-mac" element=\{<ServerMacSettings \/>\} \/>/)
+})
+
 test('人员标签不再作为独立导航项，旧 Dock 配置会自动清理', () => {
   const source = readFileSync(
     new URL('../src/navigation/mobileNavigation.ts', import.meta.url),

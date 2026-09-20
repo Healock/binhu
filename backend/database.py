@@ -21,6 +21,7 @@ from services.permissions import (
     PRESENCE_DETAIL_VIEW,
     POSITION_DEFAULT_GROUP,
     QMF_REGISTRATION_EXECUTE,
+    SERVER_MAC_MANAGE,
     VISIT_SOURCE_MANAGE,
     WORKFLOW_ATTACHMENT_VIEW,
     WORKFLOW_TICKET_CREATE,
@@ -294,6 +295,7 @@ async def ensure_permission_schema(cur) -> None:
             "workflow.ticket.manage",
             QMF_REGISTRATION_EXECUTE,
             PRESENCE_DETAIL_VIEW,
+            SERVER_MAC_MANAGE,
         },
         "super_admin": {
             VISIT_SOURCE_MANAGE,

@@ -88,6 +88,7 @@ ACTION_LABELS: dict[str, str] = {
     "sync.trigger": "触发在线数据同步",
     "sync.schedule.update": "修改自动同步计划",
     "system.config.update": "修改系统设置",
+    "system.server_mac.update": "修改服务器 MAC",
     "task_graph.config.update": "修改个人任务图设置",
     "task_graph.backfill": "回填个人任务依赖图",
     "user.create": "创建用户",

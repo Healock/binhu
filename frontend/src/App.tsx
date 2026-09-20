@@ -15,6 +15,7 @@ import WeekendDuty from './pages/WeekendDuty'
 import Communities from './pages/Communities'
 import UserManagement from './pages/UserManagement'
 import SystemSettings from './pages/SystemSettings'
+import ServerMacSettings from './pages/ServerMacSettings'
 import TxDocsMonitorSettings from './pages/TxDocsMonitorSettings'
 import PersonalizationSettings from './pages/PersonalizationSettings'
 import AccountSecuritySettings from './pages/AccountSecuritySettings'
@@ -225,6 +226,9 @@ function App() {
                 <Route path="updates" element={<UpdateSettings />} />
                 <Route element={<ProtectedRoute requirePermission="system.manage" />}>
                   <Route path="system" element={<SystemSettings />} />
+                </Route>
+                <Route element={<ProtectedRoute requirePermission="system.server_mac.manage" />}>
+                  <Route path="server-mac" element={<ServerMacSettings />} />
                 </Route>
                 <Route element={<ProtectedRoute requirePermission="workflow.config.manage" />}>
                   <Route path="workflow" element={<WorkflowConfig />} />

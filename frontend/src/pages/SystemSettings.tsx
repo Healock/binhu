@@ -110,9 +110,6 @@ function getResidenceReadiness(
   if (!config.password_configured && !pendingPassword) {
     return { type: 'warning', message: '请填写统一登录密码', description: '密码加密保存且不会回显。' }
   }
-  if (!config.mac_service_url.trim()) {
-    return { type: 'warning', message: '请填写 MAC 服务地址', description: '后台登录需要读取设备 MAC 地址。' }
-  }
   if (!config.session_ready) {
     return {
       type: 'warning',
@@ -403,7 +400,6 @@ export default function SystemSettings() {
         base_url: residenceConfig.base_url,
         login_community_ids: residenceConfig.login_community_ids,
         ...(residencePassword ? { password: residencePassword } : {}),
-        mac_service_url: residenceConfig.mac_service_url,
         timeout_seconds: residenceConfig.timeout_seconds,
         full_scan_interval_minutes: residenceConfig.full_scan_interval_minutes,
       })
@@ -803,14 +799,6 @@ export default function SystemSettings() {
                   onChange={event => setResidencePassword(event.target.value)}
                   placeholder={residenceConfig.password_configured ? '已配置；留空保持不变' : '请输入密码'}
                   autoComplete="new-password"
-                  disabled={savingResidence}
-                />
-              </label>
-              <label className="settings-field text-sm text-[var(--app-text-strong)]">
-                <span className="settings-field__label font-medium">MAC 服务地址</span>
-                <Input
-                  value={residenceConfig.mac_service_url}
-                  onChange={event => setResidenceConfig(current => current ? { ...current, mac_service_url: event.target.value } : current)}
                   disabled={savingResidence}
                 />
               </label>

@@ -2073,7 +2073,7 @@ export interface ResidencePlatformConfigUpdate {
   base_url: string
   login_community_ids: number[]
   password?: string
-  mac_service_url: string
+  mac_service_url?: string
   timeout_seconds: number
   full_scan_interval_minutes: number
 }
@@ -4239,6 +4239,21 @@ export async function getMaintenanceStatus(): Promise<MaintenanceStatus> {
 
 export async function updateSystemConfig(config: Record<string, string>): Promise<void> {
   await api.put('/system/config', config)
+}
+
+export interface ServerMacConfig {
+  mac: string
+  compatibility_port: number
+}
+
+export async function getServerMacConfig(): Promise<ServerMacConfig> {
+  const { data } = await api.get('/system/server-mac')
+  return data as ServerMacConfig
+}
+
+export async function updateServerMacConfig(mac: string): Promise<ServerMacConfig> {
+  const { data } = await api.put('/system/server-mac', { mac })
+  return data as ServerMacConfig
 }
 
 function utcDate(value: string): Date {

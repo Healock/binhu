@@ -137,12 +137,11 @@ async def update_residence_config(
             selected_ids,
             selected_rows and len(selected_rows) == len(selected_ids),
             password,
-            data.mac_service_url.strip(),
         )
     ):
         raise HTTPException(
             400,
-            "开启居住证查询前请选择已配置账号的社区，并填写接口、统一密码和 MAC 服务",
+            "开启居住证查询前请选择已配置账号的社区，并填写接口和统一密码",
         )
     values: dict[str, Any] = {
         "residence_lookup_enabled": "1" if data.enabled else "0",
@@ -157,7 +156,6 @@ async def update_residence_config(
     connection_changed = any(
         (
             data.base_url.strip().rstrip("/") != current.base_url,
-            data.mac_service_url.strip().rstrip("/") != current.mac_service_url,
         )
     )
     if data.password is not None:

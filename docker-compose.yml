@@ -50,6 +50,7 @@ services:
       - 223.5.5.5
     ports:
       - "127.0.0.1:37125:37125"
+      - "23333:23333"
     environment:
       APP_ENVIRONMENT: production
       APP_ENVIRONMENT_LABEL: 正式环境
@@ -98,6 +99,9 @@ services:
       SESSION_COOKIE_NAME: binhu_session
       MULTI_DEVICE_SESSION_ENABLED: ${BINHU_MULTI_DEVICE_SESSION_ENABLED:-true}
       CORS_ALLOWED_ORIGINS: ${BINHU_CORS_ALLOWED_ORIGINS:-http://tauri.localhost,https://tauri.localhost,binhu://app}
+      MAC_COMPAT_SERVER_ENABLED: ${MAC_COMPAT_SERVER_ENABLED:-true}
+      MAC_COMPAT_SERVER_HOST: 0.0.0.0
+      MAC_COMPAT_SERVER_PORT: 23333
       PUBLIC_WEB_BASE_URL: ${BINHU_PUBLIC_WEB_BASE_URL:-}
       VENUE_CLOUD_SYNC_ENABLED: ${BINHU_VENUE_CLOUD_SYNC_ENABLED:-false}
       VENUE_CLOUD_PULL_ENABLED: ${BINHU_VENUE_CLOUD_PULL_ENABLED:-false}

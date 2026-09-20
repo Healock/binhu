@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  OfflineResidenceClient,
   cacheOnlineResidenceConfig,
   loadOfflineResidenceConfig,
+  normalizeMacAddress,
+  readMacAddress,
   saveOfflineResidenceConfig,
 } from '../src/utils/offlineResidenceClient.ts'
 
@@ -52,10 +55,108 @@ test('离线客户端只调用居住证只读登录和查询路径', () => {
   assert.doesNotMatch(clientSource, /\/registration\/submit|\/delete|\/writeback/i)
 })
 
+test('MAC 地址只接受规范化的十六进制地址', () => {
+  assert.equal(normalizeMacAddress('aa-bb-cc-dd-ee-ff'), 'AA:BB:CC:DD:EE:FF')
+  assert.equal(normalizeMacAddress('aabb.ccdd.eeff'), 'AA:BB:CC:DD:EE:FF')
+  assert.throws(() => normalizeMacAddress('not-a-mac'), /12 位十六进制/)
+  assert.throws(() => normalizeMacAddress('00:00:00:00:00:00'), /格式无效/)
+  assert.throws(() => normalizeMacAddress('01:00:00:00:00:00'), /格式无效/)
+})
+
+test('MAC 兼容读取只访问固定本机 23333 端口', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  const requests: Array<{ url: string; init?: RequestInit }> = []
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (url: string, init?: RequestInit) => {
+      requests.push({ url, init })
+      return new Response(JSON.stringify({ mac: 'AA:BB:CC:DD:EE:FE' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    },
+  })
+  const config = { ...loadOfflineResidenceConfig(), mac_service_url: 'http://127.0.0.1:23333', timeout_seconds: 2 }
+  assert.equal(await readMacAddress(config), 'AA:BB:CC:DD:EE:FE')
+  assert.equal(requests[0].url, 'http://127.0.0.1:23333')
+  assert.equal(requests[0].init?.method, 'GET')
+})
+
+test('离线页通过客户端 bridge 读取、保存并回读本机 MAC', () => {
+  assert.match(pageSource, /读取当前 MAC/)
+  assert.match(pageSource, /保存本机 MAC/)
+  assert.match(pageSource, /resolveDesktopBridge/)
+  assert.match(pageSource, /desktop\.getLocalMac\(\)/)
+  assert.match(pageSource, /desktop\.setLocalMac\(mac\)/)
+  assert.match(pageSource, /本机 MAC 保存后回读不一致/)
+  assert.doesNotMatch(pageSource, /MAC 写入令牌|保存并推送 MAC/)
+  assert.doesNotMatch(clientSource, /X-Macmock-Token|pushMacAddress/)
+})
+
+test('候选 MAC 按社区账号顺序检测授权范围且不调用业务写接口', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  const loginBodies: Array<Record<string, unknown>> = []
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (url: string, init?: RequestInit) => {
+      if (url.includes('/sys/randomImage/')) return new Response(JSON.stringify({ success: true }), { status: 200 })
+      assert.match(url, /\/sys\/login$/)
+      assert.equal(init?.method, 'POST')
+      const body = JSON.parse(String(init?.body || '{}'))
+      loginBodies.push(body)
+      return new Response(JSON.stringify(body.username === 'community-a'
+        ? { success: true, result: { token: 'fixture-token', orgCode: 'A123456789' } }
+        : { success: false, message: 'fixture-rejected' }), { status: 200 })
+    },
+  })
+  const config = {
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid',
+    password: 'fixture-password',
+    accounts: [
+      { community_id: 1, community_name: '第一社区', username: 'community-a', community_code: 'A123456789' },
+      { community_id: 2, community_name: '第二社区', username: 'community-b', community_code: 'B123456789' },
+    ],
+  }
+  const results = await new OfflineResidenceClient(config).probeMacAccess('02-11-22-33-44-66')
+  assert.deepEqual(results.map(result => [result.community_name, result.allowed]), [
+    ['第一社区', true],
+    ['第二社区', false],
+  ])
+  assert.deepEqual(loginBodies.map(body => body.mac), ['02:11:22:33:44:66', '02:11:22:33:44:66'])
+  assert.doesNotMatch(clientSource, /\/(?:registration|writeback|delete)/i)
+})
+
+test('候选 MAC 探测最多使用前 12 个已填写完整账号的社区', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  const usernames: string[] = []
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (url: string, init?: RequestInit) => {
+      if (url.includes('/sys/randomImage/')) return new Response(JSON.stringify({ success: true }), { status: 200 })
+      const body = JSON.parse(String(init?.body || '{}'))
+      usernames.push(String(body.username || ''))
+      return new Response(JSON.stringify({ success: true, result: { token: 'fixture-token', orgCode: '' } }), { status: 200 })
+    },
+  })
+  const accounts = Array.from({ length: 13 }, (_, index) => ({
+    community_id: index + 1,
+    community_name: `测试社区${index + 1}`,
+    username: `community-${index + 1}`,
+    community_code: '',
+  }))
+  const results = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid',
+    password: 'fixture-password',
+    accounts,
+  }).probeMacAccess('02:11:22:33:44:66')
+
+  assert.equal(results.length, 12)
+  assert.deepEqual(usernames, accounts.slice(0, 12).map(account => account.username))
+})
+
 test('在线配置同步不要求密码明文', () => {
   assert.match(pageSource, /getResidencePlatformConfig\(\)/)
   assert.doesNotMatch(pageSource, /online\.username/)
-  assert.match(pageSource, /账号和统一密码不会从平台返回/)
+  assert.match(pageSource, /账号、统一密码和本机 MAC 不会从平台返回/)
   assert.match(apiSource, /account_mode: 'selected_community_account'/)
   assert.match(authSource, /currentUser\.role !== 'super_admin'/)
   assert.match(authSource, /cacheOnlineResidenceConfig\(config\)/)
@@ -77,6 +178,7 @@ test('离线页拥有独立纵向滚动容器', () => {
 test('在线范围变化移除范围外账号、保留本机密码且不保存会话令牌', () => {
   Object.defineProperty(globalThis, 'localStorage', { value: memoryStorage(), configurable: true })
   saveOfflineResidenceConfig({
+    ...loadOfflineResidenceConfig(),
     enabled: true,
     base_url: 'https://old.invalid',
     username: 'old-account',
@@ -101,11 +203,11 @@ test('在线范围变化移除范围外账号、保留本机密码且不保存�
   assert.equal(cached.password, 'device-only-password')
   assert.equal(cached.username, '')
   assert.equal(cached.base_url, 'https://new.invalid')
-  assert.equal(cached.mac_service_url, 'http://127.0.0.1:24444')
+  assert.equal(cached.mac_service_url, 'http://127.0.0.1:23333')
   assert.deepEqual(cached.login_community_ids, [18])
   assert.deepEqual(cached.login_community_names, ['新社区'])
   assert.deepEqual(cached.accounts, [{ community_id: 18, community_name: '新社区', username: '', community_code: 'NEW' }])
-  assert.equal(JSON.stringify(cached).includes('token'), false)
+  assert.equal(JSON.stringify(cached).includes('access_token'), false)
 })
 
 test('在线配置刷新保留仍在范围内的本机社区账号', () => {
