@@ -99,6 +99,7 @@ configure_account() {
 
 configure_account binhu-staging-app-deploy /usr/local/bin/binhu-staging-application-gateway "$app_key"
 configure_account binhu-staging-data-deploy /usr/local/bin/binhu-staging-data-gateway "$data_key"
+install -d -o root -g root -m 0700 /var/lib/binhu-staging-application
 install -d -o root -g root -m 0700 /var/lib/binhu-staging-application/candidates /var/lib/binhu-staging-data-gateway /var/log/binhu-staging-gateways
 
 cat > /etc/sudoers.d/binhu-staging-application <<'EOF'
