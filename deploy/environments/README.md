@@ -88,6 +88,13 @@ outcome and bounded reason codes only. They never contain database credentials,
 passwords, source rows, names, phones, identity numbers, addresses, notes or
 driver output. A workflow failure and the corresponding private `*-alert-*.json`
 record are the alert channels for switch, rollback and validation failures.
+The installer retains `/usr/local/libexec/binhu-staging-promotion/control-commit`
+after a successful atomic replacement and restores the previous value only when
+installation fails. Snapshot `measure` and `export` allocate a fresh private
+`staging-<16hex>` evidence directory before resource and container preflight, so
+an early memory, disk or Production identity refusal is attributable to that
+attempt instead of being confused with an older failed snapshot. Early evidence
+contains only the fixed policy, snapshot ID, phase and bounded reason code.
 
 For existing isolated databases, run `database_identity.py measure --environment
 staging` (or `development`), preserve its result outside the environment folder,
