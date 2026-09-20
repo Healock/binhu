@@ -51,6 +51,9 @@ forced-command wrappers and sudo allowlists. Install them only through
 `install-staging-promotion-gateways.yml` after the exact main revision passes CI.
 The installer creates `binhu-staging-app-deploy` and `binhu-staging-data-deploy`;
 neither key is shared with Production, Development or the Staging event-pipeline.
+All three workflows require the fixed `BINHU_STAGING_HOST` and
+`BINHU_STAGING_PORT` secrets; the port is validated as an integer from 1 through
+65535 and is never accepted as a workflow input or shell fragment.
 
 The application account accepts only:
 
