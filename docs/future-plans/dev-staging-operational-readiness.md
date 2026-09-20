@@ -1,6 +1,6 @@
 # Dev 与 Staging 投入开发流程计划
 
-- 当前状态：规划中；基础环境和最小链路已有部分验收，尚未签署日常开发流程可用
+- 当前状态：Dev event-pipeline 的任务元数据投影/计数域核心门禁已通过；Staging 晋级评估已提交，等待独立评审，尚未部署或签署 Staging 日常开发流程可用
 - 目标：Dev 可承载开发与架构实验，Staging 可承载候选版本回归和 75 人压测
 - 边界：不改变生产业务数据、腾讯下线路径或生产运行方式；Shadow 仅在替代能力验收后退役
 
@@ -80,3 +80,13 @@ Dev 允许快速重建虚构数据和实验资源；Staging 数据刷新、应�
 ## 当前未完成项
 
 实际进度和失败原因以[三环境运行验收台账](../plans/environment-triad-runtime-acceptance.md)为准。当前至少还需完成：Staging 脱敏预检和导入、候选库目标验证与投影重建、Dev 完整业务事件闭环、浏览器验收、资源和 75 人复测，以及 Shadow 依赖复核。PR、CI、部署或最小事件流证据不能单独替代这些门槛。
+
+## 2026-09-20：Dev 核心门禁结果与 Staging 晋级评估
+
+Dev 运行编号 `dev-20260919-dualtrack-monitor40` 已完成 1002、10000、100000 三档规模验收，随后观察编号 `obs-20260920-monitor40-6h-r2` 完成 6 小时、13 个样本的强化观察。双轨未归因差异、Kafka lag、Flink checkpoint 失败、MySQL 锁等待、Redis OOM/驱逐均保持为 0；Dev 容器重启次数和 OOMKilled 均未增加，日志轮换合同持续满足。元数据对账、Schema Registry 合同和状态汇总通过。最终证据目录为：
+
+`/data/docker/volumes/binhu-development-pipeline_evidence/_data/dev-20260919-dualtrack-monitor40/obs-20260920-monitor40-6h-r2/`
+
+因此，任务元数据投影/计数域满足“进入 Staging 评估”的 Dev 条件。当前评估结论为“有条件进入 Staging 准备”，不是 Staging 已上线：尚未读取或导入 Staging 脱敏副本，尚未执行 Staging 页面回归、权限隔离、75 人趋势压测或回滚演练，也没有修改 Staging 或 Production。评估时必须冻结 Dev 已验收的提交、镜像摘要和配置摘要，建立新的 `staging_snapshot_id` 与证据目录，并在任何失败时保留上一份可回退副本。
+
+仍需单独关闭的门禁包括：旧 Flink savepoint 的 operator ID 兼容恢复、Staging 脱敏关系校验、浏览器业务流程、75 人趋势复测、跨环境访问拒绝和回滚演练。六小时观察明确未覆盖的长期内存趋势、证书续签、Kafka/Redis 自然保留过期、跨天状态累积和长期磁盘增长，列为后续 Staging/生产灰度补充验证项。
