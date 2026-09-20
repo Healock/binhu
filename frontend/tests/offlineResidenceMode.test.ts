@@ -64,7 +64,8 @@ test('在线配置同步不要求密码明文', () => {
 
 test('离线配置使用完整账号且不会从社区代码拼接账号', () => {
   assert.match(pageSource, /完整登录账号/)
-  assert.match(clientSource, /username: this\.config\.username/)
+  assert.match(clientSource, /username: account\.username/)
+  assert.match(clientSource, /community_\$\{account\.community_id\}/)
   assert.doesNotMatch(clientSource, /username: `\$\{communityCode\}00`/)
   assert.doesNotMatch(pageSource, /账号自动按/)
 })
@@ -73,7 +74,7 @@ test('离线页拥有独立纵向滚动容器', () => {
   assert.match(pageSource, /offline-mode-page h-full min-h-0 overflow-y-auto overscroll-contain/)
 })
 
-test('在线配置缓存保留本机账号密码且不保存会话令牌', () => {
+test('在线范围变化移除范围外账号、保留本机密码且不保存会话令牌', () => {
   Object.defineProperty(globalThis, 'localStorage', { value: memoryStorage(), configurable: true })
   saveOfflineResidenceConfig({
     enabled: true,
@@ -83,6 +84,9 @@ test('在线配置缓存保留本机账号密码且不保存会话令牌', () =>
     mac_service_url: 'http://127.0.0.1:23333',
     timeout_seconds: 15,
     community_codes: ['OLD'],
+    login_community_ids: [12],
+    login_community_names: ['旧社区'],
+    accounts: [{ community_id: 12, community_name: '旧社区', username: 'old-account', community_code: 'OLD' }],
   })
   const cached = cacheOnlineResidenceConfig({
     enabled: false,
@@ -90,12 +94,80 @@ test('在线配置缓存保留本机账号密码且不保存会话令牌', () =>
     mac_service_url: 'http://127.0.0.1:24444/',
     timeout_seconds: 30,
     community_codes: ['NEW'],
+    login_community_ids: [18],
+    login_community_names: ['新社区'],
+    login_community_codes: ['NEW'],
   })
   assert.equal(cached.password, 'device-only-password')
-  assert.equal(cached.username, 'old-account')
+  assert.equal(cached.username, '')
   assert.equal(cached.base_url, 'https://new.invalid')
   assert.equal(cached.mac_service_url, 'http://127.0.0.1:24444')
+  assert.deepEqual(cached.login_community_ids, [18])
+  assert.deepEqual(cached.login_community_names, ['新社区'])
+  assert.deepEqual(cached.accounts, [{ community_id: 18, community_name: '新社区', username: '', community_code: 'NEW' }])
   assert.equal(JSON.stringify(cached).includes('token'), false)
+})
+
+test('在线配置刷新保留仍在范围内的本机社区账号', () => {
+  Object.defineProperty(globalThis, 'localStorage', { value: memoryStorage(), configurable: true })
+  saveOfflineResidenceConfig({
+    ...loadOfflineResidenceConfig(),
+    enabled: true,
+    base_url: 'https://old.invalid',
+    password: 'device-only-password',
+    mac_service_url: 'http://127.0.0.1:23333',
+    login_community_ids: [12],
+    login_community_names: ['测试社区'],
+    accounts: [{ community_id: 12, community_name: '测试社区', username: 'device-account', community_code: 'OLD' }],
+  })
+  const cached = cacheOnlineResidenceConfig({
+    enabled: true,
+    base_url: 'https://new.invalid',
+    mac_service_url: 'http://127.0.0.1:24444',
+    login_community_ids: [12, 18],
+    login_community_names: ['测试社区', '第二社区'],
+    login_community_codes: ['A123456789', 'B123456789'],
+  })
+  assert.deepEqual(cached.accounts, [
+    { community_id: 12, community_name: '测试社区', username: 'device-account', community_code: 'A123456789' },
+    { community_id: 18, community_name: '第二社区', username: '', community_code: 'B123456789' },
+  ])
+})
+
+test('在线多社区范围为每个社区建立独立的本地账号槽位', () => {
+  Object.defineProperty(globalThis, 'localStorage', { value: memoryStorage(), configurable: true })
+  saveOfflineResidenceConfig({
+    ...loadOfflineResidenceConfig(),
+    enabled: true,
+    base_url: 'https://old.invalid',
+    username: 'device-account',
+    password: 'device-only-password',
+    mac_service_url: 'http://127.0.0.1:23333',
+    community_codes: ['OLD'],
+  })
+  const cached = cacheOnlineResidenceConfig({
+    enabled: true,
+    base_url: 'https://new.invalid',
+    mac_service_url: 'http://127.0.0.1:24444',
+    login_community_ids: [12, 18],
+    login_community_names: ['测试社区', '第二社区'],
+    login_community_codes: ['A123456789', 'B123456789'],
+  })
+  assert.deepEqual(cached.login_community_ids, [12, 18])
+  assert.deepEqual(cached.login_community_names, ['测试社区', '第二社区'])
+  assert.deepEqual(cached.accounts, [
+    { community_id: 12, community_name: '测试社区', username: '', community_code: 'A123456789' },
+    { community_id: 18, community_name: '第二社区', username: '', community_code: 'B123456789' },
+  ])
+  assert.equal(cached.password, 'device-only-password')
+})
+
+test('离线页面按社区维护账号且不从远端回传凭据', () => {
+  assert.match(pageSource, /config\.accounts\.map/)
+  assert.match(pageSource, /添加本地社区账号/)
+  assert.match(pageSource, /每个选中社区必须在当前客户端填写自己的完整登录账号/)
+  assert.match(pageSource, /账号不会根据组织代码自动拼接/)
+  assert.doesNotMatch(pageSource, /online\.username/)
 })
 
 test('不完整在线响应和旧版社区代码缓存不会猜测或覆盖账号', () => {
