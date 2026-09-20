@@ -23,6 +23,7 @@ from services.qmf_config import decrypt_secret
 from services.business_time import get_business_date
 from services.parsers import PARSER_REGISTRY, get_parser
 from services.task_workflow import TASK_WORKFLOWS
+from services.report_members import canonical_community, get_community_alias_lookup
 from services.watch_matching import parse_dispatch_time
 
 
@@ -254,6 +255,21 @@ class MonitorBusinessBucket:
 def _normalize_checker_name(value: Any) -> str:
     """Normalize the internal checker label without inventing an assignee."""
     return re.sub(r"\s+", " ", str(value or "").strip())[:200]
+
+
+def canonical_monitor_community(
+    value: Any,
+    alias_lookup: dict[str, str],
+) -> str:
+    """Return the formal community name for a monitor bucket.
+
+    Monitor buckets intentionally retain the source label so that a snapshot
+    can be audited without storing row contents.  The reporting overlay must
+    still use the same formal-name/alias mapping as local reports; otherwise
+    an external alias produces a second community row instead of contributing
+    to the existing one.
+    """
+    return canonical_community(value, alias_lookup)
 
 
 def build_monitor_business_buckets(
@@ -1088,16 +1104,29 @@ async def get_txdocs_business_overlay(
 
     type_marks = ", ".join(["%s"] * len(valid_types))
     source_marks = ", ".join(["%s"] * len(source_ids))
-    community_clause = ""
-    community_params: list[str] = []
-    if communities is not None:
-        community_marks = ", ".join(["%s"] * len(communities))
-        community_clause = f" AND bucket.community IN ({community_marks})"
-        community_params = list(communities)
     pool = db_manager.get_pool("daily_report")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
+            # The monitor stores the source label in its privacy-safe bucket
+            # tables.  Resolve that label at read time so historical snapshots
+            # also follow the current formal-name/alias configuration.
+            try:
+                alias_lookup = await get_community_alias_lookup(cur)
+            except Exception:
+                # A rolling deployment may briefly expose the monitor before
+                # the organization tables are available.  Keep the raw labels
+                # rather than making the whole statistics endpoint fail.
+                alias_lookup = {}
+            allowed_communities = (
+                None
+                if communities is None
+                else {
+                    canonical_monitor_community(value, alias_lookup)
+                    for value in communities
+                    if str(value or "").strip()
+                }
+            )
             try:
                 await cur.execute(
                     f"""
@@ -1115,11 +1144,11 @@ async def get_txdocs_business_overlay(
                           AND spreadsheet_id IN ({source_marks})
                         GROUP BY spreadsheet_id, parser_type
                     ) latest ON latest.id=run.id
-                    WHERE run.status='success' {community_clause}
+                    WHERE run.status='success'
                     GROUP BY bucket.community, bucket.checker_name,
                              bucket.dispatch_date, bucket.task_state
                     """,
-                    (end_date, *valid_types, *source_ids, *community_params),
+                    (end_date, *valid_types, *source_ids),
                 )
                 bucket_rows = await cur.fetchall()
             except Exception:
@@ -1145,7 +1174,9 @@ async def get_txdocs_business_overlay(
                 community, checker_name, dispatch_date, task_state,
                 row_count, _finished,
             ) in bucket_rows:
-                name = str(community or "")
+                name = canonical_monitor_community(community, alias_lookup)
+                if allowed_communities is not None and name not in allowed_communities:
+                    continue
                 checker = _normalize_checker_name(checker_name)
                 if inspector_filter and checker != inspector_filter:
                     continue
@@ -1177,13 +1208,15 @@ async def get_txdocs_business_overlay(
                   AND run.observed_date BETWEEN %s AND %s
                   AND run.parser_type IN ({type_marks})
                   AND run.spreadsheet_id IN ({source_marks})
-                  {community_clause.replace('bucket.', 'run_community.')}
                 GROUP BY run_community.community
                 """,
-                (start_date, end_date, *valid_types, *source_ids, *community_params),
+                (start_date, end_date, *valid_types, *source_ids),
             )
             for community, changed in await cur.fetchall():
-                metrics[str(community or "")]["changed"] += int(changed or 0)
+                name = canonical_monitor_community(community, alias_lookup)
+                if allowed_communities is not None and name not in allowed_communities:
+                    continue
+                metrics[name]["changed"] += int(changed or 0)
 
             await cur.execute(
                 f"""
