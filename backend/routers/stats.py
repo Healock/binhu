@@ -168,16 +168,11 @@ async def _overlay_external_report(
     if isinstance(inspector_table, dict) and isinstance(inspector_table.get("data"), list):
         rows = inspector_table["data"]
         columns = inspector_table.get("columns", [])
-        if "数据来源" not in columns:
-            columns.append("数据来源")
         by_assignee = {
             (str(row.get("社区") or ""), str(row.get("姓名") or "")): row
             for row in rows
             if isinstance(row, dict)
         }
-        for row in rows:
-            if isinstance(row, dict):
-                row["数据来源"] = "本地业务数据"
         for community, external_item in overlay.get("communities", {}).items():
             assignees = external_item.get("assignees") or {
                 "": external_item,
@@ -192,11 +187,8 @@ async def _overlay_external_report(
                     row = {column: 0 for column in columns}
                     row["社区"] = str(community)
                     row["姓名"] = display_name
-                    row["数据来源"] = "腾讯只读"
                     rows.append(row)
                     by_assignee[key] = row
-                else:
-                    row["数据来源"] = "本地业务数据 + 腾讯只读"
                 merge_counts(row, checker_item, columns)
     result["external_overlay"] = overlay
     return result
