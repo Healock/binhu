@@ -13,6 +13,7 @@ import random
 import threading
 import time
 from pathlib import Path
+import requests
 from urllib.parse import quote
 
 import gevent
@@ -96,12 +97,13 @@ class StagingUser(HttpUser):
         self.device_id = f"{CONTEXT.run_id.lower()}-{index:03d}"
         self.ready = False
         self._stop = Event()
+        self._secondary_session: requests.Session | None = None
         self._greenlets: list[gevent.Greenlet] = []
         self._write_index = 0
         with self.client.post(_api("/auth/login"), json={
             "username": self.username,
             "password": PASSWORD,
-            "device_type": "staging-load",
+            "device_type": "desktop",
             "device_id": self.device_id,
         }, name="core.login", catch_response=True) as response:
             self.ready = response.status_code < 400
@@ -109,6 +111,14 @@ class StagingUser(HttpUser):
                 response.failure(f"login {response.status_code}")
         if not self.ready:
             return
+
+        # Keep a bounded desktop+mobile cohort active for the same account.
+        # This exercises the production multi-device session contract without
+        # reducing the 75 independent primary browser clients.
+        if index % 10 == 0:
+            self._start_secondary_mobile_session()
+            if self._secondary_session is not None:
+                self._spawn_poll(60, self._secondary_auth_refresh)
 
         # Every authenticated browser keeps the global event stream.  Query
         # WebSocket is opened by one quarter of users, matching users who keep
@@ -119,7 +129,7 @@ class StagingUser(HttpUser):
 
         self._spawn_poll(30, self._heartbeat)
         self._spawn_poll(30, self._unread)
-        self._spawn_poll(60, self._identity)
+        self._spawn_poll(60, self._auth_refresh)
         self._spawn_poll(30, self._visible_task_refresh)
         self._spawn_poll(30, self._inline_editors)
         if index % 3 == 0:
@@ -138,6 +148,9 @@ class StagingUser(HttpUser):
         for worker in self._greenlets:
             worker.kill(block=False)
         self._greenlets.clear()
+        if self._secondary_session is not None:
+            self._secondary_session.close()
+            self._secondary_session = None
 
     def _scope(self) -> str:
         return self.account.scope if self.account.scope in {"mine", "community", "all"} else "mine"
@@ -181,6 +194,89 @@ class StagingUser(HttpUser):
                 delay = 120 if failures >= 4 else retry_delay(interval, failures, maximum_seconds=120)
             if self._stop.wait(timeout=delay):
                 return
+
+    @staticmethod
+    def _record_external_request(name: str, started: float, succeeded: bool, error: str = "") -> None:
+        events.request.fire(
+            request_type="HTTP",
+            name=name,
+            response_time=(time.perf_counter() - started) * 1000,
+            response_length=0,
+            exception=None if succeeded else RuntimeError(error or "request_failed"),
+        )
+
+    def _start_secondary_mobile_session(self) -> None:
+        session = requests.Session()
+        started = time.perf_counter()
+        login_ok = False
+        try:
+            response = session.post(
+                f"{CONTEXT.base_url}{_api('/auth/login')}",
+                json={
+                    "username": self.username,
+                    "password": PASSWORD,
+                    "device_type": "mobile",
+                    "device_id": f"{self.device_id}-mobile",
+                },
+                timeout=20,
+            )
+            login_ok = response.status_code < 400
+            self._record_external_request(
+                "core.multi_client_login", started, login_ok,
+                f"status_{response.status_code}" if not login_ok else "",
+            )
+            if not login_ok:
+                session.close()
+                return
+
+            # Both cookies must remain valid after the mobile login. Failure
+            # here catches an accidental single-session Staging configuration.
+            primary_started = time.perf_counter()
+            primary = self.client.get(_api("/auth/me"), name="core.multi_client_primary")
+            secondary_started = time.perf_counter()
+            secondary = session.get(
+                f"{CONTEXT.base_url}{_api('/auth/me')}", timeout=20,
+            )
+            secondary_ok = secondary.status_code < 400
+            self._record_external_request(
+                "core.multi_client_secondary", secondary_started, secondary_ok,
+                f"status_{secondary.status_code}" if not secondary_ok else "",
+            )
+            pair_ok = primary.status_code < 400 and secondary_ok
+            self._record_external_request(
+                "core.multi_client_pair", primary_started, pair_ok,
+                "desktop_or_mobile_session_replaced" if not pair_ok else "",
+            )
+            if pair_ok:
+                self._secondary_session = session
+            else:
+                session.close()
+        except Exception as exc:
+            self._record_external_request(
+                "core.multi_client_pair" if login_ok else "core.multi_client_login",
+                started, False, type(exc).__name__,
+            )
+            session.close()
+
+    def _secondary_auth_refresh(self) -> bool:
+        if self._secondary_session is None:
+            return False
+        started = time.perf_counter()
+        try:
+            response = self._secondary_session.get(
+                f"{CONTEXT.base_url}{_api('/auth/me')}", timeout=20,
+            )
+            succeeded = response.status_code < 400
+            self._record_external_request(
+                "poll.multi_client_auth_refresh", started, succeeded,
+                f"status_{response.status_code}" if not succeeded else "",
+            )
+            return succeeded
+        except Exception as exc:
+            self._record_external_request(
+                "poll.multi_client_auth_refresh", started, False, type(exc).__name__,
+            )
+            return False
 
     def _stream_hooks(self) -> StreamHooks:
         def opened(kind: str, reconnect: bool, latency_ms: float) -> None:
@@ -241,8 +337,8 @@ class StagingUser(HttpUser):
     def _unread(self) -> bool:
         return self._simple_get("/notifications/unread-count", "poll.unread")
 
-    def _identity(self) -> bool:
-        return self._simple_get("/auth/me", "poll.identity")
+    def _auth_refresh(self) -> bool:
+        return self._simple_get("/auth/me", "poll.auth_refresh")
 
     def _maintenance(self) -> bool:
         return self._simple_get("/maintenance/status", "poll.maintenance")

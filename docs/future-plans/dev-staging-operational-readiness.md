@@ -81,13 +81,13 @@ Dev 允许快速重建虚构数据和实验资源；Staging 数据刷新、应�
 
 实际进度和失败原因以[三环境运行验收台账](../plans/environment-triad-runtime-acceptance.md)为准。当前至少还需完成：Staging 脱敏预检和导入、候选库目标验证与投影重建、Dev 完整业务事件闭环、浏览器验收、资源和 75 人复测，以及 Shadow 依赖复核。PR、CI、部署或最小事件流证据不能单独替代这些门槛。
 
-## 2026-09-20：真实前端 75 人模型修订（开发中）
+## 2026-09-20：真实前端 75 人模型修订（已合并，待 Staging 实测）
 
-基于生产窗口的请求分布，本轮先在隔离分支 `codex/staging-realistic-load` 补齐了 Staging 专用的固定环境合同、脱敏/关系元数据校验、分层指标报告和 75 人请求模型。模型持续 30 分钟，每个虚拟用户独立执行登录、列表/详情、保存/领取/分配、心跳、未读数、维护状态、身份检查、任务列表刷新、行内编辑器读取、Query 版本、脱敏房屋搜索、SSE 和 Query WebSocket，并受控模拟断线重连。前端共享恢复调度器已加入指数退避、随机抖动、连续失败熔断和页面隐藏暂停；Query WebSocket 与全局 SSE 使用显式重连游标，写请求仍不自动重放。后端性能快照新增轮询/实时分组、SSE/WebSocket 当前连接数、重连峰值和 `resync_required` 指标。
+基于生产窗口的请求分布，PR #760 已合入 Staging 专用的固定环境合同、脱敏/关系元数据校验、分层指标报告和 75 人请求模型。模型持续 30 分钟，每个虚拟用户独立执行登录、列表/详情、保存/领取/分配、心跳、未读数、维护状态、认证刷新、任务列表刷新、行内编辑器读取、Query 版本、脱敏房屋搜索、SSE 和 Query WebSocket，并受控模拟断线重连；固定比例账号同时保持桌面和手机会话，验证多客户端会话不会互相替换。前端共享恢复调度器已加入指数退避、随机抖动、连续失败熔断和页面隐藏暂停；Query WebSocket 与全局 SSE 使用显式重连游标，写请求仍不自动重放。后端性能快照新增轮询/实时分组、SSE/WebSocket 当前连接数、重连峰值和 `resync_required` 指标。
 
 Staging fixture 固定生成 75 个 `@staging` 虚构账号和六类业务共 1,440 条虚构任务，密码只经标准输入进入私有播种进程，运行索引不保存密码或业务正文。候选 manifest 绑定不可变 `staging_snapshot_id`，部署前必须核验 Staging Backend 正在使用对应快照。Staging 网关只采集 Staging 指标；Production 健康样本必须通过独立只读路径采集，并与 Staging 样本在 90 秒窗口内逐一对齐。任何资源指标或 Production 样本缺失时，报告必须标记为 `unverified`，不能按零值通过。
 
-当前状态是“本地实现与单元测试完成，等待 PR CI”，不代表 Staging 已部署或压测通过。仍需在候选制品冻结后完成 Staging 脱敏副本、真实关系/权限核验、同一镜像摘要部署、75 人压测、Python Worker 回滚演练和页面人工验收。`/api/query` 历史 500 的具体后端根因尚无新的真实证据，本轮不以猜测修改 SQL；若 Staging 复现则按停止条件保留证据并单独修复。
+当前代码和自动化合同已随 PR #760 通过 CI 并合入主线；这不代表 Staging 已部署或压测通过。仍需在候选制品冻结后完成 Staging 脱敏副本、真实关系/权限核验、同一镜像摘要部署、75 人压测、Python Worker 回滚演练和页面人工验收。`/api/query` 历史 500 的具体后端根因尚无新的真实证据，本轮不以猜测修改 SQL；若 Staging 复现则按停止条件保留证据并单独修复。
 
 ## 2026-09-20：Dev 核心门禁结果与 Staging 晋级评估
 
@@ -135,3 +135,7 @@ Production 路径、Docker、MySQL、Dev、Shadow 和任意 shell 的 12 项独�
 因此当前状态是：网关安装和最小权限隔离已通过，Staging 脱敏副本仍未创建，
 应用制品仍未晋级，完整回归、75 人压测、回滚演练和页面人工验收均未执行。
 完成这些证据前，Staging 晋级评估仍为未通过，也不得进入 Production 架构切换。
+
+### 2026-09-20：Staging preflight 证据
+
+PR #768 已修复 preflight 失败证据和网关安装身份保留，主线 CI 与网关重装均通过。新的只读 `measure` Action `35504450683` 创建了不可覆盖目录 `staging-10b71cf9285a32df`；私有证据确认 `phase=preflight`、`reason=insufficient_memory_for_snapshot`，固定脱敏策略完整，安装控制提交为 `93f676795837a34e1e591afff35a2de0cd0a87a6`。随后只读复测的 `MemAvailable=2,949,312 KiB`，仍低于固定 `3,145,728 KiB` 门槛约 192 MiB。本轮没有执行 export/create/import/verify/switch，也没有新的数据一致性失败。不得降低门槛或清理其他环境资源来制造通过；内存自然恢复前继续保留该资源阻塞。
