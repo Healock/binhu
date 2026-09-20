@@ -25,10 +25,17 @@ BASE = Path('/var/lib/binhu-staging-data-gateway')
 AUDIT_ROOT = Path('/var/log/binhu-staging-gateways')
 SNAPSHOT_RE = re.compile(r'staging-[0-9a-f]{16}')
 POLICY = 'approved-sanitized-scope-v1'
+_REASON = re.compile(r'[a-z0-9_]{1,100}')
 
 
 def refuse(message='fixed Staging data command required'):
     raise SnapshotError(message)
+
+
+def _safe_failure_reason(exc: BaseException) -> str:
+    """Keep fixed internal reason codes while never serializing exception text."""
+    reason = getattr(exc, 'reason', '')
+    return reason if isinstance(reason, str) and _REASON.fullmatch(reason) else 'staging_data_operation_failed'
 
 
 def _safe_root(path: Path, *, create=False):
@@ -181,6 +188,12 @@ def main():
             if action == 'status':
                 _audit('status', 'passed')
             print(json.dumps(result, sort_keys=True))
+        except SnapshotError as exc:
+            reason = _safe_failure_reason(exc)
+            _audit(action or 'invalid', 'failed', snapshot_id=snapshot_id, reason=reason)
+            if action in {'export','create','import','verify','switch'}:
+                _alert(action, snapshot_id, reason)
+            raise SystemExit('Staging data gateway refused; inspect private evidence') from None
         except Exception:
             reason = 'staging_data_operation_failed'
             _audit(action or 'invalid', 'failed', snapshot_id=snapshot_id, reason=reason)

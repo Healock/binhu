@@ -98,6 +98,14 @@ class StagingApplicationGatewayTests(unittest.TestCase):
 
 
 class StagingDataGatewayTests(unittest.TestCase):
+    def test_failure_reason_preserves_only_fixed_snapshot_code(self):
+        self.assertEqual(data._safe_failure_reason(SnapshotError('source_recovery_ledger_not_unique')),
+                         'source_recovery_ledger_not_unique')
+        self.assertEqual(data._safe_failure_reason(ValueError('private database details')),
+                         'staging_data_operation_failed')
+        self.assertEqual(data._safe_failure_reason(SnapshotError('bad reason; secret')),
+                         'staging_data_operation_failed')
+
     def test_gateway_exposes_only_fixed_snapshot_contract(self):
         wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
