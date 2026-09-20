@@ -12,10 +12,15 @@ authentication, business data and update files.
 - `apps/shell-ui`: generated local React assets shared by both targets.
 - `config/desktop.config.json`: package IDs, API endpoint and fixed update URLs.
 
-Both clients use a frameless `1024x640` minimum window, local `/login` and
-`/offline` routes, and the same credentialed API at
+Both clients use a frameless `1024x640` minimum window, local `/login`,
+`/staging/login` and `/offline` routes, and the same credentialed API at
 `https://www.h332a0a4b.nyat.app:48726/api`. No remote frontend, `file://` URL,
 iframe, browser extension or local HTTP gateway is used.
+
+The login page exposes a fixed Staging entry for desktop builds. Staging
+accounts use the `@staging` suffix and are restricted to the `/staging/api`
+route after the server bootstrap identity is verified; they never fall back to
+the production `/api` route.
 
 ## Version and updates
 
