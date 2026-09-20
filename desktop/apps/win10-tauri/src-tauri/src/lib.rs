@@ -314,7 +314,7 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
             return probe_residence_result("network_error", Some("captcha_request_failed"), None)
         }
     };
-    if !(200..300).contains(&captcha.status()) {
+    if !captcha.status().is_success() {
         return probe_residence_result("rejected", Some("captcha_http_error"), None);
     }
     let captcha_body = match captcha
@@ -351,7 +351,7 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
             return probe_residence_result("network_error", Some("login_request_failed"), None)
         }
     };
-    if !(200..300).contains(&login.status()) {
+    if !login.status().is_success() {
         return probe_residence_result("rejected", Some("login_http_error"), None);
     }
     let login_body = match login
