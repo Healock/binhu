@@ -400,3 +400,15 @@ checkpoint 推进、内存/连接/磁盘无持续增长趋势。证书续签、�
 其中创建手动对账子目录。失败证据保留；修补仅让固定 monitor 容器内的一次性对账命令以
 `0:0` 写入该私有目录，不放宽目录权限、不接受任意命令，也不修改业务数据。正式观察使用
 新的 observation ID，不能覆盖该失败目录。
+
+## 2026-09-20：monitor40 六小时强化观察通过
+
+运行编号 `dev-20260919-dualtrack-monitor40` 的 1002、10000、100000 三档规模验收已全部通过；观察编号 `obs-20260920-monitor40-6h-r2` 完成 21600 秒、13 个每 30 分钟采样点，最终状态为 `passed=true`，失败原因为空。13 个样本和最终报告保留在 Dev 证据目录：
+
+`/data/docker/volumes/binhu-development-pipeline_evidence/_data/dev-20260919-dualtrack-monitor40/obs-20260920-monitor40-6h-r2/`
+
+观察核验结果：双轨未归因差异每个样本均为 0；Kafka lag 每个样本均为 0；Flink checkpoint 失败数每个样本均为 0（完成数从 4199 增至 6356）；MySQL 当前锁等待每个样本均为 0；Redis OOM 和驱逐计数保持 0；8 个 Dev event-pipeline 容器始终运行、重启次数保持 0、未被 OOM 杀死，日志轮换合同 `max-size=5m,max-file=2` 始终满足；磁盘使用率从 10.792% 增至 10.848%，在本窗口内通过趋势门禁。Python worker 内存保持不变，relay 内存仅小幅变化，monitor 内存有受控增长且未触发健康或资源门禁。
+
+主动任务中，元数据双轨对账、Schema Registry 合同核对和状态汇总通过；日报刷新、业务清理及其他周期任务标记为当前元数据域不适用，未越过 Dev 网关访问生产或 Staging。长期内存泄漏、证书续签、Kafka/Redis 自然保留过期、跨天状态累积和长期磁盘趋势仍是非阻塞未验证项。旧 savepoint 的 operator ID 兼容恢复门禁仍未通过，继续保持 `allowNonRestoredState` 禁用，不能以本次干净状态观察替代该独立门禁。
+
+据此，任务元数据投影/计数域满足 Dev 核心规模和六小时持续运行门禁，可以提交 Staging 晋级评估；这不等同于 Staging 已部署或生产架构已切换。

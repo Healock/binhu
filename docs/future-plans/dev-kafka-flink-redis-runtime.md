@@ -138,3 +138,11 @@ Flink、磁盘、日志和差异，并主动执行当前元数据域可安全触
 TTL、固定周期任务自然触发、跨天状态累积、长期内存泄漏和长期磁盘趋势。这些项目不
 阻塞当前 Staging 晋级评估，但必须在 Staging 或生产灰度补充。当前首个派生域不包含
 日报刷新或业务清理，不能为满足清单越过 Dev event-pipeline 网关边界调用生产业务任务。
+
+## 2026-09-20：Dev 核心运行门禁通过，进入 Staging 晋级评估
+
+`dev-20260919-dualtrack-monitor40` 的三档规模验收和 `obs-20260920-monitor40-6h-r2` 六小时强化观察均已通过。观察窗口为 2026-09-19 18:22:13Z 至 2026-09-20 00:22:23Z，13 个样本全部存在且按顺序完成。公开 workflow run `35481237403` 返回 `status=passed`、`samples_completed=13`、`failure_reasons=[]`；私有最终报告的 `passed=true`、`duration_seconds=21600`。
+
+运行态证据显示 Kafka lag 始终为 0、Flink checkpoint 失败数始终为 0、MySQL 锁等待始终为 0、Redis OOM/驱逐计数始终为 0，容器重启次数和 OOMKilled 状态均未变化，日志轮换和开发环境隔离合同持续满足。主动元数据对账、Schema Registry 合同核对和状态汇总通过。证据目录和样本清单由 `dev-dual-track-comparison.md` 记录。
+
+本次只签署 Dev 的任务元数据投影/计数域核心门禁。Flink 旧 savepoint operator ID 兼容恢复仍为未通过的独立门禁，Staging 的脱敏副本、业务页面回归、权限隔离、75 人趋势复测和回滚演练尚未执行；因此没有部署或修改 Staging，也没有改变 Production。Staging 晋级评估应使用与 Dev 相同的候选提交、镜像摘要和配置摘要，先完成脱敏副本与关系核验，再执行回归、性能和回滚门禁。
