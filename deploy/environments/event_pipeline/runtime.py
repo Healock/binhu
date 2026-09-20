@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from .services.kafka_delivery_store import MySQLDeliveryStore
 from .services.kafka_relay import KafkaRelay
 from .services.derived_revision_cache import RevisionCache
+from .identity import source_name, topic_for, validate_identity
 
 DEV_RELAY_CONCURRENCY = 2
 DEV_RELAY_DB_CONNECTIONS = 4
@@ -39,25 +40,39 @@ def runtime_error_message(error: BaseException) -> str:
     return "Dev pipeline stopped; identity or runtime check failed"
 
 
+def pipeline_run_id(config):
+    value = config.get("RUN_ID") or config.get("DEV_RUN_ID") or config.get("STAGING_RUN_ID", "")
+    validate_identity(config.get("APP_ENVIRONMENT"), value)
+    return value
+
+
 def configuration(environ=None):
     env = os.environ if environ is None else environ
-    run_id = env.get("DEV_RUN_ID", "")
-    if env.get("APP_ENVIRONMENT") != "development" or not re.fullmatch(r"dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
-        raise ValueError("Dev identity required")
-    targets = {
+    environment = env.get("APP_ENVIRONMENT", "")
+    run_id = env.get("PIPELINE_RUN_ID") or env.get("DEV_RUN_ID") or env.get("STAGING_RUN_ID", "")
+    validate_identity(environment, run_id)
+    targets = ({
         "MYSQL_HOST": "dev-derived-mysql", "MYSQL_DATABASE": "Dev_EventPipeline",
         "MYSQL_USER": "dev_pipeline", "REDIS_HOST": "dev-derived-redis",
         "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
-    }
+    } if environment == "development" else {
+        "MYSQL_HOST": "staging-derived-mysql", "MYSQL_DATABASE": "Staging_EventPipeline",
+        "MYSQL_USER": "staging_pipeline", "REDIS_HOST": "staging-derived-redis",
+        "KAFKA_BOOTSTRAP_SERVERS": "staging-kafka-1:9092,staging-kafka-2:9092,staging-kafka-3:9092",
+    })
     if any(env.get(k) != v for k, v in targets.items()):
-        raise ValueError("isolated Dev targets required")
+        raise ValueError("isolated non-Production targets required")
     for key in ("MYSQL_PASSWORD", "REDIS_PASSWORD"):
         if not re.fullmatch(r"[0-9a-f]{48}", env.get(key, "")):
             raise ValueError("independent runtime credential required")
     backend_url = env.get("BACKEND_REDIS_URL", "")
-    if "production" in backend_url.lower() or "staging" in backend_url.lower():
+    forbidden = {"production", "shadow", "development", "staging"} - {environment}
+    if any(value in backend_url.lower() for value in forbidden):
         raise ValueError("external environment Redis is forbidden")
-    return {**targets, "APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
+    return {**targets, "APP_ENVIRONMENT": environment, "RUN_ID": run_id,
+            "DEV_RUN_ID": run_id if environment == "development" else "",
+            "STAGING_RUN_ID": run_id if environment == "staging" else "",
+            "TOPIC": topic_for(environment),
             "MYSQL_PASSWORD": env["MYSQL_PASSWORD"], "REDIS_PASSWORD": env["REDIS_PASSWORD"],
             "BACKEND_REDIS_URL": backend_url,
             "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),
@@ -98,12 +113,13 @@ async def ensure_database_identity(pool, config):
         async with conn.cursor() as cur:
             await cur.execute("SELECT environment,run_id,database_name FROM _pipeline_identity WHERE id=1")
             row = await cur.fetchone()
-            if row is None or row[0] != "development" or row[2] != config["MYSQL_DATABASE"]:
+            if row is None or row[0] != config["APP_ENVIRONMENT"] or row[2] != config["MYSQL_DATABASE"]:
                 raise ValueError("database identity mismatch")
-            if row[1] != config["DEV_RUN_ID"]:
+            run_id = pipeline_run_id(config)
+            if row[1] != run_id:
                 await cur.execute(
                     "UPDATE _pipeline_identity SET run_id=%s WHERE id=1 AND environment=%s AND database_name=%s",
-                    (config["DEV_RUN_ID"], "development", config["MYSQL_DATABASE"]),
+                    (run_id, config["APP_ENVIRONMENT"], config["MYSQL_DATABASE"]),
                 )
 
 
@@ -179,23 +195,24 @@ async def run_relay_workers(workers):
 
 async def relay(config, pool):
     from aiokafka import AIOKafkaProducer
+    run_id = pipeline_run_id(config)
     producer = AIOKafkaProducer(
         bootstrap_servers=config["KAFKA_BOOTSTRAP_SERVERS"], enable_idempotence=True,
-        acks="all", request_timeout_ms=15000, client_id=config["DEV_RUN_ID"] + "-relay",
+        acks="all", request_timeout_ms=15000, client_id=run_id + "-relay",
     )
     try:
         await asyncio.wait_for(producer.start(), 30)
-        workers = build_relay_workers(pool, producer, config["DEV_RUN_ID"])
+        workers = build_relay_workers(pool, producer, run_id)
         await run_relay_workers(workers)
     finally:
         await asyncio.wait_for(producer.stop(), 30)
 
 
-def cache_result(task_id, source_id, revision):
+def cache_result(task_id, source_id, revision, environment="development"):
     """Derived metadata only; this is not a business address matching result."""
     content = f"{task_id}|{source_id}|{revision}".encode()
     return {"task_id": task_id, "source_id": source_id, "revision": revision,
-            "source_revision": revision, "source": "flink-dev",
+            "source_revision": revision, "source": source_name(environment, "flink"),
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "content_hash": hashlib.sha256(content).hexdigest(),
             "fields": {"task_state": "metadata_processed"}}
@@ -205,7 +222,8 @@ async def bridge(config, pool):
     from redis.asyncio import Redis
     client = Redis(host=config["REDIS_HOST"], password=config["REDIS_PASSWORD"],
                    socket_timeout=5, socket_connect_timeout=5, decode_responses=True)
-    cache = RevisionCache(client, config["DEV_RUN_ID"])
+    run_id = pipeline_run_id(config)
+    cache = RevisionCache(client, run_id)
     try:
         while True:
             # Keyset pagination bounds memory and never logs task metadata.
@@ -217,13 +235,13 @@ async def bridge(config, pool):
                             "SELECT task_id,source_id,revision FROM dev_task_revisions "
                             "WHERE run_id=%s AND (task_id>%s OR (task_id=%s AND source_id>%s)) "
                             "ORDER BY task_id,source_id LIMIT 200",
-                            (config["DEV_RUN_ID"], after_task, after_task, after_source),
+                            (run_id, after_task, after_task, after_source),
                         )
                         rows = await cur.fetchall()
                 if not rows:
                     break
                 for task, source, revision in rows:
-                    state = await cache.put(cache_result(task, source, revision))
+                    state = await cache.put(cache_result(task, source, revision, config["APP_ENVIRONMENT"]))
                     if state == "conflict":
                         raise ValueError("derived revision conflict")
                 after_task, after_source = rows[-1][:2]
@@ -243,38 +261,39 @@ async def python_metadata_worker(config):
 
 
 async def dual_track_monitor(config):
+    if config["APP_ENVIRONMENT"] != "development":
+        raise ValueError("dual-track monitor is Dev-only")
     from .dual_track_monitor import run
+    run_id = pipeline_run_id(config)
     evidence_dir = __import__("pathlib").Path(os.environ.get(
-        "DUAL_TRACK_EVIDENCE_DIR", "/var/lib/binhu-dev-event-pipeline/evidence")) / config["DEV_RUN_ID"]
-    evidence_id = os.environ.get("DUAL_TRACK_EVIDENCE_ID", "dual-track-" + config["DEV_RUN_ID"][4:])
+        "DUAL_TRACK_EVIDENCE_DIR", "/var/lib/binhu-dev-event-pipeline/evidence")) / run_id
+    evidence_id = os.environ.get("DUAL_TRACK_EVIDENCE_ID", "dual-track-" + run_id[4:])
     await run(config, evidence_dir, evidence_id)
 
 
 def backend_relay_configuration(environ=None):
-    """Validate the Dev-only Backend outbox relay targets.
-
-    This relay deliberately uses the Dev Backend database and Redis stream;
-    it never shares the pipeline database credentials or Production relay.
-    """
+    """Validate an isolated Dev or Staging Backend outbox relay target."""
     env = os.environ if environ is None else environ
-    if env.get("APP_ENVIRONMENT") != "development":
-        raise ValueError("development identity required")
-    run_id = env.get("DEV_RUN_ID", "")
-    if not re.fullmatch(r"dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
-        raise ValueError("Dev run ID required")
+    environment = env.get("APP_ENVIRONMENT", "")
+    run_id = env.get("PIPELINE_RUN_ID") or env.get("DEV_RUN_ID") or env.get("STAGING_RUN_ID", "")
+    validate_identity(environment, run_id)
     host = env.get("BACKEND_MYSQL_HOST", "")
     database = env.get("BACKEND_MYSQL_DATABASE", "")
     user = env.get("BACKEND_MYSQL_USER", "")
     password = env.get("BACKEND_MYSQL_PASSWORD", "")
     redis_url = env.get("BACKEND_REDIS_URL", "")
-    if host != "environment-mysql" or not re.fullmatch(r"Dev_[A-Za-z0-9_]+", database):
-        raise ValueError("isolated Dev Backend database required")
+    prefix = "Dev_" if environment == "development" else "Staging_"
+    if host != "environment-mysql" or not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9_]+", database):
+        raise ValueError("isolated non-Production Backend database required")
     if user != "environment_app" or not password or len(password) < 32:
         raise ValueError("independent Backend credential required")
-    if not redis_url or any(value in redis_url.lower() for value in ("production", "staging", "shadow")):
-        raise ValueError("isolated Dev Backend Redis required")
+    forbidden = {"production", "shadow", "development", "staging"} - {environment}
+    if not redis_url or any(value in redis_url.lower() for value in forbidden):
+        raise ValueError("isolated non-Production Backend Redis required")
     return {
-        "APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
+        "APP_ENVIRONMENT": environment, "RUN_ID": run_id,
+        "DEV_RUN_ID": run_id if environment == "development" else "",
+        "STAGING_RUN_ID": run_id if environment == "staging" else "",
         "BACKEND_MYSQL_HOST": host, "BACKEND_MYSQL_DATABASE": database,
         "BACKEND_MYSQL_USER": user, "BACKEND_MYSQL_PASSWORD": password,
         "BACKEND_REDIS_URL": redis_url,
@@ -302,7 +321,7 @@ async def backend_outbox_relay(config):
         while True:
             state = await worker.run_once()
             if state != "idle":
-                print(json.dumps({"component": "dev-backend-outbox-relay", "state": state}), flush=True)
+                print(json.dumps({"component": config["APP_ENVIRONMENT"] + "-backend-outbox-relay", "state": state}), flush=True)
             await asyncio.sleep(.5 if state == "idle" else .01)
     finally:
         await client.aclose()

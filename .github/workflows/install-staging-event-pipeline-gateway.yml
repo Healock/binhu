@@ -1,0 +1,41 @@
+name: Install Staging event-pipeline gateway
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Install only the Staging gateway
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          PUBLIC_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_DEPLOY_PUBLIC_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$HOST" && "$PORT" =~ ^[0-9]+$ && -n "$ADMIN_KEY" && -n "$PUBLIC_KEY" && -n "$KNOWN_HOSTS" ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh"
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          printf '%s\n' "$PUBLIC_KEY" > "$RUNNER_TEMP/staging-ssh/deploy-key.pub"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          scp -P "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" \
+            deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway \
+            deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway.py \
+            deploy/environments/event_pipeline/install-staging-gateway.sh \
+            "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            'cd /tmp && ./install-staging-gateway.sh /tmp/deploy-key.pub'
+          rm -f "$RUNNER_TEMP/staging-ssh/"*

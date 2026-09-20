@@ -7,6 +7,7 @@ from typing import Any
 
 from .kafka_event_contract import validate_task_event
 from .task_metadata_projection import IncrementalTaskMetadataProjector, flatten_projection, _canonical
+from ..identity import topic_for
 
 TABLE = "dev_task_metadata_python"
 
@@ -46,10 +47,12 @@ async def run(config):
     from aiokafka import AIOKafkaConsumer
     import aiomysql
 
+    run_id = config.get("RUN_ID") or config.get("DEV_RUN_ID") or config.get("STAGING_RUN_ID")
     consumer = AIOKafkaConsumer(
-        "dev.task.events.v1", bootstrap_servers=config["KAFKA_BOOTSTRAP_SERVERS"],
-        group_id=config["DEV_RUN_ID"] + "-python-metadata", auto_offset_reset="earliest",
-        enable_auto_commit=True, client_id=config["DEV_RUN_ID"] + "-python-metadata",
+        config.get("TOPIC") or topic_for(config["APP_ENVIRONMENT"]),
+        bootstrap_servers=config["KAFKA_BOOTSTRAP_SERVERS"],
+        group_id=run_id + "-python-metadata", auto_offset_reset="earliest",
+        enable_auto_commit=True, client_id=run_id + "-python-metadata",
     )
     pool = await aiomysql.create_pool(
         host=config["MYSQL_HOST"], port=3306, user=config["MYSQL_USER"],
@@ -67,19 +70,19 @@ async def run(config):
                     "SELECT run_id,task_id,source_id,revision,event_count,changed_field_count,"
                     "created_count,saved_count,claimed_count,assigned_count,reviewed_count,"
                     "archived_count,deleted_count FROM dev_task_metadata_python WHERE run_id=%s",
-                    (config["DEV_RUN_ID"],),
+                    (run_id,),
                 )
                 columns = ("run_id", "task_id", "source_id", "revision", "event_count", "changed_field_count",
                            "created_count", "saved_count", "claimed_count", "assigned_count", "reviewed_count",
                            "archived_count", "deleted_count")
                 for row in await cur.fetchall():
                     persisted = dict(zip(columns, row))
-                    persisted["environment"] = "development"
+                    persisted["environment"] = config["APP_ENVIRONMENT"]
                     projector.restore_snapshot(persisted)
         await consumer.start()
         async for message in consumer:
             event = validate_task_event(json.loads(message.value))
-            if event["run_id"] != config["DEV_RUN_ID"]:
+            if event["run_id"] != run_id or event["environment"] != config["APP_ENVIRONMENT"]:
                 continue
             async with pool.acquire() as conn:
                 await conn.begin()

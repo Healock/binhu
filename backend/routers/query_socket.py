@@ -20,6 +20,7 @@ from services.permissions import (
     has_permission,
 )
 from routers.query import CellUpdate, QUERY_TYPES, query_data_version, update_source_cell
+from services.platform_performance import performance_metrics
 
 router = APIRouter(prefix='/api/query', tags=['在线工作表实时协作'])
 _connections: Counter = Counter()
@@ -168,8 +169,11 @@ async def spreadsheet_socket(socket: WebSocket, parser_type: str):
         return
     _connections[key] += 1
     seen: set[str] = set()
+    metrics_opened = False
     try:
         await socket.accept()
+        performance_metrics.realtime_open('websocket')
+        metrics_opened = True
         _subscribers[parser_type].add(socket)
         version = await read_version(parser_type, user)
         await socket.send_json({'type': 'version', 'data_version': version})
@@ -191,8 +195,10 @@ async def spreadsheet_socket(socket: WebSocket, parser_type: str):
                 message_type = envelope.get('type') if isinstance(envelope, dict) else None
                 if message_type == 'resume':
                     resume = ResumeMessage.model_validate(envelope)
+                    performance_metrics.realtime_reconnect('websocket')
                     replay = _events_after(parser_type, resume.after_event_id)
                     if replay is None:
+                        performance_metrics.realtime_resync()
                         await socket.send_json({'type': 'resync_required', 'data_version': version})
                     else:
                         for event in replay:
@@ -264,6 +270,8 @@ async def spreadsheet_socket(socket: WebSocket, parser_type: str):
         await socket.close(code=1011)
     finally:
         _subscribers[parser_type].discard(socket)
+        if metrics_opened:
+            performance_metrics.realtime_close('websocket')
         _connections[key] -= 1
         if not _connections[key]:
             del _connections[key]

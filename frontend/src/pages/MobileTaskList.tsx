@@ -68,6 +68,7 @@ import { openNativePhoneDialer } from '../utils/nativePhone'
 import { downloadBlob } from '../utils/fileDownload'
 import { retainAvailableMobileTaskFilters } from '../utils/mobileTaskFilters'
 import { useTaskReturnPosition } from '../hooks/useTaskReturnPosition'
+import { createResilientPoller } from '../utils/resilientPolling'
 
 const MODEL_THREE_PARSER = '疑似未注销模型三'
 const ALL_ANALYSIS_TYPES = '__all__'
@@ -733,19 +734,30 @@ export default function MobileTaskList({
 
   useEffect(() => {
     if (!active) return undefined
-    const refreshVisibleList = () => {
+    const refreshVisibleList = async () => {
       if (restorationRef.current) return
-      if (document.visibilityState === 'visible') void load(1, false, true)
+      if (document.visibilityState === 'visible') await load(1, false, true)
     }
     const visibilityChanged = () => {
-      if (document.visibilityState === 'visible') refreshVisibleList()
+      if (document.visibilityState === 'visible') poller.trigger()
     }
-    const timer = window.setInterval(refreshVisibleList, 30_000)
-    window.addEventListener('focus', refreshVisibleList)
+    const poller = createResilientPoller(refreshVisibleList, {
+      intervalMs: 30_000,
+      maxDelayMs: 120_000,
+      failureThreshold: 4,
+      cooldownMs: 120_000,
+      shouldRun: () => document.visibilityState === 'visible',
+    })
+    poller.start()
+    const focused = () => poller.trigger()
+    const online = () => poller.trigger()
+    window.addEventListener('focus', focused)
+    window.addEventListener('online', online)
     document.addEventListener('visibilitychange', visibilityChanged)
     return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('focus', refreshVisibleList)
+      poller.stop()
+      window.removeEventListener('focus', focused)
+      window.removeEventListener('online', online)
       document.removeEventListener('visibilitychange', visibilityChanged)
     }
   }, [active, load])

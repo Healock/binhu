@@ -11,6 +11,7 @@ from collections import Counter, defaultdict, deque
 from typing import Any, Iterable
 
 from .kafka_event_contract import validate_task_event
+from ..identity import environment_for_run_id
 
 
 EVENT_COUNTERS = (
@@ -35,7 +36,7 @@ def _key(event: dict[str, Any]) -> tuple[str, str, int]:
 def _empty(key: tuple[str, str, int]) -> dict[str, Any]:
     run_id, task_id, source_id = key
     return {
-        "environment": "development",
+        "environment": environment_for_run_id(run_id),
         "run_id": run_id,
         "task_id": task_id,
         "source_id": source_id,
@@ -146,9 +147,15 @@ class IncrementalTaskMetadataProjector:
             "environment", "run_id", "task_id", "source_id", "revision",
             "event_count", "changed_field_count", *[f"{name}_count" for name in EVENT_COUNTERS],
         }
-        if set(value) != required or value.get("environment") != "development":
+        if set(value) != required:
             raise ValueError("invalid persisted projection identity")
         key = (value["run_id"], value["task_id"], value["source_id"])
+        try:
+            environment = environment_for_run_id(value["run_id"])
+        except ValueError:
+            raise ValueError("invalid persisted projection identity") from None
+        if value.get("environment") != environment:
+            raise ValueError("invalid persisted projection identity")
         if not isinstance(value["run_id"], str) or not isinstance(value["task_id"], str):
             raise ValueError("invalid persisted projection key")
         if type(value["source_id"]) is not int or value["source_id"] <= 0:
@@ -157,7 +164,7 @@ class IncrementalTaskMetadataProjector:
         if any(type(value[name]) is not int or value[name] < 0 for name in numeric):
             raise ValueError("invalid persisted projection counters")
         self._rows[key] = {
-            "environment": "development", "run_id": key[0], "task_id": key[1],
+            "environment": environment, "run_id": key[0], "task_id": key[1],
             "source_id": key[2], "revision": value["revision"],
             "event_count": value["event_count"],
             "changed_field_count": value["changed_field_count"],

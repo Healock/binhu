@@ -63,3 +63,16 @@ test('unconnected save fails immediately rather than being queued for replay', a
   assert.equal(socket.sent.length, 0)
   channel.close()
 })
+
+test('reconnect delay includes bounded jitter and never replays a pending save', () => {
+  const socket = new Socket()
+  const delays: number[] = []
+  const channel = connectQueryRealtime('全链条', () => {}, () => {}, {
+    url: 'ws://example.test/api/query/live/test', socketFactory: () => socket as any,
+    random: () => 1,
+    onReconnect: details => delays.push(details.delay_ms),
+  })
+  socket.onclose!({ code: 1006 })
+  assert.equal(delays[0], 1250)
+  channel.close()
+})

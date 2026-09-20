@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
+from ..identity import environment_for_run_id
+
 
 SCHEMA_VERSION = 1
 MAX_EVENT_BYTES = 16 * 1024
@@ -89,7 +91,6 @@ _TIMESTAMP_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:"
     r"[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z$"
 )
-_RUN_ID_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 class EventContractError(ValueError):
@@ -192,12 +193,16 @@ def validate_task_event(event: Mapping[str, Any]) -> dict[str, Any]:
     changed_fields = _validate_changed_fields(event["changed_fields"])
     timestamp = _validate_timestamp(event["timestamp"])
 
-    environment = event["environment"]
-    if not isinstance(environment, str) or environment != "development":
-        raise _invalid("environment")
     run_id = event["run_id"]
-    if not isinstance(run_id, str) or _RUN_ID_RE.fullmatch(run_id) is None:
+    if not isinstance(run_id, str):
         raise _invalid("run_id")
+    try:
+        expected_environment = environment_for_run_id(run_id)
+    except ValueError:
+        raise _invalid("run_id") from None
+    environment = event["environment"]
+    if not isinstance(environment, str) or environment != expected_environment:
+        raise _invalid("environment")
 
     normalized = {
         "schema_version": SCHEMA_VERSION,
@@ -209,7 +214,7 @@ def validate_task_event(event: Mapping[str, Any]) -> dict[str, Any]:
         "operation_id": operation_id,
         "changed_fields": changed_fields,
         "timestamp": timestamp,
-        "environment": "development",
+        "environment": expected_environment,
         "run_id": run_id,
     }
     if len(_dump(normalized).encode("utf-8")) > MAX_EVENT_BYTES:

@@ -1,0 +1,58 @@
+name: Deploy Staging event pipeline
+run-name: Deploy Staging event pipeline ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id: {description: "Prepared STG-YYYYMMDD-NN run", required: true, type: string}
+      artifact_run_id: {description: "Prepare workflow run ID", required: true, type: string}
+      commit: {description: "Full merged commit SHA", required: true, type: string}
+      bundle_sha256: {description: "Candidate bundle SHA-256", required: true, type: string}
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: deploy-staging-event-pipeline
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v7.0.0
+        with:
+          name: binhu-staging-event-pipeline-${{ inputs.run_id }}-${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.artifact_run_id }}
+          path: candidate
+      - name: Prepare, measure and apply through fixed Staging gateway
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+          RUN_ID: ${{ inputs.run_id }}
+          COMMIT: ${{ inputs.commit }}
+          EXPECTED_SHA: ${{ inputs.bundle_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "$COMMIT" =~ ^[0-9a-f]{40}$ && "$EXPECTED_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ -n "$HOST" && "$PORT" =~ ^[0-9]+$ && -n "$KEY" && -n "$KNOWN_HOSTS" ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          bundle=candidate/binhu-staging-event-pipeline.tar.gz
+          [[ "$(sha256sum "$bundle" | awk '{print $1}')" == "$EXPECTED_SHA" ]]
+          size="$(wc -c < "$bundle")"
+          ssh_cmd=(ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "binhu-staging-deploy@$HOST")
+          cat "$bundle" | "${ssh_cmd[@]}" "prepare $RUN_ID $COMMIT $size $EXPECTED_SHA"
+          "${ssh_cmd[@]}" "measure $RUN_ID"
+          "${ssh_cmd[@]}" "apply $RUN_ID"
+          rm -f "$RUNNER_TEMP/staging-ssh/key" "$RUNNER_TEMP/staging-ssh/known_hosts"

@@ -11,10 +11,12 @@ from config import settings
 from deps import require_permission
 from services.permissions import ANNOUNCEMENT_MANAGE, NOTIFICATION_VIEW
 from services.audit import record_admin_audit, request_audit_fields
+from services.bounded_cache import BoundedTTLCache
 
 router = APIRouter(prefix="/api/notifications", tags=["消息中心"])
 require_notification_view = require_permission(NOTIFICATION_VIEW)
 require_announcement_manage = require_permission(ANNOUNCEMENT_MANAGE)
+_unread_cache = BoundedTTLCache[int, tuple[int, int]](ttl_seconds=5, max_entries=4096)
 
 
 async def _workflow_task_paths(cur, ticket_ids: list[int]) -> dict[int, str]:
@@ -83,8 +85,13 @@ async def get_unread_count(
     user: dict = Depends(require_notification_view),
     conn=Depends(get_db),
 ):
-    async with conn.cursor() as cur:
-        personal, announcements = await _unread_counts(cur, user["id"])
+    user_id = int(user["id"])
+    cached = _unread_cache.get(user_id)
+    if cached is None:
+        async with conn.cursor() as cur:
+            cached = await _unread_counts(cur, user_id)
+        _unread_cache.set(user_id, cached)
+    personal, announcements = cached
     return {
         "unread_count": personal + announcements,
         "personal_unread_count": personal,
@@ -265,6 +272,7 @@ async def mark_all_read(
             """,
             (user["id"],),
         )
+    _unread_cache.invalidate(int(user["id"]))
     return {"message": "全部消息已标记为已读"}
 
 
@@ -297,6 +305,7 @@ async def create_announcement(
         detail={"title": title, "severity": data.severity},
         **request_audit_fields(request),
     )
+    _unread_cache.clear()
     return {"message": "公告已发布", "id": announcement_id}
 
 
@@ -332,6 +341,7 @@ async def mark_announcement_read(
             )
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail="公告不存在")
+    _unread_cache.invalidate(int(user["id"]))
     return {"message": "公告已标记为已读"}
 
 
@@ -360,6 +370,7 @@ async def delete_announcement(
         target_name=str(announcement_id),
         **request_audit_fields(request),
     )
+    _unread_cache.clear()
     return {"message": "公告已删除"}
 
 
@@ -385,4 +396,5 @@ async def mark_read(
             )
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail="个人提示不存在")
+    _unread_cache.invalidate(int(user["id"]))
     return {"message": "个人提示已标记为已读"}

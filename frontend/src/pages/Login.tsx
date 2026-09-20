@@ -17,6 +17,7 @@ import {
   storeRememberedUsername,
 } from '../utils/rememberedUsername'
 import { getSafeLocalStorage } from '../utils/themeMode'
+import { createResilientPoller } from '../utils/resilientPolling'
 import { environmentPath } from '../utils/apiEnvironment'
 
 export default function Login() {
@@ -52,20 +53,26 @@ export default function Login() {
 
   useEffect(() => {
     let disposed = false
-    const refresh = () => {
-      getMaintenanceStatus()
-        .then(status => {
-          if (!disposed) setMaintenance(status)
-        })
-        .catch(() => {
-          if (!disposed) setMaintenance(null)
-        })
+    const refresh = async () => {
+      try {
+        const status = await getMaintenanceStatus()
+        if (!disposed) setMaintenance(status)
+      } catch (error) {
+        if (!disposed) setMaintenance(null)
+        throw error
+      }
     }
-    refresh()
-    const timer = window.setInterval(refresh, 30_000)
+    const poller = createResilientPoller(refresh, {
+      intervalMs: 30_000,
+      maxDelayMs: 120_000,
+      failureThreshold: 4,
+      cooldownMs: 120_000,
+      shouldRun: () => document.visibilityState === 'visible',
+    })
+    poller.start()
     return () => {
       disposed = true
-      window.clearInterval(timer)
+      poller.stop()
     }
   }, [])
 

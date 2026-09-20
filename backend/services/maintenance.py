@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from fastapi import HTTPException, status
+from services.bounded_cache import BoundedTTLCache
 
 
 MAINTENANCE_CONFIG_KEYS = (
@@ -15,6 +16,11 @@ MAINTENANCE_CONFIG_KEYS = (
     "maintenance_message",
     "timezone",
 )
+maintenance_config_cache = BoundedTTLCache[str, dict[str, str]](ttl_seconds=5, max_entries=1)
+
+
+def invalidate_maintenance_cache() -> None:
+    maintenance_config_cache.clear()
 
 
 def _as_bool(value: Any) -> bool:

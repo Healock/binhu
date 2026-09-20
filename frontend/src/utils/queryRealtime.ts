@@ -1,4 +1,5 @@
 import { resolveRuntimeApiUrl } from './apiEnvironment.ts'
+import { retryDelay } from './resilientPolling.ts'
 
 export interface QueryEdit {
   column: string
@@ -52,6 +53,8 @@ export function connectQueryRealtime(
     url?: string
     socketFactory?: (url: string) => WebSocket
     onEvent?: (event: QueryRealtimeEvent) => void
+    random?: () => number
+    onReconnect?: (details: { attempt: number; delay_ms: number }) => void
   } = {},
 ) {
   const url = options.url || querySocketUrl(
@@ -61,7 +64,7 @@ export function connectQueryRealtime(
   let socket: WebSocket | undefined
   let stopped = false
   let sequence = 0
-  let retryDelay = 1000
+  let retryFailures = 0
   let lastEventId = 0
   let lastDataVersion = ''
   let pendingPresence: Record<string, unknown> | null = null
@@ -86,7 +89,7 @@ export function connectQueryRealtime(
     const current = factory(url)
     socket = current
     current.onopen = () => {
-      retryDelay = 1000
+      retryFailures = 0
       onState('connected')
       if (lastEventId > 0) {
         try { current.send(JSON.stringify({ type: 'resume', after_event_id: lastEventId, data_version: lastDataVersion })) } catch { /* reconnect will retry */ }
@@ -127,8 +130,12 @@ export function connectQueryRealtime(
       failPending()
       onState(event.code === 1008 ? 'forbidden' : 'disconnected')
       if (event.code !== 1008) {
-        retry = setTimeout(connect, retryDelay)
-        retryDelay = Math.min(retryDelay * 2, 30000)
+        retryFailures += 1
+        const delay = retryFailures >= 6
+          ? 120_000
+          : retryDelay(1000, retryFailures, 30_000, 0.25, options.random ?? Math.random)
+        options.onReconnect?.({ attempt: retryFailures, delay_ms: delay })
+        retry = setTimeout(connect, delay)
       }
     }
     current.onerror = () => { /* onclose owns reconnect and pending-write handling. */ }
