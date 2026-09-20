@@ -138,6 +138,7 @@ class StagingDataGatewayTests(unittest.TestCase):
         data_flow = (ROOT / '.github/workflows/manage-staging-sanitized-snapshot.yml').read_text(encoding='utf-8')
         self.assertIn('BINHU_STAGING_APP_SSH_KEY', install + application_flow)
         self.assertIn('BINHU_STAGING_DATA_SSH_KEY', install + data_flow)
+        self.assertIn('bash ./deploy/environments/install-staging-promotion-gateways.sh', install)
         self.assertEqual(install.count('BINHU_STAGING_PORT'), 2)
         self.assertEqual(application_flow.count('BINHU_STAGING_PORT'), 1)
         self.assertEqual(data_flow.count('BINHU_STAGING_PORT'), 1)

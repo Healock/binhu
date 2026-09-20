@@ -53,7 +53,7 @@ jobs:
             deploy staging-app.pub staging-data.pub staging-control-commit
           cat "$RUNNER_TEMP/staging-promotion-gateways.tar.gz" | ssh -p "$PORT" -i ~/.ssh/staging-admin \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-staging-gateways.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; ./deploy/environments/install-staging-promotion-gateways.sh ./staging-app.pub ./staging-data.pub ./staging-control-commit'
+            "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-staging-gateways.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; bash ./deploy/environments/install-staging-promotion-gateways.sh ./staging-app.pub ./staging-data.pub ./staging-control-commit'
       - name: Verify fixed status and rejection boundaries
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
