@@ -25,6 +25,7 @@ const path = require('node:path')
 const fs = require('node:fs')
 const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require('electron')
 const { ElectronUpdateController } = require('./updater')
+const { LocalMacService } = require('./local-mac-service')
 
 const root = path.resolve(__dirname, '..', '..', '..')
 const configPath = path.join(root, 'config', 'desktop.config.json')
@@ -33,6 +34,7 @@ const config = require(configPath)
 const smokeTest = process.argv.includes('--smoke-test')
 let updateController = null
 let upgradeInfo = null
+let localMacService = null
 
 function upgradeStatePath() {
   return path.join(app.getPath('userData'), 'upgrade-state.json')
@@ -215,9 +217,17 @@ ipcMain.handle('desktop:acknowledge-upgrade', () => { acknowledgeUpgrade(); retu
 ipcMain.handle('desktop:check-for-updates', () => updateController?.checkForUpdates())
 ipcMain.handle('desktop:download-update', () => updateController?.downloadUpdate())
 ipcMain.handle('desktop:restart-and-apply', () => updateController?.restartAndApply())
+ipcMain.handle('desktop:get-local-mac', () => localMacService?.getMac())
+ipcMain.handle('desktop:set-local-mac', (_event, mac) => localMacService?.setMac(mac))
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   protocol.handle('binhu', handleLocalAsset)
+  localMacService = new LocalMacService(path.join(app.getPath('userData'), 'mac-address'))
+  try {
+    await localMacService.start()
+  } catch (_error) {
+    // The offline page reports a bounded port-occupancy error through IPC.
+  }
   loadUpgradeInfo()
   updateController = new ElectronUpdateController({
     currentVersion: config.appVersion,
@@ -240,6 +250,7 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow() })
 })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+app.on('before-quit', () => { void localMacService?.close() })
 app.on('web-contents-created', (_event, contents) => {
   contents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) shell.openExternal(url)

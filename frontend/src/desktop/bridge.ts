@@ -45,6 +45,8 @@ export interface DesktopBridge extends ClientUpdateBridge {
   close: () => Promise<void>
   getUpgradeInfo: () => Promise<DesktopUpgradeInfo | null>
   acknowledgeUpgrade: () => Promise<DesktopUpgradeInfo | null>
+  getLocalMac: () => Promise<string>
+  setLocalMac: (mac: string) => Promise<string>
 }
 
 interface TauriEvent<T> {
@@ -121,6 +123,8 @@ export function resolveDesktopBridge(): DesktopBridge | null {
     getUpdateStatus: () => invoke<DesktopUpdateState>('get_update_status'),
     getUpgradeInfo: () => invoke<DesktopUpgradeInfo>('get_upgrade_info'),
     acknowledgeUpgrade: () => invoke<DesktopUpgradeInfo>('acknowledge_upgrade'),
+    getLocalMac: () => invoke<string>('get_local_mac'),
+    setLocalMac: mac => invoke<string>('set_local_mac', { mac }),
     checkForUpdates: () => invoke<DesktopUpdateState>('check_for_updates'),
     downloadUpdate: () => invoke<DesktopUpdateState>('download_update'),
     restartAndApply: () => invoke<DesktopUpdateState>('restart_and_apply'),

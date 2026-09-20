@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://tauri.localhost https://www.h332a0a4b.nyat.app:48726; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost https://tauri.localhost http://127.0.0.1:23333 https://www.h332a0a4b.nyat.app:48726; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
     }
   },
   "bundle": {

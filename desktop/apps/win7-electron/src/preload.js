@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('binhuDesktop', {
   checkForUpdates: () => ipcRenderer.invoke('desktop:check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('desktop:download-update'),
   restartAndApply: () => ipcRenderer.invoke('desktop:restart-and-apply'),
+  getLocalMac: () => ipcRenderer.invoke('desktop:get-local-mac'),
+  setLocalMac: (mac) => ipcRenderer.invoke('desktop:set-local-mac', mac),
   subscribeUpdateState: (listener) => {
     const handler = (_event, state) => listener(state)
     ipcRenderer.on('desktop:update-state', handler)

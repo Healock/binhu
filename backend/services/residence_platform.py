@@ -249,22 +249,12 @@ class ResidencePlatformClient:
         return check_key, image
 
     async def _read_mac(self) -> str:
-        url = _validate_base_url(self.config.mac_service_url)
-        async with httpx.AsyncClient(
-            timeout=self.config.timeout_seconds,
-            transport=self.transport,
-        ) as client:
-            response = await client.get(url)
-        if response.status_code != 200:
-            raise ResidencePlatformError("mac_service_error", "MAC 服务不可用")
+        from services.mac_address import normalize_mac_address
+
         try:
-            payload = response.json()
+            return normalize_mac_address(self.config.mac_address)
         except ValueError as exc:
-            raise ResidencePlatformError("mac_service_invalid", "MAC 服务响应无法解析") from exc
-        mac = str(payload.get("mac") or "").strip() if isinstance(payload, dict) else ""
-        if not mac:
-            raise ResidencePlatformError("mac_missing", "MAC 服务未返回设备地址")
-        return mac
+            raise ResidencePlatformError("mac_missing", "服务器 MAC 尚未配置") from exc
 
     async def login(
         self,

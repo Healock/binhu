@@ -1,17 +1,17 @@
 import { Alert, Button, Input, InputNumber, Progress, Switch, Upload, message } from 'antd'
 import { ArrowLeftOutlined, InboxOutlined, ToolOutlined } from '@ant-design/icons'
 import type { UploadFile, UploadProps } from 'antd'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Panel } from '../components/ui'
 import { getResidencePlatformConfig } from '../api/client'
 import { downloadBlob } from '../utils/fileDownload'
+import { resolveDesktopBridge } from '../desktop/bridge'
 import {
   OfflineResidenceClient,
   cacheOnlineResidenceConfig,
   loadOfflineResidenceConfig,
   normalizeMacAddress,
-  pushMacAddress,
   readMacAddress,
   saveOfflineResidenceConfig,
   type OfflineResidenceConfig,
@@ -47,20 +47,42 @@ export default function OfflineMode() {
   const [exporting, setExporting] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [macBusy, setMacBusy] = useState(false)
+  const [activeMac, setActiveMac] = useState(config.mac_address)
   const [macMessage, setMacMessage] = useState('')
   const [macMessageType, setMacMessageType] = useState<'info' | 'success' | 'error'>('info')
+  const [macProbeBusy, setMacProbeBusy] = useState(false)
+  const [macProbeProgress, setMacProbeProgress] = useState({ completed: 0, total: 0, mac: '' })
+  const macProbeRun = useRef(0)
 
   const running = queryState === 'running'
   const total = workbook?.rows.length ?? 0
   const configWarning = useMemo(() => {
     if (!config.enabled) return '离线居住证查询已关闭。'
-    if (!config.base_url.trim() || !config.mac_service_url.trim()) return '请填写居住证接口地址和 MAC 服务地址。'
+    if (!config.base_url.trim()) return '请填写居住证接口地址。'
     if (!config.password) return '未填写统一登录密码。在线平台不会回传密码，请在此处手动填写。'
     if (!config.accounts.length) return '没有可用的社区账号配置，请先刷新在线范围或在本机填写账号。'
     const incomplete = config.accounts.filter(account => !account.username.trim())
     if (incomplete.length) return `请填写完整居住证登录账号：${incomplete.map(account => account.community_name || '本地账号').join('、')}`
     return ''
   }, [config])
+
+  useEffect(() => {
+    const desktop = resolveDesktopBridge()
+    if (!desktop) return
+    desktop.getLocalMac().then(value => {
+      const mac = normalizeMacAddress(value)
+      setActiveMac(mac)
+      setConfig(current => {
+        const next = {
+          ...current,
+          mac_address: mac,
+          mac_addresses: Array.from(new Set([mac, ...current.mac_addresses])),
+        }
+        saveOfflineResidenceConfig(next)
+        return next
+      })
+    }).catch(() => {})
+  }, [])
 
   const updateConfig = (change: Partial<OfflineResidenceConfig>) => {
     setConfig(current => ({ ...current, ...change }))
@@ -72,7 +94,7 @@ export default function OfflineMode() {
     const next = {
       ...config,
       base_url: config.base_url.trim().replace(/\/+$/, ''),
-      mac_service_url: config.mac_service_url.trim().replace(/\/+$/, ''),
+      mac_service_url: 'http://127.0.0.1:23333',
       timeout_seconds: Math.min(120, Math.max(1, Number(config.timeout_seconds) || 15)),
     }
     saveOfflineResidenceConfig(next)
@@ -84,8 +106,11 @@ export default function OfflineMode() {
     setMacBusy(true)
     setMacMessage('')
     try {
-      const mac = await readMacAddress(config)
-      const next = { ...config, mac_address: mac }
+      const desktop = resolveDesktopBridge()
+      if (!desktop) throw new Error('请使用滨湖 Windows 客户端管理本机 MAC')
+      const mac = normalizeMacAddress(await desktop.getLocalMac())
+      setActiveMac(mac)
+      const next = { ...config, mac_address: mac, mac_addresses: Array.from(new Set([mac, ...config.mac_addresses])) }
       saveOfflineResidenceConfig(next)
       setConfig(next)
       setMacMessage(`当前 MAC：${mac}`)
@@ -102,9 +127,14 @@ export default function OfflineMode() {
     setMacBusy(true)
     setMacMessage('')
     try {
+      const desktop = resolveDesktopBridge()
+      if (!desktop) throw new Error('请使用滨湖 Windows 客户端管理本机 MAC')
       const mac = normalizeMacAddress(config.mac_address)
-      const verified = await pushMacAddress(config, mac, config.mac_write_token)
-      const next = { ...config, mac_address: verified }
+      const saved = normalizeMacAddress(await desktop.setLocalMac(mac))
+      const verified = normalizeMacAddress(await desktop.getLocalMac())
+      if (saved !== mac || verified !== mac) throw new Error('本机 MAC 保存后回读不一致')
+      setActiveMac(verified)
+      const next = { ...config, mac_address: verified, mac_addresses: Array.from(new Set([verified, ...config.mac_addresses])) }
       saveOfflineResidenceConfig(next)
       setConfig(next)
       setMacMessage(`MAC 已保存并回读确认：${verified}`)
@@ -117,6 +147,119 @@ export default function OfflineMode() {
     }
   }
 
+  const addMacCandidate = () => {
+    try {
+      const mac = normalizeMacAddress(config.mac_address)
+      const next = { ...config, mac_address: mac, mac_addresses: Array.from(new Set([...config.mac_addresses, mac])) }
+      saveOfflineResidenceConfig(next)
+      setConfig(next)
+      setMacMessage(`已加入候选列表：${mac}`)
+      setMacMessageType('success')
+    } catch (reason) {
+      setMacMessage(reason instanceof Error ? reason.message : 'MAC 地址格式无效')
+      setMacMessageType('error')
+    }
+  }
+
+  const activateMacCandidate = async (value: string) => {
+    setMacBusy(true)
+    setMacMessage('')
+    try {
+      const desktop = resolveDesktopBridge()
+      if (!desktop) throw new Error('请使用滨湖 Windows 客户端管理本机 MAC')
+      const mac = normalizeMacAddress(await desktop.setLocalMac(value))
+      const verified = normalizeMacAddress(await desktop.getLocalMac())
+      if (mac !== verified) throw new Error('本机 MAC 保存后回读不一致')
+      setActiveMac(verified)
+      const next = { ...config, mac_address: verified, mac_addresses: Array.from(new Set([verified, ...config.mac_addresses])) }
+      saveOfflineResidenceConfig(next)
+      setConfig(next)
+      setMacMessage(`当前使用的 MAC 已切换为：${verified}`)
+      setMacMessageType('success')
+    } catch (reason) {
+      setMacMessage(reason instanceof Error ? reason.message : '切换 MAC 失败')
+      setMacMessageType('error')
+    } finally {
+      setMacBusy(false)
+    }
+  }
+
+  const removeMacCandidate = (value: string) => {
+    if (value === activeMac) {
+      setMacMessage('当前正在使用的 MAC 不能移除，请先切换到其他候选地址')
+      setMacMessageType('error')
+      return
+    }
+    const next = {
+      ...config,
+      mac_addresses: config.mac_addresses.filter(mac => mac !== value),
+      mac_probe_results: Object.fromEntries(Object.entries(config.mac_probe_results).filter(([mac]) => mac !== value)),
+    }
+    saveOfflineResidenceConfig(next)
+    setConfig(next)
+  }
+
+  const probeMacCandidates = async (targets: string[]) => {
+    if (macProbeBusy || !targets.length) return
+    const incomplete = config.accounts.filter(account => !account.username.trim())
+    if (!config.base_url.trim() || !config.password || !config.accounts.length || incomplete.length) {
+      setMacMessage('请先填写接口地址、统一密码和全部社区完整登录账号，再检测 MAC 授权范围')
+      setMacMessageType('error')
+      return
+    }
+    const runId = ++macProbeRun.current
+    const perMac = Math.min(config.accounts.length, 12)
+    setMacProbeBusy(true)
+    setMacProbeProgress({ completed: 0, total: targets.length * perMac, mac: targets[0] })
+    setMacMessage('')
+    let nextConfig = config
+    try {
+      for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+        if (macProbeRun.current !== runId) break
+        const mac = normalizeMacAddress(targets[targetIndex])
+        const client = new OfflineResidenceClient(config)
+        const results = await client.probeMacAccess(
+          mac,
+          completed => setMacProbeProgress({ completed: targetIndex * perMac + completed, total: targets.length * perMac, mac }),
+          () => macProbeRun.current === runId,
+        )
+        if (macProbeRun.current !== runId || results.length !== perMac) break
+        nextConfig = {
+          ...nextConfig,
+          mac_probe_results: {
+            ...nextConfig.mac_probe_results,
+            [mac]: {
+              checked_at: new Date().toISOString(),
+              tested_community_count: perMac,
+              authorized_communities: results.filter(result => result.allowed).map(result => ({
+                community_id: result.community_id,
+                community_name: result.community_name,
+              })),
+            },
+          },
+        }
+        saveOfflineResidenceConfig(nextConfig)
+        setConfig(nextConfig)
+      }
+      if (macProbeRun.current === runId) {
+        setMacMessage('MAC 授权范围检测完成。结果只保存在当前客户端。')
+        setMacMessageType('success')
+      }
+    } catch (reason) {
+      setMacMessage(reason instanceof Error ? reason.message : 'MAC 授权范围检测失败')
+      setMacMessageType('error')
+    } finally {
+      if (macProbeRun.current === runId) setMacProbeBusy(false)
+    }
+  }
+
+  const stopMacProbe = () => {
+    macProbeRun.current += 1
+    setMacProbeBusy(false)
+    setMacMessage('已停止检测；当前请求结束后不会继续测试其他社区账号。')
+    setMacMessageType('info')
+  }
+
   const syncOnlineConfig = async () => {
     setSyncing(true)
     setConfigMessage('')
@@ -124,11 +267,11 @@ export default function OfflineMode() {
       const online = await getResidencePlatformConfig()
       const next = cacheOnlineResidenceConfig(online)
       setConfig(next)
-      if (!online.base_url?.trim() || !online.mac_service_url?.trim()) {
+      if (!online.base_url?.trim()) {
         setConfigMessage('在线配置尚不完整，已保留当前客户端的离线配置。')
       } else setConfigMessage(online.password_configured && !next.password
-        ? '已同步接口、MAC、超时和选中社区范围；账号和统一密码不会从平台返回，请在当前客户端手动填写。'
-        : '已同步接口、MAC、超时和选中社区范围；本地已有账号和密码已保留。')
+        ? '已同步接口、超时和选中社区范围；账号、统一密码和本机 MAC 不会从平台返回，请在当前客户端手动填写。'
+        : '已同步接口、超时和选中社区范围；本地已有账号、密码和 MAC 列表已保留。')
     } catch {
       setConfigMessage('无法连接滨湖平台，未同步在线配置；可以直接手动修改离线配置。')
     } finally {
@@ -226,7 +369,7 @@ export default function OfflineMode() {
             </div>
           </section>
 
-          <Panel title="居住证系统配置" description="配置保存在当前客户端。在线平台同步接口、MAC 服务地址和超时；账号、统一密码、MAC 写入令牌和会话不会从平台配置接口回传。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>刷新在线配置</Button>}>
+          <Panel title="居住证系统配置" description="配置保存在当前客户端。在线平台同步接口、查询范围和超时；账号、统一密码、本机 MAC 和会话不会上传到平台。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>刷新在线配置</Button>}>
             <div className="grid gap-4">
               {configWarning && <Alert type="warning" showIcon message={configWarning} />}
               {configMessage && <Alert type="info" showIcon message={configMessage} />}
@@ -234,9 +377,8 @@ export default function OfflineMode() {
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">离线查询开关</span><div className="flex min-h-9 items-center gap-3"><Switch checked={config.enabled} onChange={enabled => updateConfig({ enabled })} /><span>{config.enabled ? '已开启' : '已关闭'}</span></div></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">居住证接口地址</span><Input value={config.base_url} onChange={event => updateConfig({ base_url: event.target.value })} /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">统一登录密码</span><Input.Password value={config.password} onChange={event => updateConfig({ password: event.target.value })} autoComplete="new-password" /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">MAC 服务地址</span><Input value={config.mac_service_url} onChange={event => updateConfig({ mac_service_url: event.target.value })} /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">要使用的 MAC 地址</span><Input value={config.mac_address} onChange={event => updateConfig({ mac_address: event.target.value })} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">MAC 写入令牌（如服务端要求）</span><Input.Password value={config.mac_write_token} onChange={event => updateConfig({ mac_write_token: event.target.value })} placeholder="不会上传到滨湖平台" autoComplete="off" /></label>
+                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">本机 MAC 服务</span><Input value="http://127.0.0.1:23333" readOnly /></label>
+                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">要使用或加入列表的 MAC</span><Input value={config.mac_address} onChange={event => updateConfig({ mac_address: event.target.value })} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" /></label>
                 <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">请求超时（秒）</span><InputNumber min={1} max={120} value={config.timeout_seconds} onChange={value => updateConfig({ timeout_seconds: Number(value || 15) })} className="w-full" /></label>
               </div>
               {config.login_community_names.length > 0 && <Alert type="info" showIcon message={`在线查询范围：${config.login_community_names.join('、')}`} />}
@@ -249,12 +391,43 @@ export default function OfflineMode() {
                 </div>)}
               </div>
               <div className="text-xs text-[var(--app-text-secondary)]">每个选中社区必须在当前客户端填写自己的完整登录账号，共用本机统一密码；账号不会根据组织代码自动拼接。这里不保存居住证会话令牌，远端同步也不会返回账号或密码。</div>
-              <div className="grid gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
-                <div className="text-sm text-[var(--app-text-secondary)]">MAC 地址推送只修改配置的 MAC mock 服务，不修改滨湖平台配置。保存后会立即 GET 回读校验；生产服务应启用写入令牌。</div>
+              <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
+                <div className="text-sm text-[var(--app-text-secondary)]">Windows 客户端首次运行时读取本机硬件 MAC 作为默认值，并在回环地址提供 `23333` 兼容读取端口。候选列表、检测结果和修改都只保存在当前电脑，不会修改服务器 MAC，也不会上传到滨湖平台。</div>
                 {macMessage && <Alert type={macMessageType} showIcon message={macMessage} />}
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button onClick={() => void readCurrentMac()} loading={macBusy}>读取当前 MAC</Button>
-                  <Button type="primary" onClick={() => void pushConfiguredMac()} loading={macBusy} disabled={!config.mac_address.trim()}>保存并推送 MAC</Button>
+                  <Button onClick={addMacCandidate} disabled={!config.mac_address.trim() || macBusy || macProbeBusy}>加入候选列表</Button>
+                  <Button type="primary" onClick={() => void pushConfiguredMac()} loading={macBusy} disabled={!config.mac_address.trim()}>保存本机 MAC</Button>
+                </div>
+                <div className="grid gap-2">
+                  {config.mac_addresses.length === 0 && <div className="text-sm text-[var(--app-text-secondary)]">尚无候选 MAC。Windows 客户端会自动读取一次本机硬件地址，也可以在上方手动添加。</div>}
+                  {config.mac_addresses.map(mac => {
+                    const snapshot = config.mac_probe_results[mac]
+                    const authorized = snapshot?.authorized_communities || []
+                    return <div key={mac} className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--app-text-strong)]"><span>{mac}</span>{mac === activeMac && <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">当前使用</span>}</div>
+                        <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
+                          {snapshot
+                            ? `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无'}；检测时间：${new Date(snapshot.checked_at).toLocaleString()}`
+                            : '尚未检测可登录的社区账号'}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button size="small" onClick={() => void activateMacCandidate(mac)} disabled={mac === activeMac || macBusy || macProbeBusy}>设为当前</Button>
+                        <Button size="small" onClick={() => void probeMacCandidates([mac])} disabled={macProbeBusy || macBusy}>检测社区</Button>
+                        <Button size="small" danger onClick={() => removeMacCandidate(mac)} disabled={mac === activeMac || macBusy || macProbeBusy}>移除</Button>
+                      </div>
+                    </div>
+                  })}
+                </div>
+                {macProbeBusy && <Progress percent={macProbeProgress.total ? Math.round(macProbeProgress.completed / macProbeProgress.total * 100) : 0} format={() => `${macProbeProgress.completed}/${macProbeProgress.total}`} />}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-[var(--app-text-secondary)]">检测会按顺序使用最多 12 个已配置社区账号登录，不并发，不执行登记、修改、删除或写回。</span>
+                  <div className="flex gap-2">
+                    {macProbeBusy && <Button danger onClick={stopMacProbe}>停止检测</Button>}
+                    <Button onClick={() => void probeMacCandidates(config.mac_addresses)} disabled={!config.mac_addresses.length || macProbeBusy || macBusy}>检测全部候选</Button>
+                  </div>
                 </div>
               </div>
               <div className="flex justify-end"><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>

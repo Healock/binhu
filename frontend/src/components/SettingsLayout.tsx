@@ -3,6 +3,7 @@ import {
   BgColorsOutlined,
   CloudDownloadOutlined,
   ClockCircleOutlined,
+  DesktopOutlined,
   ApartmentOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
@@ -12,20 +13,19 @@ import { PageHeader } from './ui'
 export default function SettingsLayout() {
   const { user } = useAuth()
   const location = useLocation()
-  const canManageSystem = user?.permissions?.includes('system.manage')
-
   const allMenuItems = [
-    { path: '/settings/system', label: '系统设置', icon: <ClockCircleOutlined />, superOnly: true },
-    { path: '/settings/workflow', label: '工单流程配置', icon: <ApartmentOutlined />, superOnly: true },
-    { path: '/settings/account-security', label: '账号与安全', icon: <SafetyCertificateOutlined />, superOnly: false },
-    { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, superOnly: false },
-    { path: '/settings/updates', label: '应用更新', icon: <CloudDownloadOutlined />, superOnly: false },
+    { path: '/settings/system', label: '系统设置', icon: <ClockCircleOutlined />, permission: 'system.manage' },
+    { path: '/settings/server-mac', label: '服务器 MAC', icon: <DesktopOutlined />, permission: 'system.server_mac.manage' },
+    { path: '/settings/workflow', label: '工单流程配置', icon: <ApartmentOutlined />, permission: 'workflow.config.manage' },
+    { path: '/settings/account-security', label: '账号与安全', icon: <SafetyCertificateOutlined />, permission: '' },
+    { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, permission: '' },
+    { path: '/settings/updates', label: '应用更新', icon: <CloudDownloadOutlined />, permission: '' },
   ]
 
-  const menuItems = allMenuItems.filter(item => !item.superOnly || canManageSystem)
-  const restrictedPaths = allMenuItems.filter(item => item.superOnly).map(item => item.path)
+  const menuItems = allMenuItems.filter(item => !item.permission || user?.permissions?.includes(item.permission))
+  const restrictedPaths = allMenuItems.filter(item => item.permission && !user?.permissions?.includes(item.permission)).map(item => item.path)
 
-  if (!canManageSystem && restrictedPaths.some(path => location.pathname.startsWith(path))) {
+  if (restrictedPaths.some(path => location.pathname.startsWith(path))) {
     return <Navigate to="/settings/personalization" replace />
   }
 

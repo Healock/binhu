@@ -21,6 +21,7 @@ from routers.auth import router as auth_router
 from routers.query import router as query_router
 from routers.grid_members import router as grid_members_router
 from routers.system import router as system_router
+from routers.mac_address import router as mac_address_router
 from routers.users import router as users_router
 from routers.notifications import router as notifications_router
 from routers.admin_ops import router as admin_ops_router
@@ -95,6 +96,11 @@ from services.online_summary_updates import (
 )
 from services.txdocs_statistics_monitor import run_txdocs_statistics_monitor
 from services.txdocs_usage import stop_txdocs_usage_tasks
+from services.mac_address import (
+    load_server_mac,
+    start_mac_compat_server,
+    stop_mac_compat_server,
+)
 
 
 @asynccontextmanager
@@ -106,6 +112,14 @@ async def lifespan(app: FastAPI):
             yield
         return
     await init_db()
+    from database import db_manager
+    async with db_manager.get_pool("online_data").acquire() as mac_conn:
+        await load_server_mac(mac_conn)
+    if settings.MAC_COMPAT_SERVER_ENABLED:
+        await start_mac_compat_server(
+            host=settings.MAC_COMPAT_SERVER_HOST,
+            port=settings.MAC_COMPAT_SERVER_PORT,
+        )
     interrupted_backups = await recover_interrupted_backups()
     if interrupted_backups:
         print(
@@ -206,6 +220,7 @@ async def lifespan(app: FastAPI):
         await stop_fullchain_archive_tasks()
         await stop_status_scan_tasks()
         await stop_external_acquisition_tasks()
+        await stop_mac_compat_server()
         await close_db()
 
 
@@ -317,6 +332,7 @@ app.include_router(police_dispatch_router, dependencies=auth_dep)
 app.include_router(fullchain_archive_router, dependencies=auth_dep)
 app.include_router(grid_members_router, dependencies=auth_dep)
 app.include_router(system_router, dependencies=auth_dep)
+app.include_router(mac_address_router, dependencies=auth_dep)
 app.include_router(notifications_router, dependencies=auth_dep)
 app.include_router(visits_router, dependencies=auth_dep)
 app.include_router(visit_sources_router, dependencies=auth_dep)

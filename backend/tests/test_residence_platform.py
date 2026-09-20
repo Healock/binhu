@@ -156,6 +156,7 @@ def config(**overrides) -> ResidencePlatformConfig:
         "username": "fixture-user",
         "password": "fixture-password",
         "mac_service_url": "http://mac.invalid",
+        "mac_address": "02:11:22:33:44:66",
         "access_token": "fixture-token",
         "organization_code": "3205840377",
         "timeout_seconds": 5,
@@ -814,15 +815,13 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
             await client._post_readonly("/szjzz/save", {})
         self.assertEqual(raised.exception.code, "path_not_allowed")
 
-    async def test_login_reads_mac_and_does_not_expose_upstream_rejection(self):
+    async def test_login_uses_configured_mac_and_does_not_expose_upstream_rejection(self):
         requests: list[httpx.Request] = []
 
         async def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            if request.url.host == "mac.invalid":
-                return httpx.Response(200, json={"mac": "AA-BB-CC-DD-EE-FF"})
             body = json.loads(request.content.decode("utf-8"))
-            self.assertEqual(body["mac"], "AA-BB-CC-DD-EE-FF")
+            self.assertEqual(body["mac"], "02:11:22:33:44:66")
             return httpx.Response(200, json={
                 "success": False,
                 "message": "fixture-sensitive-login-detail",
@@ -836,15 +835,13 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
             await client.login(captcha="1234", check_key="fixture-key")
         self.assertEqual(raised.exception.code, "login_rejected")
         self.assertNotIn("fixture-sensitive", str(raised.exception))
-        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(requests), 1)
 
     async def test_login_fetches_hidden_challenge_and_submits_empty_captcha(self):
         requests: list[httpx.Request] = []
 
         async def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            if request.url.host == "mac.invalid":
-                return httpx.Response(200, json={"mac": "AA-BB-CC-DD-EE-FF"})
             if "/sys/randomImage/" in request.url.path:
                 return httpx.Response(200, json={
                     "success": True,
@@ -871,7 +868,7 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(organization_code, "999999999900")
         self.assertEqual(
             [request.method for request in requests],
-            ["GET", "GET", "POST"],
+            ["GET", "POST"],
         )
 
 

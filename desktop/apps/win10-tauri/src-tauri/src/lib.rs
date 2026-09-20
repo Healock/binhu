@@ -1,13 +1,19 @@
 use std::{
     fs,
+    io::{Read, Write},
+    net::TcpListener,
     path::PathBuf,
-    sync::{mpsc, Mutex},
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
 
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, State};
 use velopack::{
     sources::HttpSource, UpdateCheck, UpdateInfo, UpdateManager, UpdateOptions, VelopackAsset,
 };
@@ -207,6 +213,179 @@ struct UpdateRuntime {
 }
 
 struct UpdateRuntimeState(Mutex<UpdateRuntime>);
+
+const DEFAULT_LOCAL_MAC: &str = "02:00:00:00:00:01";
+
+#[derive(Clone)]
+struct LocalMacRuntimeState {
+    mac: Arc<Mutex<String>>,
+    state_path: Arc<Mutex<Option<PathBuf>>>,
+    server_ready: Arc<AtomicBool>,
+}
+
+impl Default for LocalMacRuntimeState {
+    fn default() -> Self {
+        Self {
+            mac: Arc::new(Mutex::new(DEFAULT_LOCAL_MAC.into())),
+            state_path: Arc::new(Mutex::new(None)),
+            server_ready: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+fn normalize_local_mac(value: &str) -> Result<String, String> {
+    let compact: String = value
+        .chars()
+        .filter(|character| !matches!(character, '.' | '-' | ':' | ' ' | '\t' | '\r' | '\n'))
+        .flat_map(char::to_uppercase)
+        .collect();
+    if compact.len() != 12
+        || !compact
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("MAC 地址必须是 12 位十六进制字符".into());
+    }
+    let first = u8::from_str_radix(&compact[..2], 16).map_err(|_| "MAC 地址格式无效")?;
+    if compact == "000000000000" || first & 1 == 1 {
+        return Err("MAC 地址必须是有效的单播地址".into());
+    }
+    Ok((0..6)
+        .map(|index| compact[index * 2..index * 2 + 2].to_string())
+        .collect::<Vec<_>>()
+        .join(":"))
+}
+
+fn detect_hardware_mac() -> String {
+    let output = Command::new("getmac").args(["/fo", "csv", "/nh"]).output();
+    if let Ok(output) = output {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for token in text.split(|character: char| {
+            character == '"' || character == ',' || character.is_whitespace()
+        }) {
+            if let Ok(mac) = normalize_local_mac(token) {
+                return mac;
+            }
+        }
+    }
+    DEFAULT_LOCAL_MAC.into()
+}
+
+fn persist_local_mac(path: &PathBuf, mac: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|_| "无法创建本机 MAC 配置目录")?;
+    }
+    let temporary = path.with_extension("partial");
+    fs::write(&temporary, format!("{}\n", mac)).map_err(|_| "无法保存本机 MAC")?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|_| "无法替换本机 MAC")?;
+    }
+    fs::rename(&temporary, path).map_err(|_| "无法保存本机 MAC".to_string())
+}
+
+impl LocalMacRuntimeState {
+    fn initialize(&self, path: PathBuf) {
+        let stored = fs::read_to_string(&path)
+            .ok()
+            .and_then(|value| normalize_local_mac(&value).ok());
+        let needs_persist = stored.is_none();
+        let loaded = stored.unwrap_or_else(detect_hardware_mac);
+        if needs_persist {
+            let _ = persist_local_mac(&path, &loaded);
+        }
+        *self
+            .mac
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = loaded;
+        *self
+            .state_path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
+    }
+
+    fn start(&self) {
+        let mac = self.mac.clone();
+        let ready = self.server_ready.clone();
+        thread::spawn(move || {
+            let Ok(listener) = TcpListener::bind(("127.0.0.1", 23333)) else {
+                return;
+            };
+            ready.store(true, Ordering::Release);
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { continue };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+                let mut buffer = [0u8; 8192];
+                let Ok(length) = stream.read(&mut buffer) else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&buffer[..length]);
+                let first_line = request.lines().next().unwrap_or("");
+                let parts: Vec<_> = first_line.split_whitespace().collect();
+                let (method, path) = if parts.len() == 3 {
+                    (parts[0], parts[1])
+                } else {
+                    ("", "")
+                };
+                let (status, body) = match (method, path) {
+                    ("OPTIONS", "/") | ("OPTIONS", "/health") => ("204 No Content", String::new()),
+                    ("GET", "/") => {
+                        let current = mac
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        ("200 OK", format!("{{\"mac\":\"{}\"}}", current))
+                    }
+                    ("GET", "/health") => ("200 OK", "{\"status\":\"ok\"}".into()),
+                    (_, "/") | (_, "/health") => (
+                        "405 Method Not Allowed",
+                        "{\"error\":\"method_not_allowed\"}".into(),
+                    ),
+                    _ => ("404 Not Found", "{\"error\":\"not_found\"}".into()),
+                };
+                let response = format!(
+                    "HTTP/1.1 {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    body.as_bytes().len(),
+                    body,
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+            ready.store(false, Ordering::Release);
+        });
+    }
+}
+
+#[tauri::command]
+fn get_local_mac(state: State<'_, LocalMacRuntimeState>) -> Result<String, String> {
+    if !state.server_ready.load(Ordering::Acquire) {
+        return Err("本机 23333 端口未能启动，请检查端口占用".into());
+    }
+    Ok(state
+        .mac
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone())
+}
+
+#[tauri::command]
+fn set_local_mac(mac: String, state: State<'_, LocalMacRuntimeState>) -> Result<String, String> {
+    if !state.server_ready.load(Ordering::Acquire) {
+        return Err("本机 23333 端口未能启动，请检查端口占用".into());
+    }
+    let normalized = normalize_local_mac(&mac)?;
+    let path = state
+        .state_path
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .ok_or_else(|| "本机 MAC 配置目录尚未就绪".to_string())?;
+    persist_local_mac(&path, &normalized)?;
+    *state
+        .mac
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = normalized.clone();
+    Ok(normalized)
+}
 
 impl Default for UpdateRuntimeState {
     fn default() -> Self {
@@ -695,9 +874,15 @@ fn acknowledge_upgrade(app: tauri::AppHandle) -> DesktopUpgradeInfo {
 pub fn run(restarted: bool) {
     tauri::Builder::default()
         .manage(UpdateRuntimeState::default())
+        .manage(LocalMacRuntimeState::default())
         .setup(move |app| {
             let handle = app.handle().clone();
             initialize_upgrade_info(&handle, restarted);
+            let local_mac = app.state::<LocalMacRuntimeState>().inner().clone();
+            if let Ok(directory) = app.path().app_data_dir() {
+                local_mac.initialize(directory.join("mac-address"));
+                local_mac.start();
+            }
             thread::spawn(move || loop {
                 tauri::async_runtime::block_on(perform_update_check(handle.clone()));
                 thread::sleep(CHECK_INTERVAL);
@@ -718,7 +903,9 @@ pub fn run(restarted: bool) {
             acknowledge_upgrade,
             check_for_updates,
             download_update,
-            restart_and_apply
+            restart_and_apply,
+            get_local_mac,
+            set_local_mac
         ])
         .run(tauri::generate_context!())
         .expect("error while running Binhu Tauri application");

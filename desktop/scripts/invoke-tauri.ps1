@@ -12,7 +12,7 @@ $repoRoot = (Resolve-Path (Join-Path $desktopRoot '..')).Path
 $workspaceRoot = (Resolve-Path (Join-Path $repoRoot '..')).Path
 $tauriRoot = Join-Path $desktopRoot 'apps\win10-tauri'
 $rustRoot = Join-Path $tauriRoot 'src-tauri'
-$sdkRoot = Join-Path $workspaceRoot '.tooling\windows-sdk\extracted'
+$sdkRoot = Join-Path $repoRoot '.tooling\windows-sdk\extracted'
 $sdkVersion = '10.0.28000.0'
 $cargoCandidates = @(
     (Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'),

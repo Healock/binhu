@@ -5,6 +5,17 @@ export interface OfflineResidenceAccount {
   community_code: string
 }
 
+export interface OfflineMacAuthorizedCommunity {
+  community_id: number | null
+  community_name: string
+}
+
+export interface OfflineMacProbeSnapshot {
+  checked_at: string
+  authorized_communities: OfflineMacAuthorizedCommunity[]
+  tested_community_count: number
+}
+
 export interface OfflineResidenceConfig {
   enabled: boolean
   base_url: string
@@ -12,7 +23,8 @@ export interface OfflineResidenceConfig {
   password: string
   mac_service_url: string
   mac_address: string
-  mac_write_token: string
+  mac_addresses: string[]
+  mac_probe_results: Record<string, OfflineMacProbeSnapshot>
   timeout_seconds: number
   community_codes: string[]
   login_community_ids: number[]
@@ -36,11 +48,16 @@ export interface OfflineResidenceQueryResult {
   error?: string
 }
 
+export interface OfflineMacProbeResult extends OfflineMacAuthorizedCommunity {
+  allowed: boolean
+}
+
 const SEARCH_RESIDENT_PATH = '/szjzz/searchIsck'
 const SEARCH_FLOATING_PATH = '/szjzz/searchzzrk'
 const LOGIN_PATH = '/sys/login'
 const CAPTCHA_PATH_PREFIX = '/sys/randomImage/'
 const STORAGE_KEY = 'binhu_offline_residence_config_v1'
+const LOCAL_MAC_SERVICE_URL = 'http://127.0.0.1:23333'
 
 export const DEFAULT_OFFLINE_RESIDENCE_CONFIG: OfflineResidenceConfig = {
   enabled: true,
@@ -49,7 +66,8 @@ export const DEFAULT_OFFLINE_RESIDENCE_CONFIG: OfflineResidenceConfig = {
   password: '',
   mac_service_url: 'http://127.0.0.1:23333',
   mac_address: '',
-  mac_write_token: '',
+  mac_addresses: [],
+  mac_probe_results: {},
   timeout_seconds: 15,
   community_codes: [],
   login_community_ids: [],
@@ -81,12 +99,36 @@ export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
       username: legacyUsername,
       community_code: legacyCodes[0] || '',
     })] : []
+    const activeMac = normalizeMacOrEmpty(parsed.mac_address)
+    const macAddresses = Array.from(new Set([
+      activeMac,
+      ...(Array.isArray(parsed.mac_addresses) ? parsed.mac_addresses.map(normalizeMacOrEmpty) : []),
+    ].filter(Boolean)))
+    const macProbeResults = parsed.mac_probe_results && typeof parsed.mac_probe_results === 'object'
+      ? Object.fromEntries(Object.entries(parsed.mac_probe_results).flatMap(([mac, snapshot]) => {
+          const normalized = normalizeMacOrEmpty(mac)
+          if (!normalized || !snapshot || typeof snapshot !== 'object') return []
+          const value = snapshot as Partial<OfflineMacProbeSnapshot>
+          return [[normalized, {
+            checked_at: typeof value.checked_at === 'string' ? value.checked_at : '',
+            tested_community_count: Number.isInteger(value.tested_community_count) ? Number(value.tested_community_count) : 0,
+            authorized_communities: Array.isArray(value.authorized_communities)
+              ? value.authorized_communities.map(item => ({
+                  community_id: Number.isInteger(item?.community_id) && Number(item.community_id) > 0 ? Number(item.community_id) : null,
+                  community_name: String(item?.community_name || '').trim(),
+                })).filter(item => item.community_name)
+              : [],
+          } satisfies OfflineMacProbeSnapshot]]
+        }))
+      : {}
     return {
       ...DEFAULT_OFFLINE_RESIDENCE_CONFIG,
       ...parsed,
+      mac_service_url: LOCAL_MAC_SERVICE_URL,
       username: typeof parsed.username === 'string' ? parsed.username.trim() : '',
-      mac_address: typeof parsed.mac_address === 'string' ? parsed.mac_address.trim().toUpperCase() : '',
-      mac_write_token: typeof parsed.mac_write_token === 'string' ? parsed.mac_write_token : '',
+      mac_address: activeMac,
+      mac_addresses: macAddresses,
+      mac_probe_results: macProbeResults,
       community_codes: Array.isArray(parsed.community_codes) ? parsed.community_codes.map(String).filter(Boolean) : [],
       login_community_ids: Array.isArray(parsed.login_community_ids)
         ? Array.from(new Set(parsed.login_community_ids.filter(id => Number.isInteger(id) && id > 0))).sort((a, b) => a - b)
@@ -104,12 +146,21 @@ export function loadOfflineResidenceConfig(): OfflineResidenceConfig {
 
 export function saveOfflineResidenceConfig(config: OfflineResidenceConfig): void {
   const accounts = config.accounts.map(account => normalizeAccount(account))
+  const activeMac = normalizeMacOrEmpty(config.mac_address)
+  const macAddresses = Array.from(new Set([
+    activeMac,
+    ...config.mac_addresses.map(normalizeMacOrEmpty),
+  ].filter(Boolean)))
+  const macProbeResults = Object.fromEntries(
+    Object.entries(config.mac_probe_results).filter(([mac]) => macAddresses.includes(mac)),
+  )
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
     ...config,
     base_url: config.base_url.trim().replace(/\/+$/, ''),
-    mac_service_url: config.mac_service_url.trim().replace(/\/+$/, ''),
-    mac_address: typeof config.mac_address === 'string' ? config.mac_address.trim().toUpperCase() : '',
-    mac_write_token: typeof config.mac_write_token === 'string' ? config.mac_write_token : '',
+    mac_service_url: LOCAL_MAC_SERVICE_URL,
+    mac_address: activeMac,
+    mac_addresses: macAddresses,
+    mac_probe_results: macProbeResults,
     login_community_ids: Array.from(new Set(config.login_community_ids.filter(id => Number.isInteger(id) && id > 0))).sort((a, b) => a - b),
     login_community_names: config.login_community_names.map(item => item.trim()).filter(Boolean),
     accounts,
@@ -125,7 +176,6 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
   const current = loadOfflineResidenceConfig()
   if (
     typeof snapshot.base_url !== 'string' || !snapshot.base_url.trim()
-    || typeof snapshot.mac_service_url !== 'string' || !snapshot.mac_service_url.trim()
   ) {
     return current
   }
@@ -153,7 +203,7 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
     ...current,
     ...(typeof snapshot.enabled === 'boolean' ? { enabled: snapshot.enabled } : {}),
     ...(typeof snapshot.base_url === 'string' ? { base_url: snapshot.base_url } : {}),
-    ...(typeof snapshot.mac_service_url === 'string' ? { mac_service_url: snapshot.mac_service_url } : {}),
+    mac_service_url: LOCAL_MAC_SERVICE_URL,
     ...(typeof snapshot.timeout_seconds === 'number' ? { timeout_seconds: snapshot.timeout_seconds } : {}),
     ...(selectedIds !== null
       ? {
@@ -175,7 +225,7 @@ function baseUrl(config: OfflineResidenceConfig): string {
 
 const MAC_ADDRESS_RE = /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/
 
-/** Normalize the formats accepted by macmock without accepting arbitrary text. */
+/** Normalize the formats accepted by the local compatibility service. */
 export function normalizeMacAddress(value: string): string {
   const compact = String(value || '').trim().replace(/[.\-:\s]/g, '').toUpperCase()
   if (!/^[0-9A-F]{12}$/.test(compact)) throw new Error('MAC 地址必须是 12 位十六进制字符')
@@ -185,6 +235,14 @@ export function normalizeMacAddress(value: string): string {
     throw new Error('MAC 地址格式无效')
   }
   return normalized
+}
+
+function normalizeMacOrEmpty(value: unknown): string {
+  try {
+    return normalizeMacAddress(String(value || ''))
+  } catch {
+    return ''
+  }
 }
 
 function macServiceUrl(config: OfflineResidenceConfig): string {
@@ -219,31 +277,6 @@ export async function readMacAddress(config: OfflineResidenceConfig): Promise<st
   try { return normalizeMacAddress(String(payload?.mac || '')) } catch { throw new Error('MAC 服务未返回有效设备地址') }
 }
 
-export async function pushMacAddress(config: OfflineResidenceConfig, value: string, writeToken = ''): Promise<string> {
-  const mac = normalizeMacAddress(value)
-  const url = macServiceUrl(config)
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (writeToken.trim()) headers['X-Macmock-Token'] = writeToken.trim()
-  const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), config.timeout_seconds * 1000)
-  try {
-    const response = await fetch(url, {
-      method: 'POST', headers, body: JSON.stringify({ mac }), credentials: 'omit', mode: 'cors', signal: controller.signal,
-    })
-    if (response.status === 401 || response.status === 403) throw new Error('MAC 服务拒绝写入，请检查 MAC 写入令牌')
-    if (response.status === 405) throw new Error('MAC 服务尚未支持 MAC 写入，请先更新 macmock')
-    if (response.status === 422) throw new Error('MAC 服务拒绝了无效 MAC 地址')
-    if (!response.ok) throw new Error(`MAC 服务写入失败（HTTP ${response.status}）`)
-    let payload: any
-    try { payload = await response.json() } catch { throw new Error('MAC 服务写入响应无法解析') }
-    const verified = await readMacAddress(config)
-    if (verified !== mac || payload?.mac && normalizeMacAddress(String(payload.mac)) !== mac) throw new Error('MAC 服务写入后回读不一致')
-    return verified
-  } finally {
-    window.clearTimeout(timer)
-  }
-}
-
 function authResponse(payload: any): boolean {
   const message = String(payload?.message || '').toLowerCase()
   return [401, 403].includes(Number(payload?.code)) || ['token', '登录失效', '未登录', '认证失败'].some(marker => message.includes(marker))
@@ -272,11 +305,10 @@ export class OfflineResidenceClient {
     return account.community_id ? `community_${account.community_id}` : `local_${account.community_code || account.username}`
   }
 
-  private async login(account: OfflineResidenceAccount): Promise<{ token: string; organizationCode: string }> {
+  private async authenticate(account: OfflineResidenceAccount, mac: string): Promise<{ token: string; organizationCode: string }> {
     const base = baseUrl(this.config)
     const checkKey = String(Date.now())
     await jsonRequest(this.config, `${base}${CAPTCHA_PATH_PREFIX}${checkKey}`, { method: 'GET' })
-    const mac = await readMacAddress(this.config)
     const payload = await jsonRequest(this.config, `${base}${LOGIN_PATH}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json;charset=UTF-8' },
@@ -296,8 +328,44 @@ export class OfflineResidenceClient {
       throw new Error('居住证账号返回的组织代码与所选社区不一致')
     }
     const session = { token: String(payload.result.token), organizationCode }
+    return session
+  }
+
+  private async login(account: OfflineResidenceAccount): Promise<{ token: string; organizationCode: string }> {
+    const session = await this.authenticate(account, await readMacAddress(this.config))
     this.tokens.set(this.accountKey(account), session)
     return session
+  }
+
+  async probeMacAccess(
+    value: string,
+    onProgress?: (completed: number, total: number, result: OfflineMacProbeResult) => void,
+    shouldContinue?: () => boolean,
+  ): Promise<OfflineMacProbeResult[]> {
+    if (!this.config.password || !this.config.base_url) throw new Error('请先填写居住证接口地址和统一登录密码')
+    const accounts = this.config.accounts.filter(account => account.username.trim()).slice(0, 12)
+    if (!accounts.length) throw new Error('请先为社区填写完整登录账号')
+    const mac = normalizeMacAddress(value)
+    const results: OfflineMacProbeResult[] = []
+    for (const account of accounts) {
+      if (shouldContinue && !shouldContinue()) break
+      let allowed = false
+      try {
+        await this.authenticate(account, mac)
+        allowed = true
+      } catch {
+        allowed = false
+      }
+      const result = {
+        community_id: account.community_id,
+        community_name: account.community_name || account.community_code || account.username,
+        allowed,
+      }
+      results.push(result)
+      onProgress?.(results.length, accounts.length, result)
+      if (results.length < accounts.length) await new Promise(resolve => window.setTimeout(resolve, 250))
+    }
+    return results
   }
 
   private async lookupWithToken(identity: string, session: { token: string; organizationCode: string }): Promise<ReturnType<typeof classify>> {

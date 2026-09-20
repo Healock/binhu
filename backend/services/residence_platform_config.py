@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from services.qmf_config import decrypt_secret, encrypt_secret
+from services.mac_address import current_server_mac
 
 
 RESIDENCE_CONFIG_KEYS = {
@@ -87,6 +88,7 @@ class ResidencePlatformConfig:
     username: str
     password: str
     mac_service_url: str
+    mac_address: str
     access_token: str
     organization_code: str
     timeout_seconds: int
@@ -115,7 +117,7 @@ class ResidencePlatformConfig:
             and self.base_url
             and accounts_ready
             and self.password
-            and self.mac_service_url
+            and self.mac_address
         )
 
     @property
@@ -257,6 +259,7 @@ async def load_residence_config(conn) -> ResidencePlatformConfig:
         mac_service_url=value(
             "residence_mac_service_url", "http://127.0.0.1:23333"
         ).rstrip("/"),
+        mac_address=current_server_mac(),
         access_token=value("residence_access_token"),
         organization_code=value("residence_organization_code"),
         timeout_seconds=_as_int(values.get("residence_timeout_seconds"), 15),
