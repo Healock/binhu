@@ -1,0 +1,73 @@
+name: Install Staging promotion gateways
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-staging-promotion-gateways
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify immutable main revision
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+      - name: Configure SSH
+        env:
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$ADMIN_KEY" > ~/.ssh/staging-admin
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/staging-admin ~/.ssh/known_hosts
+      - name: Install fixed gateways
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          APP_PUBLIC_KEY: ${{ secrets.BINHU_STAGING_APP_DEPLOY_PUBLIC_KEY }}
+          DATA_PUBLIC_KEY: ${{ secrets.BINHU_STAGING_DATA_DEPLOY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/staging-gateway-install"
+          install -d -m 700 "$package/deploy"
+          cp deploy/__init__.py "$package/deploy/__init__.py"
+          cp -a deploy/environments "$package/deploy/environments"
+          printf '%s\n' "$APP_PUBLIC_KEY" > "$package/staging-app.pub"
+          printf '%s\n' "$DATA_PUBLIC_KEY" > "$package/staging-data.pub"
+          printf '%s\n' "$GITHUB_SHA" > "$package/staging-control-commit"
+          tar -C "$package" -czf "$RUNNER_TEMP/staging-promotion-gateways.tar.gz" \
+            deploy staging-app.pub staging-data.pub staging-control-commit
+          cat "$RUNNER_TEMP/staging-promotion-gateways.tar.gz" | ssh -i ~/.ssh/staging-admin \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-staging-gateways.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; ./deploy/environments/install-staging-promotion-gateways.sh ./staging-app.pub ./staging-data.pub ./staging-control-commit'
+      - name: Verify fixed status and rejection boundaries
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          APP_KEY: ${{ secrets.BINHU_STAGING_APP_SSH_KEY }}
+          DATA_KEY: ${{ secrets.BINHU_STAGING_DATA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$APP_KEY" > ~/.ssh/staging-app
+          printf '%s\n' "$DATA_KEY" > ~/.ssh/staging-data
+          chmod 600 ~/.ssh/staging-app ~/.ssh/staging-data
+          app=(ssh -i ~/.ssh/staging-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-app-deploy@$HOST")
+          data=(ssh -i ~/.ssh/staging-data -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-data-deploy@$HOST")
+          "${app[@]}" status
+          "${data[@]}" status
+          ! "${app[@]}" 'apply production deadbeef'
+          ! "${app[@]}" 'sh -c id'
+          ! "${data[@]}" 'switch production'
+          ! "${data[@]}" 'create development'
+          ! "${data[@]}" 'cat /srv/binhu/compose.yml'

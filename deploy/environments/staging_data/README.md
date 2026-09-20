@@ -1,9 +1,10 @@
 # Staging 白名单副本准备器
 
 本模块提供 `control measure/export`，用于在生产服务器受保护边界内生成
-独立编号的脱敏材料；`apply_control measure/create/import` 可向独立候选八库导入。
-尚未提供应用切换；报告中的
-`ready_for_application_switch=false` 必须保留，不能把导出成功当作 Staging 验收。
+独立编号的脱敏材料；`apply_control measure/create/import/verify` 可向独立候选八库导入，
+`switch_control` 只在完整验证通过后原子切换 Staging Backend。日常操作必须经过
+`binhu-staging-data-gateway` 的固定 `measure → export → create → import → verify → switch`
+合同，不能直接调用模块、传入任意路径或数据库名。
 
 ```sh
 python -m deploy.environments.staging_data.control measure
@@ -37,6 +38,35 @@ python -m deploy.environments.staging_data.control export
 应用切换前仍须完成候选库真实导入、完整目标验证、投影重建及切换/回退验收。
 报告显式列出未通过门槛。
 旧 `staging_snapshot.py` 的简化 JSONL 工具不能替代本模块的关系和敏感值验收。
+
+## 脱敏字段合同
+
+Production 导出在 `START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY` 中完成，
+不执行 INSERT、UPDATE、DELETE、DDL 或配置修改。原始行只进入容器内存；磁盘材料
+只保存通过以下封闭转换和最终扫描的结果：
+
+| 字段类别 | Staging 输出 | 规则 |
+| --- | --- | --- |
+| 姓名、核查人、账号显示名 | `验证人员/验证核查员` 加快照内 HMAC 摘要 | 不可逆、同快照内稳定 |
+| 身份证号 | `990000` 虚构行政区前缀加合成日期和校验位 | 不保留原号码片段，不可用于真实身份 |
+| 手机号 | `199` 加 8 位快照内合成号码 | 不保留原号码片段，不向外部平台发送 |
+| 地址、小区、街道、社区 | `验证路/验证小区/验证街道/验证社区` 加 HMAC 派生标识 | HMAC 盐只在当前导出内存中存在，不随材料保存 |
+| 照片、头像、附件正文 | 不导出 | 表和字段不在白名单内 |
+| 备注、研判、反馈、来源正文 | 空值或固定文本 `脱敏验证内容` | 不保留长度、前后缀或关键词 |
+| 密码、会话、令牌、外部凭据 | 不读取、不导出 | Staging 密码由独立初始化流程生成 |
+| 业务枚举、日期、revision | 通过封闭枚举/格式校验后保留 | 用于保持流程和冲突语义，不包含自由正文 |
+
+转换器会记住本次所选源字段的原始敏感值，在序列化前递归扫描全部输出字符串、
+嵌套 JSON 和转义 Unicode；`sensitive_value_matches` 必须为 0。扫描只适用于本模块
+明确定义的白名单源和字段合同，不能解释为通用 PII 识别器。导入后的 `verify`
+还会核对 Production 结构签名、Staging 候选结构、表行数、关键引用、唯一 observer、
+零敏感命中证明和重复导入记录；任一门禁失败都禁止 `switch`。
+
+`switch` 前固定备份当前 Staging 八库、`backend.env`、`manifest.json`、Compose 和
+初始化结构文件，并记录 SHA-256。切换只更新 Staging 的八个数据库名并只重建
+Staging Backend。Bootstrap、健康或关键 Query 接口连续失败 3 次时恢复旧配置和
+旧 Backend；数据库备份不自动回灌。失败、回滚和告警保存在新的私有证据目录，
+不得覆盖。Production 在导出前后必须保持相同容器 ID、启动时间和重启次数。
 
 地址类型采用当前业务接口的封闭枚举：`community`、`apartment`、
 `construction_dormitory`、`other`。未知值仍拒绝；不能通过允许任意字符串解决导出失败。
