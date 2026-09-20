@@ -88,6 +88,18 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
         self.assertIn("restore_previous", switcher)
         self.assertIn("systemctl reload nginx", switcher)
 
+    def test_environment_account_gateway_uses_unprefixed_runtime_variables(self) -> None:
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "ENVIRONMENT_ACCOUNT_GATEWAY_URLS: ${ENVIRONMENT_ACCOUNT_GATEWAY_URLS:-}",
+            compose,
+        )
+        self.assertIn(
+            "ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS: ${ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS:-}",
+            compose,
+        )
+        self.assertNotIn("${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS:-}", compose)
+        self.assertNotIn("${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS:-}", compose)
     def test_environment_account_gateway_install_is_guarded(self) -> None:
         installer = (ROOT / "deploy/install-nginx-migration-profiles.sh").read_text(
             encoding="utf-8"
