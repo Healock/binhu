@@ -79,6 +79,10 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertIn('mktemp -d "$deploy_root/.environments.new.', installer)
         self.assertIn('python3 -m compileall -q "$staged_environments"', installer)
         self.assertIn('mv "$staged_environments" "$deploy_root/environments"', installer)
+        self.assertIn(
+            'install -d -o root -g root -m 0700 /var/lib/binhu-staging-application\n',
+            installer,
+        )
         source = (ENVIRONMENTS / 'staging_application_gateway.py').read_text(encoding='utf-8')
         self.assertNotIn('build_image(', source)
         self.assertIn('_adopt_dev_image(', source)
