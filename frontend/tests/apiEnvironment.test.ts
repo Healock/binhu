@@ -48,6 +48,14 @@ test('shadow suffix selects the shadow environment without fuzzy matching', () =
   assert.equal(environmentForUsername('shadow-observer'), 'production')
 })
 
+test('desktop login exposes a fixed staging entry without accepting arbitrary URLs', () => {
+  const loginSource = readFileSync(new URL('../src/pages/Login.tsx', import.meta.url), 'utf8')
+  assert.match(loginSource, /id="staging-environment-button"/)
+  assert.match(loginSource, /navigate\('\/staging\/login'\)/)
+  assert.match(loginSource, /window\.location\.assign\('\/login'\)/)
+  assert.doesNotMatch(loginSource, /window\.location\.(?:href|assign)\(?.*username/)
+})
+
 test('shadow environment stays in session storage and resolves only the fixed path', () => {
   installSessionStorage()
   setApiEnvironment('shadow')

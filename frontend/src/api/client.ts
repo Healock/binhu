@@ -250,7 +250,7 @@ export interface MaintenanceStatus {
 export interface AppBootstrapSummary {
   server_version: string
   timezone: string
-  environment: 'production' | 'shadow'
+  environment: 'production' | 'staging' | 'development' | 'shadow'
   environment_label: string
   load_test_run_id: string
 }

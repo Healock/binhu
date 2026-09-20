@@ -88,6 +88,18 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
         self.assertIn("restore_previous", switcher)
         self.assertIn("systemctl reload nginx", switcher)
 
+    def test_environment_account_gateway_uses_unprefixed_runtime_variables(self) -> None:
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "ENVIRONMENT_ACCOUNT_GATEWAY_URLS: ${ENVIRONMENT_ACCOUNT_GATEWAY_URLS:-}",
+            compose,
+        )
+        self.assertIn(
+            "ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS: ${ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS:-}",
+            compose,
+        )
+        self.assertNotIn("${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS:-}", compose)
+        self.assertNotIn("${BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS:-}", compose)
     def test_environment_account_gateway_install_is_guarded(self) -> None:
         installer = (ROOT / "deploy/install-nginx-migration-profiles.sh").read_text(
             encoding="utf-8"
@@ -97,6 +109,28 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
         self.assertIn("Existing environment-account gateway differs", installer)
         self.assertIn("environment-account-gateway.conf", installer)
         self.assertIn("-m 0644", installer)
+
+    def test_environment_prefix_routes_are_installed_before_app_fallback(self) -> None:
+        installer = (ROOT / "deploy/install-nginx-migration-profiles.sh").read_text(
+            encoding="utf-8"
+        )
+        profile = (ROOT / "nginx/migration/new-production.conf").read_text(
+            encoding="utf-8"
+        )
+        prefixes = (ROOT / "nginx/migration/environment-prefixes.conf").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"$template_dir/environment-prefixes.conf"', installer)
+        self.assertIn("/etc/nginx/snippets/binhu-env-prefixes.conf", installer)
+        self.assertIn("include /etc/nginx/snippets/binhu-env-prefixes.conf;", profile)
+        self.assertIn("location /staging/api/", prefixes)
+        self.assertIn("proxy_pass http://127.0.0.1:48126/api/;", prefixes)
+        self.assertIn("location /dev/api/", prefixes)
+        self.assertIn("proxy_pass http://127.0.0.1:48125/api/;", prefixes)
+        self.assertLess(
+            profile.index("binhu-env-prefixes.conf"),
+            profile.index("binhu-app-locations.conf"),
+        )
 
     def test_long_photo_import_timeout_is_https_only(self) -> None:
         config = (ROOT / "nginx/binhu.conf").read_text(encoding="utf-8")
@@ -184,6 +218,7 @@ class MigrationInfrastructureContractTests(unittest.TestCase):
             ROOT / "deploy/install-nginx-migration-profiles.sh",
             ROOT / "nginx/migration/old-maintenance.conf.template",
             ROOT / "nginx/migration/old-proxy.conf.template",
+            ROOT / "nginx/migration/environment-prefixes.conf",
             ROOT / "nginx/migration/environment-account-gateway.conf",
         ]
         combined = "\n".join(path.read_text(encoding="utf-8") for path in paths)

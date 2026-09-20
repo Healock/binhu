@@ -67,6 +67,9 @@ case "$role" in
       "$template_dir/new-app-locations.conf" \
       /etc/nginx/snippets/binhu-app-locations.conf
     install -o root -g root -m 0644 \
+      "$template_dir/environment-prefixes.conf" \
+      /etc/nginx/snippets/binhu-env-prefixes.conf
+    install -o root -g root -m 0644 \
       "$template_dir/environment-account-gateway.conf" \
       /etc/nginx/snippets/binhu-environment-account-gateway.conf
     install -o root -g root -m 0644 \

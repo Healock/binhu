@@ -840,8 +840,8 @@ docker exec binhu-mysql sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
 ```dotenv
 BINHU_OPS_AGENT_TOKEN=<单独生成的随机内部令牌>
 BINHU_BACKUP_DIR=<服务器上的专用备份目录>
-BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_URLS='{"development":"http://172.18.0.1:18081/development","staging":"http://172.18.0.1:18081/staging"}'
-BINHU_ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS='{"development":"<dev-only-token>","staging":"<staging-only-token>"}'
+ENVIRONMENT_ACCOUNT_GATEWAY_URLS='{"development":"http://172.18.0.1:18081/development","staging":"http://172.18.0.1:18081/staging"}'
+ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS='{"development":"<dev-only-token>","staging":"<staging-only-token>"}'
 ```
 
 环境账号使用 `nginx/migration/environment-account-gateway.conf` 提供的内部适配层。它只监听经现场复核的 `binhu_default` bridge 网关 `172.18.0.1:18081`，只允许 Docker bridge 来源，并且只暴露以下四个精确路径：
