@@ -12,8 +12,11 @@ import time
 from .codec import SnapshotError
 
 ROOT = Path('/srv/deploy-backups/environment-triad/staging-snapshots')
+# The embedded reader executes these modules in order. diagnostic_contract
+# imports FLOW_FIELDS and REGISTRATION_FIELDS from build, so it must load after
+# build on the server as well as in local imports.
 MODULES = ('codec', 'registry', 'tasks', 'fences', 'organization', 'relations',
-           'digests', 'reconciliation', 'diagnostic_contract', 'recovery', 'build')
+           'digests', 'reconciliation', 'recovery', 'build', 'diagnostic_contract')
 
 
 def safe_directory(path, *, create=False):
