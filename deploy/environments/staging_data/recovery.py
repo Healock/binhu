@@ -90,6 +90,37 @@ def recovery_scope(parser, business, sources, *, community_digest=None, limit=MA
     }
 
 
+def _conflict_summary(rows, *, community_digest=None):
+    """Return bounded aggregate diagnostics for ledger conflicts only."""
+    by_type = {}
+    by_community = {}
+    dates = []
+    revisions = []
+    for item in rows:
+        kind = item['type']
+        by_type[kind] = by_type.get(kind, 0) + 1
+        key = item.get('community') or ''
+        if community_digest is not None:
+            key = str(community_digest(key))
+        else:
+            key = hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]
+        entry = by_community.setdefault(key, {'community_key': key, 'count': 0})
+        entry['count'] += 1
+        if item.get('date'):
+            dates.append(item['date'])
+        if isinstance(item.get('revision'), int):
+            revisions.append(item['revision'])
+    return {
+        'conflict_count': len(rows),
+        'conflict_by_type': by_type,
+        'conflict_by_community': [by_community[key] for key in sorted(by_community)],
+        'conflict_date_min': min(dates) if dates else None,
+        'conflict_date_max': max(dates) if dates else None,
+        'conflict_revision_min': min(revisions) if revisions else None,
+        'conflict_revision_max': max(revisions) if revisions else None,
+    }
+
+
 def reconstruct(parser, business, sources, ledgers, reserved_ids, *,
                 community_digest=None, limit=MAX_RECOVERED):
     selected, _scope = recovery_scope(
@@ -97,13 +128,19 @@ def reconstruct(parser, business, sources, ledgers, reserved_ids, *,
     )
     next_id = max(reserved_ids, default=0) + 1
     recovered = []
+    conflicts = []
     for row in selected:
         # Include partially matching active ledgers: conflicting key or ID is
         # ambiguous, even if a second ledger would otherwise match exactly.
         matches = [r for r in ledgers if r['parser_type'] == PARSER and r['status'] == 'active'
             and (r['local_task_id'] == row['id'] or r['business_key'] == row['_row_key'])]
         if len(matches) != 1:
-            raise SnapshotError('source_recovery_ledger_not_unique')
+            values = {column: str(row[column] or '') for column in parser.COLUMNS}
+            conflicts.append({'type': 'missing_active_ledger' if not matches else 'multiple_active_ledgers',
+                'community': values.get(parser.COMMUNITY_COLUMN),
+                'date': _safe_date(values.get('截止时间')),
+                'revision': None})
+            continue
         ledger = matches[0]
         values = {column: str(row[column] or '') for column in parser.COLUMNS}
         serialized = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
@@ -119,9 +156,16 @@ def reconstruct(parser, business, sources, ledgers, reserved_ids, *,
                 or ledger['source_kind'] not in {'local_table', 'local_dispatch', 'one_time_continuation_import'}
                 or not isinstance(ledger['source_ref'], str) or not ledger['source_ref']
                 or type(ledger['revision']) is not int or not 1 <= ledger['revision'] <= 2**63-1):
-            raise SnapshotError('source_recovery_ledger_mismatch')
+            conflicts.append({'type': 'task_id_business_key_conflict',
+                'community': values.get(parser.COMMUNITY_COLUMN),
+                'date': _safe_date(values.get('截止时间')),
+                'revision': ledger.get('revision') if isinstance(ledger.get('revision'), int) else None})
+            continue
         recovered.append({'id': next_id, 'parser_type': PARSER, 'physical_row': row['id'],
             'revision': ledger['revision'], 'row_key': row['_row_key'], 'row_hash': digest,
             'values_json': serialized, 'source_kind': ledger['source_kind']})
         next_id += 1
+    if conflicts:
+        raise SnapshotError('source_recovery_ledger_not_unique', diagnostics=_conflict_summary(
+            conflicts, community_digest=community_digest))
     return recovered
