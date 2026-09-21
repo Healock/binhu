@@ -14,7 +14,7 @@ import {
   type TxDocsMonitorTarget,
 } from '../api/client'
 
-const PARSER_TYPES = ['全链条', '出租房屋核查', '寄递业', '疑似未注销模型三', '疑似返苏', '苏州涉警', '交通涉警']
+const PARSER_TYPES = ['全链条', '出租房屋核查', '寄递业', '疑似漏登记', '疑似未注销模型三', '疑似返苏', '苏州涉警', '交通涉警']
 
 const newTarget = (): TxDocsMonitorTarget => ({
   id: -Date.now(),

@@ -31,3 +31,7 @@ test('连接凭据说明要求三个字段来自同一次授权', () => {
 test('外部监控配置允许疑似未注销模型三', () => {
   assert.match(pageSource, /疑似未注销模型三/)
 })
+
+test('外部监控配置允许疑似漏登记', () => {
+  assert.match(pageSource, /疑似漏登记/)
+})
