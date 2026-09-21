@@ -52,6 +52,20 @@ export interface OnlineResidenceConfigSnapshot {
 export interface OfflineResidenceQueryResult {
   status: string
   error?: string
+  diagnostics?: OfflineResidenceDiagnosticEvent[]
+}
+
+export type OfflineResidenceDiagnosticStage = 'captcha' | 'login' | 'search_resident' | 'search_floating'
+
+/** Redacted metadata for local diagnostics; never contains identity, token, or response text. */
+export interface OfflineResidenceDiagnosticEvent {
+  stage: OfflineResidenceDiagnosticStage
+  error_code: string
+  http_status?: number
+  business_code?: string
+  success?: boolean
+  result_type?: string
+  message_category?: string
 }
 
 export interface OfflineMacProbeResult extends OfflineMacAuthorizedCommunity {
@@ -313,11 +327,11 @@ async function jsonRequest(config: OfflineResidenceConfig, url: string, init: Re
       mode: 'cors',
       signal: controller.signal,
     })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) throw new ResidenceRequestError('http_error', response.status)
     try {
       return await response.json()
     } catch {
-      throw new Error('invalid_response')
+      throw new ResidenceRequestError('invalid_response')
     }
   } finally {
     window.clearTimeout(timer)
@@ -326,16 +340,18 @@ async function jsonRequest(config: OfflineResidenceConfig, url: string, init: Re
 
 class ResidenceRequestError extends Error {
   readonly code: string
+  readonly httpStatus?: number
 
-  constructor(code: string) {
+  constructor(code: string, httpStatus?: number) {
     super(code)
     this.name = 'ResidenceRequestError'
     this.code = code
+    this.httpStatus = httpStatus
   }
 }
 
 function classifyRequestError(error: unknown): string {
-  if (error instanceof ResidenceRequestError) return error.code
+  if (error instanceof ResidenceRequestError || (error && typeof error === 'object' && 'code' in error && typeof (error as { code?: unknown }).code === 'string')) return String((error as { code: string }).code)
   const value = error instanceof Error ? error.message : String(error || '')
   if (['network_error', 'timeout', 'invalid_response', 'response_too_large', 'http_error', 'config_error'].includes(value)) return value
   if (/aborted|timeout/i.test(value)) return 'timeout'
@@ -343,11 +359,16 @@ function classifyRequestError(error: unknown): string {
   return 'request_error'
 }
 
+interface ResidenceJsonResponse {
+  payload: any
+  httpStatus: number
+}
+
 async function residenceJsonRequest(
   config: OfflineResidenceConfig,
   path: string,
   init: RequestInit,
-): Promise<any> {
+): Promise<ResidenceJsonResponse> {
   const method = init.method === 'GET' ? 'GET' : 'POST'
   const headers = Object.fromEntries(new Headers(init.headers).entries())
   const body = typeof init.body === 'string' ? init.body : undefined
@@ -362,15 +383,17 @@ async function residenceJsonRequest(
         body,
         timeoutSeconds: config.timeout_seconds,
       })
-      if (response.statusCode < 200 || response.statusCode >= 300) throw new ResidenceRequestError('http_error')
-      return response.payload
+      if (response.statusCode < 200 || response.statusCode >= 300) throw new ResidenceRequestError('http_error', response.statusCode)
+      return { payload: response.payload, httpStatus: response.statusCode }
     } catch (error) {
+      if (error instanceof ResidenceRequestError || (error && typeof error === 'object' && 'code' in error)) throw error
       throw new ResidenceRequestError(classifyRequestError(error))
     }
   }
   try {
-    return await jsonRequest(config, residenceUrl(baseUrl(config), path), init)
+    return { payload: await jsonRequest(config, residenceUrl(baseUrl(config), path), init), httpStatus: 200 }
   } catch (error) {
+    if (error instanceof ResidenceRequestError || (error && typeof error === 'object' && 'code' in error)) throw error
     throw new ResidenceRequestError(classifyRequestError(error))
   }
 }
@@ -385,6 +408,35 @@ function authResponse(payload: any): boolean {
   return [401, 403].includes(Number(payload?.code)) || ['token', '登录失效', '未登录', '认证失败'].some(marker => message.includes(marker))
 }
 
+function payloadResultType(payload: any): string {
+  if (payload === null) return 'null'
+  if (payload === undefined) return 'missing'
+  if (Array.isArray(payload)) return 'array'
+  return typeof payload
+}
+
+function messageCategory(payload: any): string {
+  const message = String(payload?.message || '').trim().toLowerCase()
+  if (!message) return 'none'
+  if (message.includes('没有查询到数据') || message.includes('no data')) return 'no_data'
+  if (['token', '登录失效', '未登录', '认证失败', 'unauthorized'].some(marker => message.includes(marker))) return 'authentication'
+  return 'other'
+}
+
+export function summarizeResidencePayload(payload: any, httpStatus = 200): Omit<OfflineResidenceDiagnosticEvent, 'stage' | 'error_code'> {
+  return {
+    http_status: httpStatus,
+    business_code: payload && typeof payload === 'object' && payload.code !== undefined ? String(payload.code) : 'missing',
+    success: typeof payload?.success === 'boolean' ? payload.success : undefined,
+    result_type: payloadResultType(payload?.result),
+    message_category: messageCategory(payload),
+  }
+}
+
+function diagnosticFromPayload(stage: OfflineResidenceDiagnosticStage, errorCode: string, payload: any, httpStatus: number): OfflineResidenceDiagnosticEvent {
+  return { stage, error_code: errorCode, ...summarizeResidencePayload(payload, httpStatus) }
+}
+
 function classify(payload: any): { state: 'registered' | 'not_found' | 'error'; status?: string; error?: string } {
   if (payload?.success === true && Number(payload?.code) === 200 && payload?.result && typeof payload.result === 'object') {
     const code = String(payload.result.rysfzx || '').trim()
@@ -393,7 +445,11 @@ function classify(payload: any): { state: 'registered' | 'not_found' | 'error'; 
   if (payload?.success === false && Number(payload?.code) === 500 && payload?.result == null && String(payload?.message || '').includes('没有查询到数据')) {
     return { state: 'not_found' }
   }
-  return { state: 'error', error: authResponse(payload) ? 'authentication_expired' : 'business_error' }
+  if (authResponse(payload)) return { state: 'error', error: 'authentication_expired' }
+  if (payload && typeof payload === 'object' && typeof payload.success === 'boolean' && payload.code !== undefined) {
+    return { state: 'error', error: payload.success === false ? 'floating_business_error' : 'floating_response_contract_changed' }
+  }
+  return { state: 'error', error: 'floating_response_contract_changed' }
 }
 
 export class OfflineResidenceClient {
@@ -411,7 +467,7 @@ export class OfflineResidenceClient {
   private async authenticate(account: OfflineResidenceAccount, mac: string): Promise<{ token: string; organizationCode: string }> {
     const checkKey = String(Date.now())
     await residenceJsonRequest(this.config, `${CAPTCHA_PATH_PREFIX}${checkKey}`, { method: 'GET' })
-    const payload = await residenceJsonRequest(this.config, LOGIN_PATH, {
+    const payload = (await residenceJsonRequest(this.config, LOGIN_PATH, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json;charset=UTF-8' },
       body: JSON.stringify({
@@ -423,7 +479,7 @@ export class OfflineResidenceClient {
         checkKey,
         terminalType: 1,
       }),
-    })
+    })).payload
     if (!payload?.success || !payload?.result?.token) throw new Error('居住证平台登录失败，请检查配置')
     const organizationCode = String(payload.result.orgCode || payload.result.org_code || payload.result.userInfo?.orgCode || account.community_code).trim()
     if (!organizationCodesMatch(account.community_code, organizationCode)) {
@@ -486,6 +542,10 @@ export class OfflineResidenceClient {
         } else if (/登录失败|组织代码/.test(error instanceof Error ? error.message : '')) {
           status = 'rejected'
           error_code = 'login_rejected'
+        } else if (error instanceof ResidenceRequestError || (error && typeof error === 'object' && 'code' in error)) {
+          status = 'network_error'
+          const requestCode = String((error as { code?: unknown }).code || 'request_failed')
+          error_code = requestCode === 'network_error' ? 'request_failed' : requestCode
         } else if (error instanceof Error && error.message === 'invalid_response') {
           status = 'network_error'
           error_code = 'invalid_response'
@@ -508,17 +568,34 @@ export class OfflineResidenceClient {
     return results
   }
 
-  private async lookupWithToken(identity: string, session: { token: string; organizationCode: string }): Promise<ReturnType<typeof classify>> {
+  private async lookupWithToken(identity: string, session: { token: string; organizationCode: string }): Promise<{ result: ReturnType<typeof classify>; diagnostics: OfflineResidenceDiagnosticEvent[] }> {
     const headers = {
       'X-Access-Token': session.token,
       tenant_id: '0',
       'Content-Type': 'application/json;charset=UTF-8',
     }
     const body = JSON.stringify({ sfzh: identity, xzqh: session.organizationCode.slice(0, 6) })
-    const resident = await residenceJsonRequest(this.config, SEARCH_RESIDENT_PATH, { method: 'POST', headers, body })
-    if (authResponse(resident)) return { state: 'error', error: 'authentication_expired' }
-    const floating = await residenceJsonRequest(this.config, SEARCH_FLOATING_PATH, { method: 'POST', headers, body })
-    return classify(floating)
+    const diagnostics: OfflineResidenceDiagnosticEvent[] = []
+    try {
+      const resident = await residenceJsonRequest(this.config, SEARCH_RESIDENT_PATH, { method: 'POST', headers, body })
+      const known = resident.payload?.success === true && Number(resident.payload?.code) === 200 && resident.payload?.result == null
+      diagnostics.push(diagnosticFromPayload('search_resident', known ? 'resident_precheck_ok' : authResponse(resident.payload) ? 'authentication_expired' : 'resident_response_contract_changed', resident.payload, resident.httpStatus))
+      if (authResponse(resident.payload)) return { result: { state: 'error', error: 'authentication_expired' }, diagnostics }
+    } catch (error) {
+      const code = classifyRequestError(error)
+      diagnostics.push({ stage: 'search_resident', error_code: code, ...(error instanceof ResidenceRequestError && error.httpStatus ? { http_status: error.httpStatus } : {}) })
+      return { result: { state: 'error', error: code }, diagnostics }
+    }
+    try {
+      const floating = await residenceJsonRequest(this.config, SEARCH_FLOATING_PATH, { method: 'POST', headers, body })
+      const result = classify(floating.payload)
+      diagnostics.push(diagnosticFromPayload('search_floating', result.error || (result.state === 'registered' ? 'floating_registered' : 'floating_no_data'), floating.payload, floating.httpStatus))
+      return { result, diagnostics }
+    } catch (error) {
+      const code = classifyRequestError(error)
+      diagnostics.push({ stage: 'search_floating', error_code: code, ...(error instanceof ResidenceRequestError && error.httpStatus ? { http_status: error.httpStatus } : {}) })
+      return { result: { state: 'error', error: code }, diagnostics }
+    }
   }
 
   async lookup(identity: string): Promise<OfflineResidenceQueryResult> {
@@ -528,24 +605,30 @@ export class OfflineResidenceClient {
     }
     let lastError = ''
     let sawNotFound = false
+    const diagnostics: OfflineResidenceDiagnosticEvent[] = []
     for (const account of this.config.accounts) {
       try {
         const key = this.accountKey(account)
         let session = this.tokens.get(key) || await this.login(account)
-        let result = await this.lookupWithToken(identity, session)
+        let attempt = await this.lookupWithToken(identity, session)
+        diagnostics.push(...attempt.diagnostics)
+        let result = attempt.result
         if (result.error === 'authentication_expired') {
           this.tokens.delete(key)
           session = await this.login(account)
-          result = await this.lookupWithToken(identity, session)
+          attempt = await this.lookupWithToken(identity, session)
+          diagnostics.push(...attempt.diagnostics)
+          result = attempt.result
         }
-        if (result.state === 'registered') return { status: result.status || '状态待核对' }
+        if (result.state === 'registered') return { status: result.status || '状态待核对', diagnostics }
         if (result.state === 'not_found') sawNotFound = true
         else lastError = result.error || 'business_error'
       } catch (error) {
         lastError = classifyRequestError(error)
+        diagnostics.push({ stage: 'login', error_code: lastError })
       }
     }
-    if (sawNotFound && !lastError) return { status: '未登记' }
-    return { status: '查询失败', error: lastError || 'not_found' }
+    if (sawNotFound && !lastError) return { status: '未登记', diagnostics }
+    return { status: '查询失败', error: lastError || 'not_found', diagnostics }
   }
 }

@@ -53,6 +53,8 @@ export default function OfflineMode() {
   const [macProbeBusy, setMacProbeBusy] = useState(false)
   const [macProbeProgress, setMacProbeProgress] = useState({ completed: 0, total: 0, mac: '' })
   const [errorCounts, setErrorCounts] = useState<Record<string, number>>({})
+  const [diagnosticCounts, setDiagnosticCounts] = useState<Record<string, number>>({})
+  const [identityInputSummary, setIdentityInputSummary] = useState<{ empty: number; lengths: Record<string, number>; valid_format: number; invalid_format: number }>({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
   const macProbeRun = useRef(0)
 
   const running = queryState === 'running'
@@ -300,6 +302,8 @@ export default function OfflineMode() {
     setCompleted(0)
     setSuccessCount(0)
     setErrorCounts({})
+    setDiagnosticCounts({})
+    setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
     setQueryState('idle')
     setError('')
     return false
@@ -311,6 +315,8 @@ export default function OfflineMode() {
     setQueryState('running')
     setCompleted(0)
     setSuccessCount(0)
+    setDiagnosticCounts({})
+    setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
     try {
       const book = await readOfflineWorkbook(file)
       if (!book.rows.length) throw new Error('文件中没有可处理的数据行')
@@ -321,6 +327,8 @@ export default function OfflineMode() {
       let completedCount = 0
       let successfulCount = 0
       const nextErrorCounts: Record<string, number> = {}
+      const nextDiagnosticCounts: Record<string, number> = {}
+      const identitySummary = { empty: 0, lengths: {} as Record<string, number>, valid_format: 0, invalid_format: 0 }
       const results = [...nextStatuses]
       const concurrency = Math.min(4, Math.max(1, book.rows.length))
       let cursor = 0
@@ -328,8 +336,14 @@ export default function OfflineMode() {
         while (cursor < book.rows.length) {
           const index = cursor
           cursor += 1
-          const identity = String(book.rows[index]?.[book.identityColumn] ?? '')
-          let result: { status: string; error?: string }
+          const identity = String(book.rows[index]?.[book.identityColumn] ?? '').trim().replace(/^['’]/, '')
+          if (!identity) identitySummary.empty += 1
+          const lengthKey = String(identity.length)
+          identitySummary.lengths[lengthKey] = (identitySummary.lengths[lengthKey] || 0) + 1
+          if (/^\d{17}[\dXx]$/.test(identity)) identitySummary.valid_format += 1
+          else identitySummary.invalid_format += 1
+          setIdentityInputSummary({ ...identitySummary, lengths: { ...identitySummary.lengths } })
+          let result: { status: string; error?: string; diagnostics?: Array<{ stage: string; error_code: string; http_status?: number; business_code?: string; result_type?: string }> }
           try {
             result = await client.lookup(identity)
           } catch (reason) {
@@ -338,7 +352,12 @@ export default function OfflineMode() {
           results[index] = result.status
           if (!result.error) successfulCount += 1
           if (result.error) nextErrorCounts[result.error] = (nextErrorCounts[result.error] || 0) + 1
+          for (const event of result.diagnostics || []) {
+            const key = [event.stage, event.error_code, event.http_status ?? '', event.business_code ?? '', event.result_type ?? '', event.message_category ?? ''].join('|')
+            nextDiagnosticCounts[key] = (nextDiagnosticCounts[key] || 0) + 1
+          }
           setErrorCounts({ ...nextErrorCounts })
+          setDiagnosticCounts({ ...nextDiagnosticCounts })
           completedCount += 1
           setStatuses([...results])
           setCompleted(completedCount)
@@ -384,7 +403,7 @@ export default function OfflineMode() {
       accounts: config.accounts.map(account => ({ community_id: account.community_id, community_name: account.community_name, username_configured: Boolean(account.username.trim()), community_code_configured: Boolean(account.community_code.trim()) })),
       active_mac_masked: activeMac ? `**:**:**:${activeMac.slice(-8)}` : '',
       probe_results: snapshot ? { tested_count: snapshot.tested_community_count, allowed_communities: snapshot.authorized_communities.map(item => item.community_name), rejected_count: snapshot.rejected_community_count || 0, failure_codes: (snapshot.probe_failures || []).reduce<Record<string, number>>((counts, item) => { const code = item.error_code || item.status; counts[code] = (counts[code] || 0) + 1; return counts }, {}) } : null,
-      last_batch: { state: queryState, total, completed, success_count: successCount, error_counts: errorCounts },
+      last_batch: { state: queryState, total, completed, success_count: successCount, error_counts: errorCounts, diagnostic_counts: diagnosticCounts, identity_input_summary: identityInputSummary },
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
     await downloadBlob(blob, `滨湖离线居住证诊断-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}.json`)
