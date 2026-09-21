@@ -8,6 +8,27 @@ import {
 } from '../src/utils/contributionCalendar.ts'
 import { defaultMobileDockConfig } from '../src/navigation/mobileNavigation.ts'
 import { resolveApiAssetUrl } from '../src/utils/apiUrl.ts'
+import {
+  isCompleteLeaveDateRange,
+  updateLeaveDateRangeFromCalendar,
+} from '../src/utils/leaveDateRange.ts'
+
+test('请假日期范围允许先替换起始日期再选择结束日期', () => {
+  assert.deepEqual(
+    updateLeaveDateRangeFromCalendar(['2026-09-30', '2026-08-10'], 'start'),
+    ['2026-09-30', ''],
+  )
+  assert.deepEqual(
+    updateLeaveDateRangeFromCalendar(['2026-09-30', ''], 'end'),
+    ['2026-09-30', ''],
+  )
+  assert.deepEqual(
+    updateLeaveDateRangeFromCalendar(['', ''], 'end'),
+    ['', ''],
+  )
+  assert.equal(isCompleteLeaveDateRange(['2026-08-10', '2026-08-10']), true)
+  assert.equal(isCompleteLeaveDateRange(['2026-09-30', '2026-08-10']), false)
+})
 
 test('贡献强度使用固定工作量区间', () => {
   assert.deepEqual(
@@ -105,6 +126,18 @@ test('人员管理电话对所有页面查看者显示但备注仍受敏感权�
   assert.equal(source.includes("['phone', 'notes']"), false)
   assert.match(source, /<span className="w-16 shrink-0 text-slate-500">电话<\/span>[\s\S]*\{member\.phone \|\| '-'\}/)
   assert.equal(source.includes('{canViewSensitive && <div className="flex min-w-0 gap-3">\n          <span className="w-16 shrink-0 text-slate-500">电话</span>'), false)
+})
+
+test('请假日期控件保留可清除的半成品区间', () => {
+  const source = readFileSync(
+    new URL('../src/pages/GridMembers.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(source, /onCalendarChange=\{\(_, dateStrings, info\) =>/)
+  assert.match(source, /updateLeaveDateRangeFromCalendar\(/)
+  assert.match(source, /allowClear\s*\n\s*order=\{false\}/)
+  assert.match(source, /value=\{leaveRange\[0\] \|\| leaveRange\[1\]/)
+  assert.doesNotMatch(source, /setLeaveRange\(null\)/)
 })
 
 test('缺少手机号的下发任务显示为待研判', () => {
