@@ -2051,6 +2051,7 @@ export interface ResidencePlatformConfig {
   login_community_ids: number[]
   login_community_names: string[]
   login_community_codes: string[]
+  login_community_usernames?: string[]
   login_community_count: number
   login_community_id: number | null
   login_community_name: string
@@ -2511,12 +2512,16 @@ function normalizeResidencePlatformConfig(data: Partial<ResidencePlatformConfig>
     : data.login_community_name ? [data.login_community_name] : []
   const namesById = new Map<number, string>()
   const codesById = new Map<number, string>()
+  const usernamesById = new Map<number, string>()
   const rawCodes = Array.isArray(data.login_community_codes) ? data.login_community_codes : []
+  const rawUsernames = Array.isArray(data.login_community_usernames) ? data.login_community_usernames : []
   rawIds.forEach((id, index) => {
     const name = rawNames[index]
     if (typeof name === 'string' && name) namesById.set(id, name)
     const code = rawCodes[index]
     if (typeof code === 'string') codesById.set(id, code.trim().toUpperCase())
+    const username = rawUsernames[index]
+    if (typeof username === 'string') usernamesById.set(id, username.trim())
   })
   const names = ids.map(id => namesById.get(id)).filter((name): name is string => Boolean(name))
   return {
@@ -2527,6 +2532,7 @@ function normalizeResidencePlatformConfig(data: Partial<ResidencePlatformConfig>
     login_community_id: ids[0] ?? null,
     login_community_name: names[0] || '',
     login_community_codes: ids.map(id => codesById.get(id) || ''),
+    login_community_usernames: ids.map(id => usernamesById.get(id) || ''),
   } as ResidencePlatformConfig
 }
 

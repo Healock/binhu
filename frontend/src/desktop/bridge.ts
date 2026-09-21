@@ -45,6 +45,20 @@ export interface ResidenceProbeResult {
   errorCode?: string
 }
 
+export interface ResidenceApiRequest {
+  baseUrl: string
+  path: string
+  method: 'GET' | 'POST'
+  headers?: Record<string, string>
+  body?: string
+  timeoutSeconds: number
+}
+
+export interface ResidenceApiResponse {
+  statusCode: number
+  payload: unknown
+}
+
 export interface ClientUpdateBridge {
   getUpdateStatus: () => Promise<ClientUpdateState>
   checkForUpdates: () => Promise<ClientUpdateState>
@@ -54,6 +68,7 @@ export interface ClientUpdateBridge {
 }
 
 export interface DesktopBridge extends ClientUpdateBridge {
+  target?: 'win7' | 'win10'
   saveFile: (filename: string, data: number[]) => Promise<boolean>
   openOffline: () => Promise<void>
   minimize: () => Promise<void>
@@ -65,6 +80,7 @@ export interface DesktopBridge extends ClientUpdateBridge {
   getLocalMac: () => Promise<string>
   setLocalMac: (mac: string) => Promise<string>
   probeResidenceLogin: (request: ResidenceProbeRequest) => Promise<ResidenceProbeResult>
+  requestResidenceApi: (request: ResidenceApiRequest) => Promise<ResidenceApiResponse>
 }
 
 interface TauriEvent<T> {
@@ -132,6 +148,7 @@ export function resolveDesktopBridge(): DesktopBridge | null {
   if (!invoke || !listen) return null
 
   return {
+    target: 'win10',
     saveFile: (filename, data) => invoke<boolean>('save_file', { filename, data }),
     openOffline: () => invoke<void>('open_offline'),
     minimize: () => invoke<void>('window_minimize'),
@@ -144,6 +161,7 @@ export function resolveDesktopBridge(): DesktopBridge | null {
     getLocalMac: () => invoke<string>('get_local_mac'),
     setLocalMac: mac => invoke<string>('set_local_mac', { mac }),
     probeResidenceLogin: request => invoke<ResidenceProbeResult>('probe_residence_login', { request }),
+    requestResidenceApi: request => invoke<ResidenceApiResponse>('request_residence_api', { request }),
     checkForUpdates: () => invoke<DesktopUpdateState>('check_for_updates'),
     downloadUpdate: () => invoke<DesktopUpdateState>('download_update'),
     restartAndApply: () => invoke<DesktopUpdateState>('restart_and_apply'),

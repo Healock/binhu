@@ -231,7 +231,7 @@ test('登录成功后允许社区代码与返回组织代码的层级后缀兼�
 test('在线配置同步不要求密码明文', () => {
   assert.match(pageSource, /getResidencePlatformConfig\(\)/)
   assert.doesNotMatch(pageSource, /online\.username/)
-  assert.match(pageSource, /账号、统一密码和本机 MAC 不会从平台返回/)
+  assert.match(pageSource, /社区完整登录账号/)
   assert.match(apiSource, /account_mode: 'selected_community_account'/)
   assert.match(authSource, /currentUser\.role !== 'super_admin'/)
   assert.match(authSource, /cacheOnlineResidenceConfig\(config\)/)
@@ -283,6 +283,20 @@ test('在线范围变化移除范围外账号、保留本机密码且不保存�
   assert.deepEqual(cached.login_community_names, ['新社区'])
   assert.deepEqual(cached.accounts, [{ community_id: 18, community_name: '新社区', username: '', community_code: 'NEW' }])
   assert.equal(JSON.stringify(cached).includes('access_token'), false)
+})
+
+test('在线配置同步 selected community 的完整账号到本机', () => {
+  Object.defineProperty(globalThis, 'localStorage', { value: memoryStorage(), configurable: true })
+  const cached = cacheOnlineResidenceConfig({
+    enabled: true,
+    base_url: 'https://new.invalid/grandlynn-boot',
+    login_community_ids: [12],
+    login_community_names: ['测试社区'],
+    login_community_codes: ['A123456789'],
+    login_community_usernames: ['community-login'],
+  })
+  assert.equal(cached.accounts[0].username, 'community-login')
+  assert.equal(cached.accounts[0].community_code, 'A123456789')
 })
 
 test('在线配置刷新保留仍在范围内的本机社区账号', () => {
@@ -342,9 +356,15 @@ test('在线多社区范围为每个社区建立独立的本地账号槽位', ()
 test('离线页面按社区维护账号且不从远端回传凭据', () => {
   assert.match(pageSource, /config\.accounts\.map/)
   assert.match(pageSource, /添加本地社区账号/)
-  assert.match(pageSource, /每个选中社区必须在当前客户端填写自己的完整登录账号/)
+  assert.match(pageSource, /每个选中社区使用社区管理中配置的完整登录账号/)
   assert.match(pageSource, /账号不会根据组织代码自动拼接/)
   assert.doesNotMatch(pageSource, /online\.username/)
+})
+
+test('离线页面提供脱敏诊断导出并显示批量失败分类', () => {
+  assert.match(pageSource, /导出诊断信息/)
+  assert.match(pageSource, /error_counts/)
+  assert.match(pageSource, /native_residence_bridge_available/)
 })
 
 test('不完整在线响应和旧版社区代码缓存不会猜测或覆盖账号', () => {

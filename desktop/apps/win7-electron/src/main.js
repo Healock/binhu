@@ -48,13 +48,14 @@ function probeResidenceUrl(baseUrl, pathName) {
   return new URL(`${prefix}${pathName.startsWith('/') ? pathName : `/${pathName}`}`, `${base.protocol}//${base.host}`)
 }
 
-function residenceRequest(url, { method = 'GET', body, timeoutSeconds }) {
+function residenceRequest(url, { method = 'GET', body, headers = {}, timeoutSeconds }) {
   const transport = url.protocol === 'https:' ? https : http
   return new Promise((resolve, reject) => {
     const request = transport.request(url, {
       method,
       headers: {
         Accept: 'application/json',
+        ...headers,
         ...(body ? { 'Content-Type': 'application/json;charset=UTF-8', 'Content-Length': Buffer.byteLength(body) } : {}),
         Connection: 'close',
       },
@@ -81,6 +82,34 @@ function residenceRequest(url, { method = 'GET', body, timeoutSeconds }) {
     if (body) request.write(body)
     request.end()
   })
+}
+
+const RESIDENCE_READ_PATHS = [
+  { method: 'GET', pattern: /^\/sys\/randomImage\/[0-9]+$/ },
+  { method: 'POST', pattern: /^\/sys\/login$/ },
+  { method: 'POST', pattern: /^\/szjzz\/searchIsck$/ },
+  { method: 'POST', pattern: /^\/szjzz\/searchzzrk$/ },
+]
+const RESIDENCE_HEADER_ALLOWLIST = new Set(['content-type', 'x-access-token', 'tenant_id', 'accept'])
+
+function residenceApiPath(baseUrl, pathName, method) {
+  if (typeof pathName !== 'string' || !pathName.startsWith('/') || pathName.includes('..') || pathName.includes('?') || pathName.includes('#')) throw new Error('config_error')
+  if (!RESIDENCE_READ_PATHS.some(rule => rule.method === method && rule.pattern.test(pathName))) throw new Error('config_error')
+  return probeResidenceUrl(baseUrl, pathName)
+}
+
+function requestResidenceApi(request) {
+  const method = request?.method === 'GET' ? 'GET' : request?.method === 'POST' ? 'POST' : ''
+  if (!method) return Promise.reject(new Error('config_error'))
+  const url = residenceApiPath(request.baseUrl, request.path, method)
+  const headers = {}
+  for (const [key, value] of Object.entries(request.headers || {})) {
+    if (!RESIDENCE_HEADER_ALLOWLIST.has(String(key).toLowerCase()) || typeof value !== 'string' || value.length > 512) return Promise.reject(new Error('config_error'))
+    headers[key] = value
+  }
+  const body = typeof request.body === 'string' ? request.body : undefined
+  if (body && Buffer.byteLength(body) > 256 * 1024) return Promise.reject(new Error('config_error'))
+  return residenceRequest(url, { method, body, headers, timeoutSeconds: request.timeoutSeconds })
 }
 
 function probeResidenceLogin(request) {
@@ -296,6 +325,7 @@ ipcMain.handle('desktop:restart-and-apply', () => updateController?.restartAndAp
 ipcMain.handle('desktop:get-local-mac', () => localMacService?.getMac())
 ipcMain.handle('desktop:set-local-mac', (_event, mac) => localMacService?.setMac(mac))
 ipcMain.handle('desktop:probe-residence-login', async (_event, request) => probeResidenceLogin(request))
+ipcMain.handle('desktop:request-residence-api', async (_event, request) => requestResidenceApi(request))
 
 app.whenReady().then(async () => {
   protocol.handle('binhu', handleLocalAsset)
