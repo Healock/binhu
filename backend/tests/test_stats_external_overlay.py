@@ -14,6 +14,7 @@ def _overlay_payload():
         "changed_tasks": 1,
         "pending_tasks": 1,
         "completed_tasks": 1,
+        "unable_to_verify_tasks": 1,
         "last_success_at": "2026-09-20T01:00:00Z",
         "communities": {
             "社区一": {
@@ -24,6 +25,7 @@ def _overlay_payload():
                 "unchecked": 1,
                 "checked": 0,
                 "completed": 1,
+                "unable_to_verify": 1,
                 "carryover": 0,
                 "assignees": {
                     "测试人员甲": {
@@ -34,6 +36,7 @@ def _overlay_payload():
                         "unchecked": 1,
                         "checked": 0,
                         "completed": 0,
+                        "unable_to_verify": 0,
                         "carryover": 0,
                         "sources": ["txdocs_readonly"],
                     },
@@ -45,6 +48,7 @@ def _overlay_payload():
                         "unchecked": 0,
                         "checked": 0,
                         "completed": 1,
+                        "unable_to_verify": 1,
                         "carryover": 0,
                         "sources": ["txdocs_readonly"],
                     },
@@ -94,9 +98,8 @@ async def test_external_overlay_merges_counts_and_recalculates_rates():
     assert row["已核查"] == 3
     assert row["已完成"] == 4
     assert row["核查完成率"] == 0.4
-    # Existing unable-to-verify data is retained; external rows contribute 0.
-    assert row["无法见底数"] == 1
-    assert row["核查见底率"] == 0.8
+    assert row["无法见底数"] == 2
+    assert row["核查见底率"] == 0.67
     assert actual["external_overlay"]["available"] is True
 
 

@@ -126,11 +126,26 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             "全链条", rows, datetime(2026, 9, 19).date()
         )
         counts = {
-            (bucket.checker_name, bucket.dispatch_date.isoformat(), bucket.task_state): count
+            (bucket.checker_name, bucket.dispatch_date.isoformat(), bucket.task_state,
+             bucket.unable_to_verify): count
             for bucket, count in buckets.items()
         }
-        self.assertEqual(counts[("测试人员甲", "2026-09-19", "unchecked")], 1)
-        self.assertEqual(counts[("测试人员乙", "2026-09-10", "completed")], 1)
+        self.assertEqual(counts[("测试人员甲", "2026-09-19", "unchecked", False)], 1)
+        self.assertEqual(counts[("测试人员乙", "2026-09-10", "completed", False)], 1)
+
+    def test_unable_to_verify_is_a_checked_bucket_dimension(self):
+        buckets = monitor.build_monitor_business_buckets(
+            "全链条",
+            [{"values": {
+                "下发日期": "2026-09-19", "核查人": "虚构核查人",
+                "社区": "虚构社区", "核查结果": "无法核实",
+            }}],
+            datetime(2026, 9, 19).date(),
+        )
+        bucket, count = next(iter(buckets.items()))
+        self.assertEqual(count, 1)
+        self.assertEqual(bucket.task_state, "checked")
+        self.assertTrue(bucket.unable_to_verify)
 
     def test_external_overlay_uses_formal_community_for_alias_buckets(self):
         aliases = {
@@ -169,6 +184,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         assert bucket.community == "虚构社区"
         assert bucket.checker_name == "虚构核查人"
         assert bucket.task_state == "completed"
+        assert bucket.unable_to_verify is False
 
     async def test_disabled_switch_makes_no_database_or_network_access(self):
         with patch.object(monitor.settings, "APP_ENVIRONMENT", "staging"):
