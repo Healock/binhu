@@ -88,6 +88,8 @@ class ControlTests(unittest.TestCase):
         program, hashes = source_program('staging-'+'a'*16, b'a'*32, measure=True)
         compile(program, '<snapshot-reader>', 'exec')
         self.assertEqual(set(hashes), {'codec','registry','tasks','fences','organization','relations','digests','reconciliation','diagnostic_contract','build','recovery'})
+        from deploy.environments.staging_data.control import MODULES
+        self.assertLess(MODULES.index('build'), MODULES.index('diagnostic_contract'))
         self.assertIn("source_settings(settings)", program)
         self.assertIn("'snapshot_source_operation_failed'", program)
         self.assertNotIn('print(settings', program)
