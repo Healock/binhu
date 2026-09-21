@@ -536,6 +536,7 @@ export interface WorkContributionSummary {
 export interface PublicProfileSummary {
   id: number
   display_name: string
+  avatar_url: string | null
   position: string
   departments: string[]
   community_names: string[]
