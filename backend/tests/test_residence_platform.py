@@ -188,6 +188,7 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public["login_community_id"], 12)
         self.assertEqual(public["login_community_name"], "测试社区")
         self.assertEqual(public["account_mode"], "selected_community_account")
+        self.assertEqual(public["login_community_usernames"], ["fixture-full-account"])
 
     async def test_config_loads_the_encrypted_account_from_selected_community(self):
         loaded = await load_residence_config(ResidenceConfigConnection())
@@ -238,7 +239,7 @@ class ResidencePlatformTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(public["login_community_names"], ["测试社区", "第二社区"])
         self.assertEqual(public["login_community_count"], 2)
         self.assertEqual(public["login_community_codes"], ["A123456789", "B123456789"])
-        self.assertNotIn("usernames", public)
+        self.assertEqual(public["login_community_usernames"], ["fixture-account-a", "fixture-account-b"])
 
     def test_invalid_multi_community_values_fail_closed(self):
         self.assertEqual(normalize_residence_community_ids("[18, 12, 12]"), (12, 18))

@@ -284,10 +284,17 @@ def serialize_residence_value(key: str, value: Any) -> str:
 def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
     communities_by_id = {community.id: community for community in config.login_communities}
     selected_codes = []
+    selected_usernames = []
     for community_id in config.login_community_ids:
         community = communities_by_id.get(community_id)
         code = community.code if community and community.is_active else ""
+        username = (
+            community.username
+            if community and community.is_active
+            else config.username if len(config.login_community_ids) == 1 else ""
+        )
         selected_codes.append(code if COMMUNITY_CODE_PATTERN.fullmatch(code) else "")
+        selected_usernames.append(username)
     return {
         "enabled": config.enabled,
         "base_url": config.base_url,
@@ -302,6 +309,11 @@ def public_residence_config(config: ResidencePlatformConfig) -> dict[str, Any]:
         "login_community_ids": list(config.login_community_ids),
         "login_community_names": list(config.login_community_names),
         "login_community_codes": selected_codes,
+        # This configuration endpoint is restricted to super administrators.
+        # Return only the selected communities' complete login names so an
+        # authorized desktop client can cache its read-only offline scope.
+        # Passwords, tokens, cookies and unselected accounts stay server-side.
+        "login_community_usernames": selected_usernames,
         "login_community_count": len(config.login_community_ids),
         "selected_account_configured": (
             all(community.account_configured for community in config.login_communities)

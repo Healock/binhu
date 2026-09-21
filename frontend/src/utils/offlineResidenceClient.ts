@@ -46,6 +46,7 @@ export interface OnlineResidenceConfigSnapshot {
   login_community_ids?: number[]
   login_community_names?: string[]
   login_community_codes?: string[]
+  login_community_usernames?: string[]
 }
 
 export interface OfflineResidenceQueryResult {
@@ -215,6 +216,9 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
   const selectedCodes = Array.isArray(snapshot.login_community_codes)
     ? snapshot.login_community_codes.map(code => String(code).trim().toUpperCase())
     : Array.isArray(snapshot.community_codes) ? snapshot.community_codes.map(code => String(code).trim().toUpperCase()) : []
+  const selectedUsernames = Array.isArray(snapshot.login_community_usernames)
+    ? snapshot.login_community_usernames.map(username => String(username).trim())
+    : []
   const currentById = new Map(current.accounts.filter(account => account.community_id).map(account => [account.community_id, account]))
   const legacyAccount = current.accounts.length === 1 && current.accounts[0].community_id == null
     ? current.accounts[0]
@@ -224,7 +228,7 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
     return normalizeAccount({
       community_id: id,
       community_name: selectedNames[index] || existing?.community_name || '',
-      username: existing?.username || (selectedIds.length === 1 ? legacyAccount?.username : '') || '',
+      username: selectedUsernames[index] || existing?.username || (selectedIds.length === 1 ? legacyAccount?.username : '') || '',
       community_code: selectedCodes[index] || existing?.community_code || (selectedIds.length === 1 ? legacyAccount?.community_code : '') || '',
     })
   })
@@ -320,6 +324,57 @@ async function jsonRequest(config: OfflineResidenceConfig, url: string, init: Re
   }
 }
 
+class ResidenceRequestError extends Error {
+  readonly code: string
+
+  constructor(code: string) {
+    super(code)
+    this.name = 'ResidenceRequestError'
+    this.code = code
+  }
+}
+
+function classifyRequestError(error: unknown): string {
+  if (error instanceof ResidenceRequestError) return error.code
+  const value = error instanceof Error ? error.message : String(error || '')
+  if (['network_error', 'timeout', 'invalid_response', 'response_too_large', 'http_error', 'config_error'].includes(value)) return value
+  if (/aborted|timeout/i.test(value)) return 'timeout'
+  if (/failed to fetch|network/i.test(value)) return 'network_error'
+  return 'request_error'
+}
+
+async function residenceJsonRequest(
+  config: OfflineResidenceConfig,
+  path: string,
+  init: RequestInit,
+): Promise<any> {
+  const method = init.method === 'GET' ? 'GET' : 'POST'
+  const headers = Object.fromEntries(new Headers(init.headers).entries())
+  const body = typeof init.body === 'string' ? init.body : undefined
+  const desktop = resolveDesktopBridge()
+  if (desktop?.requestResidenceApi) {
+    try {
+      const response = await desktop.requestResidenceApi({
+        baseUrl: baseUrl(config),
+        path,
+        method,
+        headers,
+        body,
+        timeoutSeconds: config.timeout_seconds,
+      })
+      if (response.statusCode < 200 || response.statusCode >= 300) throw new ResidenceRequestError('http_error')
+      return response.payload
+    } catch (error) {
+      throw new ResidenceRequestError(classifyRequestError(error))
+    }
+  }
+  try {
+    return await jsonRequest(config, residenceUrl(baseUrl(config), path), init)
+  } catch (error) {
+    throw new ResidenceRequestError(classifyRequestError(error))
+  }
+}
+
 export async function readMacAddress(config: OfflineResidenceConfig): Promise<string> {
   const payload = await jsonRequest(config, macServiceUrl(config), { method: 'GET' })
   try { return normalizeMacAddress(String(payload?.mac || '')) } catch { throw new Error('MAC 服务未返回有效设备地址') }
@@ -354,10 +409,9 @@ export class OfflineResidenceClient {
   }
 
   private async authenticate(account: OfflineResidenceAccount, mac: string): Promise<{ token: string; organizationCode: string }> {
-    const base = baseUrl(this.config)
     const checkKey = String(Date.now())
-    await jsonRequest(this.config, residenceUrl(base, `${CAPTCHA_PATH_PREFIX}${checkKey}`), { method: 'GET' })
-    const payload = await jsonRequest(this.config, residenceUrl(base, LOGIN_PATH), {
+    await residenceJsonRequest(this.config, `${CAPTCHA_PATH_PREFIX}${checkKey}`, { method: 'GET' })
+    const payload = await residenceJsonRequest(this.config, LOGIN_PATH, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json;charset=UTF-8' },
       body: JSON.stringify({
@@ -461,9 +515,9 @@ export class OfflineResidenceClient {
       'Content-Type': 'application/json;charset=UTF-8',
     }
     const body = JSON.stringify({ sfzh: identity, xzqh: session.organizationCode.slice(0, 6) })
-    const resident = await jsonRequest(this.config, `${baseUrl(this.config)}${SEARCH_RESIDENT_PATH}`, { method: 'POST', headers, body })
+    const resident = await residenceJsonRequest(this.config, SEARCH_RESIDENT_PATH, { method: 'POST', headers, body })
     if (authResponse(resident)) return { state: 'error', error: 'authentication_expired' }
-    const floating = await jsonRequest(this.config, `${baseUrl(this.config)}${SEARCH_FLOATING_PATH}`, { method: 'POST', headers, body })
+    const floating = await residenceJsonRequest(this.config, SEARCH_FLOATING_PATH, { method: 'POST', headers, body })
     return classify(floating)
   }
 
@@ -488,7 +542,7 @@ export class OfflineResidenceClient {
         if (result.state === 'not_found') sawNotFound = true
         else lastError = result.error || 'business_error'
       } catch (error) {
-        lastError = error instanceof Error ? error.message : 'request_error'
+        lastError = classifyRequestError(error)
       }
     }
     if (sawNotFound && !lastError) return { status: '未登记' }

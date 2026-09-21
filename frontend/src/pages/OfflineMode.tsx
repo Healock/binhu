@@ -52,6 +52,7 @@ export default function OfflineMode() {
   const [macMessageType, setMacMessageType] = useState<'info' | 'success' | 'error'>('info')
   const [macProbeBusy, setMacProbeBusy] = useState(false)
   const [macProbeProgress, setMacProbeProgress] = useState({ completed: 0, total: 0, mac: '' })
+  const [errorCounts, setErrorCounts] = useState<Record<string, number>>({})
   const macProbeRun = useRef(0)
 
   const running = queryState === 'running'
@@ -277,9 +278,9 @@ export default function OfflineMode() {
       setConfig(next)
       if (!online.base_url?.trim()) {
         setConfigMessage('在线配置尚不完整，已保留当前客户端的离线配置。')
-      } else setConfigMessage(online.password_configured && !next.password
-        ? '已同步接口、超时和选中社区范围；账号、统一密码和本机 MAC 不会从平台返回，请在当前客户端手动填写。'
-        : '已同步接口、超时和选中社区范围；本地已有账号、密码和 MAC 列表已保留。')
+      } else setConfigMessage(online.password_configured && next.accounts.some(account => account.username)
+        ? '已同步接口、超时、选中社区范围和社区完整登录账号；统一密码与本机 MAC 仍只保存在当前客户端。'
+        : '已同步接口、超时和选中社区范围；请在当前客户端填写尚未配置的完整账号和统一密码。')
     } catch {
       setConfigMessage('无法连接滨湖平台，未同步在线配置；可以直接手动修改离线配置。')
     } finally {
@@ -298,6 +299,7 @@ export default function OfflineMode() {
     setStatuses([])
     setCompleted(0)
     setSuccessCount(0)
+    setErrorCounts({})
     setQueryState('idle')
     setError('')
     return false
@@ -318,6 +320,7 @@ export default function OfflineMode() {
       const client = new OfflineResidenceClient(config)
       let completedCount = 0
       let successfulCount = 0
+      const nextErrorCounts: Record<string, number> = {}
       const results = [...nextStatuses]
       const concurrency = Math.min(4, Math.max(1, book.rows.length))
       let cursor = 0
@@ -329,11 +332,13 @@ export default function OfflineMode() {
           let result: { status: string; error?: string }
           try {
             result = await client.lookup(identity)
-          } catch {
-            result = { status: '查询失败', error: 'request_error' }
+          } catch (reason) {
+            result = { status: '查询失败', error: reason instanceof Error ? reason.message : 'request_error' }
           }
           results[index] = result.status
           if (!result.error) successfulCount += 1
+          if (result.error) nextErrorCounts[result.error] = (nextErrorCounts[result.error] || 0) + 1
+          setErrorCounts({ ...nextErrorCounts })
           completedCount += 1
           setStatuses([...results])
           setCompleted(completedCount)
@@ -360,6 +365,29 @@ export default function OfflineMode() {
     } finally {
       setExporting(false)
     }
+  }
+
+  const exportDiagnostics = async () => {
+    const desktop = resolveDesktopBridge()
+    const snapshot = config.mac_probe_results[activeMac]
+    const payload = {
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      client_runtime: desktop?.target || (desktop ? 'desktop' : 'browser'),
+      base_origin: (() => { try { return new URL(config.base_url).origin } catch { return '' } })(),
+      base_path: (() => { try { return new URL(config.base_url).pathname.replace(/\/+$/, '') } catch { return '' } })(),
+      timeout_seconds: config.timeout_seconds,
+      desktop_bridge_available: Boolean(desktop),
+      native_residence_bridge_available: Boolean(desktop?.requestResidenceApi),
+      password_configured: Boolean(config.password),
+      account_count: config.accounts.length,
+      accounts: config.accounts.map(account => ({ community_id: account.community_id, community_name: account.community_name, username_configured: Boolean(account.username.trim()), community_code_configured: Boolean(account.community_code.trim()) })),
+      active_mac_masked: activeMac ? `**:**:**:${activeMac.slice(-8)}` : '',
+      probe_results: snapshot ? { tested_count: snapshot.tested_community_count, allowed_communities: snapshot.authorized_communities.map(item => item.community_name), rejected_count: snapshot.rejected_community_count || 0, failure_codes: (snapshot.probe_failures || []).reduce<Record<string, number>>((counts, item) => { const code = item.error_code || item.status; counts[code] = (counts[code] || 0) + 1; return counts }, {}) } : null,
+      last_batch: { state: queryState, total, completed, success_count: successCount, error_counts: errorCounts },
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+    await downloadBlob(blob, `滨湖离线居住证诊断-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}.json`)
   }
 
   return (
@@ -398,7 +426,7 @@ export default function OfflineMode() {
                   <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">组织代码（可选）</span><Input value={account.community_code} onChange={event => updateConfig({ accounts: config.accounts.map((item, itemIndex) => itemIndex === index ? { ...item, community_code: event.target.value.toUpperCase() } : item) })} placeholder="接口未返回组织代码时使用" /></label>
                 </div>)}
               </div>
-              <div className="text-xs text-[var(--app-text-secondary)]">每个选中社区必须在当前客户端填写自己的完整登录账号，共用本机统一密码；账号不会根据组织代码自动拼接。这里不保存居住证会话令牌，远端同步也不会返回账号或密码。</div>
+              <div className="text-xs text-[var(--app-text-secondary)]">每个选中社区使用社区管理中配置的完整登录账号，共用本机统一密码；账号不会根据组织代码自动拼接。这里不保存居住证会话令牌，远端同步不会返回密码。</div>
               <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
                 <div className="text-sm text-[var(--app-text-secondary)]">Windows 客户端首次运行时读取本机硬件 MAC 作为默认值，并在回环地址提供 `23333` 兼容读取端口。候选列表、检测结果和修改都只保存在当前电脑，不会修改服务器 MAC，也不会上传到滨湖平台。</div>
                 {macMessage && <Alert type={macMessageType} showIcon message={macMessage} />}
@@ -443,7 +471,7 @@ export default function OfflineMode() {
                   </div>
                 </div>
               </div>
-              <div className="flex justify-end"><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
+              <div className="flex flex-wrap justify-end gap-2"><Button onClick={() => void exportDiagnostics()}>导出诊断信息</Button><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
             </div>
           </Panel>
 
@@ -452,7 +480,7 @@ export default function OfflineMode() {
               {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
               <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={() => { setFile(null); setFileList([]); setWorkbook(null); setStatuses([]); setQueryState('idle') }} disabled={running}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p className="ant-upload-text">拖入人员名单文件，或点击选择</p><p className="ant-upload-hint">识别“身份证号 / 身份证号码 / 身份证”列；不校验号码格式</p></Dragger>
               <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-[var(--app-text-secondary)]">{file ? `已选择：${file.name}` : '请选择文件后确认查询'}</span><Button type="primary" onClick={() => void start()} loading={running} disabled={!file || running || !configIsUsable(config)}>确认并开始查询</Button></div>
-              {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出结果 XLSX</Button></div>}</div>}
+              {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出结果 XLSX</Button></div>}</div>}
             </div>
           </Panel>
         </div>

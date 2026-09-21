@@ -237,6 +237,143 @@ struct ResidenceProbeResult {
     error_code: Option<String>,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResidenceApiRequest {
+    base_url: String,
+    path: String,
+    method: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    body: Option<String>,
+    timeout_seconds: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResidenceApiResponse {
+    status_code: u16,
+    payload: serde_json::Value,
+}
+
+fn residence_api_path_allowed(method: &str, path: &str) -> bool {
+    (method == "GET"
+        && path.starts_with("/sys/randomImage/")
+        && !path[17..].is_empty()
+        && path[17..].chars().all(|c| c.is_ascii_digit()))
+        || (method == "POST"
+            && matches!(
+                path,
+                "/sys/login" | "/szjzz/searchIsck" | "/szjzz/searchzzrk"
+            ))
+}
+
+fn request_residence_api_sync(
+    request: ResidenceApiRequest,
+) -> Result<ResidenceApiResponse, String> {
+    let method = request.method.trim().to_ascii_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST")
+        || !request.path.starts_with('/')
+        || request.path.contains("..")
+        || request.path.contains('?')
+        || request.path.contains('#')
+        || !residence_api_path_allowed(&method, &request.path)
+    {
+        return Err("config_error".into());
+    }
+    let base = request.base_url.trim().trim_end_matches('/');
+    let parsed = match base.parse::<ureq::http::Uri>() {
+        Ok(value)
+            if matches!(value.scheme_str(), Some("http") | Some("https"))
+                && value.authority().is_some()
+                && !value.path().contains("..")
+                && value.query().is_none() =>
+        {
+            value
+        }
+        _ => return Err("config_error".into()),
+    };
+    if request
+        .body
+        .as_ref()
+        .map(|body| body.len() > 256 * 1024)
+        .unwrap_or(false)
+    {
+        return Err("config_error".into());
+    }
+    let origin = format!(
+        "{}://{}",
+        parsed.scheme_str().unwrap(),
+        parsed.authority().unwrap()
+    );
+    let prefix = parsed.path().trim_end_matches('/');
+    let url = format!("{}{}{}", origin, prefix, request.path);
+    let timeout = Duration::from_secs(request.timeout_seconds.clamp(1, 120));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .disable_verification(true)
+                .build(),
+        )
+        .build()
+        .into();
+    let response = if method == "GET" {
+        let mut call = agent.get(&url);
+        if let Some(headers) = request.headers.as_ref() {
+            for (key, value) in headers {
+                let normalized = key.to_ascii_lowercase();
+                if !matches!(
+                    normalized.as_str(),
+                    "content-type" | "x-access-token" | "tenant_id" | "accept"
+                ) || value.len() > 512
+                {
+                    return Err("config_error".into());
+                }
+                call = call.header(key, value);
+            }
+        }
+        call.call()
+    } else {
+        let mut call = agent.post(&url);
+        if let Some(headers) = request.headers.as_ref() {
+            for (key, value) in headers {
+                let normalized = key.to_ascii_lowercase();
+                if !matches!(
+                    normalized.as_str(),
+                    "content-type" | "x-access-token" | "tenant_id" | "accept"
+                ) || value.len() > 512
+                {
+                    return Err("config_error".into());
+                }
+                call = call.header(key, value);
+            }
+        }
+        call.send(request.body.unwrap_or_default())
+    }
+    .map_err(|_| "network_error".to_string())?;
+    let status = response.status().as_u16();
+    let body = response
+        .into_body()
+        .with_config()
+        .limit(1024 * 1024)
+        .read_to_string()
+        .map_err(|_| "network_error".to_string())?;
+    let payload = serde_json::from_str(&body).map_err(|_| "invalid_response".to_string())?;
+    Ok(ResidenceApiResponse {
+        status_code: status,
+        payload,
+    })
+}
+
+#[tauri::command]
+async fn request_residence_api(
+    request: ResidenceApiRequest,
+) -> Result<ResidenceApiResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || request_residence_api_sync(request))
+        .await
+        .map_err(|_| "居住证请求任务异常结束".to_string())?
+}
+
 fn probe_residence_result(
     status: &str,
     error_code: Option<&str>,
@@ -1097,7 +1234,8 @@ pub fn run(restarted: bool) {
             restart_and_apply,
             get_local_mac,
             set_local_mac,
-            probe_residence_login
+            probe_residence_login,
+            request_residence_api
         ])
         .run(tauri::generate_context!())
         .expect("error while running Binhu Tauri application");
