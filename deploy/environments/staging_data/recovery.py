@@ -122,7 +122,8 @@ def _conflict_summary(rows, *, community_digest=None):
 
 
 def reconstruct(parser, business, sources, ledgers, reserved_ids, *,
-                community_digest=None, limit=MAX_RECOVERED):
+                community_digest=None, limit=MAX_RECOVERED,
+                exclude_approved_conflicts=False, return_diagnostics=False):
     selected, _scope = recovery_scope(
         parser, business, sources, community_digest=community_digest, limit=limit
     )
@@ -132,14 +133,19 @@ def reconstruct(parser, business, sources, ledgers, reserved_ids, *,
     for row in selected:
         # Include partially matching active ledgers: conflicting key or ID is
         # ambiguous, even if a second ledger would otherwise match exactly.
-        matches = [r for r in ledgers if r['parser_type'] == PARSER and r['status'] == 'active'
+        candidates = [r for r in ledgers if r['parser_type'] == PARSER
             and (r['local_task_id'] == row['id'] or r['business_key'] == row['_row_key'])]
+        matches = [r for r in candidates if r['status'] == 'active']
         if len(matches) != 1:
             values = {column: str(row[column] or '') for column in parser.COLUMNS}
+            if candidates and not matches:
+                raise SnapshotError('source_recovery_ledger_mismatch')
             conflicts.append({'type': 'missing_active_ledger' if not matches else 'multiple_active_ledgers',
                 'community': values.get(parser.COMMUNITY_COLUMN),
                 'date': _safe_date(values.get('截止时间')),
                 'revision': None})
+            if not exclude_approved_conflicts:
+                raise SnapshotError('source_recovery_ledger_not_unique')
             continue
         ledger = matches[0]
         values = {column: str(row[column] or '') for column in parser.COLUMNS}
@@ -149,23 +155,30 @@ def reconstruct(parser, business, sources, ledgers, reserved_ids, *,
             ledger_values = json.loads(ledger['values_json']) if isinstance(ledger['values_json'], str) else ledger['values_json']
         except (ValueError, TypeError):
             raise SnapshotError('source_recovery_ledger_invalid_json') from None
-        if (ledger['local_task_id'] != row['id'] or ledger['business_key'] != row['_row_key']
-                or parser.make_row_key(values) != row['_row_key']
+        if ledger['local_task_id'] != row['id'] or ledger['business_key'] != row['_row_key']:
+            conflicts.append({'type': 'task_id_business_key_conflict',
+                'community': values.get(parser.COMMUNITY_COLUMN),
+                'date': _safe_date(values.get('截止时间')),
+                'revision': ledger.get('revision') if isinstance(ledger.get('revision'), int) else None})
+            if not exclude_approved_conflicts:
+                raise SnapshotError('source_recovery_ledger_not_unique')
+            continue
+        if (parser.make_row_key(values) != row['_row_key']
                 or ledger_values != values or ledger['content_hash'] != digest
                 or ledger['archived_at'] is not None
                 or ledger['source_kind'] not in {'local_table', 'local_dispatch', 'one_time_continuation_import'}
                 or not isinstance(ledger['source_ref'], str) or not ledger['source_ref']
                 or type(ledger['revision']) is not int or not 1 <= ledger['revision'] <= 2**63-1):
-            conflicts.append({'type': 'task_id_business_key_conflict',
-                'community': values.get(parser.COMMUNITY_COLUMN),
-                'date': _safe_date(values.get('截止时间')),
-                'revision': ledger.get('revision') if isinstance(ledger.get('revision'), int) else None})
-            continue
+            raise SnapshotError('source_recovery_ledger_mismatch')
         recovered.append({'id': next_id, 'parser_type': PARSER, 'physical_row': row['id'],
             'revision': ledger['revision'], 'row_key': row['_row_key'], 'row_hash': digest,
             'values_json': serialized, 'source_kind': ledger['source_kind']})
         next_id += 1
-    if conflicts:
+    if conflicts and not exclude_approved_conflicts:
         raise SnapshotError('source_recovery_ledger_not_unique', diagnostics=_conflict_summary(
             conflicts, community_digest=community_digest))
-    return recovered
+    diagnostics = _conflict_summary(conflicts, community_digest=community_digest) if conflicts else {
+        'conflict_count': 0, 'conflict_by_type': {}, 'conflict_by_community': [],
+        'conflict_date_min': None, 'conflict_date_max': None,
+        'conflict_revision_min': None, 'conflict_revision_max': None}
+    return (recovered, diagnostics) if return_diagnostics else recovered

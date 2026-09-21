@@ -179,8 +179,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recovery_rejects_unproven_or_duplicate_ledgers(self):
         for field, value in [('status','archived'), ('content_hash','f'*64), ('revision',0),
-                ('business_key','bad'), ('values_json','{}'), ('source_kind','txdocs'),
-                ('archived_at','2026-09-01'), ('local_task_id',10)]:
+                ('values_json','{}'), ('source_kind','txdocs'), ('archived_at','2026-09-01')]:
             with self.subTest(field=field):
                 settings, tables, _, conn = self.recovery_fixture()
                 tables['OnlineData._local_source_records'][0][field] = value
@@ -189,9 +188,11 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
                         recover_model_three_sources=True)
         settings, tables, _, conn = self.recovery_fixture()
         tables['OnlineData._local_source_records'] *= 2
-        with self.assertRaises(SnapshotError):
-            await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings,
-                recover_model_three_sources=True)
+        result = await build(conn, 'staging-'+'a'*16, b'a'*32, settings=settings,
+            recover_model_three_sources=True)
+        self.assertEqual(result['report']['recovery_scope']['excluded_ledger_conflicts']['conflict_count'], 1)
+        self.assertEqual(result['report']['recovery_scope']['excluded_ledger_conflicts']['conflict_by_type'],
+                         {'multiple_active_ledgers': 1})
 
 
 if __name__ == '__main__':
