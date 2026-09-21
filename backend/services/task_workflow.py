@@ -81,6 +81,7 @@ class TaskWorkflow:
     secondary_fields: tuple[str, ...] = ()
     analysis_fields: tuple[str, ...] = ("研判",)
     valid_results: tuple[str, ...] = ()
+    checked_results: tuple[str, ...] = ()
     result_options: tuple[str, ...] = ()
     include_in_summary: bool = True
 
@@ -101,10 +102,14 @@ class TaskWorkflow:
         if registration_state:
             return registration_state
         result = str(values.get(self.result_field, "") or "").strip()
-        if self.valid_results:
-            return "completed" if result in self.valid_results else "unchecked"
         if "无法核实" in result:
             return "checked"
+        if self.valid_results:
+            if result in self.valid_results:
+                return "completed"
+            if result in self.checked_results:
+                return "checked"
+            return "unchecked"
         if result:
             return "completed"
         if any(str(values.get(field, "") or "").strip() for field in ("现住址",)):
@@ -120,7 +125,7 @@ class TaskWorkflow:
     ) -> bool:
         if conflict or source_count > 1:
             return True
-        if self.valid_results:
+        if self.valid_results and not self.checked_results:
             return False
         result = str(values.get(self.result_field, "") or "").strip()
         return "无法核实" in result
@@ -128,7 +133,9 @@ class TaskWorkflow:
     def review_stage(self, values: dict[str, str]) -> str:
         """无法核实任务按研判是否填写区分复核阶段。"""
         result = str(values.get(self.result_field, "") or "").strip()
-        if self.valid_results or "无法核实" not in result:
+        if self.valid_results and not self.checked_results:
+            return ""
+        if "无法核实" not in result:
             return ""
         return "analyzed" if any(
             str(values.get(field, "") or "").strip()
@@ -243,6 +250,22 @@ TASK_WORKFLOWS: dict[str, TaskWorkflow] = {
         # “近期反吴”是旧版本曾经写入的错拼值，只用于兼容历史数据。
         valid_results=("近期返吴", "近期反吴", "在吴", "离吴", "非本辖区"),
         result_options=("近期返吴", "离吴", "在吴", "非本辖区"),
+    ),
+    "疑似漏登记": TaskWorkflow(
+        parser_type="疑似漏登记",
+        label="疑似漏登记",
+        result_field="核查结果",
+        phone_fields=("联系方式",),
+        title_fields=("姓名",),
+        address_fields=("现住址", "地址"),
+        date_fields=("截止日期", "下发日期"),
+        identity_fields=("身份证号",),
+        secondary_fields=("二次反馈",),
+        valid_results=("已登记", "离苏", "无需登记", "移交（所外）"),
+        checked_results=("移交（所内）",),
+        result_options=(
+            "已登记", "离苏", "无需登记", "移交（所内）", "移交（所外）", "无法核实",
+        ),
     ),
     "疑似返苏": TaskWorkflow(
         parser_type="疑似返苏",

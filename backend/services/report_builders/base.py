@@ -30,6 +30,7 @@ class BaseReportBuilder:
         "常口",
         "身份错误",
     )
+    checked_results: tuple[str, ...] = ()
 
     INSPECTOR_COLS = """
         社区 VARCHAR(100) NOT NULL,
@@ -58,8 +59,13 @@ class BaseReportBuilder:
     def ledger_state_sql(self, alias: str) -> str:
         result = f"IFNULL({alias}.`{self.result_column}`, '')"
         address = f"IFNULL({alias}.`现住址`, '')"
+        checked = ""
+        if self.checked_results:
+            values = ", ".join(f"'{value}'" for value in self.checked_results)
+            checked = f"WHEN TRIM({result}) IN ({values}) THEN 'checked' "
         return (
             f"CASE WHEN {result} LIKE '%%无法核实%%' THEN 'checked' "
+            f"{checked}"
             f"WHEN {result} <> '' THEN 'completed' "
             f"WHEN {address} <> '' THEN 'checked' "
             "ELSE 'unchecked' END"

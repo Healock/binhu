@@ -53,6 +53,7 @@ from routers.mobile_tasks import (
 from services.parsers import get_parser
 from services.local_source import local_row_hash
 from services.task_workflow import TASK_WORKFLOWS, task_state
+from services.unverifiable_review import supports_unverifiable_review
 
 
 class FilterOptionsCursor:
@@ -334,6 +335,18 @@ class MobileTaskWorkflowTests(unittest.TestCase):
             workflow.review_stage({"核查结果": "无法核实", "研判": "已研判"}),
             "analyzed",
         )
+
+    def test_suspect_missing_registration_uses_frozen_results_and_review(self):
+        workflow = TASK_WORKFLOWS["疑似漏登记"]
+        self.assertEqual(task_state("疑似漏登记", {"核查结果": "已登记"}), "completed")
+        self.assertEqual(task_state("疑似漏登记", {"核查结果": "移交（所外）"}), "completed")
+        self.assertEqual(task_state("疑似漏登记", {"核查结果": "移交（所内）"}), "checked")
+        self.assertEqual(task_state("疑似漏登记", {"核查结果": "无法核实"}), "checked")
+        self.assertTrue(workflow.needs_review({"核查结果": "无法核实"}))
+        self.assertEqual(workflow.review_stage({"核查结果": "无法核实"}), "waiting_analysis")
+
+    def test_model_three_stays_out_of_unverifiable_review(self):
+        self.assertFalse(supports_unverifiable_review("疑似未注销模型三"))
 
     def test_analysis_filter_excludes_workflows_without_unverifiable_result(self):
         self.assertEqual(

@@ -107,6 +107,7 @@ export function mobileTaskSourceState(
       ? 'completed'
       : 'unchecked'
   }
+  if (parserType === '疑似漏登记' && result === '移交（所内）') return 'checked'
   // “待登记”只是网格员已完成现场核查、等待房屋关联和居住证二次确认，
   // 不能提前计入已完成；否则列表、完成率和任务图会把它误判为完成。
   if (result === '待登记') return 'checked'

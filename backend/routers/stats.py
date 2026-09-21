@@ -65,7 +65,7 @@ router = APIRouter(prefix="/api/stats", tags=["统计查询"])
 builder = DailyReportBuilder()
 
 # 支持的分汇总表类型 + 总汇总表
-REPORT_TYPES = ["全链条", "出租房屋核查", "寄递业", "疑似未注销模型三", "疑似返苏", "总汇总表"]
+REPORT_TYPES = ["全链条", "出租房屋核查", "寄递业", "疑似漏登记", "疑似未注销模型三", "疑似返苏", "总汇总表"]
 # 分表已实现的类型
 IMPLEMENTED_SUBTYPES = [t for t in IMPLEMENTED_TYPES] + ["总汇总表"]
 ScopeMode = Literal["permission", "responsibility"]
