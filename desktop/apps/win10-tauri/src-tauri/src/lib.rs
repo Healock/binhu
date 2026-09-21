@@ -268,7 +268,10 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
                 && (value.path().is_empty() || value.path().starts_with('/'))
                 && !value.path().contains("..")
                 && value.query().is_none()
-                && value.fragment().is_none() => value,
+                && value.fragment().is_none() =>
+        {
+            value
+        }
         _ => return probe_residence_result("config_error", Some("invalid_base_url"), None),
     };
     if request.username.trim().is_empty() || request.password.is_empty() {
