@@ -250,6 +250,7 @@ class MonitorBusinessBucket:
     checker_name: str
     dispatch_date: date | None
     task_state: str
+    unable_to_verify: bool
 
 
 def _normalize_checker_name(value: Any) -> str:
@@ -295,6 +296,9 @@ def build_monitor_business_buckets(
                 normalized,
                 registration_status=str(normalized.get("登记情况") or ""),
             )
+            unable_to_verify = "无法核实" in str(
+                normalized.get(workflow.result_field) or ""
+            )
             # ``TaskWorkflow.date_fields`` is ordered for display and often
             # starts with a deadline.  Business classification must prefer
             # the actual dispatch/creation date.
@@ -307,11 +311,14 @@ def build_monitor_business_buckets(
             ))
             parsed = parse_dispatch_time(normalized, dispatch_fields, fallback)
             dispatch_date = parsed.date() if parsed else business_date
+        if workflow is None:
+            unable_to_verify = False
         result[MonitorBusinessBucket(
             community=parser.community_value(normalized),
             checker_name=_normalize_checker_name(normalized.get("核查人")),
             dispatch_date=dispatch_date,
             task_state=state,
+            unable_to_verify=unable_to_verify,
         )] += 1
     return result
 
@@ -554,9 +561,11 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
             checker_name VARCHAR(200) NOT NULL DEFAULT '',
             dispatch_date DATE NOT NULL,
             task_state VARCHAR(20) NOT NULL,
+            unable_to_verify TINYINT(1) NOT NULL DEFAULT 0,
             row_count INT UNSIGNED NOT NULL DEFAULT 0,
             PRIMARY KEY (
-                run_id, community_hash, checker_name, dispatch_date, task_state
+                run_id, community_hash, checker_name, dispatch_date, task_state,
+                unable_to_verify
             ),
             INDEX idx_txdocs_monitor_bucket_date (dispatch_date, task_state)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -587,21 +596,40 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
     await cur.execute(
         """
         SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema=DATABASE()
+          AND table_name='_txdocs_monitor_run_buckets'
+          AND column_name='unable_to_verify'
+        """
+    )
+    unable_column_exists = bool((await cur.fetchone() or [0])[0])
+    if not unable_column_exists:
+        await cur.execute(
+            """
+            ALTER TABLE _txdocs_monitor_run_buckets
+            ADD COLUMN unable_to_verify TINYINT(1) NOT NULL DEFAULT 0
+                AFTER task_state
+            """
+        )
+    await cur.execute(
+        """
+        SELECT COUNT(*)
         FROM information_schema.statistics
         WHERE table_schema=DATABASE()
           AND table_name='_txdocs_monitor_run_buckets'
           AND index_name='PRIMARY'
-          AND column_name='checker_name'
+          AND column_name IN ('checker_name', 'unable_to_verify')
         """
     )
-    checker_in_primary_key = bool((await cur.fetchone() or [0])[0])
-    if not checker_in_primary_key:
+    primary_key_columns = int((await cur.fetchone() or [0])[0])
+    if primary_key_columns < 2:
         await cur.execute(
             """
             ALTER TABLE _txdocs_monitor_run_buckets
             DROP PRIMARY KEY,
             ADD PRIMARY KEY (
-                run_id, community_hash, checker_name, dispatch_date, task_state
+                run_id, community_hash, checker_name, dispatch_date, task_state,
+                unable_to_verify
             )
             """
         )
@@ -820,8 +848,8 @@ async def _persist_success(
                     """
                     INSERT INTO _txdocs_monitor_run_buckets (
                         run_id, community_hash, community, checker_name,
-                        dispatch_date, task_state, row_count
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s)
+                        dispatch_date, task_state, unable_to_verify, row_count
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     [
                         (
@@ -831,6 +859,7 @@ async def _persist_success(
                             bucket.checker_name,
                             bucket.dispatch_date,
                             bucket.task_state,
+                            int(bucket.unable_to_verify),
                             count,
                         )
                         for bucket, count in buckets.items()
@@ -1132,7 +1161,8 @@ async def get_txdocs_business_overlay(
                     f"""
                     SELECT bucket.community, bucket.checker_name,
                            bucket.dispatch_date,
-                           bucket.task_state, SUM(bucket.row_count),
+                           bucket.task_state, bucket.unable_to_verify,
+                           SUM(bucket.row_count),
                            MAX(run.finished_at)
                     FROM _txdocs_monitor_run_buckets bucket
                     JOIN _txdocs_monitor_runs run ON run.id=bucket.run_id
@@ -1146,7 +1176,8 @@ async def get_txdocs_business_overlay(
                     ) latest ON latest.id=run.id
                     WHERE run.status='success'
                     GROUP BY bucket.community, bucket.checker_name,
-                             bucket.dispatch_date, bucket.task_state
+                             bucket.dispatch_date, bucket.task_state,
+                             bucket.unable_to_verify
                     """,
                     (end_date, *valid_types, *source_ids),
                 )
@@ -1161,7 +1192,7 @@ async def get_txdocs_business_overlay(
                 return {
                     "total": 0, "carryover": 0, "new": 0,
                     "pending": 0, "unchecked": 0, "checked": 0,
-                    "completed": 0, "changed": 0,
+                    "completed": 0, "unable_to_verify": 0, "changed": 0,
                     "sources": ["txdocs_readonly"],
                 }
 
@@ -1172,7 +1203,7 @@ async def get_txdocs_business_overlay(
             inspector_filter = _normalize_checker_name(inspector)
             for (
                 community, checker_name, dispatch_date, task_state,
-                row_count, _finished,
+                unable_to_verify, row_count, _finished,
             ) in bucket_rows:
                 name = canonical_monitor_community(community, alias_lookup)
                 if allowed_communities is not None and name not in allowed_communities:
@@ -1183,6 +1214,8 @@ async def get_txdocs_business_overlay(
                 count = int(row_count or 0)
                 for item in (metrics[name], assignee_metrics[name][checker]):
                     item["total"] += count
+                    if int(unable_to_verify or 0):
+                        item["unable_to_verify"] += count
                     if str(task_state or "") == "completed":
                         item["completed"] += count
                     else:
@@ -1243,7 +1276,7 @@ async def get_txdocs_business_overlay(
     if last_success is None:
         return result
 
-    totals = {key: 0 for key in ("total_tasks", "carryover_tasks", "new_tasks", "changed_tasks", "pending_tasks", "completed_tasks")}
+    totals = {key: 0 for key in ("total_tasks", "carryover_tasks", "new_tasks", "changed_tasks", "pending_tasks", "completed_tasks", "unable_to_verify_tasks")}
     for community, item in metrics.items():
         item["assignees"] = dict(assignee_metrics.get(community, {}))
         result["communities"][community] = item
@@ -1253,6 +1286,7 @@ async def get_txdocs_business_overlay(
         totals["changed_tasks"] += item["changed"]
         totals["pending_tasks"] += item["pending"]
         totals["completed_tasks"] += item["completed"]
+        totals["unable_to_verify_tasks"] += item["unable_to_verify"]
     result.update(totals)
     result["available"] = True
     result["last_success_at"] = (

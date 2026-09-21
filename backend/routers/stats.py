@@ -123,12 +123,13 @@ async def _overlay_external_report(
         completed = int(item.get("completed", 0))
         checked = int(item.get("checked", 0))
         unchecked = int(item.get("unchecked", 0))
+        unable = int(item.get("unable_to_verify", 0))
         return {
             "数据总数": total,
             "未核查": unchecked,
             "已核查": checked,
             "已完成": completed,
-            "无法见底数": 0,
+            "无法见底数": unable,
         }
 
     def merge_counts(row: dict[str, object], item: dict[str, int], columns: list[str]) -> None:
