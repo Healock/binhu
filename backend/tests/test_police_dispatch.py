@@ -211,7 +211,7 @@ def test_quick_dispatch_profiles_cover_all_supported_business_tables():
     assert set(profiles) == {
         "fullchain_processed", "rental_processed", "suspect_return_processed",
         "police_internal_processed", "police_suzhou_processed", "police_traffic_processed",
-        "delivery_processed",
+        "delivery_processed", "suspect_missing_registration_processed",
     }
     assert profiles["rental_processed"]["target_parser"] == "出租房屋核查"
     assert profiles["suspect_return_processed"]["target_parser"] == "疑似返苏"

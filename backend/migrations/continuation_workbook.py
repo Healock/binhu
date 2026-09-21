@@ -160,6 +160,7 @@ def read_workbook(parser_type: str, path: Path, run_id: str):
             result_field = {
                 "全链条": "核查结果", "出租房屋核查": "核查结果",
                 "疑似返苏": "核查反馈", "疑似未注销模型三": "核查结果",
+                "疑似漏登记": "核查结果",
             }[parser_type]
             result_value = values.get(result_field, "")
             known_result = RESULT_ALIASES.get((parser_type, result_value), result_value)
@@ -168,6 +169,7 @@ def read_workbook(parser_type: str, path: Path, run_id: str):
                 "出租房屋核查": {"已登记", "待登记", "离苏", "常口", "无需登记，原因写备注", "移交，移交哪个社区写备注", "无法核实"},
                 "疑似返苏": {"已登记", "无需登记", "无法核实", "移交，备注后面填写移交哪个社区", "移交，移交哪个社区写备注"},
                 "疑似未注销模型三": {"在吴", "近期返吴", "离吴"},
+                "疑似漏登记": {"已登记", "离苏", "无需登记", "移交（所内）", "移交（所外）", "无法核实"},
             }[parser_type]
             if known_result and known_result not in known_results:
                 row_issues.append("unsupported_result")

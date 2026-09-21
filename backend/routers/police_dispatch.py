@@ -497,6 +497,10 @@ def _quick_dispatch_profiles() -> dict[str, dict[str, Any]]:
             "label": "疑似返苏", "target_parser": "疑似返苏", "business_type": "suspect_return", "police_subtype": "",
             "fields": [text("姓名", "姓名", True), text("身份证号码", "身份证号码", True), text("联系号码", "联系号码", True), area("高频抓拍小区", "高频抓拍小区", True)],
         },
+        "suspect_missing_registration_processed": {
+            "label": "疑似漏登记", "target_parser": "疑似漏登记", "business_type": "suspect_missing_registration", "police_subtype": "",
+            "fields": [text("姓名", "姓名", True), text("身份证号", "身份证号", True), area("地址", "地址", True), text("联系方式", "联系方式", True)],
+        },
     }
 
 
@@ -529,10 +533,14 @@ async def create_quick_dispatch(
         "police_traffic_processed": ("姓名", "身份证号", "联系号码", "地址1"),
         "delivery_processed": ("姓名", "身份证号", "地址1", "手机号码"),
         "suspect_return_processed": ("姓名", "身份证号码", "联系号码", "高频抓拍小区"),
+        # 日期和社区由快捷下发表单的结构化控件提供，不能从 fields 字典绕过。
+        "suspect_missing_registration_processed": ("姓名", "身份证号", "地址", "联系方式"),
     }[data.profile]
     missing = [field for field in required_fields if not provided.get(field)]
     if missing:
         raise HTTPException(400, f"快捷下发缺少必要字段：{'、'.join(missing)}")
+    if data.profile == "suspect_missing_registration_processed" and not data.deadline_date:
+        raise HTTPException(400, "快捷下发缺少必要字段：截止日期")
     identity_field = "身份证号" if "身份证号" in provided else "身份证号码"
     identity_number = normalize_identity(provided.get(identity_field, ""))
     if identity_number and not IDENTITY_PATTERN.fullmatch(identity_number):

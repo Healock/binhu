@@ -247,3 +247,19 @@ def test_unknown_header_is_rejected_instead_of_guessing_business_type():
             BUSINESS_DATE,
             COMMUNITIES,
         )
+
+
+def test_suspect_missing_registration_profile_uses_header_fingerprint_and_mobile_only():
+    result = parse_profile(
+        "suspect_missing_registration_processed",
+        workbook_bytes([
+            ["下发日期", "截止日期", "社区", "姓名", "身份证号", "联系方式", "地址", "核查结果"],
+            ["2026-08-25", "2026-08-28", "长板社区", "虚构人员", "32050020000101001X", "时间 13800000000", "虚构地址", "已登记"],
+        ]),
+        "suspect-missing.xlsx", BUSINESS_DATE, COMMUNITIES,
+    )
+    row = result["rows"][0]
+    assert result["counts"]["importable"] == 1
+    assert row["standard_values"]["联系方式"] == "13800000000"
+    assert row["standard_values"]["核查结果"] == "已登记"
+    assert row["business_key_hmac"]

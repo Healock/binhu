@@ -36,7 +36,7 @@ const publishStatusLabels: Record<string, string> = {
 
 const businessLabels: Record<string, string> = {
   fullchain: '全链条', rental: '出租房屋核查', police: '涉警',
-  delivery: '寄递业', suspect_return: '疑似返苏',
+  delivery: '寄递业', suspect_return: '疑似返苏', suspect_missing_registration: '疑似漏登记',
 }
 const policeSubtypeLabels: Record<string, string> = {
   internal: '所内涉警',

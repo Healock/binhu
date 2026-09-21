@@ -16,7 +16,7 @@ const { Dragger } = Upload
 const businessOptions = [
   { value: 'fullchain', label: '全链条' }, { value: 'rental', label: '出租房屋核查' },
   { value: 'police', label: '涉警' }, { value: 'delivery', label: '寄递业' },
-  { value: 'suspect_return', label: '疑似返苏' },
+  { value: 'suspect_return', label: '疑似返苏' }, { value: 'suspect_missing_registration', label: '疑似漏登记' },
 ]
 const businessLabels: Record<string, string> = Object.fromEntries(businessOptions.map(item => [item.value, item.label]))
 const policeSubtypeLabels: Record<string, string> = {

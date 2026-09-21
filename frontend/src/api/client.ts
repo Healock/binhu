@@ -3620,7 +3620,7 @@ export interface PoliceDispatchBatch {
   file_name: string
   sheet_name: string
   import_mode: 'raw' | 'clean' | 'processed' | 'quick'
-  business_type: 'fullchain' | 'rental' | 'police' | 'delivery' | 'suspect_return'
+  business_type: 'fullchain' | 'rental' | 'police' | 'delivery' | 'suspect_return' | 'suspect_missing_registration'
   police_subtype: 'internal' | 'suzhou' | 'traffic' | ''
   import_profile: string
   adapter_version: string
