@@ -46,7 +46,9 @@ def safe_diagnostics(value):
     counts = {'source_count', 'business_count', 'source_only_count', 'business_only_count',
               'total', 'duplicate_business_key_count', 'duplicate_source_key_count',
               'business_only_active_ledger_count', 'business_only_archived_ledger_count',
-              'business_only_no_ledger_count', 'business_only_archive_key_count'}
+              'business_only_no_ledger_count', 'business_only_archive_key_count',
+              'conflict_count', 'conflict_date_min', 'conflict_date_max',
+              'conflict_revision_min', 'conflict_revision_max'}
     for key, item in value.items():
         if key in counts and type(item) is int and 0 <= item <= 10**9:
             result[key] = item
@@ -58,6 +60,22 @@ def safe_diagnostics(value):
             allowed = {p + '|' + s for p in (*TASK_TYPES, 'unknown_parser') for s in
                 ('local_table', 'local_dispatch', 'one_time_continuation_import', 'unknown_source_kind')}
             result[key] = {k:v for k,v in item.items() if k in allowed and type(v) is int and 0 <= v <= 10**9}
+        elif key == 'conflict_by_type' and isinstance(item, dict) and len(item) <= 16:
+            result[key] = {k: v for k, v in item.items()
+                           if isinstance(k, str) and re.fullmatch('[a-z_]{1,64}', k)
+                           and type(v) is int and 0 <= v <= 10**9}
+        elif key == 'conflict_by_community' and isinstance(item, list) and len(item) <= 256:
+            safe = []
+            for entry in item:
+                if (isinstance(entry, dict) and set(entry) == {'community_key', 'count'}
+                        and isinstance(entry['community_key'], str)
+                        and re.fullmatch('[0-9a-f]{16,128}', entry['community_key'])
+                        and type(entry['count']) is int and 0 <= entry['count'] <= 10**9):
+                    safe.append(entry)
+            result[key] = safe
+        elif key in {'conflict_date_min', 'conflict_date_max'}:
+            if item is None or (isinstance(item, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', item)):
+                result[key] = item
         elif key == 'fields' and isinstance(item, list) and len(item) <= 64:
             safe = []
             for entry in item:
