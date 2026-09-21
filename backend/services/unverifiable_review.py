@@ -19,6 +19,7 @@ UNVERIFIABLE_REVIEW_TYPES = (
     "疑似返苏",
     "苏州涉警",
     "交通涉警",
+    "疑似漏登记",
 )
 
 INITIAL_PENDING = "initial_pending"

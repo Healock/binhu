@@ -6,6 +6,7 @@ from .rental_check import RentalCheckBuilder
 from .delivery_industry import DeliveryIndustryBuilder
 from .suspect_unrevoked import SuspectUnrevokedBuilder
 from .suspect_return import SuspectReturnBuilder
+from .suspect_missing_registration import SuspectMissingRegistrationBuilder
 
 # 注册表：parser_type → builder实例
 BUILDERS: dict[str, BaseReportBuilder] = {
@@ -14,6 +15,7 @@ BUILDERS: dict[str, BaseReportBuilder] = {
     "寄递业": DeliveryIndustryBuilder(),
     "疑似未注销模型三": SuspectUnrevokedBuilder(),
     "疑似返苏": SuspectReturnBuilder(),
+    "疑似漏登记": SuspectMissingRegistrationBuilder(),
 }
 
 # 已实现的类型

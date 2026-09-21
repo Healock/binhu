@@ -1849,7 +1849,7 @@ async def _aggregate_live(
                                     AND registration_link.status='review_required'
                               )
                               OR (projection.parser_type IN (
-                                      '全链条','出租房屋核查','寄递业'
+                                      '全链条','出租房屋核查','寄递业','疑似漏登记'
                                   ) AND {_json_field('核查结果')}
                                       LIKE '%%无法核实%%')
                               OR (projection.parser_type='疑似返苏'

@@ -97,6 +97,7 @@ class UnverifiableReviewTests(unittest.IsolatedAsyncioTestCase):
             "全链条", "出租房屋核查", "寄递业", "疑似返苏", "苏州涉警", "交通涉警",
         ):
             self.assertTrue(review.supports_unverifiable_review(parser_type))
+        self.assertTrue(review.supports_unverifiable_review("疑似漏登记"))
         self.assertFalse(review.supports_unverifiable_review("疑似未注销模型三"))
 
     def test_review_due_dates_are_fixed_by_stage(self):

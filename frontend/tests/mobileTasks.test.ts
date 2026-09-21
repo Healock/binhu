@@ -560,6 +560,17 @@ test('全链条新增待登记结果保留为正式任务选项', () => {
   )
 })
 
+test('疑似漏登记按冻结结果区分已核查与已完成', () => {
+  assert.equal(
+    mobileTaskSourceState('疑似漏登记', '核查结果', { 核查结果: '移交（所内）' }),
+    'checked',
+  )
+  assert.equal(
+    mobileTaskSourceState('疑似漏登记', '核查结果', { 核查结果: '移交（所外）' }),
+    'completed',
+  )
+})
+
 test('待登记不会被前端误判为已完成', () => {
   for (const parserType of ['全链条', '出租房屋核查', '寄递业', '疑似返苏', '苏州涉警', '交通涉警']) {
     assert.equal(
