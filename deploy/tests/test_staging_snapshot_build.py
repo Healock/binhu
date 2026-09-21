@@ -215,6 +215,11 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
                         recover_model_three_sources=True)
         self.assertEqual(caught.exception.diagnostics['pre_recovery_duplicate_source_key_count'], 0)
         self.assertEqual(caught.exception.diagnostics['recovered_source_collision_count'], 1)
+        self.assertEqual(caught.exception.diagnostics['collision_by_type'], {'business_key': 1})
+        self.assertEqual(caught.exception.diagnostics['observed_source_count'], 1)
+        self.assertEqual(caught.exception.diagnostics['recovered_candidate_count'], 1)
+        self.assertEqual(caught.exception.diagnostics['collision_pairs'][0]['relation'], 'business_key')
+        self.assertEqual(len(caught.exception.diagnostics['collision_pairs'][0]['business_key']), 64)
 
 
 if __name__ == '__main__':
