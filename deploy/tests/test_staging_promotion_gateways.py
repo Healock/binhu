@@ -125,10 +125,11 @@ class StagingDataGatewayTests(unittest.TestCase):
             (Path(directory) / 'report.json').write_text(json.dumps({
                 'sensitive_value_matches': 0, 'reference_integrity': True}))
             data.export(data.POLICY)
-            execute.assert_called_once_with('export', exclude_orphan_property_links=True,
-                                            recover_model_three_sources=True)
-            with self.assertRaises(SnapshotError):
-                data.export('arbitrary')
+        execute.assert_called_once_with('export', exclude_orphan_property_links=True,
+                                        recover_model_three_sources=True,
+                                        staging_sample_mode=True, staging_sample_limit=150)
+        with self.assertRaises(SnapshotError):
+            data.export('arbitrary')
 
     def test_import_replay_returns_existing_record_without_second_write(self):
         snapshot = 'staging-' + 'a' * 16

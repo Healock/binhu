@@ -97,7 +97,8 @@ def _record(path: Path, action: str, value=None):
 
 def measure():
     result = source_execute('measure', exclude_orphan_property_links=True,
-                            recover_model_three_sources=True)
+                            recover_model_three_sources=True,
+                            staging_sample_mode=True, staging_sample_limit=150)
     _audit('measure', 'passed', snapshot_id=result['snapshot_id'])
     return result
 
@@ -106,7 +107,8 @@ def export(policy):
     if policy != POLICY:
         refuse('fixed_sanitization_policy_required')
     result = source_execute('export', exclude_orphan_property_links=True,
-                            recover_model_three_sources=True)
+                            recover_model_three_sources=True,
+                            staging_sample_mode=True, staging_sample_limit=150)
     path = _snapshot(result['snapshot_id'])
     report = json.loads((path / 'report.json').read_text(encoding='utf-8'))
     if report.get('sensitive_value_matches') != 0 or report.get('reference_integrity') is not True:

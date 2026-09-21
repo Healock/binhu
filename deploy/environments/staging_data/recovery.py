@@ -48,7 +48,74 @@ def _safe_date(value):
         return None
 
 
-def recovery_scope(parser, business, sources, *, community_digest=None, limit=MAX_RECOVERED):
+def _candidate_exclusion_reason(parser, row, ledgers):
+    """Return a bounded reason for an unsafe candidate, or None when healthy.
+
+    This deliberately uses only structural/value-presence checks. Sensitive
+    identity and address values are never used as selection criteria.
+    """
+    candidates = [item for item in (ledgers or [])
+                  if item['parser_type'] == PARSER
+                  and (item['local_task_id'] == row['id']
+                       or item['business_key'] == row['_row_key'])]
+    matches = [item for item in candidates if item['status'] == 'active']
+    if len(matches) != 1:
+        return 'missing_active_ledger' if not matches else 'multiple_active_ledgers'
+    ledger = matches[0]
+    if ledger['local_task_id'] != row['id'] or ledger['business_key'] != row['_row_key']:
+        return 'task_id_business_key_conflict'
+    try:
+        values = {column: str(row[column] or '') for column in parser.COLUMNS}
+        ledger_values = json.loads(ledger['values_json']) if isinstance(ledger['values_json'], str) else ledger['values_json']
+    except (TypeError, ValueError, KeyError):
+        return 'ledger_invalid'
+    serialized = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    digest = hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+    if (parser.make_row_key(values) != row['_row_key']
+            or ledger_values != values or ledger['content_hash'] != digest
+            or ledger['archived_at'] is not None
+            or ledger['source_kind'] not in {'local_table', 'local_dispatch', 'one_time_continuation_import'}
+            or not isinstance(ledger['source_ref'], str) or not ledger['source_ref']
+            or type(ledger['revision']) is not int or not 1 <= ledger['revision'] <= 2**63-1):
+        return 'ledger_mismatch'
+    return None
+
+
+def _stratum(parser, row):
+    """Build a non-sensitive coverage stratum for deterministic sampling."""
+    values = row
+    community = str(values.get(parser.COMMUNITY_COLUMN) or '').strip()
+    result = str(values.get('核查结果') or '').strip()
+    reviewer_present = bool(str(values.get('核查人') or '').strip())
+    date_value = _safe_date(values.get('截止时间') or values.get('下发日期') or values.get('下发时间')) or ''
+    return community, date_value, result, reviewer_present
+
+
+def _stratified_sample(parser, rows, limit):
+    """Select a deterministic, broad sample without using sensitive fields."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(_stratum(parser, row), []).append(row)
+    for group in groups.values():
+        group.sort(key=lambda item: (int(item['id']), str(item['_row_key'])))
+    selected = []
+    keys = sorted(groups)
+    while len(selected) < limit and keys:
+        next_keys = []
+        for key in keys:
+            group = groups[key]
+            if group:
+                selected.append(group.pop(0))
+                if len(selected) >= limit:
+                    break
+            if group:
+                next_keys.append(key)
+        keys = next_keys
+    return selected
+
+
+def recovery_scope(parser, business, sources, *, community_digest=None, limit=MAX_RECOVERED,
+                   ledgers=None, sample_mode=False, sample_limit=None):
     """Select a deterministic bounded subset and return aggregate-only overflow evidence.
 
     The returned evidence contains no business identifiers or source text. A
@@ -58,8 +125,38 @@ def recovery_scope(parser, business, sources, *, community_digest=None, limit=MA
     missing = _missing_rows(parser, business, sources)
     if limit < 1:
         raise SnapshotError('source_recovery_limit_invalid')
-    selected = missing[:limit]
-    excluded = missing[limit:]
+    if not sample_mode:
+        selected = missing[:limit]
+        excluded = missing[limit:]
+        return _scope_evidence(parser, selected, excluded, missing, limit,
+                               community_digest=community_digest, excluded_reasons={})
+
+    current_keys = {r['row_key'] for r in sources if r['parser_type'] == PARSER}
+    eligible = []
+    excluded_reasons = {}
+    for row in missing:
+        if row['_row_key'] in current_keys:
+            reason = 'existing_business_key_collision'
+        else:
+            reason = _candidate_exclusion_reason(parser, row, ledgers) if ledgers is not None else None
+        if reason:
+            excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
+        else:
+            eligible.append(row)
+    target = min(sample_limit if sample_limit is not None else limit, len(eligible))
+    selected = _stratified_sample(parser, eligible, target)
+    selected_ids = {row['id'] for row in selected}
+    excluded = [row for row in missing if row['id'] not in selected_ids]
+    return _scope_evidence(parser, selected, excluded, missing, limit,
+                           community_digest=community_digest,
+                           excluded_reasons=excluded_reasons,
+                           sample_mode=sample_mode,
+                           sample_limit=sample_limit)
+
+
+def _scope_evidence(parser, selected, excluded, missing, limit, *,
+                    community_digest=None, excluded_reasons=None,
+                    sample_mode=False, sample_limit=None):
     grouped = {}
     for row in excluded:
         values = row
@@ -78,7 +175,7 @@ def recovery_scope(parser, business, sources, *, community_digest=None, limit=MA
             entry['date_max'] = date_text
     dates = [_safe_date(row.get('截止时间')) for row in excluded]
     dates = [item for item in dates if item]
-    return selected, {
+    evidence = {
         'parser_type': PARSER,
         'maximum_recovered_sources': limit,
         'candidate_missing_count': len(missing),
@@ -88,6 +185,21 @@ def recovery_scope(parser, business, sources, *, community_digest=None, limit=MA
         'excluded_date_max': max(dates) if dates else None,
         'excluded_by_community': [grouped[key] for key in sorted(grouped)],
     }
+    if sample_mode:
+        evidence.update({
+            'eligible_normal_count': len(missing) - sum((excluded_reasons or {}).values()),
+            'excluded_by_reason': excluded_reasons or {},
+            'sample_mode': 'stratified_normal_only',
+            'sample_limit': sample_limit if sample_limit is not None else limit,
+            'selected_community_count': len({_stratum(parser, row)[0] for row in selected if _stratum(parser, row)[0]}),
+            'selected_date_count': len({_stratum(parser, row)[1] for row in selected if _stratum(parser, row)[1]}),
+            'selected_result_values': sorted({_stratum(parser, row)[2] for row in selected if _stratum(parser, row)[2]}),
+            'selected_reviewer_presence': {
+                'present': sum(1 for row in selected if _stratum(parser, row)[3]),
+                'absent': sum(1 for row in selected if not _stratum(parser, row)[3]),
+            },
+        })
+    return selected, evidence
 
 
 def _conflict_summary(rows, *, community_digest=None):
@@ -123,9 +235,11 @@ def _conflict_summary(rows, *, community_digest=None):
 
 def reconstruct(parser, business, sources, ledgers, reserved_ids, *,
                 community_digest=None, limit=MAX_RECOVERED,
-                exclude_approved_conflicts=False, return_diagnostics=False):
+                exclude_approved_conflicts=False, return_diagnostics=False,
+                sample_mode=False, sample_limit=None):
     selected, _scope = recovery_scope(
-        parser, business, sources, community_digest=community_digest, limit=limit
+        parser, business, sources, community_digest=community_digest, limit=limit,
+        ledgers=ledgers, sample_mode=sample_mode, sample_limit=sample_limit
     )
     next_id = max(reserved_ids, default=0) + 1
     recovered = []

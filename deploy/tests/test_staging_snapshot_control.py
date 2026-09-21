@@ -32,6 +32,8 @@ class ControlTests(unittest.TestCase):
                 self.assertEqual(json.loads((attempts[0] / 'policy.json').read_text()), {
                     'exclude_orphan_property_links': True,
                     'recover_model_three_sources': True,
+                    'staging_sample_mode': False,
+                    'staging_sample_limit': 150,
                     'maximum_excluded_links': 3,
                     'maximum_recovered_sources': 261,
                 })
@@ -95,6 +97,14 @@ class ControlTests(unittest.TestCase):
         self.assertNotIn('print(settings', program)
         self.assertNotIn('print(str(exc))', program)
         self.assertNotIn('traceback.print', program)
+
+    def test_reader_program_contains_bounded_normal_sample_mode(self):
+        program, _ = source_program('staging-'+'b'*16, b'b'*32, measure=True,
+                                    recover_model_three_sources=True,
+                                    staging_sample_mode=True, staging_sample_limit=150)
+        compile(program, '<snapshot-reader-sample>', 'exec')
+        self.assertIn('staging_sample_mode=True', program)
+        self.assertIn('staging_sample_limit=150', program)
 
     def test_existing_failure_evidence_cannot_be_overwritten(self):
         with tempfile.TemporaryDirectory() as root:

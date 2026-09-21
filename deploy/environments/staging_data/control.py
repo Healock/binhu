@@ -123,7 +123,8 @@ def safe_diagnostics(value):
 
 
 def source_program(snapshot_id, salt, *, measure, exclude_orphan_property_links=False,
-                   recover_model_three_sources=False):
+                   recover_model_three_sources=False, staging_sample_mode=False,
+                   staging_sample_limit=150):
     modules = {name: (Path(__file__).parent / (name + '.py')).read_text(encoding='utf-8') for name in MODULES}
     # Load reviewed pure modules in memory. No code or business file is written
     # into the production container and its app process is not changed.
@@ -135,6 +136,8 @@ def source_program(snapshot_id, salt, *, measure, exclude_orphan_property_links=
     program += 'measure=' + repr(measure) + '\n'
     program += 'exclude_orphan_property_links=' + repr(exclude_orphan_property_links) + '\n'
     program += 'recover_model_three_sources=' + repr(recover_model_three_sources) + '\n'
+    program += 'staging_sample_mode=' + repr(staging_sample_mode) + '\n'
+    program += 'staging_sample_limit=' + repr(staging_sample_limit) + '\n'
     program += '''
 from snapshot_tool.build import build,source_settings
 from snapshot_tool.codec import SnapshotError
@@ -148,7 +151,9 @@ async def main():
     try:
         result=await build(conn,snapshot_id,salt,settings=settings,
             exclude_orphan_property_links=exclude_orphan_property_links,
-            recover_model_three_sources=recover_model_three_sources)
+            recover_model_three_sources=recover_model_three_sources,
+            staging_sample_mode=staging_sample_mode,
+            staging_sample_limit=staging_sample_limit)
         print(json.dumps({'ok':True,'result':{'report':result['report']} if measure else result},ensure_ascii=True))
     finally:
         conn.close()
@@ -189,7 +194,8 @@ def preflight():
             'restart_count': container['RestartCount'], 'memory_available_kib': int(memory['MemAvailable'].split()[0])}
 
 
-def execute(action, *, exclude_orphan_property_links=False, recover_model_three_sources=False):
+def execute(action, *, exclude_orphan_property_links=False, recover_model_three_sources=False,
+            staging_sample_mode=False, staging_sample_limit=150):
     import fcntl
     os.umask(0o077)
     safe_directory(ROOT, create=True)
@@ -204,6 +210,8 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
         before = None
         private_json(path / 'policy.json', {'exclude_orphan_property_links':exclude_orphan_property_links,
             'recover_model_three_sources': recover_model_three_sources,
+            'staging_sample_mode': staging_sample_mode,
+            'staging_sample_limit': staging_sample_limit,
             'maximum_excluded_links':3 if exclude_orphan_property_links else 0,
             'maximum_recovered_sources':261 if recover_model_three_sources else 0})
         try:
@@ -211,7 +219,9 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
             private_json(path / 'before.json', before)
             program, hashes = source_program(snapshot_id, secrets.token_bytes(32), measure=action == 'measure',
                 exclude_orphan_property_links=exclude_orphan_property_links,
-                recover_model_three_sources=recover_model_three_sources)
+                recover_model_three_sources=recover_model_three_sources,
+                staging_sample_mode=staging_sample_mode,
+                staging_sample_limit=staging_sample_limit)
             private_json(path / 'code-hashes.json', hashes)
             response = subprocess.run(['docker', 'exec', '-i', before['container_id'], 'python', '-'],
                 input=program, capture_output=True, text=True, timeout=300)
@@ -264,10 +274,16 @@ def main():
         help='Explicitly reject up to three nonconfirmed orphan relations; preserve houses and report each rejection')
     parser.add_argument('--recover-model-three-sources', action='store_true',
         help='Staging-only recovery of unambiguous active model-three source projections')
+    parser.add_argument('--staging-sample-mode', action='store_true',
+        help='Select a bounded, stratified normal sample and exclude known anomalies')
+    parser.add_argument('--staging-sample-limit', type=int, default=150,
+        help='Maximum normal Staging sample size (default: 150)')
     args = parser.parse_args()
     try:
         print(json.dumps(execute(args.action,exclude_orphan_property_links=args.exclude_orphan_property_links,
-            recover_model_three_sources=args.recover_model_three_sources)))
+            recover_model_three_sources=args.recover_model_three_sources,
+            staging_sample_mode=args.staging_sample_mode,
+            staging_sample_limit=args.staging_sample_limit)))
     except (SnapshotError, OSError):
         raise SystemExit('snapshot preparation failed; inspect private fixed-code evidence') from None
 

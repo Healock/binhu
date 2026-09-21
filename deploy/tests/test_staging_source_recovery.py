@@ -55,6 +55,29 @@ class RecoveryTests(unittest.TestCase):
             'excluded_date_max', 'excluded_by_community',
         })
 
+    def test_known_business_key_collision_is_excluded_before_sampling(self):
+        args = list(self.fixture())
+        parser = args[0]
+        existing = dict(args[1][0], id=9001, _row_key=args[1][0]['_row_key'])
+        args[2] = [{'parser_type': PARSER, 'physical_row': existing['id'],
+                    'row_key': existing['_row_key']}]
+        selected, scope = recovery_scope(parser, [args[1][0], dict(args[1][0], id=2, _row_key='other')], args[2], limit=10, sample_mode=True, sample_limit=10)
+        self.assertEqual([row['_row_key'] for row in selected], ['other'])
+        self.assertEqual(scope['excluded_by_reason'], {'existing_business_key_collision': 1})
+
+    def test_sampling_covers_multiple_strata_deterministically(self):
+        args = list(self.fixture())
+        parser = args[0]
+        rows = []
+        for index in range(12):
+            rows.append(dict(args[1][0], id=index + 1, _row_key=f'key-{index}',
+                             **{'下发社区': f'社区{index % 3}', '截止时间': f'2026-09-{index + 1:02d}',
+                                 '核查结果': ('已登记' if index % 2 else '离苏'),
+                                 '核查人': ('核查员' if index % 2 else '')}))
+        selected, _ = recovery_scope(parser, rows, [], limit=6)
+        self.assertEqual(len(selected), 6)
+        self.assertEqual([row['id'] for row in selected], [1, 2, 3, 4, 5, 6])
+
     def test_bad_json_and_partial_duplicate_ledger_never_recover(self):
         args = list(self.fixture())
         args[3][0]['values_json'] = 'invalid-json'

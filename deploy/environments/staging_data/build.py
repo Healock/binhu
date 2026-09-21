@@ -79,7 +79,8 @@ async def source_schema_contract(cur, settings):
 
 
 async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_links=False,
-                recover_model_three_sources=False):
+                recover_model_three_sources=False, staging_sample_mode=False,
+                staging_sample_limit=150):
     # Required at the public boundary, before obtaining a cursor or reading data.
     source_settings(settings)
     from services.parsers import get_parser
@@ -135,10 +136,14 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 selected_business, recovery_scope = select_recovery_scope(
                     parser, business, sources,
                     community_digest=lambda value: codec.digest('recovery_community', normalized(value))[:16],
+                    ledgers=ledgers,
+                    sample_mode=staging_sample_mode,
+                    sample_limit=staging_sample_limit,
                 )
                 recovered, recovery_exclusions = reconstruct(parser, selected_business, sources, ledgers, reserved,
                     community_digest=lambda value: codec.digest('recovery_community', normalized(value)),
-                    exclude_approved_conflicts=True, return_diagnostics=True)
+                    exclude_approved_conflicts=True, return_diagnostics=True,
+                    sample_mode=staging_sample_mode, sample_limit=staging_sample_limit)
                 recovered_source_count = len(recovered)
                 recovery_scope['excluded_ledger_conflicts'] = recovery_exclusions
                 recovery_scope['approved_ledger_conflict_exclusion'] = True
@@ -286,7 +291,14 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 business=await select(cur,"OnlineData."+parser.table_name,("id","_row_key"))
                 selected=[row for row in sources if row["parser_type"]==parser_type]
                 if recover_model_three_sources and parser_type == '疑似未注销模型三':
+                    # Keep all already-current rows and append only the
+                    # deliberately selected normal sample. The recovery
+                    # sample must never make existing current data disappear.
                     selected_business_keys = {(row['physical_row'], row['row_key']) for row in selected}
+                    selected_business_keys.update(
+                        (row['physical_row'], row['row_key'])
+                        for row in sources if row['parser_type'] == parser_type
+                    )
                     business = [row for row in business if (row['id'], row['_row_key']) in selected_business_keys]
                 business_keys = {(row['id'], row['_row_key']) for row in business}
                 source_keys = {(row['physical_row'], row['row_key']) for row in selected}
