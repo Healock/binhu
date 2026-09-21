@@ -204,6 +204,13 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
                 # payload. It contains aggregate counts, HMAC community keys,
                 # and date bounds only; no task identifiers or source values.
                 private_json(path / 'recovery-overflow.json', scope)
+            if isinstance(scope, dict):
+                exclusions = scope.get('excluded_ledger_conflicts')
+                if isinstance(exclusions, dict) and int(exclusions.get('conflict_count') or 0) > 0:
+                    exclusions_path = path / 'recovery-exclusions.json'
+                    private_json(exclusions_path, exclusions)
+                    private_json(path / 'recovery-exclusions-sha256.json', {
+                        'sha256': hashlib.sha256(exclusions_path.read_bytes()).hexdigest()})
             if action == 'export':
                 private_json(path / 'snapshot.json', result)
                 private_json(path / 'snapshot-sha256.json', {'sha256': hashlib.sha256((path / 'snapshot.json').read_bytes()).hexdigest()})

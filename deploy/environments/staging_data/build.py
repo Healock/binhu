@@ -136,9 +136,12 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                     parser, business, sources,
                     community_digest=lambda value: codec.digest('recovery_community', normalized(value))[:16],
                 )
-                recovered = reconstruct(parser, selected_business, sources, ledgers, reserved,
-                                        community_digest=lambda value: codec.digest('recovery_community', normalized(value)))
+                recovered, recovery_exclusions = reconstruct(parser, selected_business, sources, ledgers, reserved,
+                    community_digest=lambda value: codec.digest('recovery_community', normalized(value)),
+                    exclude_approved_conflicts=True, return_diagnostics=True)
                 recovered_source_count = len(recovered)
+                recovery_scope['excluded_ledger_conflicts'] = recovery_exclusions
+                recovery_scope['approved_ledger_conflict_exclusion'] = True
                 sources = [*sources, *recovered]
             current = {(row["parser_type"], row["row_key"]): row for row in sources}
             if len(current) != len(sources):

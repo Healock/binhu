@@ -64,3 +64,20 @@ class RecoveryTests(unittest.TestCase):
         args[3].append(dict(args[3][0], business_key='different-key'))
         with self.assertRaisesRegex(SnapshotError, 'source_recovery_ledger_not_unique'):
             reconstruct(*args)
+
+    def test_approved_ledger_conflicts_are_excluded_with_aggregate_diagnostics(self):
+        args = list(self.fixture())
+        args[3].clear()
+        recovered, diagnostics = reconstruct(*args, exclude_approved_conflicts=True,
+                                              return_diagnostics=True,
+                                              community_digest=lambda value: 'community-hmac')
+        self.assertEqual(recovered, [])
+        self.assertEqual(diagnostics['conflict_count'], 1)
+        self.assertEqual(diagnostics['conflict_by_type'], {'missing_active_ledger': 1})
+        self.assertEqual(diagnostics['conflict_by_community'], [{'community_key': 'community-hmac', 'count': 1}])
+
+    def test_unapproved_ledger_value_mismatch_still_fails(self):
+        args = list(self.fixture())
+        args[3][0]['content_hash'] = 'bad'
+        with self.assertRaisesRegex(SnapshotError, 'source_recovery_ledger_mismatch'):
+            reconstruct(*args, exclude_approved_conflicts=True)

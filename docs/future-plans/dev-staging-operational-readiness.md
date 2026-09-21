@@ -151,6 +151,16 @@ Production 路径、Docker、MySQL、Dev、Shadow 和任意 shell 的 12 项独�
 服务器安装和真实 `measure` 重跑尚待完成。`export → create → import → verify → switch`、
 全量回归、75 人压测、回滚演练和页面验收在 `measure` 通过后继续执行。
 
+### 2026-09-21：模型三来源账本冲突的批准排除规则
+
+真实只读 `measure` 发现 31 条模型三候选存在来源账本一致性问题：27 条缺少活动账本、
+3 条存在多条活动账本、1 条任务 ID 与业务键冲突；涉及 5 个 HMAC 社区桶，日期均为
+2026-09-10，revision 均为 3。项目管理人批准这些三类冲突仅从本次 Staging 脱敏快照恢复
+范围排除。排除清单写入私有 `recovery-exclusions.json`，并附带 SHA-256；不写入
+Staging 数据库、业务表或日报，也不修改 Production 账本。其他冲突类型仍会阻止快照。
+因此本次 Staging 验证最多覆盖 261 条模型三来源，另有 31 条因生产来源账本一致性问题
+未纳入；这不代表 Production 全量验证通过，生产账本治理需单独排期。
+
 ### 2026-09-20：Staging preflight 证据
 
 PR #768 已修复 preflight 失败证据和网关安装身份保留，主线 CI 与网关重装均通过。新的只读 `measure` Action `35504450683` 创建了不可覆盖目录 `staging-10b71cf9285a32df`；私有证据确认 `phase=preflight`、`reason=insufficient_memory_for_snapshot`，固定脱敏策略完整，安装控制提交为 `93f676795837a34e1e591afff35a2de0cd0a87a6`。随后只读复测的 `MemAvailable=2,949,312 KiB`，仍低于固定 `3,145,728 KiB` 门槛约 192 MiB。本轮没有执行 export/create/import/verify/switch，也没有新的数据一致性失败。不得降低门槛或清理其他环境资源来制造通过；内存自然恢复前继续保留该资源阻塞。
