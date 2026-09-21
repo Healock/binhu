@@ -267,8 +267,7 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
                 && value.authority().is_some()
                 && (value.path().is_empty() || value.path().starts_with('/'))
                 && !value.path().contains("..")
-                && value.query().is_none()
-                && value.fragment().is_none() =>
+                && value.query().is_none() =>
         {
             value
         }
