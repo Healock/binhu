@@ -115,6 +115,7 @@ class ProfileCursor:
                 "长板",
                 datetime(2026, 1, 2, 3, 4, 5),
                 12,
+                "7/avatar.jpg",
             )
         return None
 
@@ -140,6 +141,7 @@ async def test_public_profile_response_omits_account_and_sensitive_fields():
 
     assert payload["display_name"] == "张三"
     assert payload["departments"] == ["长板"]
+    assert payload["avatar_url"].startswith("/api/auth/avatar/7?v=avatar")
     assert payload["contribution"]["total"] == 1
     serialized_keys = repr(payload)
     for forbidden in (

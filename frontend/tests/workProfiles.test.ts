@@ -57,6 +57,14 @@ test('账号区域优先显示已上传头像并保留默认图标兜底', () =>
   assert.match(authenticatedImageHook, /URL\.revokeObjectURL/)
 })
 
+test('公开个人资料使用受认证头像并保留姓名首字回退', () => {
+  const profile = readFileSync(new URL('../src/pages/PublicProfile.tsx', import.meta.url), 'utf8')
+  const types = readFileSync(new URL('../src/types/index.ts', import.meta.url), 'utf8')
+  assert.match(profile, /<AuthenticatedAvatar[\s\S]*src=\{profile\.avatar_url\}/)
+  assert.match(profile, /profile\.display_name\.slice\(0, 1\)/)
+  assert.match(types, /interface PublicProfileSummary[\s\S]*avatar_url: string \| null/)
+})
+
 test('热力图只接收所选年度日期并保留年度边界', () => {
   assert.deepEqual(contributionDaysForYear([
     { date: '2025-12-31', count: 8 },

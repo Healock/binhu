@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -38,7 +39,8 @@ PROFILE_SELECT = """
                ''
            ) AS community_names,
            user.created_at AS joined_at,
-           user.member_id AS member_id
+           user.member_id AS member_id,
+           user.avatar_storage_key AS avatar_storage_key
     FROM _users AS user
     LEFT JOIN _grid_members AS member ON member.id=user.member_id
     LEFT JOIN _departments AS primary_department
@@ -76,6 +78,7 @@ def _profile_payload(row) -> dict:
     user_id = int(row[0])
     member_id = int(row[6]) if row[6] is not None else None
     joined_at = row[5]
+    avatar_storage_key = str(row[7]) if len(row) > 7 and row[7] else None
     return {
         "id": user_id,
         "profile_key": work_profile_key(user_id, member_id),
@@ -84,6 +87,10 @@ def _profile_payload(row) -> dict:
         "departments": _split_names(row[3]),
         "community_names": _split_names(row[4]),
         "joined_at": joined_at.isoformat() + "Z" if joined_at else None,
+        "avatar_url": (
+            f"/api/auth/avatar/{user_id}?v={Path(avatar_storage_key).stem}"
+            if avatar_storage_key else None
+        ),
     }
 
 

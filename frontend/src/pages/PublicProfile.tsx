@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Button, Empty, Select, Skeleton, Tag } from 'antd'
-import { ArrowLeftOutlined, CalendarOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, CalendarOutlined, UserOutlined } from '@ant-design/icons'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { getPublicProfile } from '../api/client'
 import type { PublicProfile as PublicProfileType } from '../types'
 import ContributionCalendar from '../components/ContributionCalendar'
+import { AuthenticatedAvatar } from '../components/AuthenticatedImage'
 import { PageHeader, Panel } from '../components/ui'
 
 function profileError(error: any): string {
@@ -86,7 +87,14 @@ export default function PublicProfile() {
         <aside className="public-profile-sidebar">
           <section className="app-card public-profile-identity">
             <div className="public-profile-identity__header">
-              <span className="public-profile-avatar">{profile.display_name.slice(0, 1)}</span>
+              <AuthenticatedAvatar
+                className="public-profile-avatar"
+                size={64}
+                src={profile.avatar_url}
+                icon={<UserOutlined />}
+              >
+                {profile.display_name.slice(0, 1)}
+              </AuthenticatedAvatar>
               <div className="min-w-0">
                 <h1 className="truncate text-xl font-semibold text-[var(--app-text-strong)]">
                   {profile.display_name}
