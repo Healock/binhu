@@ -12,7 +12,8 @@ import time
 from .codec import SnapshotError
 
 ROOT = Path('/srv/deploy-backups/environment-triad/staging-snapshots')
-MODULES = ('codec', 'registry', 'tasks', 'fences', 'organization', 'relations', 'digests', 'reconciliation', 'recovery', 'build')
+MODULES = ('codec', 'registry', 'tasks', 'fences', 'organization', 'relations',
+           'digests', 'reconciliation', 'diagnostic_contract', 'recovery', 'build')
 
 
 def safe_directory(path, *, create=False):
