@@ -49,6 +49,8 @@ def safe_diagnostics(value):
     allowed_fields = diagnostic_fields()
     counts = {'source_count', 'business_count', 'source_only_count', 'business_only_count',
               'total', 'duplicate_business_key_count', 'duplicate_source_key_count',
+              'recovered_source_collision_count',
+              'pre_recovery_duplicate_source_key_count',
               'business_only_active_ledger_count', 'business_only_archived_ledger_count',
               'business_only_no_ledger_count', 'business_only_archive_key_count',
               'conflict_count', 'conflict_date_min', 'conflict_date_max',

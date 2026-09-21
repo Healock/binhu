@@ -194,6 +194,28 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['report']['recovery_scope']['excluded_ledger_conflicts']['conflict_by_type'],
                          {'multiple_active_ledgers': 1})
 
+    async def test_recovery_key_collision_reports_bounded_diagnostics(self):
+        settings, tables, _, conn = self.recovery_fixture()
+        parser = get_parser('疑似未注销模型三')
+        # The current source uses a different physical row but the same
+        # business key as the recovery candidate. This must remain a hard
+        # failure and must not be silently excluded as an approved ledger
+        # conflict.
+        values = {field: '' for field in parser.COLUMNS}
+        values.update({'社区': '虚构社区', '下发社区': '虚构社区', '姓名': '虚构乙', '身份证号': 'synthetic-id'})
+        key = parser.make_row_key(values)
+        raw = json.dumps({field: str(values.get(field, '') or '') for field in parser.COLUMNS},
+                         ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        tables['OnlineData._online_source_rows'] = [{
+            'id': 2, 'parser_type': parser.parser_type, 'physical_row': 8,
+            'revision': 7, 'row_key': key, 'row_hash': hashlib.sha256(raw.encode()).hexdigest(),
+            'values_json': raw, 'source_kind': 'local_table'}]
+        with self.assertRaisesRegex(SnapshotError, '^duplicate_current_business_key$') as caught:
+            await build(conn, 'staging-' + 'a' * 16, b'a' * 32, settings=settings,
+                        recover_model_three_sources=True)
+        self.assertEqual(caught.exception.diagnostics['pre_recovery_duplicate_source_key_count'], 0)
+        self.assertEqual(caught.exception.diagnostics['recovered_source_collision_count'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

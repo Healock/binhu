@@ -145,7 +145,39 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 sources = [*sources, *recovered]
             current = {(row["parser_type"], row["row_key"]): row for row in sources}
             if len(current) != len(sources):
-                raise SnapshotError("duplicate_current_business_key")
+                # Keep the failure code stable, but expose only bounded counts so
+                # the staging gateway can distinguish an existing source-key
+                # collision from a recovered row colliding with a current row.
+                source_key_counts = {}
+                for row in sources:
+                    key = (row["parser_type"], row["row_key"])
+                    source_key_counts[key] = source_key_counts.get(key, 0) + 1
+                duplicate_source_key_count = sum(count - 1 for count in source_key_counts.values()
+                                                  if count > 1)
+                recovered_keys = {
+                    (row["parser_type"], row["row_key"])
+                    for row in recovered if row["parser_type"] == PARSER
+                } if recover_model_three_sources else set()
+                pre_recovery_keys = {
+                    (row["parser_type"], row["row_key"])
+                    for row in sources[:-recovered_source_count]
+                } if recovered_source_count else set(source_key_counts)
+                pre_recovery_key_counts = {}
+                for row in sources[:-recovered_source_count] if recovered_source_count else sources:
+                    key = (row["parser_type"], row["row_key"])
+                    pre_recovery_key_counts[key] = pre_recovery_key_counts.get(key, 0) + 1
+                pre_recovery_duplicate_source_key_count = sum(
+                    count - 1 for count in pre_recovery_key_counts.values() if count > 1
+                )
+                recovered_source_collision_count = sum(
+                    1 for key in recovered_keys if key in pre_recovery_keys
+                )
+                raise SnapshotError("duplicate_current_business_key", diagnostics={
+                    "source_count": len(sources),
+                    "duplicate_source_key_count": duplicate_source_key_count,
+                    "pre_recovery_duplicate_source_key_count": pre_recovery_duplicate_source_key_count,
+                    "recovered_source_collision_count": recovered_source_collision_count,
+                })
             retained_flows = [row for row in flows if (row["parser_type"],row["row_key"]) in current]
             retained_registrations = [row for row in registrations if (row["parser_type"],row["row_key"]) in current]
             addresses = await select(cur,"OnlineData._online_task_address_matches",ADDRESS_FIELDS)
