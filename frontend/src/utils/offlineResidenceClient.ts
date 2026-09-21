@@ -248,8 +248,16 @@ export function cacheOnlineResidenceConfig(snapshot: OnlineResidenceConfigSnapsh
 
 function baseUrl(config: OfflineResidenceConfig): string {
   const value = config.base_url.trim().replace(/\/+$/, '')
-  if (!/^https?:\/\/[^/?#]+$/i.test(value)) throw new Error('居住证接口地址格式无效')
+  let parsed: URL
+  try { parsed = new URL(value) } catch { throw new Error('居住证接口地址格式无效') }
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname.includes('..')) {
+    throw new Error('居住证接口地址格式无效')
+  }
   return value
+}
+
+function residenceUrl(base: string, path: string): string {
+  return `${base}${path.startsWith('/') ? path : `/${path}`}`
 }
 
 const MAC_ADDRESS_RE = /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/
@@ -302,7 +310,11 @@ async function jsonRequest(config: OfflineResidenceConfig, url: string, init: Re
       signal: controller.signal,
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    return await response.json()
+    try {
+      return await response.json()
+    } catch {
+      throw new Error('invalid_response')
+    }
   } finally {
     window.clearTimeout(timer)
   }
@@ -344,8 +356,8 @@ export class OfflineResidenceClient {
   private async authenticate(account: OfflineResidenceAccount, mac: string): Promise<{ token: string; organizationCode: string }> {
     const base = baseUrl(this.config)
     const checkKey = String(Date.now())
-    await jsonRequest(this.config, `${base}${CAPTCHA_PATH_PREFIX}${checkKey}`, { method: 'GET' })
-    const payload = await jsonRequest(this.config, `${base}${LOGIN_PATH}`, {
+    await jsonRequest(this.config, residenceUrl(base, `${CAPTCHA_PATH_PREFIX}${checkKey}`), { method: 'GET' })
+    const payload = await jsonRequest(this.config, residenceUrl(base, LOGIN_PATH), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json;charset=UTF-8' },
       body: JSON.stringify({
@@ -420,6 +432,9 @@ export class OfflineResidenceClient {
         } else if (/登录失败|组织代码/.test(error instanceof Error ? error.message : '')) {
           status = 'rejected'
           error_code = 'login_rejected'
+        } else if (error instanceof Error && error.message === 'invalid_response') {
+          status = 'network_error'
+          error_code = 'invalid_response'
         } else {
           status = 'network_error'
           error_code = 'request_failed'

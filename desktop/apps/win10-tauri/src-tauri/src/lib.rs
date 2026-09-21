@@ -265,14 +265,9 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
         Ok(value)
             if matches!(value.scheme_str(), Some("http") | Some("https"))
                 && value.authority().is_some()
-                && value.path() == "" =>
-        {
-            value
-        }
-        Ok(value)
-            if matches!(value.scheme_str(), Some("http") | Some("https"))
-                && value.authority().is_some()
-                && value.path() == "/" =>
+                && (value.path().is_empty() || value.path().starts_with('/'))
+                && !value.path().contains("..")
+                && value.query().is_none() =>
         {
             value
         }
@@ -300,6 +295,7 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
         parsed.scheme_str().unwrap(),
         parsed.authority().unwrap()
     );
+    let prefix = parsed.path().trim_end_matches('/');
     let check_key = format!(
         "{}",
         std::time::SystemTime::now()
@@ -307,7 +303,7 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
             .unwrap_or_default()
             .as_millis()
     );
-    let captcha_url = format!("{}/sys/randomImage/{}", origin, check_key);
+    let captcha_url = format!("{}{}/sys/randomImage/{}", origin, prefix, check_key);
     let mut captcha = match agent.get(&captcha_url).call() {
         Ok(value) => value,
         Err(_) => {
@@ -335,7 +331,7 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
     if captcha_payload.get("success") != Some(&serde_json::Value::Bool(true)) {
         return probe_residence_result("rejected", Some("captcha_rejected"), None);
     }
-    let login_url = format!("{}/sys/login", origin);
+    let login_url = format!("{}{}/sys/login", origin, prefix);
     let login_body = serde_json::json!({
         "username": request.username.trim(), "password": request.password, "mac": mac,
         "remember_me": true, "captcha": "", "checkKey": check_key, "terminalType": 1,
