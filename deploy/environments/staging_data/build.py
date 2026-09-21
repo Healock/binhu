@@ -172,11 +172,75 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 recovered_source_collision_count = sum(
                     1 for key in recovered_keys if key in pre_recovery_keys
                 )
+                collision_by_type = {}
+                collision_communities = {}
+                collision_dates = []
+                collision_pairs = []
+                existing_by_key = {}
+                existing_by_physical = {}
+                if recovered_source_count:
+                    pre_recovery_sources = sources[:-recovered_source_count]
+                    for row in pre_recovery_sources:
+                        key = (row["parser_type"], row["row_key"])
+                        existing_by_key.setdefault(key, []).append(row)
+                        physical = (row["parser_type"], row["physical_row"])
+                        existing_by_physical.setdefault(physical, []).append(row)
+                    parser = get_parser(PARSER)
+                    for row in recovered:
+                        key = (row["parser_type"], row["row_key"])
+                        physical = (row["parser_type"], row["physical_row"])
+                        business_matches = existing_by_key.get(key, [])
+                        source_matches = existing_by_physical.get(physical, [])
+                        has_business_key = bool(business_matches)
+                        has_source_reference = bool(source_matches)
+                        if has_business_key and has_source_reference:
+                            kind = "business_key_and_source_reference"
+                        elif has_business_key:
+                            kind = "business_key"
+                        elif has_source_reference:
+                            kind = "source_reference"
+                        else:
+                            continue
+                        collision_by_type[kind] = collision_by_type.get(kind, 0) + 1
+                        try:
+                            values = json.loads(row["values_json"])
+                        except (TypeError, ValueError):
+                            values = {}
+                        community = normalized(values.get(parser.COMMUNITY_COLUMN))
+                        if community:
+                            digest = codec.digest("recovery_collision_community", community)[:16]
+                            collision_communities[digest] = collision_communities.get(digest, 0) + 1
+                        related = business_matches or source_matches
+                        for existing in related[:2]:
+                            collision_pairs.append({
+                                "candidate_task_key": codec.digest("recovery_collision_task", row["physical_row"]),
+                                "existing_source_key": codec.digest("recovery_collision_source", existing["id"]),
+                                "business_key": codec.digest("recovery_collision_business", row["row_key"]),
+                                "relation": "business_key" if existing in business_matches else "source_reference",
+                            })
+                        for field in ("下发日期", "下发时间", "截止日期", "截止时间"):
+                            value = str(values.get(field) or "").strip()
+                            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                                collision_dates.append(value)
+                            elif re.fullmatch(r"\d{1,2}[-.]\d{1,2}", value):
+                                collision_dates.append(value)
+                            if collision_dates and collision_dates[-1] == value:
+                                break
                 raise SnapshotError("duplicate_current_business_key", diagnostics={
                     "source_count": len(sources),
+                    "observed_source_count": len(sources) - recovered_source_count,
+                    "recovered_candidate_count": recovered_source_count,
                     "duplicate_source_key_count": duplicate_source_key_count,
                     "pre_recovery_duplicate_source_key_count": pre_recovery_duplicate_source_key_count,
                     "recovered_source_collision_count": recovered_source_collision_count,
+                    "collision_by_type": collision_by_type,
+                    "collision_by_community": [
+                        {"community_key": key, "count": collision_communities[key]}
+                        for key in sorted(collision_communities)
+                    ],
+                    "collision_pairs": collision_pairs[:256],
+                    "collision_date_min": min(collision_dates) if collision_dates else None,
+                    "collision_date_max": max(collision_dates) if collision_dates else None,
                 })
             retained_flows = [row for row in flows if (row["parser_type"],row["row_key"]) in current]
             retained_registrations = [row for row in registrations if (row["parser_type"],row["row_key"]) in current]

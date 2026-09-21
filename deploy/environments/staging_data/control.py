@@ -51,6 +51,7 @@ def safe_diagnostics(value):
               'total', 'duplicate_business_key_count', 'duplicate_source_key_count',
               'recovered_source_collision_count',
               'pre_recovery_duplicate_source_key_count',
+              'observed_source_count', 'recovered_candidate_count',
               'business_only_active_ledger_count', 'business_only_archived_ledger_count',
               'business_only_no_ledger_count', 'business_only_archive_key_count',
               'conflict_count', 'conflict_date_min', 'conflict_date_max',
@@ -70,6 +71,29 @@ def safe_diagnostics(value):
             result[key] = {k: v for k, v in item.items()
                            if isinstance(k, str) and re.fullmatch('[a-z_]{1,64}', k)
                            and type(v) is int and 0 <= v <= 10**9}
+        elif key == 'collision_by_type' and isinstance(item, dict) and len(item) <= 16:
+            result[key] = {k: v for k, v in item.items()
+                           if isinstance(k, str) and re.fullmatch('[a-z_]{1,64}', k)
+                           and type(v) is int and 0 <= v <= 10**9}
+        elif key == 'collision_by_community' and isinstance(item, list) and len(item) <= 256:
+            safe = []
+            for entry in item:
+                if (isinstance(entry, dict) and set(entry) == {'community_key', 'count'}
+                        and isinstance(entry['community_key'], str)
+                        and re.fullmatch('[0-9a-f]{16,128}', entry['community_key'])
+                        and type(entry['count']) is int and 0 <= entry['count'] <= 10**9):
+                    safe.append(entry)
+            result[key] = safe
+        elif key == 'collision_pairs' and isinstance(item, list) and len(item) <= 256:
+            safe = []
+            for entry in item:
+                if (isinstance(entry, dict)
+                        and set(entry) == {'candidate_task_key', 'existing_source_key', 'business_key', 'relation'}
+                        and all(isinstance(entry[field], str) and re.fullmatch('[0-9a-f]{64}', entry[field])
+                                for field in ('candidate_task_key', 'existing_source_key', 'business_key'))
+                        and entry['relation'] in {'business_key', 'source_reference'}):
+                    safe.append(entry)
+            result[key] = safe
         elif key == 'conflict_by_community' and isinstance(item, list) and len(item) <= 256:
             safe = []
             for entry in item:
@@ -81,6 +105,9 @@ def safe_diagnostics(value):
             result[key] = safe
         elif key in {'conflict_date_min', 'conflict_date_max'}:
             if item is None or (isinstance(item, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', item)):
+                result[key] = item
+        elif key in {'collision_date_min', 'collision_date_max'}:
+            if item is None or (isinstance(item, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}|\d{1,2}[-.]\d{1,2}', item)):
                 result[key] = item
         elif key == 'fields' and isinstance(item, list) and len(item) <= 64:
             safe = []
