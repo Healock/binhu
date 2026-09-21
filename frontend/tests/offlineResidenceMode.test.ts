@@ -124,6 +124,45 @@ test('候选 MAC 按社区账号顺序检测授权范围且不调用业务写接
   assert.doesNotMatch(clientSource, /\/(?:registration|writeback|delete)/i)
 })
 
+test('居住证接口地址保留可选应用上下文路径', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  const urls: string[] = []
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (url: string) => {
+      urls.push(url)
+      return new Response(JSON.stringify(url.includes('/sys/randomImage/')
+        ? { success: true }
+        : { success: true, result: { token: 'fixture-token', orgCode: '' } }), { status: 200 })
+    },
+  })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid/grandlynn-boot',
+    password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '测试社区', username: 'fixture-user', community_code: '' }],
+  }).probeMacAccess('02:11:22:33:44:66')
+  assert.equal(result[0].status, 'allowed')
+  assert.ok(urls[0].startsWith('https://residence.invalid/grandlynn-boot/sys/randomImage/'))
+  assert.equal(urls[1], 'https://residence.invalid/grandlynn-boot/sys/login')
+})
+
+test('验证码返回非 JSON 时保留可诊断错误码', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async () => new Response('<html>not json</html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
+  })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid/grandlynn-boot',
+    password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '测试社区', username: 'fixture-user', community_code: '' }],
+  }).probeMacAccess('02:11:22:33:44:66')
+  assert.equal(result[0].status, 'network_error')
+  assert.equal(result[0].error_code, 'invalid_response')
+})
+
 test('候选 MAC 探测最多使用前 12 个已填写完整账号的社区', async () => {
   Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
   const usernames: string[] = []

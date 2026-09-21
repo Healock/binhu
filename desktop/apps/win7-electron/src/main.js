@@ -41,10 +41,11 @@ let localMacService = null
 function probeResidenceUrl(baseUrl, pathName) {
   let base
   try { base = new URL(String(baseUrl || '').trim()) } catch (_error) { throw new Error('config_error') }
-  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || (base.pathname && base.pathname !== '/')) {
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || base.pathname.includes('..')) {
     throw new Error('config_error')
   }
-  return new URL(pathName, base)
+  const prefix = base.pathname.replace(/\/+$/, '')
+  return new URL(`${prefix}${pathName.startsWith('/') ? pathName : `/${pathName}`}`, `${base.protocol}//${base.host}`)
 }
 
 function residenceRequest(url, { method = 'GET', body, timeoutSeconds }) {
