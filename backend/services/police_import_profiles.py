@@ -25,6 +25,7 @@ from services.police_dispatch import (
     resolve_community,
     stable_json,
 )
+from services.parsers.suspect_missing_registration import extract_mobile_numbers
 
 
 ADAPTER_VERSION = "2026-08-25.2"
@@ -488,6 +489,56 @@ def _parse_return(content: bytes, filename: str, business_date: date, communitie
     return _finalize(sheet_name=sheet, rows=result, communities=communities, business_key_fields=("身份证号码", "联系号码"))
 
 
+def _parse_suspect_missing_registration(content: bytes, filename: str, business_date: date, communities: list[dict[str, Any]]) -> dict[str, Any]:
+    """解析疑似漏登记已处理工作簿。
+
+    表头指纹固定要求身份证号、社区、地址、核查结果和联系方式；
+    其余列按名称读取，缺少的业务日期使用上传时确认日期，不依赖物理列号。
+    """
+    sheet, rows, header_index, columns = _find_sheet(
+        content, filename,
+        (("身份证号", "身份证号码"), ("社区", "所属社区"),
+         ("地址", "地址，小区名", "小区名"), ("核查结果",),
+         ("联系方式", "手机号", "手机号码")),
+    )
+    headers = rows[header_index]
+    normalized = {_header(value): index for index, value in enumerate(headers) if _header(value)}
+
+    def at(row: list[str], *names: str) -> str:
+        index = next((normalized[_header(name)] for name in names if _header(name) in normalized), None)
+        return _cell(row[index]) if index is not None and index < len(row) else ""
+
+    result = []
+    for number, row in enumerate(rows[header_index + 1:], start=header_index + 2):
+        identity = normalize_identity(at(row, "身份证号", "身份证号码"))
+        name = at(row, "姓名")
+        community = at(row, "社区", "所属社区")
+        address = at(row, "地址", "地址，小区名", "小区名")
+        phone = extract_mobile_numbers(at(row, "联系方式", "手机号", "手机号码"))
+        if not any((identity, name, community, address, phone)):
+            continue
+        dispatch_date = _date_value(at(row, "下发日期", "下发时间", "日期"), business_date) or business_date.isoformat()
+        deadline = _date_value(at(row, "截止日期", "截止时间"), business_date) or dispatch_date
+        values = {
+            "下发日期": dispatch_date, "截止日期": deadline, "社区": community,
+            "姓名": name, "身份证号": identity, "联系方式": phone,
+            "地址": address, "核查人": at(row, "核查人"),
+            "登记情况": at(row, "登记情况"), "现住址": at(row, "现住址"),
+            "核查结果": at(row, "核查结果"), "备注": at(row, "备注"),
+            "研判": at(row, "研判"), "二次反馈": at(row, "二次反馈"),
+        }
+        result.append({
+            "source_row": number, "source_name": "疑似漏登记", "community_name": community,
+            "person_name": name, "identity_number": identity, "phone": phone,
+            "original_address": address, "created_time": dispatch_date,
+            "transfer_note": values["备注"], "raw_values": _raw_values(headers, row),
+            "standard_values": values,
+        })
+    if not result:
+        raise PoliceWorkbookError("疑似漏登记文件中没有可导入的数据")
+    return _finalize(sheet_name=sheet, rows=result, communities=communities, business_key_fields=("身份证号", "下发日期"))
+
+
 PROFILES: dict[str, ImportProfile] = {
     "fullchain_raw": ImportProfile("fullchain_raw", "fullchain", "全链条原始数据", "", "全链条", True, "待基础管控审核的全链条原始文件", ("姓名", "身份证号", "地址"), None),
     "fullchain_processed": ImportProfile("fullchain_processed", "fullchain", "全链条已处理数据", "", "全链条", True, "已包含社区和登记情况的全链条文件", ("社区", "登记情况", "姓名", "身份证号", "手机号", "地址"), None),
@@ -497,6 +548,7 @@ PROFILES: dict[str, ImportProfile] = {
     "police_traffic_processed": ImportProfile("police_traffic_processed", "police", "交通涉警", "traffic", "交通涉警", True, "双短日期列的人员型涉警任务；未配置腾讯表时可导入但不可发布", ("前两列短日期", "业务分类（社区）", "姓名", "身份证号码", "手机号码", "地址1"), _parse_traffic),
     "delivery_processed": ImportProfile("delivery_processed", "delivery", "寄递业", "", "寄递业", True, "身份证号和手机号作为业务主键", ("身份证号码", "手机号码", "参考姓名"), _parse_delivery),
     "suspect_return_processed": ImportProfile("suspect_return_processed", "suspect_return", "疑似返苏", "", "疑似返苏", True, "身份证号码和联系号码作为业务主键", ("身份证号码", "联系号码", "高频抓拍小区"), _parse_return),
+    "suspect_missing_registration_processed": ImportProfile("suspect_missing_registration_processed", "suspect_missing_registration", "疑似漏登记", "", "疑似漏登记", True, "按身份证号和下发日期导入疑似漏登记任务", ("身份证号", "社区", "地址", "核查结果", "联系方式"), _parse_suspect_missing_registration),
 }
 
 

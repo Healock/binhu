@@ -33,13 +33,16 @@ FILES = {
     "全链条": "全链条.xlsx",
     "出租房屋核查": "出租房屋核查.xlsx",
     "疑似返苏": "注销人员疑似返苏核查.xlsx",
+    "疑似漏登记": "疑似漏登记.xlsx",
 }
+OPTIONAL_FILES = {"疑似漏登记"}
 MODEL_THREE_SHA256 = "3dfcd519fe3388d9d14887c713b75dd3f35b3b3bcf69cb946b09a59164dc46d1"
 HEADER_HINTS = {
     "疑似未注销模型三": "截止时间",
     "全链条": "下发日期",
     "出租房屋核查": "下发时间",
     "疑似返苏": "下发日期",
+    "疑似漏登记": "下发日期",
 }
 
 
@@ -231,7 +234,12 @@ def main() -> None:
     parsed: dict[str, list[dict[str, str]]] = {}
     reports: list[dict] = []
     for parser_type, filename in FILES.items():
-        rows, report = read_workbook(parser_type, args.input_dir / filename, args.run_id)
+        path = args.input_dir / filename
+        if parser_type in OPTIONAL_FILES and not path.is_file():
+            report = {"parser_type": parser_type, "file": filename, "status": "not_provided", "ready": True, "total": 0, "issues": []}
+            rows = []
+        else:
+            rows, report = read_workbook(parser_type, path, args.run_id)
         report["parser_type"] = parser_type
         parsed[parser_type] = rows
         reports.append(report)
