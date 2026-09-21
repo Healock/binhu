@@ -8,6 +8,7 @@ import {
   normalizeMacAddress,
   readMacAddress,
   saveOfflineResidenceConfig,
+  summarizeResidencePayload,
 } from '../src/utils/offlineResidenceClient.ts'
 
 const pageSource = readFileSync(new URL('../src/pages/OfflineMode.tsx', import.meta.url), 'utf8')
@@ -27,6 +28,18 @@ function memoryStorage() {
     get length() { return values.size },
   }
 }
+
+test('离线诊断摘要只保留阶段和响应元数据，不包含响应正文', () => {
+  const summary = summarizeResidencePayload({ success: false, code: 500, message: '姓名和身份证等业务正文不应出现在诊断中', result: null }, 200)
+  assert.deepEqual(summary, {
+    http_status: 200,
+    business_code: '500',
+    success: false,
+    result_type: 'null',
+    message_category: 'other',
+  })
+  for (const key of ['message', 'result', 'token', 'sfzh']) assert.equal(Object.prototype.hasOwnProperty.call(summary, key), false)
+})
 
 test('离线批量查询不依赖滨湖平台批量接口', () => {
   assert.match(pageSource, /readOfflineWorkbook\(file\)/)
