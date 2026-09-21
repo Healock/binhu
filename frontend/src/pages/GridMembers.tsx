@@ -59,6 +59,10 @@ import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import type { ResponsiveColumns } from '../components/responsiveTable'
 import { useAuth } from '../context/AuthContext'
 import useDebouncedValue from '../hooks/useDebouncedValue'
+import {
+  isCompleteLeaveDateRange,
+  updateLeaveDateRangeFromCalendar,
+} from '../utils/leaveDateRange'
 
 export default function GridMembers() {
   const { user } = useAuth()
@@ -1265,11 +1269,14 @@ function LeaveModal({
   const [mode, setMode] = useState<'temporary' | 'long_term'>(
     member.status === '离岗' ? 'long_term' : 'temporary',
   )
-  const [leaveRange, setLeaveRange] = useState<[string, string] | null>(
-    member.leave_start_date && member.leave_end_date
-      ? [member.leave_start_date, member.leave_end_date]
-      : null,
-  )
+  // Keep the two ends independently editable.  RangePicker emits a partial
+  // range while a user is replacing one end or clearing the other one; using
+  // `null` for the whole range discarded that intermediate state and made the
+  // old end date appear to be "stuck".
+  const [leaveRange, setLeaveRange] = useState<[string, string]>([
+    member.leave_start_date || '',
+    member.leave_end_date || '',
+  ])
   const [reason, setReason] = useState(member.leave_reason || '')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
@@ -1281,9 +1288,18 @@ function LeaveModal({
   const handleSave = async () => {
     if (
       mode === 'temporary'
-      && (!leaveRange?.[0] || !leaveRange?.[1])
+      && (!leaveRange[0] || !leaveRange[1])
     ) {
       setFormError('请选择临时请假日期')
+      return
+    }
+    if (
+      mode === 'temporary'
+      && leaveRange[0]
+      && leaveRange[1]
+      && !isCompleteLeaveDateRange(leaveRange)
+    ) {
+      setFormError('结束日期不能早于开始日期')
       return
     }
     setSaving(true)
@@ -1291,8 +1307,8 @@ function LeaveModal({
     try {
       await updateGridMemberLeave(member.id, {
         action: mode,
-        leave_start_date: mode === 'temporary' ? leaveRange?.[0] : null,
-        leave_end_date: mode === 'temporary' ? leaveRange?.[1] : null,
+        leave_start_date: mode === 'temporary' ? leaveRange[0] : null,
+        leave_end_date: mode === 'temporary' ? leaveRange[1] : null,
         leave_reason: reason,
       })
       onSaved(mode === 'long_term' ? '已设置为长期' : '请假日期已保存')
@@ -1377,18 +1393,10 @@ function LeaveModal({
                   aria-label="请假开始日期"
                   className="h-11 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   type="date"
-                  value={leaveRange?.[0] || ''}
+                  value={leaveRange[0]}
                   onChange={event => {
                     const nextStart = event.target.value
-                    if (!nextStart) {
-                      setLeaveRange(null)
-                      return
-                    }
-                    const currentEnd = leaveRange?.[1] || nextStart
-                    setLeaveRange([
-                      nextStart,
-                      currentEnd < nextStart ? nextStart : currentEnd,
-                    ])
+                    setLeaveRange(current => [nextStart, current[1]])
                   }}
                 />
               </label>
@@ -1397,39 +1405,42 @@ function LeaveModal({
                 <input
                   aria-label="请假结束日期"
                   className="h-11 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-sm text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  min={leaveRange?.[0] || undefined}
                   type="date"
-                  value={leaveRange?.[1] || ''}
+                  value={leaveRange[1]}
                   onChange={event => {
                     const nextEnd = event.target.value
-                    const currentStart = leaveRange?.[0] || nextEnd
-                    if (!nextEnd || !currentStart) {
-                      setLeaveRange(null)
-                      return
-                    }
-                    setLeaveRange([
-                      currentStart,
-                      nextEnd < currentStart ? currentStart : nextEnd,
-                    ])
+                    setLeaveRange(current => [current[0], nextEnd])
                   }}
                 />
               </label>
             </div>
             <div className="hidden md:block">
               <DatePicker.RangePicker
-                value={leaveRange
-                  ? [dayjs(leaveRange[0]), dayjs(leaveRange[1])]
+                value={leaveRange[0] || leaveRange[1]
+                  ? [
+                      leaveRange[0] ? dayjs(leaveRange[0]) : null,
+                      leaveRange[1] ? dayjs(leaveRange[1]) : null,
+                    ]
                   : null}
+                onCalendarChange={(_, dateStrings, info) => {
+                  const nextStart = dateStrings[0] || ''
+                  const nextEnd = dateStrings[1] || ''
+                  // Selecting the start of an existing range begins a new
+                  // range.  Drop the old end so it cannot prevent choosing a
+                  // later start date.
+                  setLeaveRange(updateLeaveDateRangeFromCalendar(
+                    [nextStart, nextEnd],
+                    info?.range,
+                  ))
+                }}
                 onChange={(_, dateStrings) => {
-                  setLeaveRange(
-                    dateStrings[0] && dateStrings[1]
-                      ? [dateStrings[0], dateStrings[1]]
-                      : null,
-                  )
+                  setLeaveRange([dateStrings[0] || '', dateStrings[1] || ''])
                 }}
                 format="YYYY-MM-DD"
                 placeholder={['开始日期', '结束日期']}
                 className="w-full"
+                allowClear
+                order={false}
               />
             </div>
             <p className="mt-1.5 text-xs text-slate-500">
