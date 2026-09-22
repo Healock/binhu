@@ -12,6 +12,7 @@ import {
   cacheOnlineResidenceConfig,
   loadOfflineResidenceConfig,
   normalizeMacAddress,
+  normalizeResidenceIdentity,
   readMacAddress,
   saveOfflineResidenceConfig,
   type OfflineResidenceConfig,
@@ -336,16 +337,19 @@ export default function OfflineMode() {
         while (cursor < book.rows.length) {
           const index = cursor
           cursor += 1
-          const identity = String(book.rows[index]?.[book.identityColumn] ?? '').trim().replace(/^['’]/, '')
-          if (!identity) identitySummary.empty += 1
-          const lengthKey = String(identity.length)
+          const rawIdentity = String(book.rows[index]?.[book.identityColumn] ?? '').trim().replace(/^[\u0027\u2019]/, '')
+          const identity = normalizeResidenceIdentity(rawIdentity)
+          if (!rawIdentity) identitySummary.empty += 1
+          const lengthKey = String(rawIdentity.length)
           identitySummary.lengths[lengthKey] = (identitySummary.lengths[lengthKey] || 0) + 1
-          if (/^\d{17}[\dXx]$/.test(identity)) identitySummary.valid_format += 1
+          if (identity) identitySummary.valid_format += 1
           else identitySummary.invalid_format += 1
           setIdentityInputSummary({ ...identitySummary, lengths: { ...identitySummary.lengths } })
           let result: { status: string; error?: string; diagnostics?: Array<{ stage: string; error_code: string; http_status?: number; business_code?: string; result_type?: string }> }
           try {
-            result = await client.lookup(identity)
+            result = identity
+              ? await client.lookup(identity)
+              : { status: '身份证号格式无效', error: 'invalid_identity' }
           } catch (reason) {
             result = { status: '查询失败', error: reason instanceof Error ? reason.message : 'request_error' }
           }
@@ -494,10 +498,10 @@ export default function OfflineMode() {
             </div>
           </Panel>
 
-          <Panel title="已撤管人员居住登记情况批量查询" description="支持 .xlsx。只读取身份证号列，不检查身份证号格式；原表会在身份证号后新增“登记情况”列。">
+          <Panel title="已撤管人员居住登记情况批量查询" description="支持 .xlsx。只读取身份证号列并校验 15/18 位身份证号；格式无效的行不会请求居住证系统，原表会在身份证号后新增“登记情况”列。">
             <div className="grid gap-4">
               {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
-              <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={() => { setFile(null); setFileList([]); setWorkbook(null); setStatuses([]); setQueryState('idle') }} disabled={running}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p className="ant-upload-text">拖入人员名单文件，或点击选择</p><p className="ant-upload-hint">识别“身份证号 / 身份证号码 / 身份证”列；不校验号码格式</p></Dragger>
+              <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={() => { setFile(null); setFileList([]); setWorkbook(null); setStatuses([]); setQueryState('idle') }} disabled={running}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p className="ant-upload-text">拖入人员名单文件，或点击选择</p><p className="ant-upload-hint">识别“身份证号 / 身份证号码 / 身份证”列；先校验号码格式，再查询居住证系统</p></Dragger>
               <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-[var(--app-text-secondary)]">{file ? `已选择：${file.name}` : '请选择文件后确认查询'}</span><Button type="primary" onClick={() => void start()} loading={running} disabled={!file || running || !configIsUsable(config)}>确认并开始查询</Button></div>
               {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出结果 XLSX</Button></div>}</div>}
             </div>

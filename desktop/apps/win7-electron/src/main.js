@@ -92,6 +92,20 @@ const RESIDENCE_READ_PATHS = [
 ]
 const RESIDENCE_HEADER_ALLOWLIST = new Set(['content-type', 'x-access-token', 'tenant_id', 'accept'])
 
+function extractResidenceOrganizationCode(value) {
+  const queue = [value]
+  while (queue.length) {
+    const current = queue.shift()
+    if (!current || typeof current !== 'object') continue
+    for (const key of ['orgCode', 'org_code', 'departCode']) {
+      const candidate = String(current[key] || '').trim()
+      if (candidate.length >= 6 && /^\d{6}/.test(candidate)) return candidate
+    }
+    queue.push(...(Array.isArray(current) ? current : Object.values(current)))
+  }
+  return ''
+}
+
 function residenceApiPath(baseUrl, pathName, method) {
   if (typeof pathName !== 'string' || !pathName.startsWith('/') || pathName.includes('..') || pathName.includes('?') || pathName.includes('#')) throw new Error('config_error')
   if (!RESIDENCE_READ_PATHS.some(rule => rule.method === method && rule.pattern.test(pathName))) throw new Error('config_error')
@@ -131,7 +145,7 @@ function probeResidenceLogin(request) {
         const result = login.payload?.result
         const token = result?.token
         if (login.statusCode < 200 || login.statusCode >= 300 || login.payload?.success !== true || !token) return { status: 'rejected', errorCode: 'login_rejected' }
-        const organizationCode = String(result?.orgCode || result?.org_code || result?.userInfo?.orgCode || '').trim()
+        const organizationCode = extractResidenceOrganizationCode(result)
         const expected = String(request.communityCode || '').trim().toUpperCase()
         const actual = organizationCode.toUpperCase()
         if (expected && actual && !(expected === actual || (expected.length >= 6 && actual.startsWith(expected)) || (actual.length >= 6 && expected.startsWith(actual)))) return { status: 'rejected', errorCode: 'organization_mismatch' }
