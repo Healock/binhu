@@ -408,6 +408,48 @@ function authResponse(payload: any): boolean {
   return [401, 403].includes(Number(payload?.code)) || ['token', '登录失效', '未登录', '认证失败'].some(marker => message.includes(marker))
 }
 
+const IDENTITY_18_RE = /^\d{17}[0-9X]$/
+const IDENTITY_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+const IDENTITY_CHECKS = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2']
+
+/** Normalize and validate a PRC identity number before sending it upstream. */
+export function normalizeResidenceIdentity(value: unknown): string {
+  let identity = String(value ?? '').trim().replace(/^[\u0027\u2019]/, '').replace(/\s+/g, '').toUpperCase()
+  if (/^\d{15}$/.test(identity)) {
+    identity = `${identity.slice(0, 6)}19${identity.slice(6)}`
+  }
+  if (!IDENTITY_18_RE.test(identity)) return ''
+  const year = Number(identity.slice(6, 10))
+  const month = Number(identity.slice(10, 12))
+  const day = Number(identity.slice(12, 14))
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return ''
+  const checksum = IDENTITY_CHECKS[IDENTITY_WEIGHTS.reduce((sum, weight, index) => sum + Number(identity[index]) * weight, 0) % 11]
+  return checksum === identity[17] ? identity : ''
+}
+
+/**
+ * The residence platform has returned the login organisation under several
+ * equivalent field names over time. Keep the offline client aligned with the
+ * server client and search nested login result objects before falling back to
+ * the configured community code.
+ */
+export function extractResidenceOrganizationCode(value: any): string {
+  const queue: any[] = [value]
+  while (queue.length) {
+    const current = queue.shift()
+    if (current && typeof current === 'object') {
+      for (const key of ['orgCode', 'org_code', 'departCode']) {
+        const candidate = String(current[key] || '').trim()
+        if (candidate.length >= 6 && /^\d{6}/.test(candidate)) return candidate
+      }
+      if (Array.isArray(current)) queue.push(...current)
+      else queue.push(...Object.values(current))
+    }
+  }
+  return ''
+}
+
 function payloadResultType(payload: any): string {
   if (payload === null) return 'null'
   if (payload === undefined) return 'missing'
@@ -481,7 +523,7 @@ export class OfflineResidenceClient {
       }),
     })).payload
     if (!payload?.success || !payload?.result?.token) throw new Error('居住证平台登录失败，请检查配置')
-    const organizationCode = String(payload.result.orgCode || payload.result.org_code || payload.result.userInfo?.orgCode || account.community_code).trim()
+    const organizationCode = extractResidenceOrganizationCode(payload.result) || account.community_code
     if (!organizationCodesMatch(account.community_code, organizationCode)) {
       throw new Error('居住证账号返回的组织代码与所选社区不一致')
     }

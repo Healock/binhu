@@ -396,6 +396,35 @@ fn residence_org_matches(expected: &str, actual: &str) -> bool {
         || (right.len() >= 6 && left.starts_with(&right))
 }
 
+fn extract_residence_organization_code(value: &serde_json::Value) -> String {
+    if let Some(object) = value.as_object() {
+        for key in ["orgCode", "org_code", "departCode"] {
+            if let Some(candidate) = object.get(key).and_then(serde_json::Value::as_str) {
+                let candidate = candidate.trim();
+                if candidate.chars().count() >= 6
+                    && candidate.chars().take(6).all(|c| c.is_ascii_digit())
+                {
+                    return candidate.to_string();
+                }
+            }
+        }
+        for child in object.values() {
+            let candidate = extract_residence_organization_code(child);
+            if !candidate.is_empty() {
+                return candidate;
+            }
+        }
+    } else if let Some(array) = value.as_array() {
+        for child in array {
+            let candidate = extract_residence_organization_code(child);
+            if !candidate.is_empty() {
+                return candidate;
+            }
+        }
+    }
+    String::new()
+}
+
 fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeResult {
     let base = request.base_url.trim().trim_end_matches('/');
     let parsed = match base.parse::<ureq::http::Uri>() {
@@ -511,17 +540,8 @@ fn probe_residence_login_sync(request: ResidenceProbeRequest) -> ResidenceProbeR
         return probe_residence_result("rejected", Some("login_rejected"), None);
     }
     let organization_code = result
-        .and_then(|value| value.get("orgCode").or_else(|| value.get("org_code")))
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| {
-            result
-                .and_then(|value| value.get("userInfo"))
-                .and_then(|value| value.get("orgCode"))
-                .and_then(serde_json::Value::as_str)
-        })
-        .unwrap_or("")
-        .trim()
-        .to_string();
+        .map(extract_residence_organization_code)
+        .unwrap_or_default();
     if !residence_org_matches(
         request.community_code.as_deref().unwrap_or(""),
         &organization_code,

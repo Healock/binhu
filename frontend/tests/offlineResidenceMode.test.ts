@@ -6,8 +6,10 @@ import {
   cacheOnlineResidenceConfig,
   loadOfflineResidenceConfig,
   normalizeMacAddress,
+  normalizeResidenceIdentity,
   readMacAddress,
   saveOfflineResidenceConfig,
+  extractResidenceOrganizationCode,
   summarizeResidencePayload,
 } from '../src/utils/offlineResidenceClient.ts'
 
@@ -239,6 +241,44 @@ test('登录成功后允许社区代码与返回组织代码的层级后缀兼�
   }).probeMacAccess('02:11:22:33:44:66')
   assert.equal(result[0].allowed, true)
   assert.equal(result[0].status, 'allowed')
+})
+
+test('离线批量查询校验身份证日期和校验位', () => {
+  assert.equal(normalizeResidenceIdentity("'11010519491231002x"), '11010519491231002X')
+  assert.equal(normalizeResidenceIdentity('110105194912310021'), '')
+  assert.equal(normalizeResidenceIdentity('123'), '')
+})
+
+test('离线查询复用登录响应中的 departCode 作为查询机构代码', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  const queryBodies: Array<Record<string, unknown>> = []
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (url: string, init?: RequestInit) => {
+      if (url === 'http://127.0.0.1:23333') return new Response(JSON.stringify({ mac: '02:11:22:33:44:66' }), { status: 200 })
+      if (url.includes('/sys/randomImage/')) return new Response(JSON.stringify({ success: true }), { status: 200 })
+      if (url.endsWith('/sys/login')) return new Response(JSON.stringify({
+        success: true,
+        result: { token: 'fixture-token', userInfo: { departCode: '320584037700' } },
+      }), { status: 200 })
+      const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>
+      queryBodies.push(body)
+      if (url.endsWith('/szjzz/searchIsck')) return new Response(JSON.stringify({ success: true, code: 200, result: null }), { status: 200 })
+      return new Response(JSON.stringify({ success: false, code: 500, message: '操作失败，没有查询到数据', result: null }), { status: 200 })
+    },
+  })
+  assert.equal(extractResidenceOrganizationCode({ nested: [{ departCode: '320584037700' }] }), '320584037700')
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid/grandlynn-boot',
+    password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '测试社区', username: 'fixture-user', community_code: '3205840377' }],
+  }).lookup('11010519491231002X')
+  assert.equal(result.status, '未登记')
+  assert.deepEqual(queryBodies, [
+    { sfzh: '11010519491231002X', xzqh: '320584' },
+    { sfzh: '11010519491231002X', xzqh: '320584' },
+  ])
 })
 
 test('在线配置同步不要求密码明文', () => {
