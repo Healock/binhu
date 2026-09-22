@@ -12,10 +12,12 @@ import {
   extractResidenceOrganizationCode,
   summarizeResidencePayload,
 } from '../src/utils/offlineResidenceClient.ts'
+import { selectIdentityColumn } from '../src/utils/offlineResidenceHeaders.ts'
 
 const pageSource = readFileSync(new URL('../src/pages/OfflineMode.tsx', import.meta.url), 'utf8')
 const clientSource = readFileSync(new URL('../src/utils/offlineResidenceClient.ts', import.meta.url), 'utf8')
 const workbookSource = readFileSync(new URL('../src/utils/offlineResidenceXlsx.ts', import.meta.url), 'utf8')
+const workbookHeadersSource = readFileSync(new URL('../src/utils/offlineResidenceHeaders.ts', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
 const authSource = readFileSync(new URL('../src/context/AuthContext.tsx', import.meta.url), 'utf8')
 
@@ -58,9 +60,20 @@ test('离线页面展示整体进度和查询成功人数', () => {
 })
 
 test('工作簿只查找身份证列并在其后插入登记情况', () => {
-  assert.match(workbookSource, /身份证号.*身份证号码.*身份证/)
+  for (const header of ['身份证号', '身份证号码', '证件号码', '公民身份号码']) {
+    assert.match(workbookHeadersSource, new RegExp(header))
+  }
+  assert.match(workbookHeadersSource, /证件类型/)
+  assert.match(workbookHeadersSource, /NON_IDENTITY_HEADERS/)
   assert.match(workbookSource, /header\.splice\(book\.identityColumn \+ 1, 0, '登记情况'\)/)
   assert.match(workbookSource, /不校验|不检查|identityColumn/)
+})
+
+test('工作簿优先选择证件号码而不是相邻的证件类型', () => {
+  assert.equal(selectIdentityColumn(['姓名', '证件类型', '证件号码']), 2)
+  assert.equal(selectIdentityColumn(['姓名', '身份证件类型', '居民身份证号']), 2)
+  assert.equal(selectIdentityColumn(['姓名', '身份证']), 1)
+  assert.equal(selectIdentityColumn(['姓名', '证件类型']), -1)
 })
 
 test('离线客户端只调用居住证只读登录和查询路径', () => {

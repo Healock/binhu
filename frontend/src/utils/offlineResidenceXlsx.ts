@@ -1,4 +1,5 @@
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate'
+import { identityHeaderScore, selectIdentityColumn } from './offlineResidenceHeaders'
 
 export interface OfflineWorkbook {
   sheetName: string
@@ -6,8 +7,6 @@ export interface OfflineWorkbook {
   rows: string[][]
   identityColumn: number
 }
-
-const IDENTITY_HEADERS = new Set(['身份证号', '身份证号码', '身份证'])
 
 function xmlEscape(value: string): string {
   return value.replace(/[&<>"']/g, character => ({
@@ -68,11 +67,17 @@ export async function readOfflineWorkbook(file: File): Promise<OfflineWorkbook> 
   const rows = parseSheet(strFromU8(files[sheet.path]), shared)
   let headerIndex = -1
   let identityColumn = -1
+  let identityScore = -1
   for (let index = 0; index < Math.min(rows.length, 20); index += 1) {
-    const candidate = rows[index].findIndex(value => IDENTITY_HEADERS.has(String(value || '').replace(/[：: ]/g, '')))
-    if (candidate >= 0) { headerIndex = index; identityColumn = candidate; break }
+    const candidate = selectIdentityColumn(rows[index])
+    const candidateScore = candidate >= 0 ? identityHeaderScore(rows[index][candidate]) : -1
+    if (candidate >= 0 && candidateScore > identityScore) {
+      headerIndex = index
+      identityColumn = candidate
+      identityScore = candidateScore
+    }
   }
-  if (headerIndex < 0) throw new Error('未找到身份证号列（支持：身份证号、身份证号码、身份证）')
+  if (headerIndex < 0) throw new Error('未找到身份证号列（支持：身份证号、身份证号码、证件号码、公民身份号码、身份证）')
   const header = [...rows[headerIndex]]
   while (header.length && !header[header.length - 1]) header.pop()
   const data = rows.slice(headerIndex + 1)
