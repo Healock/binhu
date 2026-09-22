@@ -74,8 +74,10 @@ def read_exact(stream: BinaryIO, destination: Path, expected_size: int) -> str:
             output.write(chunk)
             digest.update(chunk)
             remaining -= len(chunk)
-    if stream.read(1):
-        raise PublishError("upload contains bytes beyond declared length")
+    # The upload length is part of the authenticated command metadata.  Do not
+    # read one more byte here: an SSH client keeps stdin open while it waits for
+    # the remote command result, so probing for EOF would deadlock every
+    # successful upload until the CI job timeout closes the connection.
     return digest.hexdigest()
 
 

@@ -217,6 +217,21 @@ class GatewayTests(unittest.TestCase):
         )
         self.assertEqual(result, 1)
 
+    def test_publish_does_not_wait_for_stdin_eof_after_declared_bundle(self):
+        data = self.bundle()
+
+        class NoEofProbe(io.BytesIO):
+            def read(self, size=-1):
+                if self.tell() >= len(data):
+                    raise AssertionError("gateway must not probe for SSH stdin EOF")
+                return super().read(size)
+
+        result = gateway.main(
+            ["publish", "0.25.15", "a" * 40, str(len(data)), hashlib.sha256(data).hexdigest()],
+            NoEofProbe(data),
+        )
+        self.assertEqual(result, 0)
+
     def test_requires_full_only_baseline_and_delta_after_baseline(self):
         self.assertEqual(self.run_publish(self.bundle(include_delta=True)), 1)
         self.assertEqual(self.run_publish(self.bundle()), 0)
