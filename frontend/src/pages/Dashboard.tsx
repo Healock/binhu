@@ -14,7 +14,7 @@ import {
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { DownloadOutlined } from '@ant-design/icons'
-import dayjs from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import AppTable from '../components/AppTable'
 import DataOverview from '../components/DataOverview'
@@ -36,6 +36,7 @@ import {
   type TxDocsMonitoringOverview,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { updateDateRangePickerSelection } from '../utils/dateRangePicker'
 import { exportSummaryWorkbook } from '../utils/summaryXlsx'
 import { buildReportTableTotal } from '../utils/tableTotals'
 
@@ -139,6 +140,9 @@ export default function Dashboard() {
   const requestedStart = searchParams.get('start') || browserToday
   const requestedEnd = searchParams.get('end') || requestedStart
   const [dateRange, setDateRange] = useState<[string, string]>([requestedStart, requestedEnd])
+  // Keep an in-progress RangePicker selection separate from the committed
+  // query range. Ant Design only fires onChange after both dates are chosen.
+  const [pickerRange, setPickerRange] = useState<[string, string] | null>(null)
   const [reportType, setReportType] = useState(searchParams.get('type') || '全链条')
   const responsibilityScope = searchParams.get('scope') === 'responsibility' ? 'responsibility' : 'permission'
   const requestedCommunity = searchParams.get('community') || ''
@@ -167,6 +171,9 @@ export default function Dashboard() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [startDate, endDate] = dateRange
+  const pickerValue: [Dayjs | null, Dayjs | null] = pickerRange
+    ? [pickerRange[0] ? dayjs(pickerRange[0]) : null, pickerRange[1] ? dayjs(pickerRange[1]) : null]
+    : [dayjs(startDate), dayjs(endDate)]
 
   // 日期或业务类型变化时读取本地报表。
   const fetchReport = useCallback(async () => {
@@ -613,14 +620,22 @@ export default function Dashboard() {
             <DatePicker.RangePicker
               size="large"
               className="w-full"
-              value={[dayjs(startDate), dayjs(endDate)]}
+              value={pickerValue}
+              onCalendarChange={(_, dateStrings, info) => {
+                setPickerRange(updateDateRangePickerSelection(dateStrings, info?.range))
+              }}
+              onOpenChange={(open) => {
+                if (!open) setPickerRange(null)
+              }}
               onChange={(_, dateStrings) => {
                 if (dateStrings[0] && dateStrings[1]) {
                   void recordActivity().catch(() => {})
                   setDateRange([dateStrings[0], dateStrings[1]])
                 }
+                setPickerRange(null)
               }}
               allowClear={false}
+              order={false}
             />
           </div>
           {canConfigureReport && <SummaryReportConfigButton />}
