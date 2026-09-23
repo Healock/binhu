@@ -23,6 +23,9 @@ env:
   BINHU_UPDATE_HOST: 47.100.44.36
   BINHU_UPDATE_PORT: "51234"
   BINHU_UPDATE_USER: binhu-update-publish
+  ALIYUN_OSS_BUCKET: binhu-update
+  ALIYUN_OSS_UPLOAD_ENDPOINT: binhu-update.oss-cn-shanghai.aliyuncs.com
+  ALIYUN_OSS_SERVER_ENDPOINT: binhu-update.oss-cn-shanghai-internal.aliyuncs.com
   ELECTRON_ARCHIVE_URL: https://github.com/electron/electron/releases/download/v36.0.0/electron-v36.0.0-win32-x64.zip
   ELECTRON_ARCHIVE_SHA256: 3690467f4cb67752cdad90962bb3bee252dafcbfb12834d853e36d97117cd5b2
   VXKEX_URL: https://github.com/i486/VxKex/releases/download/Version1.2.1.2229/KexSetup_Release_1_2_1_2229.exe
@@ -508,48 +511,46 @@ jobs:
           sha256sum release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz > release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256
           cp release-input/combined/win7-x64/checksums.sha256 release-input/win7-x64-checksums.sha256
           cp release-input/combined/win10-x64/checksums.sha256 release-input/win10-x64-checksums.sha256
-      - name: Create temporary GitHub transfer release
+      - name: Upload transfer bundle to private Aliyun OSS
         id: transfer
         env:
-          GH_TOKEN: ${{ github.token }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
         run: |
           set -Eeuo pipefail
           bundle=release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz
           size=$(wc -c < "$bundle")
           hash=$(sha256sum "$bundle" | awk '{print $1}')
-          temp_tag="client-transfer-${{ needs.prepare.outputs.commit }}-${{ github.run_id }}"
-          gh release create "$temp_tag" --repo "$GITHUB_REPOSITORY" \
-            --target '${{ needs.prepare.outputs.commit }}' --prerelease \
-            --title "Binhu client transfer ${{ needs.prepare.outputs.version }}" \
-            --notes "Temporary transfer asset for the fixed update gateway; delete after the stable release is created."
-          gh release upload "$temp_tag" "$bundle" --repo "$GITHUB_REPOSITORY"
-          asset_name="$(basename "$bundle")"
-          asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$temp_tag" \
-            --jq ".assets[] | select(.name == \"$asset_name\") | .id")"
-          test -n "$asset_id"
-          echo "temp_tag=$temp_tag" >> "$GITHUB_OUTPUT"
-          echo "asset_id=$asset_id" >> "$GITHUB_OUTPUT"
+          object_key="client-transfer/${{ needs.prepare.outputs.version }}/${{ needs.prepare.outputs.commit }}/$(basename "$bundle")"
+          python desktop/scripts/aliyun_oss_transfer.py upload \
+            --endpoint "$ALIYUN_OSS_UPLOAD_ENDPOINT" --key "$object_key" --file "$bundle"
           echo "bundle_size=$size" >> "$GITHUB_OUTPUT"
           echo "bundle_sha256=$hash" >> "$GITHUB_OUTPUT"
+          echo "object_key=$object_key" >> "$GITHUB_OUTPUT"
           echo "bundle_bytes=$size"
           echo "bundle_sha256=$hash"
       - name: Publish through fixed SSH gateway
         env:
           UPDATE_KEY: ${{ secrets.BINHU_UPDATE_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.BINHU_UPDATE_KNOWN_HOSTS }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
         run: |
           set -Eeuo pipefail
           install -d -m 700 "$RUNNER_TEMP/binhu-update-ssh"
           printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/binhu-update-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/binhu-update-ssh/key" "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
+          python desktop/scripts/aliyun_oss_transfer.py presign \
+            --endpoint "$ALIYUN_OSS_SERVER_ENDPOINT" \
+            --key '${{ steps.transfer.outputs.object_key }}' --expires-in 3600 | \
           ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
             -o ConnectTimeout=30 -o ConnectionAttempts=3 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p "$BINHU_UPDATE_PORT" \
             "$BINHU_UPDATE_USER@$BINHU_UPDATE_HOST" \
-            "pull-release-asset ${{ steps.transfer.outputs.asset_id }} ${{ needs.prepare.outputs.version }} ${{ needs.prepare.outputs.commit }} ${{ steps.transfer.outputs.bundle_size }} ${{ steps.transfer.outputs.bundle_sha256 }}"
+            "pull-oss-object ${{ steps.transfer.outputs.object_key }} ${{ needs.prepare.outputs.version }} ${{ needs.prepare.outputs.commit }} ${{ steps.transfer.outputs.bundle_size }} ${{ steps.transfer.outputs.bundle_sha256 }}"
       - name: Create audit GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -567,9 +568,3 @@ jobs:
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz \
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256 \
             release-notes/release-notes.json
-      - name: Remove temporary transfer release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -Eeuo pipefail
-          gh release delete "${{ steps.transfer.outputs.temp_tag }}" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag

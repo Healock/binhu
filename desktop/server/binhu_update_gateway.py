@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import zipfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -35,6 +36,10 @@ SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 ASSET_ID_RE = re.compile(r"^[1-9][0-9]{0,20}$")
+OSS_KEY_RE = re.compile(
+    r"^client-transfer/[0-9]+\.[0-9]+\.[0-9]+/[0-9a-f]{40}/"
+    r"binhu-clients-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$"
+)
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]{0,199}$")
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024 * 1024
 MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024
@@ -43,6 +48,9 @@ GITHUB_ASSET_URL = "https://api.github.com/repos/Healock/binhu/releases/assets/{
 GITHUB_DOWNLOAD_TIMEOUT = 3600
 GITHUB_DOWNLOAD_RETRIES = 5
 GITHUB_DOWNLOAD_IDLE_TIMEOUT = 120
+OSS_ENDPOINT = "binhu-update.oss-cn-shanghai-internal.aliyuncs.com"
+OSS_DOWNLOAD_TIMEOUT = 3600
+OSS_DOWNLOAD_RETRIES = 5
 
 
 class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -52,7 +60,16 @@ class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
+class FixedOssRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlsplit(newurl)
+        if parsed.scheme != "https" or parsed.hostname != OSS_ENDPOINT:
+            raise PublishError("OSS object redirected outside the fixed endpoint")
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
 GITHUB_OPENER = urllib.request.build_opener(HttpsOnlyRedirectHandler)
+OSS_OPENER = urllib.request.build_opener(FixedOssRedirectHandler)
 
 
 class PublishError(RuntimeError):
@@ -201,6 +218,107 @@ def pull_release_asset(
             raise PublishError(f"GitHub asset download failed: {error}") from error
     else:
         raise PublishError(f"GitHub asset download failed: {last_error}")
+    os.replace(partial, bundle)
+    try:
+        return publish(root, bundle, expected_version, expected_commit)
+    finally:
+        bundle.unlink(missing_ok=True)
+
+
+def pull_oss_object(
+    root: Path,
+    object_key: str,
+    signed_url: str,
+    expected_version: str,
+    expected_commit: str,
+    expected_size: int,
+    expected_hash: str,
+) -> bool:
+    """Pull one fixed private OSS object and publish it after full validation."""
+    if not OSS_KEY_RE.fullmatch(object_key):
+        raise PublishError("invalid OSS object key")
+    parsed = urllib.parse.urlsplit(signed_url)
+    query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    if (parsed.scheme != "https" or parsed.hostname != OSS_ENDPOINT or parsed.port is not None
+            or parsed.username or parsed.password or parsed.fragment):
+        raise PublishError("OSS URL must use the fixed Shanghai internal endpoint")
+    if set(query) != {"OSSAccessKeyId", "Expires", "Signature"} or any(len(values) != 1 or not values[0] for values in query.values()):
+        raise PublishError("OSS URL is missing required signature parameters")
+    if not query["Expires"][0].isdigit():
+        raise PublishError("invalid OSS URL expiration")
+    if parsed.path != "/" + object_key:
+        raise PublishError("OSS URL path does not match object key")
+    parse_version(expected_version)
+    if not COMMIT_RE.fullmatch(expected_commit):
+        raise PublishError("invalid commit id")
+    expected_key = (
+        f"client-transfer/{expected_version}/{expected_commit}/"
+        f"binhu-clients-{expected_version}.tar.gz"
+    )
+    if object_key != expected_key:
+        raise PublishError("OSS object metadata does not match version or commit")
+    if expected_size <= 0 or expected_size > MAX_BUNDLE_BYTES:
+        raise PublishError("bundle length is outside the allowed range")
+    if not HASH_RE.fullmatch(expected_hash):
+        raise PublishError("invalid bundle SHA-256")
+    incoming = root / "incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    partial = incoming / f"{expected_version}-{expected_commit}.tar.gz.partial"
+    bundle = incoming / f"{expected_version}-{expected_commit}.tar.gz"
+    if partial.exists() and partial.stat().st_size > expected_size:
+        partial.unlink()
+    if partial.exists() and partial.stat().st_size == expected_size:
+        if sha256_file(partial) == expected_hash:
+            os.replace(partial, bundle)
+            try:
+                return publish(root, bundle, expected_version, expected_commit)
+            finally:
+                bundle.unlink(missing_ok=True)
+        partial.unlink()
+    last_error: Exception | None = None
+    for attempt in range(OSS_DOWNLOAD_RETRIES):
+        offset = partial.stat().st_size if partial.exists() else 0
+        digest = hashlib.sha256()
+        if offset:
+            with partial.open("rb") as prefix:
+                for chunk in iter(lambda: prefix.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        headers = {"User-Agent": "binhu-update-gateway"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        request = urllib.request.Request(signed_url, headers=headers)
+        try:
+            with OSS_OPENER.open(request, timeout=OSS_DOWNLOAD_TIMEOUT) as response:
+                ranged = bool(offset and getattr(response, "status", None) == 206)
+                if offset and not ranged:
+                    offset = 0
+                    digest = hashlib.sha256()
+                    partial.unlink(missing_ok=True)
+                mode = "ab" if offset else "wb"
+                received = offset
+                with partial.open(mode) as output:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        received += len(chunk)
+                        if received > expected_size or received > MAX_BUNDLE_BYTES:
+                            raise PublishError("download exceeds declared bundle length")
+                        output.write(chunk)
+                        digest.update(chunk)
+            if received != expected_size:
+                raise PublishError("download ended before declared length")
+            if digest.hexdigest() != expected_hash:
+                partial.unlink(missing_ok=True)
+                raise PublishError("download SHA-256 mismatch")
+            break
+        except (OSError, TimeoutError, urllib.error.URLError, urllib.error.HTTPError, PublishError) as error:
+            last_error = error
+            if attempt + 1 < OSS_DOWNLOAD_RETRIES:
+                continue
+            raise PublishError(f"OSS object download failed: {error}") from error
+    else:
+        raise PublishError(f"OSS object download failed: {last_error}")
     os.replace(partial, bundle)
     try:
         return publish(root, bundle, expected_version, expected_commit)
@@ -709,6 +827,28 @@ def main(
                     commit,
                     int(size_text),
                     expected_hash,
+                )
+            print(f"PUBLISH_STATUS={'published' if published else 'already-published'}")
+            print(f"PUBLISHED_VERSION={version}")
+            print(f"PUBLISHED_COMMIT={commit}")
+            return 0
+        if len(parts) == 6 and parts[0] == "pull-oss-object":
+            object_key, version, commit, size_text, expected_hash = parts[1:]
+            if not size_text.isdigit():
+                raise PublishError("invalid OSS pull metadata")
+            signed_url_bytes = (stdin or sys.stdin.buffer).read(4097)
+            if len(signed_url_bytes) > 4096:
+                raise PublishError("OSS URL is too long")
+            try:
+                signed_url = signed_url_bytes.decode("ascii").strip()
+            except UnicodeError as error:
+                raise PublishError("invalid OSS URL encoding") from error
+            lock_path = root / "state" / "publish.lock"
+            with lock_path.open("a+b") as lock:
+                if fcntl is not None:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                published = pull_oss_object(
+                    root, object_key, signed_url, version, commit, int(size_text), expected_hash
                 )
             print(f"PUBLISH_STATUS={'published' if published else 'already-published'}")
             print(f"PUBLISHED_VERSION={version}")

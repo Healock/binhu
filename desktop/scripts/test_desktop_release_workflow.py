@@ -18,13 +18,18 @@ class DesktopReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_publish_creates_asset_before_fixed_gateway_pull(self) -> None:
         self.assertLess(
-            self.workflow.index("Create temporary GitHub transfer release"),
+            self.workflow.index("Upload transfer bundle to private Aliyun OSS"),
             self.workflow.index("Publish through fixed SSH gateway"),
         )
         start = self.workflow.index("      - name: Publish through fixed SSH gateway")
         publish_step = self.workflow[start:]
-        self.assertIn("pull-release-asset", publish_step)
+        self.assertIn("pull-oss-object", publish_step)
         self.assertNotIn("< \"$bundle\"", publish_step)
+        self.assertNotIn("Create temporary GitHub transfer release", self.workflow)
+        self.assertIn("ALIYUN_OSS_ACCESS_KEY_ID", self.workflow)
+        self.assertIn("ALIYUN_OSS_BUCKET", self.workflow)
+        self.assertIn("ALIYUN_OSS_SERVER_ENDPOINT", self.workflow)
+        self.assertIn("aliyun_oss_transfer.py presign", self.workflow)
 
     def test_publish_ssh_has_bounded_connect_retries_and_keepalive(self) -> None:
         start = self.workflow.index("      - name: Publish through fixed SSH gateway")

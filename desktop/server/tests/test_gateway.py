@@ -249,6 +249,62 @@ class GatewayTests(unittest.TestCase):
         self.assertTrue((self.root / "public" / "win7-x64" / "releases.stable.json").is_file())
         self.assertFalse(partial.exists())
 
+    def test_pull_oss_object_downloads_fixed_private_url_and_publishes(self):
+        data = self.bundle()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, size=-1):
+                nonlocal data
+                if not data:
+                    return b""
+                chunk, data = data[:size], data[size:]
+                return chunk
+
+        key = "client-transfer/0.25.15/" + "a" * 40 + "/binhu-clients-0.25.15.tar.gz"
+        url = "https://" + gateway.OSS_ENDPOINT + "/" + key + "?OSSAccessKeyId=public-id&Expires=9999999999&Signature=signature"
+        expected = hashlib.sha256(data).hexdigest()
+        with mock.patch.object(gateway.OSS_OPENER, "open", return_value=Response()) as opener:
+            result = gateway.main(["pull-oss-object", key, "0.25.15", "a" * 40, str(len(data)), expected], io.BytesIO((url + "\n").encode()))
+        self.assertEqual(result, 0)
+        request = opener.call_args.args[0]
+        self.assertEqual(request.full_url, url)
+        self.assertTrue((self.root / "public" / "win7-x64" / "releases.stable.json").is_file())
+
+    def test_pull_oss_object_rejects_other_endpoint_and_key(self):
+        key = "client-transfer/0.25.15/" + "a" * 40 + "/binhu-clients-0.25.15.tar.gz"
+        base = ["pull-oss-object", key, "0.25.15", "a" * 40, "1", "0" * 64]
+        self.assertEqual(gateway.main(base, io.BytesIO(("https://example.invalid/" + key + "?x=y\n").encode())), 1)
+        bad_key = "releases/0.25.15/binhu-clients-0.25.15.tar.gz"
+        self.assertEqual(gateway.main(base[:1] + [bad_key] + base[2:], io.BytesIO(("https://" + gateway.OSS_ENDPOINT + "/" + bad_key + "?x=y\n").encode())), 1)
+
+    def test_pull_oss_object_rejects_missing_signature_parameters(self):
+        key = "client-transfer/0.25.15/" + "a" * 40 + "/binhu-clients-0.25.15.tar.gz"
+        url = "https://" + gateway.OSS_ENDPOINT + "/" + key + "?x=y"
+        self.assertEqual(
+            gateway.main(["pull-oss-object", key, "0.25.15", "a" * 40, "1", "0" * 64], io.BytesIO((url + "\n").encode())),
+            1,
+        )
+
+    def test_pull_oss_object_rejects_version_commit_mismatch(self):
+        key = "client-transfer/0.25.16/" + "b" * 40 + "/binhu-clients-0.25.16.tar.gz"
+        url = "https://" + gateway.OSS_ENDPOINT + "/" + key + "?OSSAccessKeyId=id&Expires=1&Signature=s"
+        self.assertEqual(
+            gateway.main(["pull-oss-object", key, "0.25.15", "a" * 40, "1", "0" * 64], io.BytesIO((url + "\n").encode())),
+            1,
+        )
+
+    def test_oss_redirect_handler_rejects_other_https_host(self):
+        with self.assertRaises(gateway.PublishError):
+            gateway.FixedOssRedirectHandler().redirect_request(
+                mock.Mock(), mock.Mock(), 302, "found", {}, "https://example.invalid/object"
+            )
+
     def test_publish_and_status(self):
         self.assertEqual(self.run_publish(self.bundle()), 0)
         for platform in gateway.PLATFORMS:

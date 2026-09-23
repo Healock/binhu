@@ -48,6 +48,7 @@ status
 fetch <win7-x64|win10-x64> <current-full-package.nupkg>
 publish <version> <40-char-commit> <byte-length> <sha256>
 pull-release-asset <asset-id> <version> <40-char-commit> <byte-length> <sha256>
+pull-oss-object <fixed-object-key> <version> <40-char-commit> <byte-length> <sha256>
 ```
 
 `fetch` is read-only and can return only the full package named by the current
@@ -71,6 +72,14 @@ the same archive and platform validation as `publish`. It never accepts a URL,
 repository name, GitHub token or local path from the SSH command. Failed or
 incomplete downloads stay out of `public/` and are removed from the temporary
 incoming path.
+
+`pull-oss-object` reads the short-lived signed URL from SSH standard input and
+accepts only the private Shanghai OSS endpoint,
+`binhu-update.oss-cn-shanghai-internal.aliyuncs.com`, a signed URL for the
+fixed `client-transfer/<version>/<commit>/binhu-clients-<version>.tar.gz`
+namespace, and matching length/hash metadata. The server does not store OSS
+credentials. Range retries leave a `.partial` file and public feeds are only
+changed after the complete bundle passes the existing publish validation.
 
 ## 3. Obtain the IP certificate
 
@@ -141,6 +150,19 @@ ANDROID_MINIMUM_VERSION
 `BINHU_UPDATE_KNOWN_HOSTS` must be the verified `[47.100.44.36]:51234` host-key
 line. The workflow fixes the host, port and user in source code and sends one
 validated tar stream over SSH standard input.
+
+The client-release workflow can alternatively use the private Shanghai OSS
+transfer path. Configure the `desktop-production` Environment with the two
+secrets `ALIYUN_OSS_ACCESS_KEY_ID` and `ALIYUN_OSS_ACCESS_KEY_SECRET`. The RAM
+identity must be restricted to the `binhu-update` bucket and the
+`client-transfer/` prefix. GitHub Actions uploads through the public endpoint
+`oss-cn-shanghai.aliyuncs.com`, creates a short-lived signed URL for the fixed
+internal endpoint `binhu-update.oss-cn-shanghai-internal.aliyuncs.com`, and
+sends only that URL plus the object key, byte length, and SHA-256 to the
+restricted gateway. The gateway accepts only HTTPS URLs for that exact host and
+the fixed `client-transfer/<version>/<commit>/binhu-clients-<version>.tar.gz`
+key shape; it never stores an OSS secret. A failed transfer leaves the partial
+file and does not change the public update feeds.
 
 ## 5. Verify
 
