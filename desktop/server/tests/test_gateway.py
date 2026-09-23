@@ -131,6 +131,74 @@ class GatewayTests(unittest.TestCase):
         bundle_hash = declared_hash or hashlib.sha256(data).hexdigest()
         return gateway.main(["publish", version, commit, str(len(data)), bundle_hash], io.BytesIO(data))
 
+    def test_pull_release_asset_downloads_fixed_github_asset_and_publishes(self):
+        data = self.bundle()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, size=-1):
+                nonlocal data
+                if not data:
+                    return b""
+                chunk, data = data[:size], data[size:]
+                return chunk
+
+        expected = hashlib.sha256(data).hexdigest()
+        with mock.patch.object(gateway.GITHUB_OPENER, "open", return_value=Response()) as opener:
+            result = gateway.main(
+                ["pull-release-asset", "12345", "0.25.15", "a" * 40, str(len(data)), expected]
+            )
+        self.assertEqual(result, 0)
+        request = opener.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.github.com/repos/Healock/binhu/releases/assets/12345")
+        self.assertEqual(request.get_header("Accept"), "application/octet-stream")
+        self.assertTrue((self.root / "public" / "win7-x64" / "releases.stable.json").is_file())
+        self.assertFalse(list((self.root / "incoming").glob("*.partial")))
+
+    def test_pull_release_asset_rejects_arbitrary_asset_id(self):
+        self.assertEqual(
+            gateway.main(
+                ["pull-release-asset", "https://example.invalid", "0.25.15", "a" * 40, "1", "0" * 64]
+            ),
+            1,
+        )
+
+    def test_github_redirect_handler_rejects_plain_http(self):
+        with self.assertRaises(gateway.PublishError):
+            gateway.HttpsOnlyRedirectHandler().redirect_request(
+                mock.Mock(), mock.Mock(), 302, "found", {}, "http://example.invalid/asset"
+            )
+
+    def test_pull_release_asset_rejects_hash_mismatch_without_public_change(self):
+        data = self.bundle()
+        size = len(data)
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, size=-1):
+                nonlocal data
+                if not data:
+                    return b""
+                chunk, data = data[:size], data[size:]
+                return chunk
+
+        with mock.patch.object(gateway.GITHUB_OPENER, "open", return_value=Response()):
+            result = gateway.main(
+                ["pull-release-asset", "12345", "0.25.15", "a" * 40, str(size), "0" * 64]
+            )
+        self.assertEqual(result, 1)
+        self.assertFalse((self.root / "public" / "win7-x64" / "releases.stable.json").exists())
+
     def test_publish_and_status(self):
         self.assertEqual(self.run_publish(self.bundle()), 0)
         for platform in gateway.PLATFORMS:

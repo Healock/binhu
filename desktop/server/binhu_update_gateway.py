@@ -13,6 +13,8 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+import urllib.error
+import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from xml.etree import ElementTree
@@ -32,10 +34,23 @@ WINDOWS_PACKAGE_IDS = {
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+ASSET_ID_RE = re.compile(r"^[1-9][0-9]{0,20}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]{0,199}$")
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024 * 1024
 MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FILES = 100
+GITHUB_ASSET_URL = "https://api.github.com/repos/Healock/binhu/releases/assets/{}"
+GITHUB_DOWNLOAD_TIMEOUT = 3600
+
+
+class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith("https://"):
+            raise PublishError("GitHub asset redirected to a non-HTTPS URL")
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+GITHUB_OPENER = urllib.request.build_opener(HttpsOnlyRedirectHandler)
 
 
 class PublishError(RuntimeError):
@@ -79,6 +94,74 @@ def read_exact(stream: BinaryIO, destination: Path, expected_size: int) -> str:
     # the remote command result, so probing for EOF would deadlock every
     # successful upload until the CI job timeout closes the connection.
     return digest.hexdigest()
+
+
+def pull_release_asset(
+    root: Path,
+    asset_id: str,
+    expected_version: str,
+    expected_commit: str,
+    expected_size: int,
+    expected_hash: str,
+) -> bool:
+    """Download one fixed-repository GitHub Release asset and publish it.
+
+    The caller supplies only an immutable numeric asset id.  The repository and
+    URL scheme are fixed in source so this restricted command cannot become an
+    arbitrary URL downloader.
+    """
+    if not ASSET_ID_RE.fullmatch(asset_id):
+        raise PublishError("invalid GitHub asset id")
+    parse_version(expected_version)
+    if not COMMIT_RE.fullmatch(expected_commit):
+        raise PublishError("invalid commit id")
+    if expected_size <= 0 or expected_size > MAX_BUNDLE_BYTES:
+        raise PublishError("bundle length is outside the allowed range")
+    if not HASH_RE.fullmatch(expected_hash):
+        raise PublishError("invalid bundle SHA-256")
+
+    incoming = root / "incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    partial = incoming / f"{expected_version}-{expected_commit}.tar.gz.partial"
+    bundle = incoming / f"{expected_version}-{expected_commit}.tar.gz"
+    if partial.exists():
+        partial.unlink()
+    request = urllib.request.Request(
+        GITHUB_ASSET_URL.format(asset_id),
+        headers={
+            "Accept": "application/octet-stream",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "binhu-update-gateway",
+        },
+    )
+    digest = hashlib.sha256()
+    received = 0
+    try:
+        with GITHUB_OPENER.open(request, timeout=GITHUB_DOWNLOAD_TIMEOUT) as response:
+            with partial.open("wb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > expected_size or received > MAX_BUNDLE_BYTES:
+                        raise PublishError("download exceeds declared bundle length")
+                    output.write(chunk)
+                    digest.update(chunk)
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as error:
+        partial.unlink(missing_ok=True)
+        raise PublishError(f"GitHub asset download failed: {error}") from error
+    if received != expected_size:
+        partial.unlink(missing_ok=True)
+        raise PublishError("download length does not match declaration")
+    if digest.hexdigest() != expected_hash:
+        partial.unlink(missing_ok=True)
+        raise PublishError("download SHA-256 mismatch")
+    os.replace(partial, bundle)
+    try:
+        return publish(root, bundle, expected_version, expected_commit)
+    finally:
+        bundle.unlink(missing_ok=True)
 
 
 def safe_member_name(name: str) -> PurePosixPath:
@@ -566,6 +649,26 @@ def main(
             return 0
         if len(parts) == 3 and parts[0] == "fetch":
             fetch_full_package(root, parts[1], parts[2], stdout or sys.stdout.buffer)
+            return 0
+        if len(parts) == 6 and parts[0] == "pull-release-asset":
+            asset_id, version, commit, size_text, expected_hash = parts[1:]
+            if not size_text.isdigit():
+                raise PublishError("invalid pull metadata")
+            lock_path = root / "state" / "publish.lock"
+            with lock_path.open("a+b") as lock:
+                if fcntl is not None:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                published = pull_release_asset(
+                    root,
+                    asset_id,
+                    version,
+                    commit,
+                    int(size_text),
+                    expected_hash,
+                )
+            print(f"PUBLISH_STATUS={'published' if published else 'already-published'}")
+            print(f"PUBLISHED_VERSION={version}")
+            print(f"PUBLISHED_COMMIT={commit}")
             return 0
         if len(parts) != 5 or parts[0] != "publish":
             raise PublishError("only status, fetch and publish are allowed")

@@ -477,7 +477,7 @@ jobs:
     # to be truncated in transit, leaving an incomplete archive on the
     # server.  Keep this bounded, but allow a slow, complete transfer and the
     # gateway's subsequent validation to finish.
-    timeout-minutes: 360
+    timeout-minutes: 120
     environment: desktop-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -508,6 +508,31 @@ jobs:
           sha256sum release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz > release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256
           cp release-input/combined/win7-x64/checksums.sha256 release-input/win7-x64-checksums.sha256
           cp release-input/combined/win10-x64/checksums.sha256 release-input/win10-x64-checksums.sha256
+      - name: Create temporary GitHub transfer release
+        id: transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          bundle=release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz
+          size=$(wc -c < "$bundle")
+          hash=$(sha256sum "$bundle" | awk '{print $1}')
+          temp_tag="client-transfer-${{ needs.prepare.outputs.commit }}-${{ github.run_id }}"
+          gh release create "$temp_tag" --repo "$GITHUB_REPOSITORY" \
+            --target '${{ needs.prepare.outputs.commit }}' --prerelease \
+            --title "Binhu client transfer ${{ needs.prepare.outputs.version }}" \
+            --notes "Temporary transfer asset for the fixed update gateway; delete after the stable release is created."
+          gh release upload "$temp_tag" "$bundle" --repo "$GITHUB_REPOSITORY"
+          asset_name="$(basename "$bundle")"
+          asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$temp_tag" \
+            --jq ".assets[] | select(.name == \\\"$asset_name\\\") | .id")"
+          test -n "$asset_id"
+          echo "temp_tag=$temp_tag" >> "$GITHUB_OUTPUT"
+          echo "asset_id=$asset_id" >> "$GITHUB_OUTPUT"
+          echo "bundle_size=$size" >> "$GITHUB_OUTPUT"
+          echo "bundle_sha256=$hash" >> "$GITHUB_OUTPUT"
+          echo "bundle_bytes=$size"
+          echo "bundle_sha256=$hash"
       - name: Publish through fixed SSH gateway
         env:
           UPDATE_KEY: ${{ secrets.BINHU_UPDATE_SSH_KEY }}
@@ -518,17 +543,13 @@ jobs:
           printf '%s\n' "$UPDATE_KEY" > "$RUNNER_TEMP/binhu-update-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/binhu-update-ssh/key" "$RUNNER_TEMP/binhu-update-ssh/known_hosts"
-          bundle=release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz
-          size=$(wc -c < "$bundle")
-          hash=$(sha256sum "$bundle" | awk '{print $1}')
-          echo "bundle_bytes=$size"
           ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
             -o ConnectTimeout=30 -o ConnectionAttempts=3 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p "$BINHU_UPDATE_PORT" \
             "$BINHU_UPDATE_USER@$BINHU_UPDATE_HOST" \
-            "publish ${{ needs.prepare.outputs.version }} ${{ needs.prepare.outputs.commit }} $size $hash" < "$bundle"
+            "pull-release-asset ${{ steps.transfer.outputs.asset_id }} ${{ needs.prepare.outputs.version }} ${{ needs.prepare.outputs.commit }} ${{ steps.transfer.outputs.bundle_size }} ${{ steps.transfer.outputs.bundle_sha256 }}"
       - name: Create audit GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -546,3 +567,9 @@ jobs:
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz \
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256 \
             release-notes/release-notes.json
+      - name: Remove temporary transfer release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          gh release delete "${{ steps.transfer.outputs.temp_tag }}" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag

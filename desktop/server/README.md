@@ -47,6 +47,7 @@ The gateway accepts only:
 status
 fetch <win7-x64|win10-x64> <current-full-package.nupkg>
 publish <version> <40-char-commit> <byte-length> <sha256>
+pull-release-asset <asset-id> <version> <40-char-commit> <byte-length> <sha256>
 ```
 
 `fetch` is read-only and can return only the full package named by the current
@@ -62,6 +63,14 @@ Files are installed before each platform's stable manifest is replaced atomicall
 Version `0.25.15` must be full-only; later versions must contain a current delta.
 The latest five release sets remain public and older files move to
 `/srv/binhu-updates/archive`.
+
+`pull-release-asset` accepts only a numeric asset ID from the fixed public
+`Healock/binhu` GitHub repository. The server downloads the asset over HTTPS
+from the GitHub API, validates its declared length and SHA-256, and then runs
+the same archive and platform validation as `publish`. It never accepts a URL,
+repository name, GitHub token or local path from the SSH command. Failed or
+incomplete downloads stay out of `public/` and are removed from the temporary
+incoming path.
 
 ## 3. Obtain the IP certificate
 
