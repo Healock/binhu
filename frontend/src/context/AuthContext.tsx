@@ -121,11 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (username: string, password: string) => {
     const targetEnvironment = environmentForUsername(username)
     const prefix = environmentPath()
-    assertLoginEnvironmentEntry(
-      targetEnvironment,
-      prefix,
-      import.meta.env.VITE_DESKTOP_MODE === 'true',
-    )
+    assertLoginEnvironmentEntry(targetEnvironment, prefix)
     setApiEnvironment(targetEnvironment)
     setEnvironment(targetEnvironment)
     try {
