@@ -52,6 +52,7 @@ from services.registry_import import (
 )
 from services.registry_certificate_source import fetch_certificate_image, fetch_certificate_rows
 from services.registry_certificate_apply import apply_certificate_batch
+from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_certificate_status import certificate_status_summary
 from services.registry_visit_history import (
     load_property_address_variants,
@@ -2306,6 +2307,7 @@ async def preview_certificate_import(
     if not data.rows:
         raise HTTPException(422, "没有可预览的告知书记录")
     classified = classify_certificate_rows(data.rows)
+    comparison = await load_certificate_comparison(conn, data.rows, classified)
     canonical = json.dumps(data.rows, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     file_hash = hashlib.sha256(canonical).hexdigest()
     await conn.begin()
@@ -2324,6 +2326,7 @@ async def preview_certificate_import(
                     "issue_count": classified["issue_count"], "problem_row_count": classified["problem_row_count"],
                     "duplicate_groups": classified["duplicate_groups"],
                     "conflict_groups": classified["conflict_groups"],
+                    "comparison": comparison,
                 }
             await cur.execute(
                 "INSERT INTO registry_source_batches (source_type, file_name, file_sha256, status, imported_count, candidate_count, conflict_count, created_by) "
@@ -2362,6 +2365,7 @@ async def preview_certificate_import(
         "issue_count": classified["issue_count"], "problem_row_count": classified["problem_row_count"],
         "duplicate_groups": classified["duplicate_groups"],
         "conflict_groups": classified["conflict_groups"],
+        "comparison": comparison,
     }
     await record_admin_audit(
         user,

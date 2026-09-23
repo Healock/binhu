@@ -110,6 +110,21 @@ def certificate_source_ref(row: dict[str, Any]) -> str:
         if normalized:
             digest = sha256(normalized.encode("utf-8")).hexdigest()
             return f"certificate:{prefix}:{digest}"
+    # A fallback identity must not contain mutable people/signature fields.
+    # Otherwise a changed renter is incorrectly reported as a new notice and
+    # the old notice as missing from the source.
+    fallback = {
+        "community": _stable_text(row.get("community") or row.get("sssq")),
+        "address": _stable_text(row.get("address") or row.get("dz")),
+    }
+    digest = sha256(
+        json.dumps(fallback, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"certificate:fallback:{digest}"
+
+
+def legacy_certificate_source_ref(row: dict[str, Any]) -> str:
+    """Derive the pre-comparison fallback ref for existing local rows only."""
     fallback = {
         "community": _stable_text(row.get("community") or row.get("sssq")),
         "address": _stable_text(row.get("address") or row.get("dz")),
@@ -118,17 +133,22 @@ def certificate_source_ref(row: dict[str, Any]) -> str:
         "renter": _stable_text(row.get("sjczrxm") or row.get("actual_renter_name")),
         "renter_id": _stable_text(row.get("sjczrzjhm") or row.get("actual_renter_identity_number")),
     }
-    digest = sha256(
-        json.dumps(fallback, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
+    digest = sha256(json.dumps(fallback, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     return f"certificate:fallback:{digest}"
 
 
 def certificate_content_hash(row: dict[str, Any]) -> str:
     comparable = {
-        str(key): value
-        for key, value in row.items()
-        if str(key) not in {"source_row", "source_ref", "source_content_hash"}
+        "community": row.get("community") or row.get("sssq"),
+        "address": row.get("address") or row.get("dz"),
+        "landlord_name": row.get("czrxm") or row.get("landlord_name"),
+        "landlord_identity_number": row.get("czrzjhm") or row.get("landlord_identity_number"),
+        "actual_renter_name": row.get("sjczrxm") or row.get("actual_renter_name"),
+        "actual_renter_identity_number": row.get("sjczrzjhm") or row.get("actual_renter_identity_number"),
+        "signed_status": row.get("isSign") or row.get("signed_status"),
+        "sign_type": row.get("signType") or row.get("sign_type"),
+        "sign_time": row.get("signTime") or row.get("sign_time"),
+        "document_ref": row.get("signurl") or row.get("document_ref"),
     }
     return sha256(
         json.dumps(comparable, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")

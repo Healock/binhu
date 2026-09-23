@@ -4607,6 +4607,7 @@ export interface RegistryCertificateSourceRun {
     problem_row_count?: number
     duplicate_groups?: number
     conflict_groups?: number
+    comparison?: RegistryCertificateComparison
   }
   error_code: string | null
   error_message: string | null
@@ -4617,6 +4618,20 @@ export interface RegistryCertificateSourceRun {
   trigger_source: 'manual' | 'scheduled'
   business_date: string | null
   reused?: boolean
+}
+
+export interface RegistryCertificateComparison {
+  compared_at?: string
+  existing_total: number
+  incoming_total: number
+  added: number
+  updated: number
+  unchanged: number
+  missing_from_source: number
+  safe_to_apply: number
+  pending_review: number
+  status_summary: Record<string, { total: number; entered: number; exited: number }>
+  issue_breakdown: Record<string, number>
 }
 
 export interface WatchCategory {
@@ -4787,6 +4802,7 @@ export const registryApi = {
       batch_id: number; status: string; idempotent: boolean; total_count: number; normal_count: number
       issue_count: number; problem_row_count: number; duplicate_groups: number; conflict_groups: number
       source_record_count: number; source_rejected_count: number
+      comparison?: RegistryCertificateComparison
     }
   },
   async startCertificateSourceRun() {
@@ -4809,7 +4825,9 @@ export const registryApi = {
       timeout: 300_000,
     })).data as {
       batch_id: number; status: string; imported_count: number; skipped_count: number
+      inserted_count?: number; updated_count?: number; unchanged_count?: number
       pending_issue_count: number; idempotent: boolean
+      comparison?: RegistryCertificateComparison
     }
   },
   async importIssues(params: {

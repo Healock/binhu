@@ -12,6 +12,7 @@ from config import settings
 from database import db_manager
 from services.business_time import get_business_timezone_name, resolve_timezone
 from services.registry_certificate_apply import apply_certificate_batch
+from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_certificate_source import (
     CERTIFICATE_PAGE_SIZE,
     certificate_content_hash,
@@ -270,6 +271,7 @@ async def _create_preview_batch(
         )
         prepared.append(row)
     classified = classify_certificate_rows(prepared)
+    comparison = await load_certificate_comparison(conn, prepared, classified)
     canonical = json.dumps(prepared, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     file_hash = hashlib.sha256(canonical).hexdigest()
     await conn.begin()
@@ -293,6 +295,7 @@ async def _create_preview_batch(
                     "problem_row_count": classified["problem_row_count"],
                     "duplicate_groups": classified["duplicate_groups"],
                     "conflict_groups": classified["conflict_groups"],
+                    "comparison": comparison,
                 }
             await cur.execute(
                 "INSERT INTO registry_source_batches "
@@ -354,6 +357,7 @@ async def _create_preview_batch(
         "problem_row_count": classified["problem_row_count"],
         "duplicate_groups": classified["duplicate_groups"],
         "conflict_groups": classified["conflict_groups"],
+        "comparison": comparison,
     }
 
 

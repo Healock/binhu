@@ -10,7 +10,9 @@ from typing import Any
 from services.registry_certificate_source import (
     certificate_content_hash,
     certificate_source_ref,
+    legacy_certificate_source_ref,
 )
+from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_import import (
     ISSUE_CERTIFICATE_NON_RENTAL,
     normalize_address,
@@ -206,6 +208,9 @@ async def apply_certificate_batch(
                 old_payload = _json(row[4], {})
                 if old_payload:
                     derived[certificate_source_ref(old_payload)].append(row)
+                    legacy_ref = legacy_certificate_source_ref(old_payload)
+                    if legacy_ref != certificate_source_ref(old_payload):
+                        derived[legacy_ref].append(row)
             existing_by_derived = {
                 ref: rows[0] for ref, rows in derived.items() if len(rows) == 1
             }
@@ -355,6 +360,20 @@ async def apply_certificate_batch(
         await conn.rollback()
         raise
 
+    comparison = None
+    try:
+        # Re-read the committed local state through the same comparison path so
+        # the response reflects the transaction result, not stale preview data.
+        applied_rows = [item.get("payload", {}) for item in candidates]
+        comparison = await load_certificate_comparison(
+            conn,
+            applied_rows,
+            {"normal_rows": applied_rows, "problem_row_count": pending_issue_count},
+        )
+    except Exception:
+        # The import itself has already committed; comparison is diagnostic and
+        # must never turn a successful local import into a failed response.
+        comparison = None
     return {
         "batch_id": batch_id,
         "status": "partially_imported" if pending_issue_count else "imported",
@@ -365,4 +384,5 @@ async def apply_certificate_batch(
         "skipped_count": skipped,
         "pending_issue_count": pending_issue_count,
         "idempotent": False,
+        **({"comparison": comparison} if comparison is not None else {}),
     }
