@@ -41,6 +41,8 @@ MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FILES = 100
 GITHUB_ASSET_URL = "https://api.github.com/repos/Healock/binhu/releases/assets/{}"
 GITHUB_DOWNLOAD_TIMEOUT = 3600
+GITHUB_DOWNLOAD_RETRIES = 5
+GITHUB_DOWNLOAD_IDLE_TIMEOUT = 120
 
 
 class HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -124,39 +126,81 @@ def pull_release_asset(
     incoming.mkdir(parents=True, exist_ok=True)
     partial = incoming / f"{expected_version}-{expected_commit}.tar.gz.partial"
     bundle = incoming / f"{expected_version}-{expected_commit}.tar.gz"
-    if partial.exists():
+    if partial.exists() and partial.stat().st_size > expected_size:
         partial.unlink()
-    request = urllib.request.Request(
-        GITHUB_ASSET_URL.format(asset_id),
-        headers={
+
+    # A previous attempt may have finished the bytes but lost the process
+    # before the atomic rename.  Verify that complete partial in place so a
+    # retry does not issue an unnecessary (and often rejected) Range request.
+    if partial.exists() and partial.stat().st_size == expected_size:
+        complete_hash = hashlib.sha256()
+        with partial.open("rb") as prefix:
+            for chunk in iter(lambda: prefix.read(1024 * 1024), b""):
+                complete_hash.update(chunk)
+        if complete_hash.hexdigest() == expected_hash:
+            os.replace(partial, bundle)
+            try:
+                return publish(root, bundle, expected_version, expected_commit)
+            finally:
+                bundle.unlink(missing_ok=True)
+        partial.unlink()
+
+    # Keep a verified prefix when a CDN/socket stalls.  GitHub's asset endpoint
+    # follows to a CDN which supports Range; a retry therefore continues from
+    # the bytes already present instead of restarting a several-hundred-MiB
+    # transfer.  A 200 response to a ranged request is treated as a fresh body.
+    last_error: Exception | None = None
+    for attempt in range(GITHUB_DOWNLOAD_RETRIES):
+        offset = partial.stat().st_size if partial.exists() else 0
+        digest = hashlib.sha256()
+        if offset:
+            with partial.open("rb") as prefix:
+                for chunk in iter(lambda: prefix.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        headers = {
             "Accept": "application/octet-stream",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "binhu-update-gateway",
-        },
-    )
-    digest = hashlib.sha256()
-    received = 0
-    try:
-        with GITHUB_OPENER.open(request, timeout=GITHUB_DOWNLOAD_TIMEOUT) as response:
-            with partial.open("wb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    received += len(chunk)
-                    if received > expected_size or received > MAX_BUNDLE_BYTES:
-                        raise PublishError("download exceeds declared bundle length")
-                    output.write(chunk)
-                    digest.update(chunk)
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, PublishError) as error:
-        partial.unlink(missing_ok=True)
-        raise PublishError(f"GitHub asset download failed: {error}") from error
-    if received != expected_size:
-        partial.unlink(missing_ok=True)
-        raise PublishError("download length does not match declaration")
-    if digest.hexdigest() != expected_hash:
-        partial.unlink(missing_ok=True)
-        raise PublishError("download SHA-256 mismatch")
+        }
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        request = urllib.request.Request(GITHUB_ASSET_URL.format(asset_id), headers=headers)
+        try:
+            with GITHUB_OPENER.open(request, timeout=GITHUB_DOWNLOAD_IDLE_TIMEOUT) as response:
+                ranged = bool(offset and getattr(response, "status", None) == 206)
+                if offset and not ranged:
+                    offset = 0
+                    digest = hashlib.sha256()
+                    partial.unlink(missing_ok=True)
+                mode = "ab" if offset else "wb"
+                received = offset
+                with partial.open(mode) as output:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        received += len(chunk)
+                        if received > expected_size or received > MAX_BUNDLE_BYTES:
+                            raise PublishError("download exceeds declared bundle length")
+                        output.write(chunk)
+                        digest.update(chunk)
+            if received == expected_size:
+                if digest.hexdigest() != expected_hash:
+                    # A complete but corrupt partial cannot be repaired by
+                    # asking for the same suffix again.  Drop only this
+                    # untrusted download and let the bounded retry restart
+                    # from byte zero; public release state is still untouched.
+                    partial.unlink(missing_ok=True)
+                    raise PublishError("download SHA-256 mismatch")
+                break
+            raise PublishError("download ended before declared length")
+        except (OSError, TimeoutError, urllib.error.URLError, urllib.error.HTTPError, PublishError) as error:
+            last_error = error
+            if attempt + 1 < GITHUB_DOWNLOAD_RETRIES:
+                continue
+            raise PublishError(f"GitHub asset download failed: {error}") from error
+    else:
+        raise PublishError(f"GitHub asset download failed: {last_error}")
     os.replace(partial, bundle)
     try:
         return publish(root, bundle, expected_version, expected_commit)

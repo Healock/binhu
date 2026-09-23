@@ -199,6 +199,56 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertFalse((self.root / "public" / "win7-x64" / "releases.stable.json").exists())
 
+    def test_pull_release_asset_resumes_existing_partial_with_range(self):
+        full_data = self.bundle()
+        cut = len(full_data) // 3
+        partial = self.root / "incoming" / ("0.25.15-" + "a" * 40 + ".tar.gz.partial")
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_bytes(full_data[:cut])
+        remaining = full_data[cut:]
+
+        class Response:
+            status = 206
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, size=-1):
+                nonlocal remaining
+                if not remaining:
+                    return b""
+                chunk, remaining = remaining[:size], remaining[size:]
+                return chunk
+
+        expected = hashlib.sha256(full_data).hexdigest()
+        with mock.patch.object(gateway.GITHUB_OPENER, "open", return_value=Response()) as opener:
+            result = gateway.main(
+                ["pull-release-asset", "12345", "0.25.15", "a" * 40, str(len(full_data)), expected]
+            )
+        self.assertEqual(result, 0)
+        request = opener.call_args.args[0]
+        self.assertEqual(request.get_header("Range"), f"bytes={cut}-")
+
+    def test_pull_release_asset_publishes_complete_partial_without_request(self):
+        full_data = self.bundle()
+        partial = self.root / "incoming" / ("0.25.15-" + "a" * 40 + ".tar.gz.partial")
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_bytes(full_data)
+        expected = hashlib.sha256(full_data).hexdigest()
+
+        with mock.patch.object(gateway.GITHUB_OPENER, "open") as opener:
+            result = gateway.main(
+                ["pull-release-asset", "12345", "0.25.15", "a" * 40, str(len(full_data)), expected]
+            )
+
+        self.assertEqual(result, 0)
+        opener.assert_not_called()
+        self.assertTrue((self.root / "public" / "win7-x64" / "releases.stable.json").is_file())
+        self.assertFalse(partial.exists())
+
     def test_publish_and_status(self):
         self.assertEqual(self.run_publish(self.bundle()), 0)
         for platform in gateway.PLATFORMS:
