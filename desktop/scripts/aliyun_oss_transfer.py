@@ -28,9 +28,13 @@ UPLOAD_ENDPOINT = "binhu-update.oss-cn-shanghai.aliyuncs.com"
 INTERNAL_ENDPOINT = "binhu-update.oss-cn-shanghai-internal.aliyuncs.com"
 KEY_RE = re.compile(r"^client-transfer/[0-9]+\.[0-9]+\.[0-9]+/[0-9a-f]{40}/binhu-clients-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$")
 UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9+/_=-]{1,256}$")
-PART_SIZE = 8 * 1024 * 1024
-PART_ATTEMPTS = 5
-PART_TIMEOUT = 90
+# The GitHub-hosted runner has a very low and variable upload rate to this
+# bucket. Keep each request small enough to finish before an idle write timeout;
+# the server-side pull remains a single streaming download from the ECS-local
+# endpoint.
+PART_SIZE = 1 * 1024 * 1024
+PART_ATTEMPTS = 4
+PART_TIMEOUT = 300
 
 
 def credentials() -> tuple[str, str]:

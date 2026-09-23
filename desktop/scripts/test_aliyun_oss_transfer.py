@@ -49,8 +49,11 @@ class AliyunOssTransferTests(unittest.TestCase):
                 return self._headers
 
         class Connection:
+            all_requests = []
+
             def __init__(self, *_args, **_kwargs):
                 self.requests = []
+                Connection.all_requests.append(self.requests)
 
             def request(self, method, path, body=None, headers=None):
                 self.requests.append((method, path, body, headers))
@@ -68,9 +71,11 @@ class AliyunOssTransferTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bundle.tar.gz"
-            path.write_bytes(b"bundle")
+            path.write_bytes(b"bundle" * 200_000)
             with mock.patch.object(oss.http.client, "HTTPSConnection", Connection):
                 oss.upload(path, oss.UPLOAD_ENDPOINT, self.key)
+            part_requests = [request for requests in Connection.all_requests for request in requests if request[0] == "PUT"]
+            self.assertEqual(len(part_requests), 2)
 
 
 if __name__ == "__main__":
