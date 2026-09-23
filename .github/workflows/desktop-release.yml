@@ -525,7 +525,7 @@ jobs:
           gh release upload "$temp_tag" "$bundle" --repo "$GITHUB_REPOSITORY"
           asset_name="$(basename "$bundle")"
           asset_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$temp_tag" \
-            --jq ".assets[] | select(.name == \\\"$asset_name\\\") | .id")"
+            --jq ".assets[] | select(.name == \"$asset_name\") | .id")"
           test -n "$asset_id"
           echo "temp_tag=$temp_tag" >> "$GITHUB_OUTPUT"
           echo "asset_id=$asset_id" >> "$GITHUB_OUTPUT"
