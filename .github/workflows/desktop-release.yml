@@ -470,7 +470,14 @@ jobs:
     needs: [prepare, build, android]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The restricted update gateway is intentionally reached through the
+    # fixed SSH route.  Its upload bandwidth is much lower than the hosted
+    # runner's local disk speed, and the combined Windows/Android bundle can
+    # be several hundred megabytes.  Thirty minutes allowed a valid upload
+    # to be truncated in transit, leaving an incomplete archive on the
+    # server.  Keep this bounded, but allow a slow, complete transfer and the
+    # gateway's subsequent validation to finish.
+    timeout-minutes: 360
     environment: desktop-production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -514,9 +521,11 @@ jobs:
           bundle=release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz
           size=$(wc -c < "$bundle")
           hash=$(sha256sum "$bundle" | awk '{print $1}')
+          echo "bundle_bytes=$size"
           ssh -F /dev/null -i "$RUNNER_TEMP/binhu-update-ssh/key" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o PasswordAuthentication=no \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-update-ssh/known_hosts" \
+            -o ConnectTimeout=30 -o ConnectionAttempts=3 \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -p "$BINHU_UPDATE_PORT" \
             "$BINHU_UPDATE_USER@$BINHU_UPDATE_HOST" \
             "publish ${{ needs.prepare.outputs.version }} ${{ needs.prepare.outputs.commit }} $size $hash" < "$bundle"
