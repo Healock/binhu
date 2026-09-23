@@ -148,7 +148,7 @@ def pull_release_asset(
                         raise PublishError("download exceeds declared bundle length")
                     output.write(chunk)
                     digest.update(chunk)
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as error:
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, PublishError) as error:
         partial.unlink(missing_ok=True)
         raise PublishError(f"GitHub asset download failed: {error}") from error
     if received != expected_size:
