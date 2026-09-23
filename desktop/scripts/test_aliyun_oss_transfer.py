@@ -37,29 +37,31 @@ class AliyunOssTransferTests(unittest.TestCase):
 
     def test_upload_streams_bundle_without_printing_secret(self):
         class Response:
-            status = 200
+            def __init__(self, status, body=b"", headers=None):
+                self.status = status
+                self._body = body
+                self._headers = headers or []
 
-            def read(self):
-                return b""
+            def read(self, _limit=None):
+                return self._body
+
+            def getheaders(self):
+                return self._headers
 
         class Connection:
             def __init__(self, *_args, **_kwargs):
-                self.sent = b""
+                self.requests = []
 
-            def putrequest(self, *_args, **_kwargs):
-                pass
-
-            def putheader(self, *_args, **_kwargs):
-                pass
-
-            def endheaders(self):
-                pass
-
-            def send(self, chunk):
-                self.sent += chunk
+            def request(self, method, path, body=None, headers=None):
+                self.requests.append((method, path, body, headers))
 
             def getresponse(self):
-                return Response()
+                method, path, _body, _headers = self.requests[-1]
+                if method == "POST" and path.endswith("?uploads"):
+                    return Response(200, b"<InitiateMultipartUploadResult><UploadId>upload-id</UploadId></InitiateMultipartUploadResult>")
+                if method == "PUT":
+                    return Response(200, b"", [("ETag", '"' + "a" * 32 + '"')])
+                return Response(200, b"<CompleteMultipartUploadResult></CompleteMultipartUploadResult>")
 
             def close(self):
                 pass
