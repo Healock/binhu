@@ -101,14 +101,22 @@ function columnName(index: number): string {
   return result
 }
 
-export function writeOfflineWorkbook(book: OfflineWorkbook, statuses: string[]): Blob {
+export interface OfflineWorkbookOutput {
+  /** Existing status mode inserts a result immediately after the identity column. */
+  mode?: 'status' | 'address'
+  addresses?: string[]
+}
+
+export function writeOfflineWorkbook(book: OfflineWorkbook, statuses: string[], output: OfflineWorkbookOutput = {}): Blob {
   const header = [...book.header]
-  header.splice(book.identityColumn + 1, 0, '登记情况')
-  const rows = book.rows.map((row, index) => {
-    const result = [...row]
-    result.splice(book.identityColumn + 1, 0, statuses[index] || '')
-    return result
-  })
+  const rows = book.rows.map(row => [...row])
+  if (output.mode === 'address') {
+    header.push('登记地址')
+    rows.forEach((row, index) => row.push(output.addresses?.[index] || ''))
+  } else {
+    header.splice(book.identityColumn + 1, 0, '登记情况')
+    rows.forEach((row, index) => row.splice(book.identityColumn + 1, 0, statuses[index] || ''))
+  }
   const allRows = [header, ...rows]
   const sheetRows = allRows.map((row, rowIndex) => {
     const cells = row.map((value, columnIndex) => {
