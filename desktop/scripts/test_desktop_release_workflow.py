@@ -40,6 +40,15 @@ class DesktopReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("-o ServerAliveCountMax=20", publish_step)
         self.assertIn('echo "bundle_bytes=$size"', self.workflow)
 
+    def test_transfer_object_is_deleted_only_after_release_creation(self) -> None:
+        release = self.workflow.index("      - name: Create audit GitHub Release")
+        cleanup = self.workflow.index("      - name: Delete transfer object after successful release")
+        self.assertLess(release, cleanup)
+        cleanup_step = self.workflow[cleanup:]
+        self.assertIn("aliyun_oss_transfer.py delete", cleanup_step)
+        self.assertIn("steps.transfer.outputs.object_key", cleanup_step)
+        self.assertIn("ALIYUN_OSS_ACCESS_KEY_ID", cleanup_step)
+
 
 if __name__ == "__main__":
     unittest.main()
