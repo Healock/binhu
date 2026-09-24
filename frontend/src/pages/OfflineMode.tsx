@@ -358,7 +358,7 @@ export default function OfflineMode() {
               ? mode === 'address' ? await client.lookupRegistrationAddress(identity) : await client.lookup(identity)
               : { status: '身份证号格式无效', error: 'invalid_identity' }
           } catch (reason) {
-            result = { status: '查询失败', error: reason instanceof Error ? reason.message : 'request_error' }
+            result = { status: '查询失败', error: 'request_error' }
           }
           results[index] = result.status
           if (mode === 'address') {
@@ -386,7 +386,7 @@ export default function OfflineMode() {
       setQueryState(successfulCount === book.rows.length ? 'completed' : 'partial')
     } catch (reason) {
       setQueryState('failed')
-      setError(reason instanceof Error ? reason.message : '名单读取或批量查询失败')
+      setError('名单读取或批量查询失败，请确认文件为有效 XLSX 且含身份证号列')
     }
   }
 
@@ -400,7 +400,7 @@ export default function OfflineMode() {
       const sourceName = file?.name.replace(/\.xlsx$/i, '') || '居住登记查询结果'
       await downloadBlob(blob, `${sourceName}-${queryMode === 'address' ? '登记地址' : '登记情况'}.xlsx`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '结果导出失败')
+      setError('结果导出失败，请检查源文件格式和查询结果行数')
     } finally {
       setExporting(false)
     }
@@ -519,7 +519,7 @@ export default function OfflineMode() {
               {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
               <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={() => { setFile(null); setFileList([]); setWorkbook(null); setStatuses([]); setRegisteredAddresses([]); setQueryState('idle') }} disabled={running}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p className="ant-upload-text">拖入人员名单文件，或点击选择</p><p className="ant-upload-hint">识别“身份证号 / 身份证号码 / 证件号码 / 公民身份号码 / 身份证”列；不会把“证件类型”列当作身份证号</p></Dragger>
               <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-[var(--app-text-secondary)]">{file ? `已选择：${file.name}` : '请选择文件后确认查询'}</span><div className="flex flex-wrap gap-2"><Button type="primary" onClick={() => void start('status')} loading={running && queryMode === 'status'} disabled={!file || running || !configIsUsable(config)}>查询登记情况</Button><Button onClick={() => void start('address')} loading={running && queryMode === 'address'} disabled={!file || running || !configIsUsable(config)}>涉警人员信息登记地址批量查询</Button></div></div>
-              {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? `正在直接查询居住证系统${queryMode === 'address' ? '登记地址' : '登记情况'}` : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{queryMode === 'address' && <div className="text-xs text-[var(--app-text-secondary)]">已找到登记地址 {registeredAddresses.filter(Boolean).length} 条；未登记或查询失败的记录保持空白，请结合失败分类复核。</div>}{Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出{queryMode === 'address' ? '登记地址' : '登记情况'}结果 XLSX</Button></div>}</div>}
+              {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? `正在直接查询居住证系统${queryMode === 'address' ? '登记地址' : '登记情况'}` : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{queryMode === 'address' && <div className="text-xs text-[var(--app-text-secondary)]">已找到登记地址 {registeredAddresses.filter(Boolean).length} 条；未登记、查询失败或上游缺少地址的记录保持空白，请结合失败分类复核。</div>}{Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出{queryMode === 'address' ? '登记地址' : '登记情况'}结果 XLSX</Button></div>}</div>}
             </div>
           </Panel>
         </div>

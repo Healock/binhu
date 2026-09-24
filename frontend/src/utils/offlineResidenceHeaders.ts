@@ -7,7 +7,7 @@ const IDENTITY_HEADER_PRIORITY = [
   '身份证',
 ] as const
 
-const IDENTITY_HEADERS = new Map(IDENTITY_HEADER_PRIORITY.map((header, index) => [header, index]))
+const IDENTITY_HEADERS = new Map<string, number>(IDENTITY_HEADER_PRIORITY.map((header, index) => [header, index]))
 const NON_IDENTITY_HEADERS = new Set(['证件类型', '身份证件类型', '证件类别', '证件种类'])
 
 function normalizeHeader(value: unknown): string {

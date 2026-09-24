@@ -485,7 +485,7 @@ function diagnosticFromPayload(stage: OfflineResidenceDiagnosticStage, errorCode
 }
 
 function classify(payload: any): { state: 'registered' | 'not_found' | 'error'; status?: string; error?: string } {
-  if (payload?.success === true && Number(payload?.code) === 200 && payload?.result && typeof payload.result === 'object') {
+  if (payload?.success === true && Number(payload?.code) === 200 && payload?.result && typeof payload.result === 'object' && !Array.isArray(payload.result)) {
     const code = String(payload.result.rysfzx || '').trim()
     return { state: 'registered', status: code === '1' ? '已注销' : code === '0' ? '未注销' : '状态待核对' }
   }
@@ -503,7 +503,7 @@ function registeredAddress(payload: any): string {
   const raw = payload?.result
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return ''
   return [raw.jlx_dictText, raw.mph]
-    .map(value => String(value || '').trim())
+    .map(value => typeof value === 'string' ? value.trim() : '')
     .filter(Boolean)
     .join('')
 }
@@ -511,13 +511,16 @@ function registeredAddress(payload: any): string {
 export class OfflineResidenceClient {
   private readonly config: OfflineResidenceConfig
   private readonly tokens = new Map<string, { token: string; organizationCode: string }>()
+  private readonly pendingLogins = new Map<string, Promise<{ token: string; organizationCode: string }>>()
 
   constructor(config: OfflineResidenceConfig) {
     this.config = { ...config, base_url: config.base_url.trim().replace(/\/+$/, '') }
   }
 
   private accountKey(account: OfflineResidenceAccount): string {
-    return account.community_id ? `community_${account.community_id}` : `local_${account.community_code || account.username}`
+    return account.community_id
+      ? `community_${account.community_id}:${account.username}:${account.community_code}`
+      : `local_${account.community_code}:${account.username}`
   }
 
   private async authenticate(account: OfflineResidenceAccount, mac: string): Promise<{ token: string; organizationCode: string }> {
@@ -563,9 +566,16 @@ export class OfflineResidenceClient {
   }
 
   private async login(account: OfflineResidenceAccount): Promise<{ token: string; organizationCode: string }> {
-    const session = await this.authenticate(account, await readMacAddress(this.config))
-    this.tokens.set(this.accountKey(account), session)
-    return session
+    const key = this.accountKey(account)
+    const pending = this.pendingLogins.get(key)
+    if (pending) return pending
+    const request = (async () => {
+      const session = await this.authenticate(account, await readMacAddress(this.config))
+      this.tokens.set(key, session)
+      return session
+    })()
+    this.pendingLogins.set(key, request)
+    try { return await request } finally { this.pendingLogins.delete(key) }
   }
 
   async probeMacAccess(
@@ -637,6 +647,9 @@ export class OfflineResidenceClient {
       const known = resident.payload?.success === true && Number(resident.payload?.code) === 200 && resident.payload?.result == null
       diagnostics.push(diagnosticFromPayload('search_resident', known ? 'resident_precheck_ok' : authResponse(resident.payload) ? 'authentication_expired' : 'resident_response_contract_changed', resident.payload, resident.httpStatus))
       if (authResponse(resident.payload)) return { result: { state: 'error', error: 'authentication_expired' }, registeredAddress: '', diagnostics }
+      if (!known && classify(resident.payload).state !== 'not_found') {
+        return { result: { state: 'error', error: 'resident_response_contract_changed' }, registeredAddress: '', diagnostics }
+      }
     } catch (error) {
       const code = classifyRequestError(error)
       diagnostics.push({ stage: 'search_resident', error_code: code, ...(error instanceof ResidenceRequestError && error.httpStatus ? { http_status: error.httpStatus } : {}) })
@@ -654,13 +667,14 @@ export class OfflineResidenceClient {
     }
   }
 
-  async lookup(identity: string): Promise<OfflineResidenceQueryResult> {
+  private async lookupAcrossAccounts(identity: string, includeAddress: boolean): Promise<OfflineResidenceAddressResult> {
     if (!this.config.enabled) return { status: '查询未开启', error: 'disabled' }
     if (!this.config.password || !this.config.base_url || !this.config.accounts.length || this.config.accounts.some(account => !account.username)) {
       return { status: '配置不完整', error: 'config_incomplete' }
     }
     let lastError = ''
     let sawNotFound = false
+    let sawRegistrationWithoutAddress = false
     const diagnostics: OfflineResidenceDiagnosticEvent[] = []
     for (const account of this.config.accounts) {
       try {
@@ -670,52 +684,17 @@ export class OfflineResidenceClient {
         diagnostics.push(...attempt.diagnostics)
         let result = attempt.result
         if (result.error === 'authentication_expired') {
-          this.tokens.delete(key)
-          session = await this.login(account)
-          attempt = await this.lookupWithToken(identity, session)
-          diagnostics.push(...attempt.diagnostics)
-          result = attempt.result
-        }
-        if (result.state === 'registered') return { status: result.status || '状态待核对', diagnostics }
-        if (result.state === 'not_found') sawNotFound = true
-        else lastError = result.error || 'business_error'
-      } catch (error) {
-        lastError = classifyRequestError(error)
-        diagnostics.push({ stage: 'login', error_code: lastError })
-      }
-    }
-    if (sawNotFound && !lastError) return { status: '未登记', diagnostics }
-    return { status: '查询失败', error: lastError || 'not_found', diagnostics }
-  }
-
-  async lookupRegistrationAddress(identity: string): Promise<OfflineResidenceAddressResult> {
-    if (!this.config.enabled) return { status: '查询未开启', error: 'disabled' }
-    if (!this.config.password || !this.config.base_url || !this.config.accounts.length || this.config.accounts.some(account => !account.username)) {
-      return { status: '配置不完整', error: 'config_incomplete' }
-    }
-    let lastError = ''
-    let sawNotFound = false
-    const diagnostics: OfflineResidenceDiagnosticEvent[] = []
-    for (const account of this.config.accounts) {
-      try {
-        const key = this.accountKey(account)
-        let session = this.tokens.get(key) || await this.login(account)
-        let attempt = await this.lookupWithToken(identity, session)
-        diagnostics.push(...attempt.diagnostics)
-        let result = attempt.result
-        if (result.error === 'authentication_expired') {
-          this.tokens.delete(key)
-          session = await this.login(account)
+          if (this.tokens.get(key)?.token === session.token) this.tokens.delete(key)
+          session = this.tokens.get(key) || await this.login(account)
           attempt = await this.lookupWithToken(identity, session)
           diagnostics.push(...attempt.diagnostics)
           result = attempt.result
         }
         if (result.state === 'registered') {
-          return {
-            status: result.status || '状态待核对',
-            registered_address: attempt.registeredAddress || '',
-            diagnostics,
-          }
+          if (!includeAddress) return { status: result.status || '状态待核对', diagnostics }
+          if (attempt.registeredAddress) return { status: result.status || '状态待核对', registered_address: attempt.registeredAddress, diagnostics }
+          sawRegistrationWithoutAddress = true
+          continue
         }
         if (result.state === 'not_found') sawNotFound = true
         else lastError = result.error || 'business_error'
@@ -724,7 +703,16 @@ export class OfflineResidenceClient {
         diagnostics.push({ stage: 'login', error_code: lastError })
       }
     }
+    if (sawRegistrationWithoutAddress) return { status: '登记地址待核对', error: 'address_unavailable', registered_address: '', diagnostics }
     if (sawNotFound && !lastError) return { status: '未登记', registered_address: '', diagnostics }
     return { status: '查询失败', error: lastError || 'not_found', registered_address: '', diagnostics }
+  }
+
+  async lookup(identity: string): Promise<OfflineResidenceQueryResult> {
+    return this.lookupAcrossAccounts(identity, false)
+  }
+
+  async lookupRegistrationAddress(identity: string): Promise<OfflineResidenceAddressResult> {
+    return this.lookupAcrossAccounts(identity, true)
   }
 }
