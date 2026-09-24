@@ -221,6 +221,24 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(row['parser_type'] == parser.parser_type
                              for row in result['tables']['OnlineData._online_source_rows']))
 
+    async def test_sample_recovery_excludes_row_with_unrecognized_business_date(self):
+        settings, tables, _, conn = self.recovery_fixture()
+        parser = get_parser('疑似未注销模型三')
+        business = tables['OnlineData.' + parser.table_name][0]
+        business['截止时间'] = 'not-a-date'
+        values = {field: str(business.get(field, '') or '') for field in parser.COLUMNS}
+        raw = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        tables['OnlineData._local_source_records'][0]['values_json'] = raw
+        tables['OnlineData._local_source_records'][0]['content_hash'] = hashlib.sha256(raw.encode()).hexdigest()
+        result = await build(conn, 'staging-' + 'a' * 16, b'a' * 32, settings=settings,
+                             recover_model_three_sources=True, staging_sample_mode=True,
+                             staging_sample_limit=150)
+        self.assertEqual(result['report']['excluded_staging_data_count'], 1)
+        self.assertEqual(result['report']['excluded_staging_data_by_reason'],
+                         {'unrecognized_business_date': 1})
+        self.assertEqual(result['report']['recovered_model_three_source_count'], 1)
+        self.assertEqual(result['report']['current_task_count'], 1)
+
     async def test_recovery_rejects_unproven_or_duplicate_ledgers(self):
         for field, value in [('status','archived'), ('content_hash','f'*64), ('revision',0),
                 ('values_json','{}'), ('source_kind','txdocs'), ('archived_at','2026-09-01')]:
