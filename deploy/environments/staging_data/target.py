@@ -51,6 +51,6 @@ def qualified(candidate, logical_table):
     # the quoted identifier or alter the logical domain/table split; allow the
     # remaining non-control characters so legitimate legacy tables can be
     # copied without weakening the database/environment boundary.
-    if not table or any(ord(char) < 0x20 or char in '`./\\' for char in table):
+    if not table or any(ord(char) < 0x20 or char in '`./\\;|&<>' for char in table):
         raise SnapshotError('invalid_target_table')
     return '`' + database + '`.`' + table + '`'
