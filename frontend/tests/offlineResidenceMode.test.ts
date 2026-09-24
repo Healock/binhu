@@ -87,6 +87,7 @@ test('登记地址查询只保留居住证响应中的白名单地址字段', ()
   assert.match(clientSource, /registered_address\?: string/)
   assert.doesNotMatch(clientSource, /registered_address.*身份证|registered_address.*手机号/)
   assert.doesNotMatch(clientSource, /\/registration\/submit|\/delete|\/writeback/i)
+  assert.match(clientSource, /登记地址待核对/)
 })
 
 test('工作簿优先选择证件号码而不是相邻的证件类型', () => {
