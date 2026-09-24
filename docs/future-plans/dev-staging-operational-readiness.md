@@ -181,3 +181,7 @@ PR #768 已修复 preflight 失败证据和网关安装身份保留，主线 CI 
 ### 2026-09-24：采样恢复忽略无活跃业务记录的历史来源
 
 已确认模型三来源表仍保留历史来源，但当前模型三业务表没有对应的活跃记录。采样恢复现在只处理 `(physical_row, row_key)` 能匹配当前业务表 `(id, _row_key)` 的来源；没有活跃业务记录的历史来源不会进入恢复候选，并以 `excluded_stale_model_three_source_count` 写入聚合报告。该过滤只作用于 Staging 脱敏快照，不修改 Production 来源、业务表或账本。
+
+### 2026-09-24：Staging 数据异常按样本排除
+
+根据 Staging 验证范围约束，主动采样模式下单条来源转换遇到无法识别日期、枚举/社区/字段合同等数据异常时，直接排除该行，不写入脱敏快照；报告记录 `excluded_staging_data_count` 和按固定原因码分类的 `excluded_staging_data_by_reason`，不包含业务正文或敏感字段。排除超过本轮采样候选一半时仍触发 `staging_sample_exclusion_scope_exceeded`，防止样本失去验证意义。该策略只作用于 Staging 快照，不修改 Production 数据或来源账本。

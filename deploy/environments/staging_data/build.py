@@ -118,6 +118,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
             observed_source_count = len(sources)
             recovered_source_count = 0
             excluded_stale_model_three_source_count = 0
+            excluded_staging_data_by_reason = {}
             recovery_scope = None
             if recover_model_three_sources:
                 from .recovery import PARSER, LEDGER_FIELDS, reconstruct, recovery_scope as select_recovery_scope
@@ -304,6 +305,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
             remapped={}
             raw_values={}
             source_communities={}
+            accepted_source_keys = set()
             for parser_type in TASK_TYPES:
                 parser=get_parser(parser_type)
                 business=await select(cur,"OnlineData."+parser.table_name,("id","_row_key"))
@@ -336,14 +338,21 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 tables["OnlineData."+parser.table_name]=[]
                 new_keys=set()
                 for row in selected:
-                    values=json.loads(row["values_json"]) if isinstance(row["values_json"],str) else row["values_json"]
-                    raw_values[(parser_type,row['row_key'])]=values
+                    source_key = (parser_type, row['row_key'])
                     try:
-                        source_communities[(parser_type,row['row_key'])]=communities[normalized(values[parser.COMMUNITY_COLUMN])]
-                    except KeyError:
-                        raise SnapshotError('task_community_unresolved') from None
-                    safe=transform_values(parser,TASK_WORKFLOWS[parser_type],values,communities,codec)
-                    entry=source_record(parser,{key:row[key] for key in ("id","physical_row","revision","row_key","source_kind")},safe,codec)
+                        values=json.loads(row["values_json"]) if isinstance(row["values_json"],str) else row["values_json"]
+                        raw_values[source_key]=values
+                        source_communities[source_key]=communities[normalized(values[parser.COMMUNITY_COLUMN])]
+                        safe=transform_values(parser,TASK_WORKFLOWS[parser_type],values,communities,codec)
+                        entry=source_record(parser,{key:row[key] for key in ("id","physical_row","revision","row_key","source_kind")},safe,codec)
+                    except (SnapshotError, KeyError, TypeError, ValueError) as exc:
+                        if not staging_sample_mode:
+                            raise
+                        reason = getattr(exc, 'reason', 'staging_row_data_invalid')
+                        if not re.fullmatch(r'[a-z_]{1,100}', reason):
+                            reason = 'staging_row_data_invalid'
+                        excluded_staging_data_by_reason[reason] = excluded_staging_data_by_reason.get(reason, 0) + 1
+                        continue
                     new_key=entry["source"]["row_key"]
                     if new_key in new_keys:
                         raise SnapshotError("sanitized_business_key_collision")
@@ -351,7 +360,21 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                     tables["OnlineData."+parser.table_name].append(entry["task"])
                     tables["OnlineData._online_source_rows"].append(entry["source"])
                     tables["OnlineData._local_source_records"].append(entry["local_record"])
-                    remapped[(parser_type,row["row_key"])]=entry
+                    remapped[source_key]=entry
+                    accepted_source_keys.add(source_key)
+            if staging_sample_mode:
+                selected_count = sum(1 for row in sources if (row['parser_type'], row['row_key']) in accepted_source_keys or
+                                     row['parser_type'] != '疑似未注销模型三')
+                excluded_count = sum(excluded_staging_data_by_reason.values())
+                if excluded_count * 2 > max(1, selected_count + excluded_count):
+                    raise SnapshotError('staging_sample_exclusion_scope_exceeded', diagnostics={
+                        'excluded_count': excluded_count,
+                        'selected_count': selected_count,
+                        'excluded_by_reason': excluded_staging_data_by_reason,
+                    })
+                current = {key: row for key, row in current.items() if key in accepted_source_keys}
+                retained_flows = [row for row in retained_flows if (row['parser_type'], row['row_key']) in accepted_source_keys]
+                retained_registrations = [row for row in retained_registrations if (row['parser_type'], row['row_key']) in accepted_source_keys]
             tables["OnlineData._unverifiable_review_flows"]=[]
             for row in retained_flows:
                 entry=remapped[(row["parser_type"],row["row_key"])]; source=entry["source"]
@@ -415,7 +438,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                     'state':matching_state(row['manual_unmatched_address_hmac'],expected)})
             tables.update(history_rows(review_events,registration_events,flow_map,current,remapped,codec))
             codec.assert_tables_safe(tables)
-            result["report"].update({"snapshot_id":snapshot_id,"current_task_count":len(sources),
+            result["report"].update({"snapshot_id":snapshot_id,"current_task_count":len(tables["OnlineData._online_source_rows"]),
                 "categorical_value_overlaps":[{'table':table,'field':field,'count':count}
                     for (table,field),count in sorted(codec.categorical_overlaps.items())],
                 "flow_count":len(retained_flows),"registration_count":len(retained_registrations),
@@ -430,6 +453,8 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 "pending_gates":["registration_hmac_rebuild","candidate_database_import","target_verification"],
                 "recovered_model_three_source_count": recovered_source_count,
                 "excluded_stale_model_three_source_count": excluded_stale_model_three_source_count,
+                "excluded_staging_data_count": sum(excluded_staging_data_by_reason.values()),
+                "excluded_staging_data_by_reason": excluded_staging_data_by_reason,
                 "recovery_scope": recovery_scope,
                 "scope":"current_tasks_organization_and_registry_graph","ready_for_application_switch":False})
             result["schema_contract"] = schema_contract
