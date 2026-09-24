@@ -221,6 +221,11 @@ def execute(action,snapshot_id):
         except Exception as exc:
             reason=str(exc) if isinstance(exc,SnapshotError) else 'staging_candidate_operation_failed'
             failure={'reason':reason}
+            diagnostics=getattr(exc, 'diagnostics', None)
+            if isinstance(diagnostics, dict):
+                failure['diagnostics']={key:value for key,value in diagnostics.items()
+                    if key in {'logical_table','table_name'} and isinstance(value,str)
+                    and len(value)<=128}
             exit_code=getattr(exc,'diagnostics',{}).get('exit_code')
             if type(exit_code) is int and -255<=exit_code<=255:
                 failure['exit_code']=exit_code
