@@ -24,6 +24,12 @@ from services.report_range import (
     get_report_range,
     get_summary_range,
 )
+from services.report_workload import load_effective_workload_by_community
+from services.report_members import (
+    calculate_ratio,
+    canonical_community,
+    get_community_alias_lookup,
+)
 from services.report_overview import (
     get_online_overview,
     get_online_overview_details,
@@ -192,6 +198,47 @@ async def _overlay_external_report(
                     by_assignee[key] = row
                 merge_counts(row, checker_item, columns)
     result["external_overlay"] = overlay
+    # The base report may have been generated before the external read-only
+    # source was folded into the common workload ledger. Recompute the public
+    # average from the same merged workload source so task counts and the
+    # denominator never describe different data paths.
+    if parser_type == "总汇总表":
+        workload_types = await _read_summary_types_from_db()
+    else:
+        workload_types = [parser_type]
+    if workload_types:
+        try:
+            from database import db_manager
+            pool = db_manager.get_pool("daily_report")
+            conn = await pool.acquire()
+            try:
+                async with conn.cursor() as cur:
+                    workload = await load_effective_workload_by_community(
+                        cur, start_date, end_date, workload_types
+                    )
+                    aliases = await get_community_alias_lookup(cur)
+            finally:
+                pool.release(conn)
+            community_table = result.get("community")
+            if isinstance(community_table, dict):
+                for row in community_table.get("data", []):
+                    if not isinstance(row, dict):
+                        continue
+                    person_days = row.get("在岗人日")
+                    if person_days is None or "每日人均核查数" not in row:
+                        continue
+                    community = canonical_community(
+                        str(row.get("社区") or ""), aliases
+                    )
+                    row["每日人均核查数"] = calculate_ratio(
+                        workload.get(community, 0), int(person_days or 0)
+                    )
+            overlay["workload_available"] = True
+        except Exception:
+            # Older rolling deployments may not yet have the new external
+            # workload table. Keep the existing report readable; the monitor
+            # overlay still reports task counts and its own availability.
+            overlay["workload_available"] = False
     return result
 
 

@@ -227,6 +227,22 @@ class MonitorVariant:
 
 
 @dataclass(frozen=True)
+class MonitorTaskState:
+    """Privacy-safe state for one externally observed business key."""
+
+    source_id: int
+    parser_type: str
+    business_key_hash: str
+    content_hash: str
+    community_hash: str
+    community: str
+    checker_name: str
+    task_state: str
+    unable_to_verify: bool
+    identity_status: str = "matched"
+
+
+@dataclass(frozen=True)
 class MonitorDelta:
     current_total: int
     added: int
@@ -404,6 +420,161 @@ def build_monitor_snapshot(
     return result, unkeyed
 
 
+def build_monitor_task_states(
+    spreadsheet_id: int,
+    parser_type: str,
+    rows: Iterable[dict[str, Any]],
+    business_date: date,
+) -> tuple[list[MonitorTaskState], int]:
+    """Build state snapshots without retaining external row contents.
+
+    Duplicate business keys are kept as ``ambiguous_identity`` records and
+    are never allowed to create workload transitions.  The existing aggregate
+    snapshot remains responsible for row-count reporting.
+    """
+    parser = get_parser(parser_type)
+    workflow = TASK_WORKFLOWS.get(parser_type)
+    states: list[MonitorTaskState] = []
+    key_counts: Counter[str] = Counter()
+    fallback = datetime.combine(business_date, datetime.min.time())
+    for source_row in rows:
+        raw_values = source_row.get("values", source_row)
+        normalized = parser.normalize_source_row(
+            raw_values if isinstance(raw_values, dict) else {}
+        )
+        ordered_values = tuple(
+            str(normalized.get(column, "") or "")
+            for column in parser.COLUMNS
+        )
+        content_hash = _hmac_digest(
+            "txdocs-monitor-content", str(spreadsheet_id), parser_type,
+            *ordered_values,
+        )
+        business_values = tuple(
+            str(normalized.get(column, "") or "").strip()
+            for column in parser.get_business_key()
+        )
+        if any(business_values):
+            business_key_hash = _hmac_digest(
+                "txdocs-monitor-business-key", str(spreadsheet_id),
+                parser_type, *business_values,
+            )
+        else:
+            business_key_hash = _hmac_digest(
+                "txdocs-monitor-unkeyed", str(spreadsheet_id), content_hash
+            )
+        community = parser.community_value(normalized)
+        community_hash = _hmac_digest("txdocs-monitor-community", community)
+        checker_name = _normalize_checker_name(normalized.get("核查人"))
+        if workflow is None:
+            task_state = "unchecked"
+            unable_to_verify = False
+        else:
+            task_state = workflow.state(
+                normalized,
+                registration_status=str(normalized.get("登记情况") or ""),
+            )
+            unable_to_verify = "无法核实" in str(
+                normalized.get(workflow.result_field) or ""
+            )
+            dispatch_fields = list(dict.fromkeys(
+                field for field in (
+                    "下发日期", "下发时间", "创建时间", "日期",
+                    *workflow.date_fields,
+                ) if field in normalized
+            ))
+            # Parse the dispatch date for the existing bucket contract.  The
+            # workload ledger intentionally uses observation date instead.
+            parse_dispatch_time(normalized, dispatch_fields, fallback)
+        states.append(MonitorTaskState(
+            source_id=spreadsheet_id,
+            parser_type=parser_type,
+            business_key_hash=business_key_hash,
+            content_hash=content_hash,
+            community_hash=community_hash,
+            community=community,
+            checker_name=checker_name,
+            task_state=task_state,
+            unable_to_verify=unable_to_verify,
+        ))
+        key_counts[business_key_hash] += 1
+    duplicate_keys = {key for key, count in key_counts.items() if count > 1}
+    if duplicate_keys:
+        states = [
+            MonitorTaskState(**{
+                **state.__dict__,
+                "identity_status": (
+                    "ambiguous_identity"
+                    if state.business_key_hash in duplicate_keys
+                    else state.identity_status
+                ),
+            })
+            for state in states
+        ]
+    return states, len(duplicate_keys)
+
+
+def effective_workload_transition(
+    previous_state: str | None, current_state: str
+) -> int:
+    """Use the same state transition rules as the local ledger."""
+    if previous_state is None:
+        return 0
+    return int(
+        (previous_state == "unchecked" and current_state in {"checked", "completed"})
+        or (previous_state == "checked" and current_state == "completed")
+    )
+
+
+async def _resolve_member_match_status(
+    cur,
+    states: list[MonitorTaskState],
+) -> dict[tuple[str, str], str]:
+    """Resolve external checker labels without guessing personal ownership."""
+    await cur.execute(
+        """
+        SELECT LOWER(TRIM(member.name)), community.name,
+               COUNT(DISTINCT member.id)
+        FROM OnlineData._grid_members AS member
+        JOIN OnlineData._grid_member_department_links AS member_link
+          ON member_link.member_id=member.id
+        JOIN OnlineData._departments AS department
+          ON department.id=member_link.department_id
+         AND department.department_type='community'
+        JOIN OnlineData._communities AS community
+          ON community.id=department.community_id
+        WHERE member.position IN ('组长', '组员')
+        GROUP BY LOWER(TRIM(member.name)),
+                 community.name
+        """,
+    )
+    known: dict[tuple[str, str], int] = {
+        (str(name), str(community)): int(count or 0)
+        for name, community, count in await cur.fetchall()
+    }
+    try:
+        alias_lookup = await get_community_alias_lookup(cur)
+    except Exception:
+        alias_lookup = {}
+    status: dict[tuple[str, str], str] = {}
+    canonical_known = {
+        (name.lower(), canonical_monitor_community(community, alias_lookup)): count
+        for (name, community), count in known.items()
+    }
+    for state in states:
+        raw_name = _normalize_checker_name(state.checker_name).lower()
+        raw_community = str(state.community or "").strip()
+        if not raw_name or not raw_community:
+            continue
+        pair = (raw_name, canonical_monitor_community(raw_community, alias_lookup))
+        count = canonical_known.get(pair, 0)
+        value = "matched" if count == 1 else (
+            "ambiguous_member" if count > 1 else "unmatched_member"
+        )
+        status[(raw_name, raw_community)] = value
+    return status
+
+
 def _consume(counter: Counter[MonitorVariant], amount: int) -> Counter[MonitorVariant]:
     consumed: Counter[MonitorVariant] = Counter()
     remaining = amount
@@ -568,6 +739,57 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
                 unable_to_verify
             ),
             INDEX idx_txdocs_monitor_bucket_date (dispatch_date, task_state)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    await cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_task_state (
+            source_id BIGINT UNSIGNED NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            business_key_hash CHAR(64) NOT NULL,
+            content_hash CHAR(64) NOT NULL,
+            community_hash CHAR(64) NOT NULL,
+            community VARCHAR(200) NOT NULL DEFAULT '',
+            checker_name VARCHAR(200) NOT NULL DEFAULT '',
+            task_state VARCHAR(20) NOT NULL,
+            unable_to_verify TINYINT(1) NOT NULL DEFAULT 0,
+            identity_status VARCHAR(32) NOT NULL DEFAULT 'matched',
+            last_observed_date DATE NOT NULL,
+            last_run_id BIGINT UNSIGNED NOT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_id, parser_type, business_key_hash),
+            INDEX idx_txdocs_monitor_state_scope (
+                parser_type, community_hash, last_observed_date
+            )
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    await cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_workload_ledger (
+            observed_date DATE NOT NULL,
+            source_id BIGINT UNSIGNED NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            business_key_hash CHAR(64) NOT NULL,
+            community_hash CHAR(64) NOT NULL,
+            community VARCHAR(200) NOT NULL DEFAULT '',
+            checker_name VARCHAR(200) NOT NULL DEFAULT '',
+            from_state VARCHAR(20) NOT NULL DEFAULT '',
+            to_state VARCHAR(20) NOT NULL,
+            effective_workload TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            member_match_status VARCHAR(32) NOT NULL DEFAULT 'unresolved',
+            run_id BIGINT UNSIGNED NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (
+                observed_date, source_id, parser_type, business_key_hash
+            ),
+            INDEX idx_txdocs_monitor_workload_scope (
+                parser_type, community_hash, observed_date
+            )
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
         """
@@ -776,11 +998,38 @@ async def _persist_success(
     current: Counter[MonitorVariant],
     unkeyed: int,
     buckets: Counter[MonitorBusinessBucket],
+    task_states: list[MonitorTaskState],
 ) -> None:
     async with conn.cursor() as cur:
         await conn.begin()
         try:
             previous, has_baseline = await _load_previous(cur, config["id"])
+            await cur.execute(
+                """
+                SELECT business_key_hash, task_state
+                FROM _txdocs_monitor_task_state
+                WHERE source_id=%s AND parser_type=%s
+                """,
+                (config["id"], config["parser_type"]),
+            )
+            previous_states = {
+                str(row[0]): str(row[1]) for row in await cur.fetchall()
+            }
+            state_baseline_exists = bool(previous_states)
+            await cur.execute(
+                """
+                SELECT business_key_hash, COALESCE(SUM(effective_workload),0)
+                FROM _txdocs_monitor_workload_ledger
+                WHERE source_id=%s AND parser_type=%s
+                GROUP BY business_key_hash
+                """,
+                (config["id"], config["parser_type"]),
+            )
+            historical_workload = {
+                str(row[0]): int(row[1] or 0)
+                for row in await cur.fetchall()
+            }
+            member_match_status = await _resolve_member_match_status(cur, task_states)
             delta = compare_monitor_snapshots(
                 previous, current, has_baseline=has_baseline
             )
@@ -824,6 +1073,79 @@ async def _persist_success(
                 ),
             )
             run_id = int(cur.lastrowid)
+            workload_rows = []
+            for state in task_states:
+                previous_state = previous_states.get(state.business_key_hash)
+                transition = (
+                    0
+                    if (
+                        state.identity_status != "matched"
+                        or not state_baseline_exists
+                    )
+                    else effective_workload_transition(
+                        previous_state, state.task_state
+                    )
+                )
+                credit = min(
+                    1,
+                    transition,
+                    max(0, 2 - historical_workload.get(
+                        state.business_key_hash, 0
+                    )),
+                )
+                if credit:
+                    match_status = member_match_status.get(
+                        (
+                            _normalize_checker_name(state.checker_name).lower(),
+                            str(state.community or "").strip(),
+                        ),
+                        "unmatched_member",
+                    )
+                    workload_rows.append((
+                        business_date, state.source_id, state.parser_type,
+                        state.business_key_hash, state.community_hash,
+                        state.community, state.checker_name,
+                        previous_state or "", state.task_state, credit,
+                        match_status, run_id,
+                    ))
+            if workload_rows:
+                await cur.executemany(
+                    """
+                    INSERT IGNORE INTO _txdocs_monitor_workload_ledger (
+                        observed_date, source_id, parser_type, business_key_hash,
+                        community_hash, community, checker_name, from_state,
+                        to_state, effective_workload, member_match_status, run_id
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    workload_rows,
+                )
+            await cur.execute(
+                "DELETE FROM _txdocs_monitor_task_state "
+                "WHERE source_id=%s AND parser_type=%s",
+                (config["id"], config["parser_type"]),
+            )
+            if task_states:
+                await cur.executemany(
+                    """
+                    INSERT INTO _txdocs_monitor_task_state (
+                        source_id, parser_type, business_key_hash, content_hash,
+                        community_hash, community, checker_name, task_state,
+                        unable_to_verify, identity_status, last_observed_date,
+                        last_run_id
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    [
+                        (
+                            state.source_id, state.parser_type,
+                            state.business_key_hash, state.content_hash,
+                            state.community_hash, state.community,
+                            state.checker_name, state.task_state,
+                            int(state.unable_to_verify), state.identity_status,
+                            business_date, run_id,
+                        )
+                        for state in task_states
+                    ],
+                )
             if delta.communities:
                 await cur.executemany(
                     """
@@ -998,9 +1320,12 @@ async def run_txdocs_statistics_once(
                 buckets = build_monitor_business_buckets(
                     config["parser_type"], rows, business_date
                 )
+                task_states, ambiguous_count = build_monitor_task_states(
+                    config["id"], config["parser_type"], rows, business_date
+                )
                 await _persist_success(
                     report_conn, config, business_date, started_at,
-                    snapshot, unkeyed, buckets,
+                    snapshot, unkeyed + ambiguous_count, buckets, task_states,
                 )
                 succeeded += 1
             except asyncio.CancelledError:

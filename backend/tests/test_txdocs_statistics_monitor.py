@@ -44,6 +44,25 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delta.current_total, 2)
         self.assertEqual((delta.added, delta.changed, delta.removed), (0, 0, 0))
 
+    def test_external_workload_transition_matches_local_rules(self):
+        self.assertEqual(monitor.effective_workload_transition(None, "completed"), 0)
+        self.assertEqual(monitor.effective_workload_transition("unchecked", "checked"), 1)
+        self.assertEqual(monitor.effective_workload_transition("unchecked", "completed"), 1)
+        self.assertEqual(monitor.effective_workload_transition("checked", "completed"), 1)
+        self.assertEqual(monitor.effective_workload_transition("completed", "completed"), 0)
+        self.assertEqual(monitor.effective_workload_transition("checked", "checked"), 0)
+
+    def test_external_task_state_marks_duplicate_business_keys_ambiguous(self):
+        rows = [
+            {"values": {"下发日期": "2026-09-19", "核查人": "甲", "社区": "社区甲", "身份证号": "same"}},
+            {"values": {"下发日期": "2026-09-19", "核查人": "乙", "社区": "社区甲", "身份证号": "same"}},
+        ]
+        states, duplicate_count = monitor.build_monitor_task_states(
+            7, "全链条", rows, datetime(2026, 9, 19).date()
+        )
+        self.assertEqual(duplicate_count, 1)
+        self.assertTrue(all(state.identity_status == "ambiguous_identity" for state in states))
+
     def test_reordering_and_identical_duplicates_do_not_create_changes(self):
         snapshot = Counter({variant("a", "1"): 2, variant("b", "2"): 1})
 
@@ -347,6 +366,8 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("content_hash", source)
         self.assertNotIn("first_seen_at", source)
         self.assertIn("checker_name", source)
+        self.assertIn("_txdocs_monitor_task_state", source)
+        self.assertIn("_txdocs_monitor_workload_ledger", source)
         for forbidden in (
             "identity_number", "phone", "address", "values_json",
             "physical_row", "access_token", "client_secret",

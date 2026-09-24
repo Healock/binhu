@@ -13,35 +13,85 @@ async def load_effective_workload_by_community(
     if not parser_types:
         return {}
     placeholders = ",".join(["%s"] * len(parser_types))
-    await cur.execute(
-        f"""
-        SELECT COALESCE(formal_community.name, ledger.community) AS community,
-               COALESCE(SUM(ledger.effective_workload), 0)
-        FROM _daily_task_ledger AS ledger
-        LEFT JOIN OnlineData._community_aliases AS community_alias
-          ON community_alias.alias=ledger.community
-        LEFT JOIN OnlineData._communities AS formal_community
-          ON formal_community.id=community_alias.community_id
-        JOIN OnlineData._grid_members AS member
-          ON LOWER(TRIM(member.name))=LOWER(TRIM(ledger.inspector))
-        JOIN OnlineData._grid_member_department_links AS member_link
-          ON member_link.member_id=member.id
-        JOIN OnlineData._departments AS department
-          ON department.id=member_link.department_id
-         AND department.department_type='community'
-        JOIN OnlineData._communities AS member_community
-          ON member_community.id=department.community_id
-         AND member_community.name=COALESCE(
-                formal_community.name, ledger.community
-             )
-        WHERE ledger.report_date BETWEEN %s AND %s
-          AND ledger.parser_type IN ({placeholders})
-          AND ledger.included=1
-          AND member.position IN ('组长', '组员')
-        GROUP BY COALESCE(formal_community.name, ledger.community)
-        """,
-        (start_date, end_date, *parser_types),
+    sql = f"""
+        SELECT community, SUM(workload) FROM (
+            SELECT COALESCE(formal_community.name, ledger.community) AS community,
+                   COALESCE(SUM(ledger.effective_workload), 0) AS workload
+            FROM _daily_task_ledger AS ledger
+            LEFT JOIN OnlineData._community_aliases AS community_alias
+              ON community_alias.alias=ledger.community
+            LEFT JOIN OnlineData._communities AS formal_community
+              ON formal_community.id=community_alias.community_id
+            JOIN OnlineData._grid_members AS member
+              ON LOWER(TRIM(member.name))=LOWER(TRIM(ledger.inspector))
+            JOIN OnlineData._grid_member_department_links AS member_link
+              ON member_link.member_id=member.id
+            JOIN OnlineData._departments AS department
+              ON department.id=member_link.department_id
+             AND department.department_type='community'
+            JOIN OnlineData._communities AS member_community
+              ON member_community.id=department.community_id
+             AND member_community.name=COALESCE(
+                    formal_community.name, ledger.community
+                 )
+            WHERE ledger.report_date BETWEEN %s AND %s
+              AND ledger.parser_type IN ({placeholders})
+              AND ledger.included=1
+              AND member.position IN ('组长', '组员')
+            GROUP BY COALESCE(formal_community.name, ledger.community)
+            UNION ALL
+            SELECT COALESCE(formal_community.name, external.community) AS community,
+                   COALESCE(SUM(external.effective_workload), 0) AS workload
+            FROM _txdocs_monitor_workload_ledger AS external
+            LEFT JOIN OnlineData._community_aliases AS community_alias
+              ON community_alias.alias=external.community
+            LEFT JOIN OnlineData._communities AS formal_community
+              ON formal_community.id=community_alias.community_id
+            WHERE external.observed_date BETWEEN %s AND %s
+              AND external.parser_type IN ({placeholders})
+            GROUP BY COALESCE(formal_community.name, external.community)
+        ) workload_sources
+        GROUP BY community
+        """
+    params = (
+        start_date, end_date, *parser_types,
+        start_date, end_date, *parser_types,
     )
+    try:
+        await cur.execute(sql, params)
+    except Exception as exc:
+        # Keep rolling deployments readable before the new monitor schema has
+        # been created.  The external adapter remains unavailable, while the
+        # existing local workload contract continues to work.
+        if "_txdocs_monitor_workload_ledger" not in str(exc):
+            raise
+        await cur.execute(
+            f"""
+            SELECT COALESCE(formal_community.name, ledger.community),
+                   COALESCE(SUM(ledger.effective_workload), 0)
+            FROM _daily_task_ledger AS ledger
+            LEFT JOIN OnlineData._community_aliases AS community_alias
+              ON community_alias.alias=ledger.community
+            LEFT JOIN OnlineData._communities AS formal_community
+              ON formal_community.id=community_alias.community_id
+            JOIN OnlineData._grid_members AS member
+              ON LOWER(TRIM(member.name))=LOWER(TRIM(ledger.inspector))
+            JOIN OnlineData._grid_member_department_links AS member_link
+              ON member_link.member_id=member.id
+            JOIN OnlineData._departments AS department
+              ON department.id=member_link.department_id
+             AND department.department_type='community'
+            JOIN OnlineData._communities AS member_community
+              ON member_community.id=department.community_id
+             AND member_community.name=COALESCE(formal_community.name, ledger.community)
+            WHERE ledger.report_date BETWEEN %s AND %s
+              AND ledger.parser_type IN ({placeholders})
+              AND ledger.included=1
+              AND member.position IN ('组长', '组员')
+            GROUP BY COALESCE(formal_community.name, ledger.community)
+            """,
+            (start_date, end_date, *parser_types),
+        )
     return {
         str(community): int(workload or 0)
         for community, workload in await cur.fetchall()
