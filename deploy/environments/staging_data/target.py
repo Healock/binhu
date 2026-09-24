@@ -38,7 +38,9 @@ def target_settings(settings, snapshot_id):
 def qualified(candidate, logical_table):
     # Logical names are labels from the sanitized artifact, never SQL input.
     try:
-        domain, table = logical_table.split('.')
+        domain, separator, table = logical_table.partition('.')
+        if not separator:
+            raise ValueError
         database = candidate[domain]
     except (KeyError, ValueError):
         raise SnapshotError('invalid_target_table') from None
@@ -51,6 +53,6 @@ def qualified(candidate, logical_table):
     # the quoted identifier or alter the logical domain/table split; allow the
     # remaining non-control characters so legitimate legacy tables can be
     # copied without weakening the database/environment boundary.
-    if not table or any(ord(char) < 0x20 or char in '`./\\;|&<>' for char in table):
+    if not table or any(ord(char) < 0x20 or char in '`\\;|&<>' for char in table):
         raise SnapshotError('invalid_target_table')
     return '`' + database + '`.`' + table + '`'
