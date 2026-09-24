@@ -176,3 +176,5 @@ accept <run-id> <artifact-id>
 ```
 
 `prepare` builds and verifies the Backend image on the authorized Dev host. `apply` uses the existing development backup, measure, health and rollback contract. `accept` rechecks the live Dev manifest and health before producing the real `dev-update-*` result consumed by the Staging application gateway. The gateway has no Production, Staging, Shadow, arbitrary command, or caller-selected path operation.
+
+The Dev application workflow reuses only the already-registered Dev event-pipeline host, port and known_hosts secrets because both gateways terminate on the same fixed Dev server. It still uses separate application admin/deploy key pairs and the separate `binhu-dev-app-deploy` account; no event-pipeline private key is reused.
