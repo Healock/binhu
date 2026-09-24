@@ -163,3 +163,16 @@ restores the previous configuration and image and checks their health; database
 backups are never automatically imported. Preserve the failure report if rollback
 health fails. The command does not support Staging promotion: that still requires
 the full Dev acceptance and Staging data gates.
+
+## Fixed Dev application promotion gateway
+
+The Dev application has a separate promotion boundary from the Dev event-pipeline gateway. Install `install-dev-application-gateway.sh` only from an exact `origin/main` revision. The forced account `binhu-dev-app-deploy` accepts only:
+
+```text
+prepare <dev-update-run-id> <40-hex-main-commit> <version> <artifact-id>
+measure <run-id> <artifact-id>
+apply <run-id> <artifact-id>
+accept <run-id> <artifact-id>
+```
+
+`prepare` builds and verifies the Backend image on the authorized Dev host. `apply` uses the existing development backup, measure, health and rollback contract. `accept` rechecks the live Dev manifest and health before producing the real `dev-update-*` result consumed by the Staging application gateway. The gateway has no Production, Staging, Shadow, arbitrary command, or caller-selected path operation.

@@ -301,3 +301,11 @@ python tools/environment_status.py --environment production --history 10 --forma
 3. 先建立只读报告和 schema 测试，再接入部署写入。
 4. 先在 Dev 验证报告与发布清单，再补 Staging 绑定，最后接入 Production 正常和紧急发布。
 5. 每个阶段单独记录 CI、部署和验收结果；没有新证据时不得宣称三套环境已经统一。
+
+## 2026-09-25：补齐 Dev 应用接受链
+
+当前 Staging 应用晋级因缺少真实 `dev-update-*` 应用接受记录而阻塞。原有 Dev event-pipeline 接受记录不能替代应用接受记录。新增独立 Dev application gateway 和固定 workflow，职责与事件管线网关隔离，合同为 `prepare → measure → apply → accept`。
+
+`0.30.24` 应用晋级使用精确 `origin/main` commit、artifact ID 和 Backend image digest。Dev 应用接受成功后，Staging 才能绑定同一制品执行应用晋级、受控数据库迁移和脱敏快照链。应用晋级链与 Kafka/Flink/Redis event-pipeline 验收链分开记录。
+
+Staging 此前停留在 `0.28.17` 的原因是应用晋级 workflow 没有成功执行记录；此前安装的是 Staging promotion gateway 和脱敏快照 gateway，而不是一次成功的应用晋级。该流程缺口已通过独立 Dev 应用接受入口补齐。生产仍保持现有版本和运行路径，架构升级不包含在本次 `0.30.24` 应用晋级中。

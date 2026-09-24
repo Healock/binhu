@@ -1,0 +1,91 @@
+name: Promote Dev application
+run-name: Promote Dev application ${{ inputs.action }} ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Fixed Dev application action
+        required: true
+        type: choice
+        options: [prepare, measure, apply, accept]
+      run_id:
+        description: dev-update plus 16 lowercase hex characters
+        required: true
+        type: string
+      commit:
+        description: Exact origin/main commit for prepare
+        required: false
+        type: string
+      artifact_id:
+        description: Exact immutable artifact ID
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-application-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate fixed inputs
+        env:
+          ACTION: ${{ inputs.action }}
+          RUN_ID: ${{ inputs.run_id }}
+          COMMIT: ${{ inputs.commit }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^dev-update-[0-9a-f]{16}$ ]]
+          case "$ACTION" in
+            prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
+            measure|apply|accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
+          esac
+      - name: Build exact artifact for prepare
+        if: inputs.action == 'prepare'
+        env:
+          COMMIT: ${{ inputs.commit }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          python -m deploy.environments.artifact build --repository . --commit "$COMMIT" --output "$RUNNER_TEMP/artifact"
+          python - "$RUNNER_TEMP/artifact/artifact.json" "$ARTIFACT_ID" <<'PY'
+          import json, pathlib, sys
+          if json.loads(pathlib.Path(sys.argv[1]).read_text())['artifact_id'] != sys.argv[2]: raise SystemExit('artifact mismatch')
+          PY
+          tar -C "$RUNNER_TEMP/artifact" -czf "$RUNNER_TEMP/artifact.tar.gz" artifact.json source.tar frontend.tar
+      - name: Configure deploy SSH
+        env:
+          KEY: ${{ secrets.BINHU_DEV_APP_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEV_APP_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/dev-app
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/dev-app ~/.ssh/known_hosts
+      - name: Execute fixed Dev application action
+        env:
+          HOST: ${{ secrets.BINHU_DEV_APP_HOST }}
+          PORT: ${{ secrets.BINHU_DEV_APP_PORT }}
+          ACTION: ${{ inputs.action }}
+          RUN_ID: ${{ inputs.run_id }}
+          COMMIT: ${{ inputs.commit }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
+          app=(ssh -p "$PORT" -i ~/.ssh/dev-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-dev-app-deploy@$HOST")
+          case "$ACTION" in
+            prepare) version="$(git show "$COMMIT:VERSION" | tr -d '\r\n')"; cat "$RUNNER_TEMP/artifact.tar.gz" | "${app[@]}" "prepare $RUN_ID $COMMIT $version $ARTIFACT_ID" ;;
+            measure|apply|accept) "${app[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
+          esac
