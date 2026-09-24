@@ -1,4 +1,4 @@
-import { Alert, Button, Input, InputNumber, Progress, Switch, Upload, message } from 'antd'
+import { Alert, Button, Input, InputNumber, Progress, Switch, Upload } from 'antd'
 import { ArrowLeftOutlined, InboxOutlined, ToolOutlined } from '@ant-design/icons'
 import type { UploadFile, UploadProps } from 'antd'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -17,6 +17,7 @@ import {
   saveOfflineResidenceConfig,
   type OfflineResidenceAddressResult,
   type OfflineResidenceConfig,
+  type OfflineResidenceQueryResult,
 } from '../utils/offlineResidenceClient'
 import { readOfflineWorkbook, writeOfflineWorkbook, type OfflineWorkbook } from '../utils/offlineResidenceXlsx'
 
@@ -35,21 +36,201 @@ function configIsUsable(config: OfflineResidenceConfig): boolean {
   )
 }
 
-export default function OfflineMode() {
-  const navigate = useNavigate()
-  const [config, setConfig] = useState<OfflineResidenceConfig>(() => loadOfflineResidenceConfig())
+type BatchQueryPanelProps = {
+  mode: BatchQueryMode
+  title: string
+  description: string
+  config: OfflineResidenceConfig
+  onSummary?: (summary: { mode: BatchQueryMode; state: QueryState; total: number; completed: number; successCount: number; errorCounts: Record<string, number>; diagnosticCounts: Record<string, number>; identityInputSummary: { empty: number; lengths: Record<string, number>; valid_format: number; invalid_format: number } }) => void
+}
+
+type BatchResult = OfflineResidenceQueryResult & Partial<Pick<OfflineResidenceAddressResult, 'registered_address'>>
+
+function workbookReadError(reason: unknown): string {
+  const value = reason instanceof Error ? reason.message : ''
+  if (value.includes('未找到身份证号列')) return value
+  if (value.includes('没有可处理的数据行')) return value
+  if (value.includes('工作簿') || value.includes('XML') || value.includes('Zip') || value.includes('zip')) {
+    return '文件读取失败：无法解析 XLSX 文件，请用 Excel 或 WPS 另存为 .xlsx 后重试。'
+  }
+  return '文件读取失败：请确认文件是有效的 XLSX，并包含身份证号列和至少一条数据。'
+}
+
+function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQueryPanelProps) {
   const [file, setFile] = useState<File | null>(null)
   const [fileList, setFileList] = useState<UploadFile[]>([])
   const [workbook, setWorkbook] = useState<OfflineWorkbook | null>(null)
   const [statuses, setStatuses] = useState<string[]>([])
   const [registeredAddresses, setRegisteredAddresses] = useState<string[]>([])
-  const [queryMode, setQueryMode] = useState<BatchQueryMode>('status')
   const [queryState, setQueryState] = useState<QueryState>('idle')
   const [completed, setCompleted] = useState(0)
   const [successCount, setSuccessCount] = useState(0)
   const [error, setError] = useState('')
-  const [configMessage, setConfigMessage] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [errorCounts, setErrorCounts] = useState<Record<string, number>>({})
+  const [diagnosticCounts, setDiagnosticCounts] = useState<Record<string, number>>({})
+  const [identityInputSummary, setIdentityInputSummary] = useState({ empty: 0, lengths: {} as Record<string, number>, valid_format: 0, invalid_format: 0 })
+
+  const total = workbook?.rows.length ?? 0
+  const running = queryState === 'running'
+  const notifySummary = (next: Partial<{ state: QueryState; total: number; completed: number; successCount: number; errorCounts: Record<string, number>; diagnosticCounts: Record<string, number>; identityInputSummary: typeof identityInputSummary }> = {}) => {
+    onSummary?.({ mode, state: next.state ?? queryState, total: next.total ?? total, completed: next.completed ?? completed, successCount: next.successCount ?? successCount, errorCounts: next.errorCounts ?? errorCounts, diagnosticCounts: next.diagnosticCounts ?? diagnosticCounts, identityInputSummary: next.identityInputSummary ?? identityInputSummary })
+  }
+
+  const reset = () => {
+    setFile(null)
+    setFileList([])
+    setWorkbook(null)
+    setStatuses([])
+    setRegisteredAddresses([])
+    setQueryState('idle')
+    setCompleted(0)
+    setSuccessCount(0)
+    setError('')
+    setErrorCounts({})
+    setDiagnosticCounts({})
+    setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
+    notifySummary({ state: 'idle', total: 0, completed: 0, successCount: 0, errorCounts: {}, diagnosticCounts: {}, identityInputSummary: { empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 } })
+  }
+
+  const beforeUpload: UploadProps['beforeUpload'] = selected => {
+    if (!selected.name.toLowerCase().endsWith('.xlsx')) {
+      setError('只支持 .xlsx 文件')
+      return Upload.LIST_IGNORE
+    }
+    setFile(selected)
+    setFileList([{ uid: selected.uid, name: selected.name, size: selected.size, status: 'done', originFileObj: selected }])
+    setWorkbook(null)
+    setStatuses([])
+    setRegisteredAddresses([])
+    setQueryState('idle')
+    setCompleted(0)
+    setSuccessCount(0)
+    setError('')
+    setErrorCounts({})
+    setDiagnosticCounts({})
+    setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
+    notifySummary({ state: 'idle', total: 0, completed: 0, successCount: 0, errorCounts: {}, diagnosticCounts: {}, identityInputSummary: { empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 } })
+    return false
+  }
+
+  const start = async () => {
+    if (!file || running) return
+    setError('')
+    setQueryState('running')
+    setCompleted(0)
+    setSuccessCount(0)
+    setErrorCounts({})
+    setDiagnosticCounts({})
+    setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
+    notifySummary({ state: 'running', total: 0, completed: 0, successCount: 0, errorCounts: {}, diagnosticCounts: {}, identityInputSummary: { empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 } })
+    try {
+      const book = await readOfflineWorkbook(file)
+      if (!book.rows.length) throw new Error('文件中没有可处理的数据行')
+      setWorkbook(book)
+      const nextStatuses = Array.from({ length: book.rows.length }, () => '查询中')
+      setStatuses(nextStatuses)
+      setRegisteredAddresses(Array.from({ length: book.rows.length }, () => ''))
+      const client = new OfflineResidenceClient(config)
+      let completedCount = 0
+      let successfulCount = 0
+      const nextErrorCounts: Record<string, number> = {}
+      const nextDiagnosticCounts: Record<string, number> = {}
+      const identitySummary = { empty: 0, lengths: {} as Record<string, number>, valid_format: 0, invalid_format: 0 }
+      const results = [...nextStatuses]
+      const concurrency = Math.min(4, Math.max(1, book.rows.length))
+      let cursor = 0
+      const worker = async () => {
+        while (cursor < book.rows.length) {
+          const index = cursor
+          cursor += 1
+          const rawIdentity = String(book.rows[index]?.[book.identityColumn] ?? '').trim().replace(/^[\u0027\u2019]/, '')
+          const identity = normalizeResidenceIdentity(rawIdentity)
+          if (!rawIdentity) identitySummary.empty += 1
+          const lengthKey = String(rawIdentity.length)
+          identitySummary.lengths[lengthKey] = (identitySummary.lengths[lengthKey] || 0) + 1
+          if (identity) identitySummary.valid_format += 1
+          else identitySummary.invalid_format += 1
+          setIdentityInputSummary({ ...identitySummary, lengths: { ...identitySummary.lengths } })
+          let result: BatchResult
+          try {
+            result = identity
+              ? mode === 'address' ? await client.lookupRegistrationAddress(identity) : await client.lookup(identity)
+              : { status: '身份证号格式无效', error: 'invalid_identity' }
+          } catch {
+            result = { status: '查询失败', error: 'request_error' }
+          }
+          results[index] = result.status
+          if (mode === 'address') {
+            setRegisteredAddresses(current => { const next = [...current]; next[index] = result.registered_address || ''; return next })
+          }
+          if (!result.error) successfulCount += 1
+          if (result.error) nextErrorCounts[result.error] = (nextErrorCounts[result.error] || 0) + 1
+          for (const event of result.diagnostics || []) {
+            const key = [event.stage, event.error_code, event.http_status ?? '', event.business_code ?? '', event.result_type ?? '', event.message_category ?? ''].join('|')
+            nextDiagnosticCounts[key] = (nextDiagnosticCounts[key] || 0) + 1
+          }
+          completedCount += 1
+          setErrorCounts({ ...nextErrorCounts })
+          setDiagnosticCounts({ ...nextDiagnosticCounts })
+          setStatuses([...results])
+          setCompleted(completedCount)
+          setSuccessCount(successfulCount)
+          notifySummary({ state: 'running', total: book.rows.length, completed: completedCount, successCount: successfulCount, errorCounts: { ...nextErrorCounts }, diagnosticCounts: { ...nextDiagnosticCounts }, identityInputSummary: { ...identitySummary, lengths: { ...identitySummary.lengths } } })
+        }
+      }
+      await Promise.all(Array.from({ length: concurrency }, worker))
+      const finalState = successfulCount === book.rows.length ? 'completed' : 'partial'
+      setQueryState(finalState)
+      notifySummary({ state: finalState, total: book.rows.length, completed: completedCount, successCount: successfulCount, errorCounts: nextErrorCounts, diagnosticCounts: nextDiagnosticCounts, identityInputSummary: identitySummary })
+    } catch (reason) {
+      setQueryState('failed')
+      setError(workbookReadError(reason))
+      notifySummary({ state: 'failed' })
+    }
+  }
+
+  const exportResult = async () => {
+    if (!workbook || completed !== workbook.rows.length) return
+    setExporting(true)
+    try {
+      const blob = mode === 'address'
+        ? writeOfflineWorkbook(workbook, statuses, { mode: 'address', addresses: registeredAddresses })
+        : writeOfflineWorkbook(workbook, statuses)
+      const sourceName = file?.name.replace(/\.xlsx$/i, '') || (mode === 'address' ? '涉警人员登记地址' : '居住登记查询结果')
+      await downloadBlob(blob, `${sourceName}-${mode === 'address' ? '登记地址' : '登记情况'}.xlsx`)
+    } catch {
+      setError('结果导出失败，请检查源文件格式和查询结果行数。原始文件不会被覆盖。')
+    } finally { setExporting(false) }
+  }
+
+  return <Panel title={title} description={description}>
+    <div className="grid gap-4">
+      {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
+      <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={reset} disabled={running}>
+        <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+        <p className="ant-upload-text">拖入文件，或点击选择</p>
+        <p className="ant-upload-hint">只读取当前文件中的身份证号列；无效行不会请求居住证系统</p>
+      </Dragger>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm text-[var(--app-text-secondary)]">{file ? `已选择：${file.name}` : '请选择本功能对应的 XLSX 文件'}</span>
+        <Button type="primary" onClick={() => void start()} loading={running} disabled={!file || running || !configIsUsable(config)}>{mode === 'address' ? '查询登记地址' : '查询登记情况'}</Button>
+      </div>
+      {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
+        <Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} />
+        <div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>
+        {mode === 'address' && <div className="text-xs text-[var(--app-text-secondary)]">已找到登记地址 {registeredAddresses.filter(Boolean).length} 条；未登记、查询失败或上游缺少地址的记录保持空白。</div>}
+        {Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}
+        {completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出{mode === 'address' ? '登记地址' : '登记情况'}结果 XLSX</Button></div>}
+      </div>}
+    </div>
+  </Panel>
+}
+
+export default function OfflineMode() {
+  const navigate = useNavigate()
+  const [config, setConfig] = useState<OfflineResidenceConfig>(() => loadOfflineResidenceConfig())
+  const [configMessage, setConfigMessage] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [macBusy, setMacBusy] = useState(false)
   const [activeMac, setActiveMac] = useState(config.mac_address)
@@ -57,13 +238,12 @@ export default function OfflineMode() {
   const [macMessageType, setMacMessageType] = useState<'info' | 'success' | 'error'>('info')
   const [macProbeBusy, setMacProbeBusy] = useState(false)
   const [macProbeProgress, setMacProbeProgress] = useState({ completed: 0, total: 0, mac: '' })
-  const [errorCounts, setErrorCounts] = useState<Record<string, number>>({})
-  const [diagnosticCounts, setDiagnosticCounts] = useState<Record<string, number>>({})
-  const [identityInputSummary, setIdentityInputSummary] = useState<{ empty: number; lengths: Record<string, number>; valid_format: number; invalid_format: number }>({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
   const macProbeRun = useRef(0)
-
-  const running = queryState === 'running'
-  const total = workbook?.rows.length ?? 0
+  const [activeSection, setActiveSection] = useState<'queries' | 'settings'>('queries')
+  const [batchSummaries, setBatchSummaries] = useState<Record<BatchQueryMode, { state: QueryState; total: number; completed: number; successCount: number; errorCounts: Record<string, number>; diagnosticCounts: Record<string, number>; identityInputSummary: { empty: number; lengths: Record<string, number>; valid_format: number; invalid_format: number } }>>({
+    status: { state: 'idle', total: 0, completed: 0, successCount: 0, errorCounts: {}, diagnosticCounts: {}, identityInputSummary: { empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 } },
+    address: { state: 'idle', total: 0, completed: 0, successCount: 0, errorCounts: {}, diagnosticCounts: {}, identityInputSummary: { empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 } },
+  })
   const configWarning = useMemo(() => {
     if (!config.enabled) return '离线居住证查询已关闭。'
     if (!config.base_url.trim()) return '请填写居住证接口地址。'
@@ -295,117 +475,6 @@ export default function OfflineMode() {
     }
   }
 
-  const beforeUpload: UploadProps['beforeUpload'] = selected => {
-    if (!selected.name.toLowerCase().endsWith('.xlsx')) {
-      message.error('只支持 .xlsx 文件')
-      return Upload.LIST_IGNORE
-    }
-    setFile(selected)
-    setFileList([{ uid: selected.uid, name: selected.name, size: selected.size, status: 'done', originFileObj: selected }])
-    setWorkbook(null)
-    setStatuses([])
-    setRegisteredAddresses([])
-    setCompleted(0)
-    setSuccessCount(0)
-    setErrorCounts({})
-    setDiagnosticCounts({})
-    setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
-    setQueryState('idle')
-    setError('')
-    return false
-  }
-
-  const start = async (mode: BatchQueryMode = 'status') => {
-    if (!file) return
-    setQueryMode(mode)
-    setError('')
-    setQueryState('running')
-    setCompleted(0)
-    setSuccessCount(0)
-    setDiagnosticCounts({})
-    setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
-    try {
-      const book = await readOfflineWorkbook(file)
-      if (!book.rows.length) throw new Error('文件中没有可处理的数据行')
-      setWorkbook(book)
-      const nextStatuses = Array.from({ length: book.rows.length }, () => '查询中')
-      setStatuses(nextStatuses)
-      setRegisteredAddresses(Array.from({ length: book.rows.length }, () => ''))
-      const client = new OfflineResidenceClient(config)
-      let completedCount = 0
-      let successfulCount = 0
-      const nextErrorCounts: Record<string, number> = {}
-      const nextDiagnosticCounts: Record<string, number> = {}
-      const identitySummary = { empty: 0, lengths: {} as Record<string, number>, valid_format: 0, invalid_format: 0 }
-      const results = [...nextStatuses]
-      const concurrency = Math.min(4, Math.max(1, book.rows.length))
-      let cursor = 0
-      const worker = async () => {
-        while (cursor < book.rows.length) {
-          const index = cursor
-          cursor += 1
-          const rawIdentity = String(book.rows[index]?.[book.identityColumn] ?? '').trim().replace(/^[\u0027\u2019]/, '')
-          const identity = normalizeResidenceIdentity(rawIdentity)
-          if (!rawIdentity) identitySummary.empty += 1
-          const lengthKey = String(rawIdentity.length)
-          identitySummary.lengths[lengthKey] = (identitySummary.lengths[lengthKey] || 0) + 1
-          if (identity) identitySummary.valid_format += 1
-          else identitySummary.invalid_format += 1
-          setIdentityInputSummary({ ...identitySummary, lengths: { ...identitySummary.lengths } })
-          let result: OfflineResidenceAddressResult
-          try {
-            result = identity
-              ? mode === 'address' ? await client.lookupRegistrationAddress(identity) : await client.lookup(identity)
-              : { status: '身份证号格式无效', error: 'invalid_identity' }
-          } catch (reason) {
-            result = { status: '查询失败', error: 'request_error' }
-          }
-          results[index] = result.status
-          if (mode === 'address') {
-            setRegisteredAddresses(current => {
-              const next = [...current]
-              next[index] = result.registered_address || ''
-              return next
-            })
-          }
-          if (!result.error) successfulCount += 1
-          if (result.error) nextErrorCounts[result.error] = (nextErrorCounts[result.error] || 0) + 1
-          for (const event of result.diagnostics || []) {
-            const key = [event.stage, event.error_code, event.http_status ?? '', event.business_code ?? '', event.result_type ?? '', event.message_category ?? ''].join('|')
-            nextDiagnosticCounts[key] = (nextDiagnosticCounts[key] || 0) + 1
-          }
-          setErrorCounts({ ...nextErrorCounts })
-          setDiagnosticCounts({ ...nextDiagnosticCounts })
-          completedCount += 1
-          setStatuses([...results])
-          setCompleted(completedCount)
-          setSuccessCount(successfulCount)
-        }
-      }
-      await Promise.all(Array.from({ length: concurrency }, worker))
-      setQueryState(successfulCount === book.rows.length ? 'completed' : 'partial')
-    } catch (reason) {
-      setQueryState('failed')
-      setError('名单读取或批量查询失败，请确认文件为有效 XLSX 且含身份证号列')
-    }
-  }
-
-  const exportResult = async () => {
-    if (!workbook || completed !== workbook.rows.length) return
-    setExporting(true)
-    try {
-      const blob = queryMode === 'address'
-        ? writeOfflineWorkbook(workbook, statuses, { mode: 'address', addresses: registeredAddresses })
-        : writeOfflineWorkbook(workbook, statuses)
-      const sourceName = file?.name.replace(/\.xlsx$/i, '') || '居住登记查询结果'
-      await downloadBlob(blob, `${sourceName}-${queryMode === 'address' ? '登记地址' : '登记情况'}.xlsx`)
-    } catch (reason) {
-      setError('结果导出失败，请检查源文件格式和查询结果行数')
-    } finally {
-      setExporting(false)
-    }
-  }
-
   const exportDiagnostics = async () => {
     const desktop = resolveDesktopBridge()
     const snapshot = config.mac_probe_results[activeMac]
@@ -423,105 +492,66 @@ export default function OfflineMode() {
       accounts: config.accounts.map(account => ({ community_id: account.community_id, community_name: account.community_name, username_configured: Boolean(account.username.trim()), community_code_configured: Boolean(account.community_code.trim()) })),
       active_mac_masked: activeMac ? `**:**:**:${activeMac.slice(-8)}` : '',
       probe_results: snapshot ? { tested_count: snapshot.tested_community_count, allowed_communities: snapshot.authorized_communities.map(item => item.community_name), rejected_count: snapshot.rejected_community_count || 0, failure_codes: (snapshot.probe_failures || []).reduce<Record<string, number>>((counts, item) => { const code = item.error_code || item.status; counts[code] = (counts[code] || 0) + 1; return counts }, {}) } : null,
-      last_batch: { state: queryState, total, completed, success_count: successCount, error_counts: errorCounts, diagnostic_counts: diagnosticCounts, identity_input_summary: identityInputSummary },
+      last_batch: Object.fromEntries(Object.entries(batchSummaries).map(([mode, summary]) => [mode, { state: summary.state, total: summary.total, completed: summary.completed, success_count: summary.successCount, error_counts: summary.errorCounts, diagnostic_counts: summary.diagnosticCounts, identity_input_summary: summary.identityInputSummary }])),
     }
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
     await downloadBlob(blob, `滨湖离线居住证诊断-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}.json`)
   }
 
+  const settingsContent = (
+    <Panel title="离线模式设置" description="设置保存在当前客户端。在线平台仅同步接口、查询范围和超时；账号、统一密码、本机 MAC 和会话不会上传到平台。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>刷新在线配置</Button>}>
+      <div className="grid gap-4">
+        {configWarning && <Alert type="warning" showIcon message={configWarning} />}
+        {configMessage && <Alert type="info" showIcon message={configMessage} />}
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">离线查询开关</span><div className="flex min-h-9 items-center gap-3"><Switch checked={config.enabled} onChange={enabled => updateConfig({ enabled })} /><span>{config.enabled ? '已开启' : '已关闭'}</span></div></label>
+          <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">居住证接口地址</span><Input value={config.base_url} onChange={event => updateConfig({ base_url: event.target.value })} /></label>
+          <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">统一登录密码</span><Input.Password value={config.password} onChange={event => updateConfig({ password: event.target.value })} autoComplete="new-password" /></label>
+          <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">本机 MAC 服务</span><Input value="http://127.0.0.1:23333" readOnly /></label>
+          <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">要使用或加入列表的 MAC</span><Input value={config.mac_address} onChange={event => updateConfig({ mac_address: event.target.value })} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" /></label>
+          <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">请求超时（秒）</span><InputNumber min={1} max={120} value={config.timeout_seconds} onChange={value => updateConfig({ timeout_seconds: Number(value || 15) })} className="w-full" /></label>
+        </div>
+        {config.login_community_names.length > 0 && <Alert type="info" showIcon message={`在线查询范围：${config.login_community_names.join('、')}`} />}
+        <div className="grid gap-3">
+          {!config.login_community_ids.length && <div className="flex justify-end"><Button onClick={() => updateConfig({ accounts: [...config.accounts, { community_id: null, community_name: '', username: '', community_code: '' }] })}>添加本地社区账号</Button></div>}
+          {config.accounts.map((account, index) => <div key={account.community_id || `local-${index}`} className="grid gap-3 rounded-xl border border-[var(--app-border)] p-4 md:grid-cols-2">
+            <div className="flex items-center justify-between gap-3 md:col-span-2"><span className="text-sm font-medium text-[var(--app-text-strong)]">{account.community_name || `本地社区账号 ${index + 1}`}</span>{!config.login_community_ids.length && <Button size="small" danger onClick={() => updateConfig({ accounts: config.accounts.filter((_, itemIndex) => itemIndex !== index) })}>移除</Button>}</div>
+            <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">完整登录账号</span><Input value={account.username} onChange={event => updateConfig({ accounts: config.accounts.map((item, itemIndex) => itemIndex === index ? { ...item, username: event.target.value } : item) })} autoComplete="username" /></label>
+            <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">组织代码（可选）</span><Input value={account.community_code} onChange={event => updateConfig({ accounts: config.accounts.map((item, itemIndex) => itemIndex === index ? { ...item, community_code: event.target.value.toUpperCase() } : item) })} placeholder="接口未返回组织代码时使用" /></label>
+          </div>)}
+        </div>
+        <div className="text-xs text-[var(--app-text-secondary)]">每个选中社区使用社区管理中配置的完整登录账号，共用本机统一密码；账号不会根据组织代码自动拼接。这里不保存居住证会话令牌，远端同步不会返回密码。</div>
+        <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
+          <div className="text-sm text-[var(--app-text-secondary)]">Windows 客户端首次运行时读取本机硬件 MAC 作为默认值，并在回环地址提供 `23333` 兼容读取端口。候选列表、检测结果和修改都只保存在当前电脑，不会修改服务器 MAC，也不会上传到滨湖平台。</div>
+          {macMessage && <Alert type={macMessageType} showIcon message={macMessage} />}
+          <div className="flex flex-wrap justify-end gap-2"><Button onClick={() => void readCurrentMac()} loading={macBusy}>读取当前 MAC</Button><Button onClick={addMacCandidate} disabled={!config.mac_address.trim() || macBusy || macProbeBusy}>加入候选列表</Button><Button type="primary" onClick={() => void pushConfiguredMac()} loading={macBusy} disabled={!config.mac_address.trim()}>保存本机 MAC</Button></div>
+          <div className="grid gap-2">
+            {config.mac_addresses.length === 0 && <div className="text-sm text-[var(--app-text-secondary)]">尚无候选 MAC。Windows 客户端会自动读取一次本机硬件地址，也可以在上方手动添加。</div>}
+            {config.mac_addresses.map(mac => { const snapshot = config.mac_probe_results[mac]; const authorized = snapshot?.authorized_communities || []; const failures = snapshot?.probe_failures || []; return <div key={mac} className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--app-text-strong)]"><span>{mac}</span>{mac === activeMac && <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">当前使用</span>}</div><div className="mt-1 text-xs text-[var(--app-text-secondary)]">{snapshot && snapshot.probe_version !== 1 ? '这是旧版本探测结果，无法区分未授权和网络失败，请重新检测' : snapshot ? failures.length ? `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无法判定'}；${failures.length} 个账号探测失败（网络、证书或配置异常），请先排查桌面客户端网络权限；检测时间：${new Date(snapshot.checked_at).toLocaleString()}` : `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无'}；未授权：${snapshot.rejected_community_count || 0}；检测时间：${new Date(snapshot.checked_at).toLocaleString()}` : '尚未检测可登录的社区账号'}</div></div><div className="flex flex-wrap justify-end gap-2"><Button size="small" onClick={() => void activateMacCandidate(mac)} disabled={mac === activeMac || macBusy || macProbeBusy}>设为当前</Button><Button size="small" onClick={() => void probeMacCandidates([mac])} disabled={macProbeBusy || macBusy}>检测社区</Button><Button size="small" danger onClick={() => removeMacCandidate(mac)} disabled={mac === activeMac || macBusy || macProbeBusy}>移除</Button></div></div> })}
+          </div>
+          {macProbeBusy && <Progress percent={macProbeProgress.total ? Math.round(macProbeProgress.completed / macProbeProgress.total * 100) : 0} format={() => `${macProbeProgress.completed}/${macProbeProgress.total}`} />}
+          <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-[var(--app-text-secondary)]">检测会按顺序使用最多 12 个已配置社区账号登录，不并发，不执行登记、修改、删除或写回。</span><div className="flex gap-2">{macProbeBusy && <Button danger onClick={stopMacProbe}>停止检测</Button>}<Button onClick={() => void probeMacCandidates(config.mac_addresses)} disabled={!config.mac_addresses.length || macProbeBusy || macBusy}>检测全部候选</Button></div></div>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2"><Button onClick={() => void exportDiagnostics()}>导出诊断信息</Button><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
+      </div>
+    </Panel>
+  )
+
   return (
     <main className="offline-mode-page h-full min-h-0 overflow-y-auto overscroll-contain bg-[var(--app-page-bg)] px-4 py-6 text-[var(--app-text-primary)] md:px-6 md:py-10">
-      <div className="mx-auto max-w-4xl">
+      <div className="mx-auto max-w-6xl">
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/login')}>返回登录</Button>
-        <div className="mt-6 grid gap-4">
-          <section className="app-card p-8">
-            <div className="flex items-start gap-4">
-              <ToolOutlined className="mt-1 text-2xl text-[var(--app-primary)]" />
-              <div>
-                <h1 className="m-0 text-2xl font-semibold">离线模式</h1>
-                <p className="mt-3 text-[var(--app-text-secondary)]">离线模式只表示滨湖平台服务器不可访问。查询时客户端直接访问居住证系统，不经过滨湖平台；名单只在本机处理。</p>
-              </div>
-            </div>
-          </section>
-
-          <Panel title="居住证系统配置" description="配置保存在当前客户端。在线平台同步接口、查询范围和超时；账号、统一密码、本机 MAC 和会话不会上传到平台。" extra={<Button onClick={() => void syncOnlineConfig()} loading={syncing}>刷新在线配置</Button>}>
-            <div className="grid gap-4">
-              {configWarning && <Alert type="warning" showIcon message={configWarning} />}
-              {configMessage && <Alert type="info" showIcon message={configMessage} />}
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">离线查询开关</span><div className="flex min-h-9 items-center gap-3"><Switch checked={config.enabled} onChange={enabled => updateConfig({ enabled })} /><span>{config.enabled ? '已开启' : '已关闭'}</span></div></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">居住证接口地址</span><Input value={config.base_url} onChange={event => updateConfig({ base_url: event.target.value })} /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">统一登录密码</span><Input.Password value={config.password} onChange={event => updateConfig({ password: event.target.value })} autoComplete="new-password" /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">本机 MAC 服务</span><Input value="http://127.0.0.1:23333" readOnly /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">要使用或加入列表的 MAC</span><Input value={config.mac_address} onChange={event => updateConfig({ mac_address: event.target.value })} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" /></label>
-                <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">请求超时（秒）</span><InputNumber min={1} max={120} value={config.timeout_seconds} onChange={value => updateConfig({ timeout_seconds: Number(value || 15) })} className="w-full" /></label>
-              </div>
-              {config.login_community_names.length > 0 && <Alert type="info" showIcon message={`在线查询范围：${config.login_community_names.join('、')}`} />}
-              <div className="grid gap-3">
-                {!config.login_community_ids.length && <div className="flex justify-end"><Button onClick={() => updateConfig({ accounts: [...config.accounts, { community_id: null, community_name: '', username: '', community_code: '' }] })}>添加本地社区账号</Button></div>}
-                {config.accounts.map((account, index) => <div key={account.community_id || `local-${index}`} className="grid gap-3 rounded-xl border border-[var(--app-border)] p-4 md:grid-cols-2">
-                  <div className="flex items-center justify-between gap-3 md:col-span-2"><span className="text-sm font-medium text-[var(--app-text-strong)]">{account.community_name || `本地社区账号 ${index + 1}`}</span>{!config.login_community_ids.length && <Button size="small" danger onClick={() => updateConfig({ accounts: config.accounts.filter((_, itemIndex) => itemIndex !== index) })}>移除</Button>}</div>
-                  <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">完整登录账号</span><Input value={account.username} onChange={event => updateConfig({ accounts: config.accounts.map((item, itemIndex) => itemIndex === index ? { ...item, username: event.target.value } : item) })} autoComplete="username" /></label>
-                  <label className="settings-field text-sm text-[var(--app-text-strong)]"><span className="settings-field__label font-medium">组织代码（可选）</span><Input value={account.community_code} onChange={event => updateConfig({ accounts: config.accounts.map((item, itemIndex) => itemIndex === index ? { ...item, community_code: event.target.value.toUpperCase() } : item) })} placeholder="接口未返回组织代码时使用" /></label>
-                </div>)}
-              </div>
-              <div className="text-xs text-[var(--app-text-secondary)]">每个选中社区使用社区管理中配置的完整登录账号，共用本机统一密码；账号不会根据组织代码自动拼接。这里不保存居住证会话令牌，远端同步不会返回密码。</div>
-              <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
-                <div className="text-sm text-[var(--app-text-secondary)]">Windows 客户端首次运行时读取本机硬件 MAC 作为默认值，并在回环地址提供 `23333` 兼容读取端口。候选列表、检测结果和修改都只保存在当前电脑，不会修改服务器 MAC，也不会上传到滨湖平台。</div>
-                {macMessage && <Alert type={macMessageType} showIcon message={macMessage} />}
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button onClick={() => void readCurrentMac()} loading={macBusy}>读取当前 MAC</Button>
-                  <Button onClick={addMacCandidate} disabled={!config.mac_address.trim() || macBusy || macProbeBusy}>加入候选列表</Button>
-                  <Button type="primary" onClick={() => void pushConfiguredMac()} loading={macBusy} disabled={!config.mac_address.trim()}>保存本机 MAC</Button>
-                </div>
-                <div className="grid gap-2">
-                  {config.mac_addresses.length === 0 && <div className="text-sm text-[var(--app-text-secondary)]">尚无候选 MAC。Windows 客户端会自动读取一次本机硬件地址，也可以在上方手动添加。</div>}
-                  {config.mac_addresses.map(mac => {
-                    const snapshot = config.mac_probe_results[mac]
-                    const authorized = snapshot?.authorized_communities || []
-                    const failures = snapshot?.probe_failures || []
-                    return <div key={mac} className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-[var(--app-text-strong)]"><span>{mac}</span>{mac === activeMac && <span className="rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">当前使用</span>}</div>
-                        <div className="mt-1 text-xs text-[var(--app-text-secondary)]">
-                          {snapshot && snapshot.probe_version !== 1
-                            ? '这是旧版本探测结果，无法区分未授权和网络失败，请重新检测'
-                            : snapshot
-                            ? failures.length
-                              ? `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无法判定'}；${failures.length} 个账号探测失败（网络、证书或配置异常），请先排查桌面客户端网络权限；检测时间：${new Date(snapshot.checked_at).toLocaleString()}`
-                              : `已检测 ${snapshot.tested_community_count} 个社区账号；允许访问：${authorized.length ? authorized.map(item => item.community_name).join('、') : '无'}；未授权：${snapshot.rejected_community_count || 0}；检测时间：${new Date(snapshot.checked_at).toLocaleString()}`
-                            : '尚未检测可登录的社区账号'}
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <Button size="small" onClick={() => void activateMacCandidate(mac)} disabled={mac === activeMac || macBusy || macProbeBusy}>设为当前</Button>
-                        <Button size="small" onClick={() => void probeMacCandidates([mac])} disabled={macProbeBusy || macBusy}>检测社区</Button>
-                        <Button size="small" danger onClick={() => removeMacCandidate(mac)} disabled={mac === activeMac || macBusy || macProbeBusy}>移除</Button>
-                      </div>
-                    </div>
-                  })}
-                </div>
-                {macProbeBusy && <Progress percent={macProbeProgress.total ? Math.round(macProbeProgress.completed / macProbeProgress.total * 100) : 0} format={() => `${macProbeProgress.completed}/${macProbeProgress.total}`} />}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs text-[var(--app-text-secondary)]">检测会按顺序使用最多 12 个已配置社区账号登录，不并发，不执行登记、修改、删除或写回。</span>
-                  <div className="flex gap-2">
-                    {macProbeBusy && <Button danger onClick={stopMacProbe}>停止检测</Button>}
-                    <Button onClick={() => void probeMacCandidates(config.mac_addresses)} disabled={!config.mac_addresses.length || macProbeBusy || macBusy}>检测全部候选</Button>
-                  </div>
-                </div>
-              </div>
-              <div className="flex flex-wrap justify-end gap-2"><Button onClick={() => void exportDiagnostics()}>导出诊断信息</Button><Button type="primary" onClick={persistConfig}>保存离线配置</Button></div>
-            </div>
-          </Panel>
-
-          <Panel title="已撤管人员居住登记情况批量查询" description="支持 .xlsx。只读取身份证号列（包括“证件号码”）并校验 15/18 位身份证号；格式无效的行不会请求居住证系统。可查询登记状态，或在下方批量查询登记地址；地址查询只读取居住证平台返回的登记地址，并追加到导出文件最后一列。">
-            <div className="grid gap-4">
-              {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
-              <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={() => { setFile(null); setFileList([]); setWorkbook(null); setStatuses([]); setRegisteredAddresses([]); setQueryState('idle') }} disabled={running}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p className="ant-upload-text">拖入人员名单文件，或点击选择</p><p className="ant-upload-hint">识别“身份证号 / 身份证号码 / 证件号码 / 公民身份号码 / 身份证”列；不会把“证件类型”列当作身份证号</p></Dragger>
-              <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-[var(--app-text-secondary)]">{file ? `已选择：${file.name}` : '请选择文件后确认查询'}</span><div className="flex flex-wrap gap-2"><Button type="primary" onClick={() => void start('status')} loading={running && queryMode === 'status'} disabled={!file || running || !configIsUsable(config)}>查询登记情况</Button><Button onClick={() => void start('address')} loading={running && queryMode === 'address'} disabled={!file || running || !configIsUsable(config)}>涉警人员信息登记地址批量查询</Button></div></div>
-              {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? `正在直接查询居住证系统${queryMode === 'address' ? '登记地址' : '登记情况'}` : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{queryMode === 'address' && <div className="text-xs text-[var(--app-text-secondary)]">已找到登记地址 {registeredAddresses.filter(Boolean).length} 条；未登记、查询失败或上游缺少地址的记录保持空白，请结合失败分类复核。</div>}{Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出{queryMode === 'address' ? '登记地址' : '登记情况'}结果 XLSX</Button></div>}</div>}
-            </div>
-          </Panel>
+        <div className="mt-6 grid gap-6">
+          <section className="app-card p-6 md:p-8"><div className="flex items-start gap-4"><ToolOutlined className="mt-1 text-2xl text-[var(--app-primary)]" /><div><h1 className="m-0 text-2xl font-semibold">离线模式</h1><p className="mt-3 text-[var(--app-text-secondary)]">离线模式只表示滨湖平台服务器不可访问。查询时客户端直接访问居住证系统，不经过滨湖平台；名单只在本机处理。</p></div></div></section>
+        <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)] lg:items-start">
+          <aside className="app-card grid gap-2 p-3 lg:sticky lg:top-4"><div className="px-3 py-2 text-sm font-semibold text-[var(--app-text-strong)]">离线模式</div><button type="button" className={`rounded-lg px-3 py-2 text-left text-sm ${activeSection === 'queries' ? 'bg-[var(--app-primary)] text-white' : 'text-[var(--app-text-secondary)] hover:bg-[var(--app-surface-muted)]'}`} onClick={() => setActiveSection('queries')}>批量查询</button><button type="button" className={`rounded-lg px-3 py-2 text-left text-sm ${activeSection === 'settings' ? 'bg-[var(--app-primary)] text-white' : 'text-[var(--app-text-secondary)] hover:bg-[var(--app-surface-muted)]'}`} onClick={() => setActiveSection('settings')}>离线模式设置</button></aside>
+          <div className="grid min-w-0 gap-4">
+            {activeSection === 'settings' ? settingsContent : <>
+              <BatchQueryPanel mode="status" title="已撤管人员居住登记情况批量查询" description="上传已撤管人员名单，查询居住登记状态并导出登记情况。此功能有独立的文件上传区，不会与涉警人员地址查询共享文件或进度。" config={config} onSummary={summary => setBatchSummaries(current => ({ ...current, status: summary }))} />
+              <BatchQueryPanel mode="address" title="涉警人员信息登记地址批量查询" description="上传涉警人员信息名单，批量只读查询登记地址，并在导出文件最后追加“登记地址”列。此功能有独立的文件上传区，不执行登记、修改、删除或写回。" config={config} onSummary={summary => setBatchSummaries(current => ({ ...current, address: summary }))} />
+            </>}
+          </div>
+        </div>
         </div>
       </div>
     </main>
