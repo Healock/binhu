@@ -30,6 +30,9 @@ test('辖区档案页面显示告知书后台进度并允许断点继续', () =>
   assert.match(pageSource, /重新读取/)
   assert.match(pageSource, /可以离开本页面，任务会在服务器继续执行/)
   assert.doesNotMatch(pageSource, /告知书读取超时/)
+  assert.match(pageSource, /本次变化/)
+  assert.match(pageSource, /读取后责任状态/)
+  assert.match(pageSource, /来源未再出现/)
 })
 
 test('房屋档案和问题核查使用正文搜索并提供完整筛选', () => {

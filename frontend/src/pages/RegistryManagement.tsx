@@ -553,9 +553,9 @@ export default function RegistryManagement() {
         ? await registryApi.confirmCertificateImport(importPreview.batch_id)
         : await registryApi.confirmHouseholdImport(importPreview.batch_id)
       message.success(certificate
-        ? `已挂载 ${result.imported_count} 条告知书；未匹配出租房的记录已进入核查清单`
+        ? `告知书处理完成：新增 ${result.inserted_count || 0} 条，更新 ${result.updated_count || 0} 条，未变化 ${result.unchanged_count || 0} 条；${result.pending_issue_count || 0} 条进入问题核查`
         : `已导入 ${result.imported_count} 条房屋档案；问题数据仍保留在核查清单`)
-      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count })
+      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count, comparison: result.comparison || importPreview.comparison })
       await load()
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '户号表导入失败')
@@ -967,6 +967,15 @@ export default function RegistryManagement() {
               ? '读取中断'
               : ''
 
+  const comparison = importPreview?.comparison || certificateRun?.preview?.comparison
+  const statusLabels: Record<string, string> = {
+    normal_signed: '正常签署',
+    not_uploaded: '未上传',
+    renter_needs_correction: '需修改实际出租人',
+    actual_renter_missing: '实际出租人未确定',
+    multiple_or_conflict: '来源待核对',
+  }
+
   const toolbarActions = <>
     {tab !== 'imports' && <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>}
     {['properties', 'people', 'organizations'].includes(tab) && (
@@ -1116,10 +1125,32 @@ export default function RegistryManagement() {
                 : '可以点击“继续读取”从已保存分页继续；如来源数据已经大幅调整，也可以选择重新读取。'}
             />}
             {importPreview ? <Alert type="success" showIcon message={importPreview.source_type === 'certificate'
-              ? `告知书共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可尝试挂载；${importPreview.problem_row_count} 条需核查。`
+              ? `告知书共 ${importPreview.total_count} 条；${comparison?.safe_to_apply ?? importPreview.normal_count} 条可安全挂载；${comparison?.pending_review ?? importPreview.problem_row_count} 条需核查。`
               : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条需核查。`}
-              description={importPreview.status === 'preview' ? '当前仍是预览状态，确认后只导入正常数据，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
+              description={importPreview.status === 'preview' ? '当前仍是预览状态，确认只处理安全记录；来源未再出现不会自动删除，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
+            {importPreview?.source_type === 'certificate' && comparison && <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded border border-[var(--app-border)] p-3">
+                <div className="mb-2 font-medium">本次变化</div>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <span>新增可挂载：{comparison.added}</span>
+                  <span>内容/房屋更新：{comparison.updated}</span>
+                  <span>保持不变：{comparison.unchanged}</span>
+                  <span>来源未再出现：{comparison.missing_from_source}</span>
+                  <span>安全可处理：{comparison.safe_to_apply}</span>
+                  <span>进入问题核查：{comparison.pending_review}</span>
+                </div>
+              </div>
+              <div className="rounded border border-[var(--app-border)] p-3">
+                <div className="mb-2 font-medium">读取后责任状态</div>
+                <div className="grid gap-1 text-sm">
+                  {Object.entries(comparison.status_summary || {}).map(([key, value]) => <div key={key} className="flex justify-between gap-2">
+                    <span>{statusLabels[key] || key}</span>
+                    <span>预计 {value.total} 条（本次 +{value.entered} / -{value.exited}）</span>
+                  </div>)}
+                </div>
+              </div>
+            </div>}
           </ExternalDataPanel>}
         {tab === 'properties' && <AppTable
           fitHeight
