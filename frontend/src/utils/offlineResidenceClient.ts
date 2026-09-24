@@ -645,7 +645,8 @@ export class OfflineResidenceClient {
     try {
       const resident = await residenceJsonRequest(this.config, SEARCH_RESIDENT_PATH, { method: 'POST', headers, body })
       const known = resident.payload?.success === true && Number(resident.payload?.code) === 200 && resident.payload?.result == null
-      diagnostics.push(diagnosticFromPayload('search_resident', known ? 'resident_precheck_ok' : authResponse(resident.payload) ? 'authentication_expired' : 'resident_response_contract_changed', resident.payload, resident.httpStatus))
+      const residentNotFound = classify(resident.payload).state === 'not_found'
+      diagnostics.push(diagnosticFromPayload('search_resident', known ? 'resident_precheck_ok' : residentNotFound ? 'resident_no_data' : authResponse(resident.payload) ? 'authentication_expired' : 'resident_response_contract_changed', resident.payload, resident.httpStatus))
       if (authResponse(resident.payload)) return { result: { state: 'error', error: 'authentication_expired' }, registeredAddress: '', diagnostics }
       if (!known && classify(resident.payload).state !== 'not_found') {
         return { result: { state: 'error', error: 'resident_response_contract_changed' }, registeredAddress: '', diagnostics }
