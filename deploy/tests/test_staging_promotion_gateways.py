@@ -172,6 +172,17 @@ class StagingDataGatewayTests(unittest.TestCase):
         self.assertIn('tar -C "$package"', install)
         self.assertNotIn('/tmp/staging-app.pub', install)
 
+    def test_install_status_probe_has_bounded_retry_without_wrapping_mutations(self):
+        install = (ROOT / '.github/workflows/install-staging-promotion-gateways.yml').read_text(encoding='utf-8')
+        self.assertIn('status_retry_delays=(2 4 8 12 20)', install)
+        self.assertIn('run_status_with_retry() {', install)
+        self.assertIn('run_status_with_retry app "${app[@]}" status', install)
+        self.assertIn('run_status_with_retry data "${data[@]}" status', install)
+        self.assertNotIn('run_status_with_retry app "${app[@]}" \'apply', install)
+        self.assertNotIn('run_status_with_retry data "${data[@]}" \'switch', install)
+        self.assertIn('-o ConnectionAttempts=1', install)
+        self.assertIn('-o ConnectTimeout=15', install)
+
 
 if __name__ == '__main__':
     unittest.main()

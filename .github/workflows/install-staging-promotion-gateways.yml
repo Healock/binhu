@@ -66,10 +66,39 @@ jobs:
           printf '%s\n' "$APP_KEY" > ~/.ssh/staging-app
           printf '%s\n' "$DATA_KEY" > ~/.ssh/staging-data
           chmod 600 ~/.ssh/staging-app ~/.ssh/staging-data
-          app=(ssh -p "$PORT" -i ~/.ssh/staging-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-app-deploy@$HOST")
-          data=(ssh -p "$PORT" -i ~/.ssh/staging-data -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-data-deploy@$HOST")
-          "${app[@]}" status
-          "${data[@]}" status
+          app=(ssh -p "$PORT" -i ~/.ssh/staging-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 "binhu-staging-app-deploy@$HOST")
+          data=(ssh -p "$PORT" -i ~/.ssh/staging-data -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ConnectionAttempts=1 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 "binhu-staging-data-deploy@$HOST")
+
+          # The fixed SSH port is fronted by a tunnel that can reset a fresh
+          # KEX while the root install session is being released.  Retry only
+          # the read-only status probe, with bounded backoff; mutating gateway
+          # actions and boundary checks remain single-attempt operations.
+          status_retry_delays=(2 4 8 12 20)
+          run_status_with_retry() {
+            local label="$1"
+            shift
+            local attempt=1
+            local delay
+            local rc=1
+            for delay in "${status_retry_delays[@]}"; do
+              if "$@"; then
+                echo "$label status passed (attempt $attempt)"
+                return 0
+              else
+                rc=$?
+              fi
+              if (( attempt == ${#status_retry_delays[@]} )); then
+                echo "::error::$label status failed after $attempt attempts" >&2
+                return "$rc"
+              fi
+              echo "::warning::$label status connection failed (attempt $attempt); retrying after ${delay}s" >&2
+              sleep "$delay"
+              ((attempt += 1))
+            done
+          }
+
+          run_status_with_retry app "${app[@]}" status
+          run_status_with_retry data "${data[@]}" status
           ! "${app[@]}" 'apply production deadbeef'
           ! "${app[@]}" 'sh -c id'
           ! "${data[@]}" 'switch production'
