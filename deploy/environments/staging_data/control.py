@@ -212,7 +212,10 @@ def execute(action, *, exclude_orphan_property_links=False, recover_model_three_
             'recover_model_three_sources': recover_model_three_sources,
             'staging_sample_mode': staging_sample_mode,
             'staging_sample_limit': staging_sample_limit,
-            'maximum_excluded_links':3 if exclude_orphan_property_links else 0,
+            # No arbitrary count cap: only true orphan links are excluded.
+            # Registry input is the full graph in the current sample mode;
+            # the report retains every rejected link and its classification.
+            'maximum_excluded_links':None if exclude_orphan_property_links else 0,
             'maximum_recovered_sources':261 if recover_model_three_sources else 0})
         try:
             before = preflight()
@@ -271,7 +274,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('measure', 'export'))
     parser.add_argument('--exclude-orphan-property-links', action='store_true',
-        help='Explicitly reject up to three nonconfirmed orphan relations; preserve houses and report each rejection')
+        help='Reject nonconfirmed true orphan relations; preserve houses and report every rejection')
     parser.add_argument('--recover-model-three-sources', action='store_true',
         help='Staging-only recovery of unambiguous active model-three source projections')
     parser.add_argument('--staging-sample-mode', action='store_true',
