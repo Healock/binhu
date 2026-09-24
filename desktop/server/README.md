@@ -151,18 +151,24 @@ ANDROID_MINIMUM_VERSION
 line. The workflow fixes the host, port and user in source code and sends one
 validated tar stream over SSH standard input.
 
-The client-release workflow can alternatively use the private Shanghai OSS
-transfer path. Configure the `desktop-production` Environment with the two
-secrets `ALIYUN_OSS_ACCESS_KEY_ID` and `ALIYUN_OSS_ACCESS_KEY_SECRET`. The RAM
-identity must be restricted to the `binhu-update` bucket and the
-`client-transfer/` prefix. GitHub Actions uploads through the public endpoint
-`oss-cn-shanghai.aliyuncs.com`, creates a short-lived signed URL for the fixed
-internal endpoint `binhu-update.oss-cn-shanghai-internal.aliyuncs.com`, and
-sends only that URL plus the object key, byte length, and SHA-256 to the
-restricted gateway. The gateway accepts only HTTPS URLs for that exact host and
-the fixed `client-transfer/<version>/<commit>/binhu-clients-<version>.tar.gz`
-key shape; it never stores an OSS secret. A failed transfer leaves the partial
-file and does not change the public update feeds.
+The client-release workflow uses the private Shanghai OSS transfer path. Configure
+the `desktop-production` Environment with the two secrets
+`ALIYUN_OSS_ACCESS_KEY_ID` and `ALIYUN_OSS_ACCESS_KEY_SECRET`. The RAM identity
+must be restricted to the `binhu-update` bucket and the `client-transfer/`
+prefix. GitHub Actions uploads through the fixed accelerated endpoint
+`binhu-update.oss-accelerate.aliyuncs.com`; the standard public endpoint
+`binhu-update.oss-cn-shanghai.aliyuncs.com` remains available only for the
+workflow's temporary A/B probe and controlled rollback. The workflow verifies
+the probe object's byte length and SHA-256 through both endpoints, deletes the
+probe object, and records duration, throughput, failed parts, and retries.
+
+For the real bundle, the workflow sends only the fixed object key, byte length,
+and SHA-256 to the restricted gateway. The server pulls from the fixed internal
+endpoint `binhu-update.oss-cn-shanghai-internal.aliyuncs.com`; the server-side
+download does not use the public or accelerated endpoint. The gateway never
+stores an OSS secret. A failed transfer leaves the partial file and does not
+change the public update feeds. After the formal GitHub Release is created, the
+workflow deletes the completed private transfer object.
 
 ## 5. Verify
 
