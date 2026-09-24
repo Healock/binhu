@@ -76,11 +76,17 @@ async def verify_current_schema(conn,snapshot,current):
         for domain,database in current.items():
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(database,'BASE TABLE'))
             tables=[row[0] for row in await cur.fetchall()]
-            if set(tables)!=(set(production_contract.get(domain,{}))|{'_environment_identity'}):
-                raise SnapshotError('production_staging_schema_table_mismatch')
+            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
+            actual_tables=set(tables)
+            if actual_tables!=expected_tables:
+                raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
+                    'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
+                    'extra_tables':sorted(actual_tables-expected_tables),
+                    'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in tables:
                 if table!='_environment_identity' and await schema_signature(cur,database,table)!=production_contract[domain][table]:
-                    raise SnapshotError('production_staging_schema_mismatch')
+                    raise SnapshotError('production_staging_schema_mismatch', diagnostics={
+                        'domain':domain,'table_name':table,'schema_signature_mismatch':True})
     return True
 async def verify_target(conn,settings,snapshot,current,candidate):
     expected=materialize(snapshot,settings.registry_hmac_key)
@@ -98,8 +104,13 @@ async def verify_target(conn,settings,snapshot,current,candidate):
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(candidate[domain],'BASE TABLE'))
             candidate_tables=[row[0] for row in await cur.fetchall()]
             if current_tables!=candidate_tables:raise SnapshotError('target_schema_table_mismatch')
-            if set(candidate_tables)!=(set(production_contract.get(domain,{}))|{'_environment_identity'}):
-                raise SnapshotError('production_staging_schema_table_mismatch')
+            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
+            actual_tables=set(candidate_tables)
+            if actual_tables!=expected_tables:
+                raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
+                    'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
+                    'extra_tables':sorted(actual_tables-expected_tables),
+                    'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in current_tables:
                 signatures=[]
                 for database in (current[domain],candidate[domain]):
@@ -108,7 +119,8 @@ async def verify_target(conn,settings,snapshot,current,candidate):
                 expected_signature=production_contract.get(domain,{}).get(table)
                 actual_signature=signatures[1]
                 if table!='_environment_identity' and expected_signature!=actual_signature:
-                    raise SnapshotError('production_staging_schema_mismatch')
+                    raise SnapshotError('production_staging_schema_mismatch', diagnostics={
+                        'domain':domain,'table_name':table,'schema_signature_mismatch':True})
                 logical=domain+'.'+table
                 expected_count=expected_counts.get(logical,0)
                 if logical=='PlatformData._users':expected_count+=1
@@ -146,7 +158,7 @@ async def main():
         print(json.dumps({'ok':True,'result':result}))
     finally:conn.close()
 try:asyncio.run(main())
-except SnapshotError as exc:print(json.dumps({'ok':False,'reason':str(exc)}))
+except SnapshotError as exc:print(json.dumps({'ok':False,'reason':str(exc),'diagnostics':exc.diagnostics}))
 except Exception:print(json.dumps({'ok':False,'reason':'staging_candidate_job_failed'}))
 '''
     return code, {name:hashlib.sha256(source.encode()).hexdigest() for name,source in modules.items()}
@@ -173,7 +185,11 @@ def run_job(backend, code, name, *, snapshot=None):
     envelope=json.loads(lines[0])
     if not envelope.get('ok'):
         reason=envelope.get('reason','')
-        raise SnapshotError(reason if re.fullmatch('[a-z_]{1,100}',reason) else 'staging_candidate_job_failed')
+        diagnostics=envelope.get('diagnostics')
+        if not isinstance(diagnostics,dict):
+            diagnostics={}
+        raise SnapshotError(reason if re.fullmatch('[a-z_]{1,100}',reason) else 'staging_candidate_job_failed',
+                            diagnostics=diagnostics)
     return envelope['result']
 
 
@@ -221,6 +237,25 @@ def execute(action,snapshot_id):
         except Exception as exc:
             reason=str(exc) if isinstance(exc,SnapshotError) else 'staging_candidate_operation_failed'
             failure={'reason':reason}
+            diagnostics=getattr(exc,'diagnostics',{})
+            if isinstance(diagnostics,dict):
+                safe={}
+                for key in ('domain','table_name'):
+                    value=diagnostics.get(key)
+                    if isinstance(value,str) and len(value)<=128:
+                        safe[key]=value
+                for key in ('missing_tables','extra_tables'):
+                    value=diagnostics.get(key)
+                    if isinstance(value,list) and all(isinstance(item,str) and len(item)<=128 for item in value):
+                        safe[key]=value
+                for key in ('expected_table_count','actual_table_count'):
+                    value=diagnostics.get(key)
+                    if type(value) is int and 0<=value<=10000:
+                        safe[key]=value
+                if diagnostics.get('schema_signature_mismatch') is True:
+                    safe['schema_signature_mismatch']=True
+                if safe:
+                    failure['diagnostics']=safe
             exit_code=getattr(exc,'diagnostics',{}).get('exit_code')
             if type(exit_code) is int and -255<=exit_code<=255:
                 failure['exit_code']=exit_code

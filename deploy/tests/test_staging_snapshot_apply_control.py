@@ -46,6 +46,23 @@ class ApplyControlTests(unittest.TestCase):
             self.assertIn("information_schema.table_constraints",code)
         self.assertIn("ready_for_application_switch':True",verify)
 
+    def test_schema_contract_diagnostics_include_table_set_diff(self):
+        code,_=program('staging-'+'a'*16,'measure')
+        self.assertIn("'missing_tables':sorted(expected_tables-actual_tables)",code)
+        self.assertIn("'extra_tables':sorted(actual_tables-expected_tables)",code)
+        self.assertIn("'expected_table_count':len(expected_tables)",code)
+        self.assertIn("'actual_table_count':len(actual_tables)",code)
+        self.assertIn("'schema_signature_mismatch':True",code)
+
+    def test_job_failure_preserves_safe_schema_diagnostics(self):
+        code,_=program('staging-'+'a'*16,'measure')
+        output='{"ok":false,"reason":"production_staging_schema_table_mismatch","diagnostics":{"domain":"OnlineData","missing_tables":["new_table"],"extra_tables":["old_table"],"expected_table_count":4,"actual_table_count":4}}'
+        with patch('deploy.environments.staging_data.apply_control.command',return_value=output):
+            with self.assertRaises(SnapshotError) as caught:
+                run_job({'Image':'sha256:'+'a'*64},code,'binhu-staging-snapshot-test')
+        self.assertEqual(caught.exception.diagnostics['missing_tables'],['new_table'])
+        self.assertEqual(caught.exception.diagnostics['extra_tables'],['old_table'])
+
     def test_import_data_is_json_on_stdin_not_python_source_or_arguments(self):
         data={'tables':{'fixture_only_payload_marker':[{'text':'虚构\\n\"sample', 'active':True, 'value':None}]*10000}}
         code,_=program('staging-'+'a'*16,'import')
