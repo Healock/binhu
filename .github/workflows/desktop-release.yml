@@ -568,3 +568,12 @@ jobs:
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz \
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256 \
             release-notes/release-notes.json
+      - name: Delete transfer object after successful release
+        env:
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -Eeuo pipefail
+          python desktop/scripts/aliyun_oss_transfer.py delete \
+            --endpoint "$ALIYUN_OSS_UPLOAD_ENDPOINT" \
+            --key '${{ steps.transfer.outputs.object_key }}'

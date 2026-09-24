@@ -35,6 +35,36 @@ class AliyunOssTransferTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             oss.presigned_url(oss.INTERNAL_ENDPOINT, "other/file.tar.gz", 3600)
 
+    def test_delete_uses_fixed_endpoint_and_namespace(self):
+        class Response:
+            status = 204
+
+            def read(self, _limit=None):
+                return b""
+
+            def getheaders(self):
+                return []
+
+        class Connection:
+            def __init__(self, *_args, **_kwargs):
+                self.requests = []
+
+            def request(self, method, path, body=None, headers=None):
+                self.requests.append((method, path, body, headers))
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with mock.patch.object(oss.http.client, "HTTPSConnection", Connection):
+            oss.delete_object(oss.UPLOAD_ENDPOINT, self.key)
+        with self.assertRaises(SystemExit):
+            oss.delete_object(oss.INTERNAL_ENDPOINT, self.key)
+        with self.assertRaises(SystemExit):
+            oss.delete_object(oss.UPLOAD_ENDPOINT, "other/file.tar.gz")
+
     def test_upload_streams_bundle_without_printing_secret(self):
         class Response:
             def __init__(self, status, body=b"", headers=None):

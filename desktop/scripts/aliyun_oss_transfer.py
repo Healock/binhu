@@ -181,6 +181,18 @@ def upload(path: Path, endpoint: str, key: str) -> None:
     print(f"object_size={size}")
 
 
+def delete_object(endpoint: str, key: str) -> None:
+    """Delete one completed transfer object from the fixed private bucket."""
+    validate_key(key)
+    if endpoint != UPLOAD_ENDPOINT:
+        raise SystemExit(f"delete endpoint must be {UPLOAD_ENDPOINT}")
+    credentials()
+    status, _, _ = oss_request(endpoint, key, "DELETE", timeout=60)
+    if status not in (200, 204):
+        raise RuntimeError(f"OSS object deletion failed with HTTP {status}")
+    print(f"deleted_object_key={key}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -192,11 +204,16 @@ def main(argv: list[str] | None = None) -> int:
     presign_parser.add_argument("--endpoint", default=INTERNAL_ENDPOINT)
     presign_parser.add_argument("--key", required=True)
     presign_parser.add_argument("--expires-in", type=int, default=3600)
+    delete_parser = subparsers.add_parser("delete")
+    delete_parser.add_argument("--endpoint", default=UPLOAD_ENDPOINT)
+    delete_parser.add_argument("--key", required=True)
     args = parser.parse_args(argv)
     if args.command == "upload":
         upload(args.file, args.endpoint, args.key)
-    else:
+    elif args.command == "presign":
         print(presigned_url(args.endpoint, args.key, args.expires_in))
+    else:
+        delete_object(args.endpoint, args.key)
     return 0
 
 
