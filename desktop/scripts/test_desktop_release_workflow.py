@@ -17,6 +17,14 @@ class DesktopReleaseWorkflowContractTests(unittest.TestCase):
         self.assertGreaterEqual(int(timeout.group(1)), 120)
 
     def test_publish_creates_asset_before_fixed_gateway_pull(self) -> None:
+        self.assertIn("ALIYUN_OSS_UPLOAD_ENDPOINT: binhu-update.oss-accelerate.aliyuncs.com", self.workflow)
+        self.assertIn("ALIYUN_OSS_STANDARD_ENDPOINT: binhu-update.oss-cn-shanghai.aliyuncs.com", self.workflow)
+        self.assertLess(
+            self.workflow.index("Compare standard and accelerated OSS endpoints"),
+            self.workflow.index("Upload transfer bundle to private Aliyun OSS"),
+        )
+        self.assertIn("aliyun_oss_transfer.py verify", self.workflow)
+        self.assertIn('"average_bytes_per_second"', self.workflow)
         self.assertLess(
             self.workflow.index("Upload transfer bundle to private Aliyun OSS"),
             self.workflow.index("Publish through fixed SSH gateway"),
