@@ -58,16 +58,12 @@ test('login page has no manual staging environment entry', () => {
   assert.doesNotMatch(loginSource, /window\.location\.(?:href|assign)\(?.*username/)
 })
 
-test('staging login depends on the account suffix while isolated paths reject mismatches', () => {
-  assert.doesNotThrow(() => assertLoginEnvironmentEntry('staging', '', true))
+test('staging login depends on the account suffix on web and desktop while isolated paths reject mismatches', () => {
+  assert.doesNotThrow(() => assertLoginEnvironmentEntry('staging', ''))
   assert.doesNotThrow(() => assertLoginEnvironmentEntry('staging', '/staging'))
   assert.doesNotThrow(() => assertLoginEnvironmentEntry('development', '/dev'))
   assert.doesNotThrow(() => assertLoginEnvironmentEntry('production', ''))
 
-  assert.throws(
-    () => assertLoginEnvironmentEntry('staging', ''),
-    /请先打开 \/staging\/ 入口/,
-  )
   assert.throws(
     () => assertLoginEnvironmentEntry('development', ''),
     /请先打开 \/dev\/ 入口/,
@@ -80,9 +76,18 @@ test('staging login depends on the account suffix while isolated paths reject mi
     () => assertLoginEnvironmentEntry('staging', '/dev'),
     /账号不属于当前环境/,
   )
+})
 
-  const authSource = readFileSync(new URL('../src/context/AuthContext.tsx', import.meta.url), 'utf8')
-  assert.match(authSource, /VITE_DESKTOP_MODE === 'true'/)
+test('root web login routes a strict staging suffix to the fixed staging API', () => {
+  installSessionStorage()
+  assert.equal(environmentForUsername('observer@staging'), 'staging')
+  assert.doesNotThrow(() => assertLoginEnvironmentEntry('staging', ''))
+
+  setApiEnvironment(environmentForUsername('observer@staging'))
+  assert.equal(getApiEnvironment(), 'staging')
+  assert.equal(getApiBaseUrl(), '/staging/api')
+  assert.equal(resolveRuntimeApiUrl('/api/app/bootstrap'), '/staging/api/app/bootstrap')
+  assert.equal(resolveRuntimeApiUrl('/api/auth/login'), '/staging/api/auth/login')
 })
 
 test('shadow environment stays in session storage and resolves only the fixed path', () => {
