@@ -177,3 +177,7 @@ Staging 脱敏副本改为主动少取策略，默认最多选择 150 条正常�
 ### 2026-09-20：Staging preflight 证据
 
 PR #768 已修复 preflight 失败证据和网关安装身份保留，主线 CI 与网关重装均通过。新的只读 `measure` Action `35504450683` 创建了不可覆盖目录 `staging-10b71cf9285a32df`；私有证据确认 `phase=preflight`、`reason=insufficient_memory_for_snapshot`，固定脱敏策略完整，安装控制提交为 `93f676795837a34e1e591afff35a2de0cd0a87a6`。随后只读复测的 `MemAvailable=2,949,312 KiB`，仍低于固定 `3,145,728 KiB` 门槛约 192 MiB。本轮没有执行 export/create/import/verify/switch，也没有新的数据一致性失败。不得降低门槛或清理其他环境资源来制造通过；内存自然恢复前继续保留该资源阻塞。
+
+### 2026-09-24：采样恢复忽略无活跃业务记录的历史来源
+
+已确认模型三来源表仍保留历史来源，但当前模型三业务表没有对应的活跃记录。采样恢复现在只处理 `(physical_row, row_key)` 能匹配当前业务表 `(id, _row_key)` 的来源；没有活跃业务记录的历史来源不会进入恢复候选，并以 `excluded_stale_model_three_source_count` 写入聚合报告。该过滤只作用于 Staging 脱敏快照，不修改 Production 来源、业务表或账本。

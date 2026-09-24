@@ -177,6 +177,50 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tables, before)
         self.assertTrue(all(sql.startswith(('SELECT', 'SET SESSION', 'START TRANSACTION')) for sql in cur.commands))
 
+    async def test_sample_recovery_excludes_historical_sources_without_active_business_rows(self):
+        settings, tables, _, conn = self.recovery_fixture()
+        parser = get_parser('疑似未注销模型三')
+        stale_values = {field: '' for field in parser.COLUMNS}
+        stale_values.update({'社区': '虚构社区', '下发社区': '虚构社区'})
+        tables['OnlineData._online_source_rows'].extend([
+            {'id': 20, 'parser_type': parser.parser_type, 'physical_row': 200,
+             'revision': 1, 'row_key': 'stale-one', 'row_hash': 'a' * 64,
+             'values_json': json.dumps(stale_values), 'source_kind': 'local_table'},
+            {'id': 21, 'parser_type': parser.parser_type, 'physical_row': 201,
+             'revision': 1, 'row_key': 'stale-two', 'row_hash': 'b' * 64,
+             'values_json': json.dumps(stale_values), 'source_kind': 'local_table'},
+        ])
+        result = await build(conn, 'staging-' + 'a' * 16, b'a' * 32, settings=settings,
+                             recover_model_three_sources=True, staging_sample_mode=True,
+                             staging_sample_limit=150)
+        self.assertEqual(result['report']['recovered_model_three_source_count'], 1)
+        self.assertEqual(result['report']['excluded_stale_model_three_source_count'], 2)
+        model_sources = [row for row in result['tables']['OnlineData._online_source_rows']
+                         if row['parser_type'] == parser.parser_type]
+        self.assertEqual(len(model_sources), 1)
+
+    async def test_sample_recovery_skips_type_with_no_active_business_rows(self):
+        settings, tables, _, conn = self.fixture()
+        parser = get_parser('疑似未注销模型三')
+        tables['OnlineData.' + parser.table_name] = []
+        stale_values = {field: '' for field in parser.COLUMNS}
+        stale_values.update({'社区': '虚构社区', '下发社区': '虚构社区'})
+        tables['OnlineData._online_source_rows'].extend([
+            {'id': 20, 'parser_type': parser.parser_type, 'physical_row': 200,
+             'revision': 1, 'row_key': 'stale-one', 'row_hash': 'a' * 64,
+             'values_json': json.dumps(stale_values), 'source_kind': 'local_table'},
+            {'id': 21, 'parser_type': parser.parser_type, 'physical_row': 201,
+             'revision': 1, 'row_key': 'stale-two', 'row_hash': 'b' * 64,
+             'values_json': json.dumps(stale_values), 'source_kind': 'local_table'},
+        ])
+        result = await build(conn, 'staging-' + 'a' * 16, b'a' * 32, settings=settings,
+                             recover_model_three_sources=True, staging_sample_mode=True,
+                             staging_sample_limit=150)
+        self.assertEqual(result['report']['recovered_model_three_source_count'], 0)
+        self.assertEqual(result['report']['excluded_stale_model_three_source_count'], 2)
+        self.assertFalse(any(row['parser_type'] == parser.parser_type
+                             for row in result['tables']['OnlineData._online_source_rows']))
+
     async def test_recovery_rejects_unproven_or_duplicate_ledgers(self):
         for field, value in [('status','archived'), ('content_hash','f'*64), ('revision',0),
                 ('values_json','{}'), ('source_kind','txdocs'), ('archived_at','2026-09-01')]:

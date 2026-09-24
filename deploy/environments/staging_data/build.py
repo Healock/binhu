@@ -117,12 +117,30 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
             registrations = await select(cur,"OnlineData._task_registration_links",REGISTRATION_FIELDS)
             observed_source_count = len(sources)
             recovered_source_count = 0
+            excluded_stale_model_three_source_count = 0
             recovery_scope = None
             if recover_model_three_sources:
                 from .recovery import PARSER, LEDGER_FIELDS, reconstruct, recovery_scope as select_recovery_scope
                 parser = get_parser(PARSER)
                 business = await select(cur, 'OnlineData.' + parser.table_name,
                     ('id', '_row_key', *parser.COLUMNS))
+                # Historical model-three source rows can outlive their active
+                # business rows. They are not recovery candidates: in sample
+                # mode, only source references backed by a current business
+                # row may enter the Staging snapshot.
+                if staging_sample_mode:
+                    active_business_keys = {(row['id'], row['_row_key']) for row in business}
+                    retained_sources = []
+                    for source in sources:
+                        if source['parser_type'] != PARSER:
+                            retained_sources.append(source)
+                            continue
+                        source_key = (source['physical_row'], source['row_key'])
+                        if source_key in active_business_keys:
+                            retained_sources.append(source)
+                        else:
+                            excluded_stale_model_three_source_count += 1
+                    sources = retained_sources
                 ledgers = await select(cur, 'OnlineData._local_source_records',
                     LEDGER_FIELDS, ' WHERE parser_type=%s', (PARSER,))
                 # A nonlocal current source must not be silently replaced.
@@ -411,6 +429,7 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                     "OnlineData._task_registration_links":len(registrations)},
                 "pending_gates":["registration_hmac_rebuild","candidate_database_import","target_verification"],
                 "recovered_model_three_source_count": recovered_source_count,
+                "excluded_stale_model_three_source_count": excluded_stale_model_three_source_count,
                 "recovery_scope": recovery_scope,
                 "scope":"current_tasks_organization_and_registry_graph","ready_for_application_switch":False})
             result["schema_contract"] = schema_contract
