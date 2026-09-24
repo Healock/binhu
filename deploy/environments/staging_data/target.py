@@ -44,6 +44,12 @@ def qualified(candidate, logical_table):
         raise SnapshotError('invalid_target_table') from None
     if not re.fullmatch(r'Staging_s[a-f0-9]{16}_[A-Za-z_]+', database):
         raise SnapshotError('invalid_candidate_database')
-    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', table):
+    # MySQL permits dollar signs and digit-leading names when identifiers are
+    # quoted.  These names can be present in an existing Staging schema even
+    # though all application-created tables use the conventional underscore
+    # form.  Keep the whitelist strict while accepting the complete safe
+    # identifier subset; dots, quoting characters and whitespace remain
+    # rejected before the identifier is interpolated into SQL.
+    if not re.fullmatch(r'[A-Za-z0-9_$]+', table):
         raise SnapshotError('invalid_target_table')
     return '`' + database + '`.`' + table + '`'
