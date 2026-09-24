@@ -375,6 +375,11 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 current = {key: row for key, row in current.items() if key in accepted_source_keys}
                 retained_flows = [row for row in retained_flows if (row['parser_type'], row['row_key']) in accepted_source_keys]
                 retained_registrations = [row for row in retained_registrations if (row['parser_type'], row['row_key']) in accepted_source_keys]
+                addresses = [row for row in addresses if (row['parser_type'], row['row_key']) in accepted_source_keys]
+                flow_map = {row['id']: row for row in retained_flows}
+                review_events = [row for row in review_events if row['flow_id'] in flow_map]
+                registration_events = [row for row in registration_events
+                                       if (row['parser_type'], row['row_key']) in accepted_source_keys]
             tables["OnlineData._unverifiable_review_flows"]=[]
             for row in retained_flows:
                 entry=remapped[(row["parser_type"],row["row_key"])]; source=entry["source"]
