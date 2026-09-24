@@ -675,7 +675,6 @@ export class OfflineResidenceClient {
     }
     let lastError = ''
     let sawNotFound = false
-    let sawRegistrationWithoutAddress = false
     const diagnostics: OfflineResidenceDiagnosticEvent[] = []
     for (const account of this.config.accounts) {
       try {
@@ -694,8 +693,7 @@ export class OfflineResidenceClient {
         if (result.state === 'registered') {
           if (!includeAddress) return { status: result.status || '状态待核对', diagnostics }
           if (attempt.registeredAddress) return { status: result.status || '状态待核对', registered_address: attempt.registeredAddress, diagnostics }
-          sawRegistrationWithoutAddress = true
-          continue
+          return { status: '登记地址待核对', error: 'address_unavailable', registered_address: '', diagnostics }
         }
         if (result.state === 'not_found') sawNotFound = true
         else lastError = result.error || 'business_error'
@@ -704,7 +702,6 @@ export class OfflineResidenceClient {
         diagnostics.push({ stage: 'login', error_code: lastError })
       }
     }
-    if (sawRegistrationWithoutAddress) return { status: '登记地址待核对', error: 'address_unavailable', registered_address: '', diagnostics }
     if (sawNotFound && !lastError) return { status: '未登记', registered_address: '', diagnostics }
     return { status: '查询失败', error: lastError || 'not_found', registered_address: '', diagnostics }
   }
