@@ -37,8 +37,8 @@ class TargetTests(unittest.TestCase):
         candidate = database_names('staging-'+'a'*16)
         self.assertEqual(qualified(candidate,'OnlineData.t_fullchain'),
                          '`Staging_saaaaaaaaaaaaaaaa_OnlineData`.`t_fullchain`')
-        self.assertEqual(qualified(candidate,'OnlineData.9legacy$view'),
-                         '`Staging_saaaaaaaaaaaaaaaa_OnlineData`.`9legacy$view`')
+        self.assertEqual(qualified(candidate,'OnlineData.9legacy$view-with-legacy'),
+                         '`Staging_saaaaaaaaaaaaaaaa_OnlineData`.`9legacy$view-with-legacy`')
         for name in ['mysql.user', 'OnlineData.t;DROP', 'OnlineData.t`', '../OnlineData.t']:
             with self.assertRaises(SnapshotError):
                 qualified(candidate,name)
