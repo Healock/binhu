@@ -12,6 +12,14 @@ Staging 使用生产脱敏副本和与候选版本一致的制品，承担发布
 
 ## 投入使用前的工作包
 
+### Staging 应用版本漂移记录（2026-09-25）
+
+- 根因：Staging 应用 promotion 工作流在 0.30.24 发布后没有成功运行记录；Staging 应用网关只完成了安装，没有执行 `prepare → measure → apply → accept`，因此运行中的 Backend 仍为 0.28.17。
+- 证据：Staging `binhu-staging-backend-1` 的 `APP_VERSION=0.28.17`，镜像摘要为 `sha256:f8a4100c1e6d40dc0a5e46bb584bd139cde6de6632177692f45e7a86477063c9`；GitHub Actions 没有 `Promote immutable Staging application` 成功运行。快照 `staging-ade7dd9442e85d19` 的 schema 合同按 0.30.24 生成，因而被严格 schema 门禁拒绝。
+- 影响：Staging 应用与脱敏快照的 schema 版本不一致，候选库创建未执行；既有失败证据目录保持不变，Production 未修改。
+- 修复：应用部署必须先绑定 Dev 已接受的同一 `artifact_id`、commit、版本和镜像摘要，再按受控网关完成部署；随后只能使用 `measure → migrate --apply → verify` 补齐 Staging schema，禁止手工 SQL 或绕过门禁。
+- 预防：0.30.24 及后续发布清单必须包含 Staging promotion workflow 的成功 run、部署前后制品记录和应用 `accept` 证据；没有这些证据时不得进入快照 `create`。
+
 ### 1. 版本与部署基线
 
 - 统一记录提交、版本号、镜像摘要、数据库迁移版本和配置摘要。
