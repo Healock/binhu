@@ -26,7 +26,7 @@ jobs:
       - name: Configure admin SSH
         env:
           ADMIN_KEY: ${{ secrets.BINHU_DEV_APP_ADMIN_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_DEV_APP_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
@@ -35,8 +35,8 @@ jobs:
           chmod 600 ~/.ssh/dev-app-admin ~/.ssh/known_hosts
       - name: Install fixed Dev application gateway
         env:
-          HOST: ${{ secrets.BINHU_DEV_APP_HOST }}
-          PORT: ${{ secrets.BINHU_DEV_APP_PORT }}
+          HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
           PUBLIC_KEY: ${{ secrets.BINHU_DEV_APP_DEPLOY_PUBLIC_KEY }}
         run: |
           set -euo pipefail
@@ -51,10 +51,10 @@ jobs:
           cat "$RUNNER_TEMP/dev-app-gateway.tar.gz" | ssh -p "$PORT" -i ~/.ssh/dev-app-admin -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-dev-app-gateway.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; bash ./deploy/environments/install-dev-application-gateway.sh ./dev-app-deploy.pub ./dev-app-control-commit'
       - name: Verify status and boundary
         env:
-          HOST: ${{ secrets.BINHU_DEV_APP_HOST }}
-          PORT: ${{ secrets.BINHU_DEV_APP_PORT }}
+          HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
           KEY: ${{ secrets.BINHU_DEV_APP_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_DEV_APP_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           printf '%s\n' "$KEY" > ~/.ssh/dev-app
@@ -64,3 +64,4 @@ jobs:
           "${app[@]}" status
           ! "${app[@]}" 'apply production aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
           ! "${app[@]}" 'sh -c id'
+
