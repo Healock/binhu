@@ -69,6 +69,27 @@ test('工作簿只查找身份证列并在其后插入登记情况', () => {
   assert.match(workbookSource, /不校验|不检查|identityColumn/)
 })
 
+test('涉警人员登记地址批量查询追加到原表最后一列', () => {
+  assert.match(pageSource, /涉警人员信息登记地址批量查询/)
+  assert.match(pageSource, /start\('address'\)/)
+  assert.match(pageSource, /lookupRegistrationAddress\(identity\)/)
+  assert.match(pageSource, /mode: 'address'/)
+  assert.match(pageSource, /登记地址/)
+  assert.match(workbookSource, /writeAddressIntoSource\(book, output\.addresses \|\| \[\]\)/)
+  assert.match(workbookSource, /source\.dataRows\.forEach/)
+  assert.match(workbookSource, /value\.trim\(\) === '登记地址'/)
+  assert.match(workbookSource, /zipSync\(\{ \.\.\.source\.files/)
+})
+
+test('登记地址查询只保留居住证响应中的白名单地址字段', () => {
+  assert.match(clientSource, /raw\.jlx_dictText/)
+  assert.match(clientSource, /raw\.mph/)
+  assert.match(clientSource, /registered_address\?: string/)
+  assert.doesNotMatch(clientSource, /registered_address.*身份证|registered_address.*手机号/)
+  assert.doesNotMatch(clientSource, /\/registration\/submit|\/delete|\/writeback/i)
+  assert.match(clientSource, /登记地址待核对/)
+})
+
 test('工作簿优先选择证件号码而不是相邻的证件类型', () => {
   assert.equal(selectIdentityColumn(['姓名', '证件类型', '证件号码']), 2)
   assert.equal(selectIdentityColumn(['姓名', '身份证件类型', '居民身份证号']), 2)
@@ -292,6 +313,120 @@ test('离线查询复用登录响应中的 departCode 作为查询机构代码',
     { sfzh: '11010519491231002X', xzqh: '320584' },
     { sfzh: '11010519491231002X', xzqh: '320584' },
   ])
+})
+
+test('登记地址批量查询只返回白名单地址字段并继续复用社区 session', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    value: async (url: string) => new Response(JSON.stringify(url === 'http://127.0.0.1:23333'
+      ? { mac: '02:11:22:33:44:66' }
+      : url.includes('/sys/randomImage/')
+        ? { success: true }
+      : url.endsWith('/sys/login')
+        ? { success: true, result: { token: 'fixture-token', userInfo: { departCode: '320584037700' } } }
+        : url.endsWith('/szjzz/searchIsck')
+          ? { success: true, code: 200, result: null }
+          : { success: true, code: 200, result: { jlx_dictText: '虚构街道', mph: '88号', rysfzx: '0', sfzh: '不应被导出' } }), { status: 200 }),
+  })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(),
+    base_url: 'https://residence.invalid',
+    password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '测试社区', username: 'fixture-user', community_code: '3205840377' }],
+  }).lookupRegistrationAddress('11010519491231002X')
+  assert.equal(result.status, '未注销')
+  assert.equal(result.registered_address, '虚构街道88号')
+  assert.equal(JSON.stringify(result).includes('不应被导出'), false)
+})
+
+test('地址字段结构异常不转为对象文本，且登记记录标记为待核对', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  Object.defineProperty(globalThis, 'fetch', { configurable: true, value: async (url: string) => new Response(JSON.stringify(
+    url === 'http://127.0.0.1:23333' ? { mac: '02:11:22:33:44:66' }
+      : url.includes('/sys/randomImage/') ? { success: true }
+        : url.endsWith('/sys/login') ? { success: true, result: { token: 'fixture-token', userInfo: { departCode: '320584037700' } } }
+          : url.endsWith('/szjzz/searchIsck') ? { success: true, code: 200, result: null }
+            : { success: true, code: 200, result: { rysfzx: '0', jlx_dictText: { unexpected: true }, mph: null } },
+  ), { status: 200 }) })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(), base_url: 'https://residence.invalid', password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '虚构社区', username: 'fixture-user', community_code: '3205840377' }],
+  }).lookupRegistrationAddress('11010519491231002X')
+  assert.equal(result.error, 'address_unavailable')
+  assert.equal(result.registered_address, '')
+  assert.equal(JSON.stringify(result).includes('unexpected'), false)
+})
+
+test('常住人口预检索响应异常时停止，不继续流动人口查询', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  let floatingCalls = 0
+  Object.defineProperty(globalThis, 'fetch', { configurable: true, value: async (url: string) => {
+    if (url.endsWith('/szjzz/searchzzrk')) floatingCalls += 1
+    return new Response(JSON.stringify(url === 'http://127.0.0.1:23333' ? { mac: '02:11:22:33:44:66' }
+      : url.includes('/sys/randomImage/') ? { success: true }
+        : url.endsWith('/sys/login') ? { success: true, result: { token: 'fixture-token', userInfo: { departCode: '320584037700' } } }
+          : { unexpected: true }), { status: 200 })
+  } })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(), base_url: 'https://residence.invalid', password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '虚构社区', username: 'fixture-user', community_code: '3205840377' }],
+  }).lookupRegistrationAddress('11010519491231002X')
+  assert.equal(result.error, 'resident_response_contract_changed')
+  assert.equal(floatingCalls, 0)
+})
+
+test('并发查询同一社区只建立一次登录 session', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  let loginCalls = 0
+  Object.defineProperty(globalThis, 'fetch', { configurable: true, value: async (url: string) => {
+    if (url.endsWith('/sys/login')) loginCalls += 1
+    return new Response(JSON.stringify(url === 'http://127.0.0.1:23333' ? { mac: '02:11:22:33:44:66' }
+      : url.includes('/sys/randomImage/') ? { success: true }
+        : url.endsWith('/sys/login') ? { success: true, result: { token: 'fixture-token', userInfo: { departCode: '320584037700' } } }
+          : url.endsWith('/szjzz/searchIsck') ? { success: true, code: 200, result: null }
+            : { success: false, code: 500, message: '操作失败，没有查询到数据', result: null }), { status: 200 })
+  } })
+  const client = new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(), base_url: 'https://residence.invalid', password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '虚构社区', username: 'fixture-user', community_code: '3205840377' }],
+  })
+  const results = await Promise.all(Array.from({ length: 4 }, () => client.lookupRegistrationAddress('11010519491231002X')))
+  assert.equal(loginCalls, 1)
+  assert.ok(results.every(result => result.status === '未登记'))
+})
+
+test('多社区只用各自账号令牌查询，第二社区的登记地址可被找到', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  const logins: string[] = []
+  const queries: string[] = []
+  Object.defineProperty(globalThis, 'fetch', { configurable: true, value: async (url: string, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    if (url.endsWith('/sys/login')) {
+      const username = String(JSON.parse(String(init?.body || '{}')).username)
+      logins.push(username)
+      return new Response(JSON.stringify({ success: true, result: { token: `fixture-${username}`, userInfo: { departCode: username === 'community-a' ? '320584037700' : '320584038800' } } }), { status: 200 })
+    }
+    if (url.endsWith('/szjzz/searchIsck') || url.endsWith('/szjzz/searchzzrk')) {
+      const token = headers.get('X-Access-Token') || ''
+      queries.push(token)
+      return new Response(JSON.stringify(url.endsWith('/szjzz/searchIsck') ? { success: true, code: 200, result: null }
+        : token === 'fixture-community-a' ? { success: false, code: 500, message: '没有查询到数据', result: null }
+          : { success: true, code: 200, result: { rysfzx: '0', jlx_dictText: '虚构路', mph: '2号' } }), { status: 200 })
+    }
+    return new Response(JSON.stringify(url === 'http://127.0.0.1:23333' ? { mac: '02:11:22:33:44:66' } : { success: true }), { status: 200 })
+  } })
+  const client = new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(), base_url: 'https://residence.invalid', password: 'fixture-password',
+    accounts: [
+      { community_id: 1, community_name: '虚构甲社区', username: 'community-a', community_code: '3205840377' },
+      { community_id: 2, community_name: '虚构乙社区', username: 'community-b', community_code: '3205840388' },
+    ],
+  })
+  const result = await client.lookupRegistrationAddress('11010519491231002X')
+  assert.equal(result.registered_address, '虚构路2号')
+  assert.deepEqual(logins, ['community-a', 'community-b'])
+  assert.deepEqual(queries, ['fixture-community-a', 'fixture-community-a', 'fixture-community-b', 'fixture-community-b'])
 })
 
 test('在线配置同步不要求密码明文', () => {

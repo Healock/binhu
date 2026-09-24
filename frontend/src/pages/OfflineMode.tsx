@@ -15,12 +15,14 @@ import {
   normalizeResidenceIdentity,
   readMacAddress,
   saveOfflineResidenceConfig,
+  type OfflineResidenceAddressResult,
   type OfflineResidenceConfig,
 } from '../utils/offlineResidenceClient'
 import { readOfflineWorkbook, writeOfflineWorkbook, type OfflineWorkbook } from '../utils/offlineResidenceXlsx'
 
 const { Dragger } = Upload
 type QueryState = 'idle' | 'running' | 'completed' | 'partial' | 'failed'
+type BatchQueryMode = 'status' | 'address'
 
 function configIsUsable(config: OfflineResidenceConfig): boolean {
   return Boolean(
@@ -40,6 +42,8 @@ export default function OfflineMode() {
   const [fileList, setFileList] = useState<UploadFile[]>([])
   const [workbook, setWorkbook] = useState<OfflineWorkbook | null>(null)
   const [statuses, setStatuses] = useState<string[]>([])
+  const [registeredAddresses, setRegisteredAddresses] = useState<string[]>([])
+  const [queryMode, setQueryMode] = useState<BatchQueryMode>('status')
   const [queryState, setQueryState] = useState<QueryState>('idle')
   const [completed, setCompleted] = useState(0)
   const [successCount, setSuccessCount] = useState(0)
@@ -300,6 +304,7 @@ export default function OfflineMode() {
     setFileList([{ uid: selected.uid, name: selected.name, size: selected.size, status: 'done', originFileObj: selected }])
     setWorkbook(null)
     setStatuses([])
+    setRegisteredAddresses([])
     setCompleted(0)
     setSuccessCount(0)
     setErrorCounts({})
@@ -310,8 +315,9 @@ export default function OfflineMode() {
     return false
   }
 
-  const start = async () => {
+  const start = async (mode: BatchQueryMode = 'status') => {
     if (!file) return
+    setQueryMode(mode)
     setError('')
     setQueryState('running')
     setCompleted(0)
@@ -324,6 +330,7 @@ export default function OfflineMode() {
       setWorkbook(book)
       const nextStatuses = Array.from({ length: book.rows.length }, () => '查询中')
       setStatuses(nextStatuses)
+      setRegisteredAddresses(Array.from({ length: book.rows.length }, () => ''))
       const client = new OfflineResidenceClient(config)
       let completedCount = 0
       let successfulCount = 0
@@ -345,15 +352,22 @@ export default function OfflineMode() {
           if (identity) identitySummary.valid_format += 1
           else identitySummary.invalid_format += 1
           setIdentityInputSummary({ ...identitySummary, lengths: { ...identitySummary.lengths } })
-          let result: { status: string; error?: string; diagnostics?: Array<{ stage: string; error_code: string; http_status?: number; business_code?: string; result_type?: string }> }
+          let result: OfflineResidenceAddressResult
           try {
             result = identity
-              ? await client.lookup(identity)
+              ? mode === 'address' ? await client.lookupRegistrationAddress(identity) : await client.lookup(identity)
               : { status: '身份证号格式无效', error: 'invalid_identity' }
           } catch (reason) {
-            result = { status: '查询失败', error: reason instanceof Error ? reason.message : 'request_error' }
+            result = { status: '查询失败', error: 'request_error' }
           }
           results[index] = result.status
+          if (mode === 'address') {
+            setRegisteredAddresses(current => {
+              const next = [...current]
+              next[index] = result.registered_address || ''
+              return next
+            })
+          }
           if (!result.error) successfulCount += 1
           if (result.error) nextErrorCounts[result.error] = (nextErrorCounts[result.error] || 0) + 1
           for (const event of result.diagnostics || []) {
@@ -372,7 +386,7 @@ export default function OfflineMode() {
       setQueryState(successfulCount === book.rows.length ? 'completed' : 'partial')
     } catch (reason) {
       setQueryState('failed')
-      setError(reason instanceof Error ? reason.message : '名单读取或批量查询失败')
+      setError('名单读取或批量查询失败，请确认文件为有效 XLSX 且含身份证号列')
     }
   }
 
@@ -380,11 +394,13 @@ export default function OfflineMode() {
     if (!workbook || completed !== workbook.rows.length) return
     setExporting(true)
     try {
-      const blob = writeOfflineWorkbook(workbook, statuses)
+      const blob = queryMode === 'address'
+        ? writeOfflineWorkbook(workbook, statuses, { mode: 'address', addresses: registeredAddresses })
+        : writeOfflineWorkbook(workbook, statuses)
       const sourceName = file?.name.replace(/\.xlsx$/i, '') || '居住登记查询结果'
-      await downloadBlob(blob, `${sourceName}-登记情况.xlsx`)
+      await downloadBlob(blob, `${sourceName}-${queryMode === 'address' ? '登记地址' : '登记情况'}.xlsx`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '结果导出失败')
+      setError('结果导出失败，请检查源文件格式和查询结果行数')
     } finally {
       setExporting(false)
     }
@@ -498,12 +514,12 @@ export default function OfflineMode() {
             </div>
           </Panel>
 
-          <Panel title="已撤管人员居住登记情况批量查询" description="支持 .xlsx。只读取身份证号列（包括“证件号码”）并校验 15/18 位身份证号；格式无效的行不会请求居住证系统，原表会在身份证号后新增“登记情况”列。">
+          <Panel title="已撤管人员居住登记情况批量查询" description="支持 .xlsx。只读取身份证号列（包括“证件号码”）并校验 15/18 位身份证号；格式无效的行不会请求居住证系统。可查询登记状态，或在下方批量查询登记地址；地址查询只读取居住证平台返回的登记地址，并追加到导出文件最后一列。">
             <div className="grid gap-4">
               {error && <Alert type="error" showIcon message={error} closable onClose={() => setError('')} />}
-              <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={() => { setFile(null); setFileList([]); setWorkbook(null); setStatuses([]); setQueryState('idle') }} disabled={running}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p className="ant-upload-text">拖入人员名单文件，或点击选择</p><p className="ant-upload-hint">识别“身份证号 / 身份证号码 / 证件号码 / 公民身份号码 / 身份证”列；不会把“证件类型”列当作身份证号</p></Dragger>
-              <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-[var(--app-text-secondary)]">{file ? `已选择：${file.name}` : '请选择文件后确认查询'}</span><Button type="primary" onClick={() => void start()} loading={running} disabled={!file || running || !configIsUsable(config)}>确认并开始查询</Button></div>
-              {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出结果 XLSX</Button></div>}</div>}
+              <Dragger accept=".xlsx" maxCount={1} fileList={fileList} beforeUpload={beforeUpload} onRemove={() => { setFile(null); setFileList([]); setWorkbook(null); setStatuses([]); setRegisteredAddresses([]); setQueryState('idle') }} disabled={running}><p className="ant-upload-drag-icon"><InboxOutlined /></p><p className="ant-upload-text">拖入人员名单文件，或点击选择</p><p className="ant-upload-hint">识别“身份证号 / 身份证号码 / 证件号码 / 公民身份号码 / 身份证”列；不会把“证件类型”列当作身份证号</p></Dragger>
+              <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-[var(--app-text-secondary)]">{file ? `已选择：${file.name}` : '请选择文件后确认查询'}</span><div className="flex flex-wrap gap-2"><Button type="primary" onClick={() => void start('status')} loading={running && queryMode === 'status'} disabled={!file || running || !configIsUsable(config)}>查询登记情况</Button><Button onClick={() => void start('address')} loading={running && queryMode === 'address'} disabled={!file || running || !configIsUsable(config)}>涉警人员信息登记地址批量查询</Button></div></div>
+              {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4"><Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} /><div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? `正在直接查询居住证系统${queryMode === 'address' ? '登记地址' : '登记情况'}` : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>{queryMode === 'address' && <div className="text-xs text-[var(--app-text-secondary)]">已找到登记地址 {registeredAddresses.filter(Boolean).length} 条；未登记、查询失败或上游缺少地址的记录保持空白，请结合失败分类复核。</div>}{Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}{completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出{queryMode === 'address' ? '登记地址' : '登记情况'}结果 XLSX</Button></div>}</div>}
             </div>
           </Panel>
         </div>
