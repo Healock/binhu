@@ -48,13 +48,36 @@ function parseSheet(xml: string, shared: string[]): Array<{ number: number; valu
   return result
 }
 
+function normalizeZipPath(path: string, base = 'xl'): string {
+  const segments = `${base}/${path}`.replace(/\\/g, '/').split('/')
+  const normalized: string[] = []
+  for (const segment of segments) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      if (!normalized.length) throw new Error('工作簿工作表路径无效')
+      normalized.pop()
+      continue
+    }
+    normalized.push(segment)
+  }
+  const result = normalized.join('/')
+  if (!result || result.includes('..') || result.startsWith('/')) throw new Error('工作簿工作表路径无效')
+  return result
+}
+
 function firstSheet(files: Record<string, Uint8Array>): { name: string; path: string } {
+  if (!files['xl/workbook.xml'] || !files['xl/_rels/workbook.xml.rels']) throw new Error('工作簿缺少必要的 XLSX 元数据')
   const workbook = new DOMParser().parseFromString(strFromU8(files['xl/workbook.xml']), 'application/xml')
   const relation = new DOMParser().parseFromString(strFromU8(files['xl/_rels/workbook.xml.rels']), 'application/xml')
+  if (workbook.querySelector('parsererror') || relation.querySelector('parsererror')) throw new Error('工作簿 XML 无法解析')
   const sheet = workbook.querySelector('sheets > sheet')
+  if (!sheet) throw new Error('工作簿中没有可读取的工作表')
   const relationId = sheet?.getAttribute('r:id') || ''
   const target = Array.from(relation.querySelectorAll('Relationship')).find(item => item.getAttribute('Id') === relationId)?.getAttribute('Target') || 'worksheets/sheet1.xml'
-  const path = target.startsWith('/') ? target.slice(1) : `xl/${target.replace(/^\.\.\//, '')}`
+  const candidates = target.startsWith('/')
+    ? [normalizeZipPath(target, '')]
+    : [normalizeZipPath(target, 'xl'), normalizeZipPath(target, 'xl/_rels')]
+  const path = candidates.find(candidate => Boolean(files[candidate])) || candidates[0]
   return { name: sheet?.getAttribute('name') || 'Sheet1', path }
 }
 
@@ -68,7 +91,9 @@ export async function readOfflineWorkbook(file: File): Promise<OfflineWorkbook> 
     : []
   const sheet = firstSheet(files)
   if (!files[sheet.path]) throw new Error('工作簿中找不到目标工作表')
-  const rows = parseSheet(strFromU8(files[sheet.path]), shared)
+  const sheetXml = strFromU8(files[sheet.path])
+  if (!sheetXml.trim() || new DOMParser().parseFromString(sheetXml, 'application/xml').querySelector('parsererror')) throw new Error('目标工作表 XML 无法解析')
+  const rows = parseSheet(sheetXml, shared)
   let headerIndex = -1
   let identityColumn = -1
   let identityScore = -1
@@ -90,7 +115,8 @@ export async function readOfflineWorkbook(file: File): Promise<OfflineWorkbook> 
       const normalized = [...row.values]
       while (normalized.length < header.length) normalized.push('')
       return normalized.slice(0, header.length)
-    })
+  })
+  if (!data.length) throw new Error('文件中没有可处理的数据行')
   return { sheetName: sheet.name, header, rows: data, identityColumn,
     source: { files, sheetPath: sheet.path, headerRow: rows[headerIndex].number, dataRows: dataRows.map(row => row.number) } }
 }

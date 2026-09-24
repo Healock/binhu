@@ -71,7 +71,8 @@ test('工作簿只查找身份证列并在其后插入登记情况', () => {
 
 test('涉警人员登记地址批量查询追加到原表最后一列', () => {
   assert.match(pageSource, /涉警人员信息登记地址批量查询/)
-  assert.match(pageSource, /start\('address'\)/)
+  assert.match(pageSource, /<BatchQueryPanel mode="address"/)
+  assert.match(pageSource, /<BatchQueryPanel mode="status"/)
   assert.match(pageSource, /lookupRegistrationAddress\(identity\)/)
   assert.match(pageSource, /mode: 'address'/)
   assert.match(pageSource, /登记地址/)
@@ -79,6 +80,22 @@ test('涉警人员登记地址批量查询追加到原表最后一列', () => {
   assert.match(workbookSource, /source\.dataRows\.forEach/)
   assert.match(workbookSource, /value\.trim\(\) === '登记地址'/)
   assert.match(workbookSource, /zipSync\(\{ \.\.\.source\.files/)
+})
+
+test('离线模式两个批量查询面板和设置入口相互独立', () => {
+  assert.match(pageSource, /离线模式设置/)
+  assert.match(pageSource, /setActiveSection\('queries'\)/)
+  assert.match(pageSource, /setActiveSection\('settings'\)/)
+  assert.match(pageSource, /此功能有独立的文件上传区/)
+  assert.match(pageSource, /不会与涉警人员地址查询共享文件或进度/)
+})
+
+test('名单读取失败按格式、表头和空数据分类提示', () => {
+  assert.match(pageSource, /未找到身份证号列/)
+  assert.match(pageSource, /没有可处理的数据行/)
+  assert.match(pageSource, /无法解析 XLSX 文件/)
+  assert.match(workbookSource, /工作簿 XML 无法解析/)
+  assert.match(workbookSource, /目标工作表 XML 无法解析/)
 })
 
 test('登记地址查询只保留居住证响应中的白名单地址字段', () => {
