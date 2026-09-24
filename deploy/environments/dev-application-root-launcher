@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /usr/local/libexec/binhu-dev-application
+exec /usr/bin/python3 -m deploy.environments.development_application_gateway "$@"

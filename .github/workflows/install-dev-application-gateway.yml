@@ -1,0 +1,66 @@
+name: Install Dev application gateway
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-dev-application-gateway
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify immutable main revision
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+      - name: Configure admin SSH
+        env:
+          ADMIN_KEY: ${{ secrets.BINHU_DEV_APP_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEV_APP_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$ADMIN_KEY" > ~/.ssh/dev-app-admin
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/dev-app-admin ~/.ssh/known_hosts
+      - name: Install fixed Dev application gateway
+        env:
+          HOST: ${{ secrets.BINHU_DEV_APP_HOST }}
+          PORT: ${{ secrets.BINHU_DEV_APP_PORT }}
+          PUBLIC_KEY: ${{ secrets.BINHU_DEV_APP_DEPLOY_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
+          package="$RUNNER_TEMP/dev-app-gateway"
+          install -d -m 700 "$package/deploy"
+          cp deploy/__init__.py "$package/deploy/__init__.py"
+          cp -a deploy/environments "$package/deploy/environments"
+          printf '%s\n' "$PUBLIC_KEY" > "$package/dev-app-deploy.pub"
+          printf '%s\n' "$GITHUB_SHA" > "$package/dev-app-control-commit"
+          tar -C "$package" -czf "$RUNNER_TEMP/dev-app-gateway.tar.gz" deploy dev-app-deploy.pub dev-app-control-commit
+          cat "$RUNNER_TEMP/dev-app-gateway.tar.gz" | ssh -p "$PORT" -i ~/.ssh/dev-app-admin -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-dev-app-gateway.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; bash ./deploy/environments/install-dev-application-gateway.sh ./dev-app-deploy.pub ./dev-app-control-commit'
+      - name: Verify status and boundary
+        env:
+          HOST: ${{ secrets.BINHU_DEV_APP_HOST }}
+          PORT: ${{ secrets.BINHU_DEV_APP_PORT }}
+          KEY: ${{ secrets.BINHU_DEV_APP_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEV_APP_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$KEY" > ~/.ssh/dev-app
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/dev-app ~/.ssh/known_hosts
+          app=(ssh -p "$PORT" -i ~/.ssh/dev-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-dev-app-deploy@$HOST")
+          "${app[@]}" status
+          ! "${app[@]}" 'apply production aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+          ! "${app[@]}" 'sh -c id'
