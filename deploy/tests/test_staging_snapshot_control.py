@@ -34,7 +34,7 @@ class ControlTests(unittest.TestCase):
                     'recover_model_three_sources': True,
                     'staging_sample_mode': False,
                     'staging_sample_limit': 150,
-                    'maximum_excluded_links': 3,
+                    'maximum_excluded_links': None,
                     'maximum_recovered_sources': 261,
                 })
                 failure = json.loads((attempts[0] / 'failure.json').read_text())

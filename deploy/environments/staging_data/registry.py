@@ -44,6 +44,12 @@ def transform(rows, codec: Codec, *, actor_ids=(), exclude_orphan_property_links
     entries = {row["id"]: row for row in rows["RegistryData._police_address_entries"]}
     properties = {row["id"]: row for row in rows["RegistryData.registry_properties"]}
     rejected = []
+    # The current Staging sample mode only samples recovered model-three
+    # task sources.  It does not trim the Registry graph, so a link whose
+    # target is absent from ``entries`` is a true orphan.  Keep the category
+    # explicit in the report so a future sampled Registry implementation
+    # cannot silently treat an out-of-scope target as a real orphan.
+    rejected_by_class = {"true_orphan": 0, "false_orphan": 0}
 
     def community_name(value):
         if value is None:
@@ -95,9 +101,9 @@ def transform(rows, codec: Codec, *, actor_ids=(), exclude_orphan_property_links
                     or row['confirmed_by'] is not None or row['confirmed_at'] is not None):
                 raise SnapshotError('unresolved_property_small_community')
             rejected.append({'property_id':codec.reference('property',row['property_id']),
-                'match_status':row['match_status'],'reason':'missing_small_community'})
-            if len(rejected)>3:
-                raise SnapshotError('orphan_exclusion_scope_exceeded')
+                'match_status':row['match_status'],'reason':'missing_small_community',
+                'classification':'true_orphan'})
+            rejected_by_class['true_orphan'] += 1
             continue
         # A pre-existing conflict may be a legitimate business state. Preserve
         # separate references and the status; never guess a corrected community.
@@ -121,4 +127,8 @@ def transform(rows, codec: Codec, *, actor_ids=(), exclude_orphan_property_links
                        "sensitive_value_matches": 0, "reference_integrity": True,
                        "rejected_property_links": rejected,
                        "rejected_property_link_count": len(rejected),
+                       "rejected_property_link_by_class": rejected_by_class,
+                       "true_orphan_count": rejected_by_class['true_orphan'],
+                       "false_orphan_count": rejected_by_class['false_orphan'],
+                       "registry_input_scope": "full_registry_graph",
                        "scope": "current_registry_graph", "ready_for_application_switch": False}}

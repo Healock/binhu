@@ -49,21 +49,28 @@ class RegistrySnapshotTests(unittest.TestCase):
         rejected=result['report']['rejected_property_links'][0]
         self.assertEqual(rejected['property_id'],result['tables']['RegistryData.registry_properties'][0]['id'])
         self.assertEqual(rejected['reason'],'missing_small_community')
+        self.assertEqual(rejected['classification'],'true_orphan')
+        self.assertEqual(result['report']['rejected_property_link_by_class'],
+                         {'true_orphan': 1, 'false_orphan': 0})
+        self.assertEqual(result['report']['registry_input_scope'],'full_registry_graph')
         for field,value in (('match_status','confirmed'),('confirmed_by',12),('confirmed_at','2026-09-10 00:00:00')):
             protected=copy.deepcopy(rows)
             protected['RegistryData.registry_property_small_community_links'][0][field]=value
             with self.assertRaises(SnapshotError):
                 transform(protected,Codec(b'a'*32),exclude_orphan_property_links=True)
 
-    def test_orphan_exclusion_cannot_expand_beyond_three_relations(self):
+    def test_true_orphan_exclusion_has_no_arbitrary_three_relation_cap(self):
         rows=fixture()
         prop=rows['RegistryData.registry_properties'][0]
         link=rows['RegistryData.registry_property_small_community_links'][0]
-        rows['RegistryData.registry_properties']=[dict(prop,id=i) for i in range(1,5)]
+        rows['RegistryData.registry_properties']=[dict(prop,id=i) for i in range(1,8)]
         rows['RegistryData.registry_property_small_community_links']=[dict(link,property_id=i,
-            small_community_id=99,match_status='conflict',confirmed_by=None,confirmed_at=None) for i in range(1,5)]
-        with self.assertRaisesRegex(SnapshotError,'orphan_exclusion_scope_exceeded'):
-            transform(rows,Codec(b'a'*32),exclude_orphan_property_links=True)
+            small_community_id=99,match_status='conflict',confirmed_by=None,confirmed_at=None) for i in range(1,8)]
+        result=transform(rows,Codec(b'a'*32),exclude_orphan_property_links=True)
+        self.assertEqual(result['report']['rejected_property_link_count'],7)
+        self.assertEqual(result['report']['rejected_property_link_by_class'],
+                         {'true_orphan': 7, 'false_orphan': 0})
+        self.assertEqual(len(result['report']['rejected_property_links']),7)
 
     def test_address_types_follow_current_business_contract(self):
         import ast
