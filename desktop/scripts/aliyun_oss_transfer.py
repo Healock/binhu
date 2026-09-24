@@ -24,7 +24,13 @@ from xml.etree import ElementTree
 
 BUCKET = "binhu-update"
 PUBLIC_ENDPOINT = "oss-cn-shanghai.aliyuncs.com"
-UPLOAD_ENDPOINT = "binhu-update.oss-cn-shanghai.aliyuncs.com"
+STANDARD_UPLOAD_ENDPOINT = "binhu-update.oss-cn-shanghai.aliyuncs.com"
+ACCELERATED_UPLOAD_ENDPOINT = "binhu-update.oss-accelerate.aliyuncs.com"
+# Production uploads use the accelerated virtual-host endpoint.  The standard
+# endpoint remains an explicit, fixed option for the pre-release A/B probe and
+# emergency rollback; callers cannot provide an arbitrary host.
+UPLOAD_ENDPOINT = ACCELERATED_UPLOAD_ENDPOINT
+UPLOAD_ENDPOINTS = frozenset({STANDARD_UPLOAD_ENDPOINT, ACCELERATED_UPLOAD_ENDPOINT})
 INTERNAL_ENDPOINT = "binhu-update.oss-cn-shanghai-internal.aliyuncs.com"
 KEY_RE = re.compile(r"^client-transfer/[0-9]+\.[0-9]+\.[0-9]+/[0-9a-f]{40}/binhu-clients-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$")
 UPLOAD_ID_RE = re.compile(r"^[A-Za-z0-9+/_=-]{1,256}$")
@@ -100,17 +106,21 @@ def oss_request(endpoint: str, key: str, method: str, subresource: str = "", bod
         connection.close()
 
 
-def retryable_request(endpoint: str, key: str, method: str, subresource: str = "", body: bytes | None = None, content_type: str = "") -> tuple[int, dict[str, str], bytes]:
+def retryable_request(endpoint: str, key: str, method: str, subresource: str = "", body: bytes | None = None, content_type: str = "", stats: dict[str, int] | None = None) -> tuple[int, dict[str, str], bytes]:
     for attempt in range(1, PART_ATTEMPTS + 1):
         try:
             status, headers, content = oss_request(endpoint, key, method, subresource, body, content_type)
         except (OSError, TimeoutError) as exc:
             if attempt == PART_ATTEMPTS:
                 raise RuntimeError(f"OSS {method} transport failed after {attempt} attempts") from exc
+            if stats is not None:
+                stats["retries"] += 1
         else:
             if status in (408, 429) or 500 <= status <= 599:
                 if attempt == PART_ATTEMPTS:
                     raise RuntimeError(f"OSS {method} failed with HTTP {status} after {attempt} attempts")
+                if stats is not None:
+                    stats["retries"] += 1
             else:
                 return status, headers, content
         time.sleep(min(2 ** (attempt - 1), 8))
@@ -124,8 +134,8 @@ def require_status(status: int, expected: int, operation: str) -> None:
 
 def upload(path: Path, endpoint: str, key: str) -> None:
     validate_key(key)
-    if endpoint != UPLOAD_ENDPOINT:
-        raise SystemExit(f"upload endpoint must be {UPLOAD_ENDPOINT}")
+    if endpoint not in UPLOAD_ENDPOINTS:
+        raise SystemExit(f"upload endpoint must be one of: {', '.join(sorted(UPLOAD_ENDPOINTS))}")
     if not path.is_file():
         raise SystemExit(f"bundle does not exist: {path}")
     credentials()
@@ -141,6 +151,7 @@ def upload(path: Path, endpoint: str, key: str) -> None:
     if not UPLOAD_ID_RE.fullmatch(upload_id):
         raise RuntimeError("OSS multipart initialization returned invalid upload ID")
     parts: list[tuple[int, str]] = []
+    stats = {"retries": 0, "failed_parts": 0}
     try:
         with path.open("rb") as source:
             for part_number in range(1, (size + PART_SIZE - 1) // PART_SIZE + 1):
@@ -148,7 +159,11 @@ def upload(path: Path, endpoint: str, key: str) -> None:
                 if not chunk:
                     raise RuntimeError("bundle ended during multipart upload")
                 query = urlencode({"partNumber": part_number, "uploadId": upload_id})
-                status, headers, _ = retryable_request(endpoint, key, "PUT", query, chunk)
+                try:
+                    status, headers, _ = retryable_request(endpoint, key, "PUT", query, chunk, stats=stats)
+                except Exception:
+                    stats["failed_parts"] += 1
+                    raise
                 require_status(status, 200, f"part {part_number}")
                 etag = headers.get("etag", "")
                 if not re.fullmatch(r'"?[0-9a-fA-F]{32}"?', etag):
@@ -179,18 +194,59 @@ def upload(path: Path, endpoint: str, key: str) -> None:
         raise
     print(f"object_key={key}")
     print(f"object_size={size}")
+    print(f"upload_retries={stats['retries']}")
+    print(f"upload_failed_parts={stats['failed_parts']}")
 
 
 def delete_object(endpoint: str, key: str) -> None:
     """Delete one completed transfer object from the fixed private bucket."""
     validate_key(key)
-    if endpoint != UPLOAD_ENDPOINT:
-        raise SystemExit(f"delete endpoint must be {UPLOAD_ENDPOINT}")
+    if endpoint not in UPLOAD_ENDPOINTS:
+        raise SystemExit(f"delete endpoint must be one of: {', '.join(sorted(UPLOAD_ENDPOINTS))}")
     credentials()
     status, _, _ = oss_request(endpoint, key, "DELETE", timeout=60)
     if status not in (200, 204):
         raise RuntimeError(f"OSS object deletion failed with HTTP {status}")
     print(f"deleted_object_key={key}")
+
+
+def verify_object(endpoint: str, key: str, expected_size: int, expected_sha256: str) -> None:
+    """Stream one fixed transfer object and verify its complete SHA-256."""
+    validate_key(key)
+    if endpoint not in UPLOAD_ENDPOINTS:
+        raise SystemExit(f"verify endpoint must be one of: {', '.join(sorted(UPLOAD_ENDPOINTS))}")
+    if expected_size <= 0 or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise SystemExit("verify requires a positive size and lowercase SHA-256")
+    access_key, secret = credentials()
+    date = email.utils.formatdate(usegmt=True)
+    request_path = "/" + quote(key, safe="/-_.~")
+    headers = {
+        "Date": date,
+        "Authorization": "OSS " + access_key + ":" + signature(secret, "GET", date, key),
+    }
+    connection = http.client.HTTPSConnection(endpoint, timeout=PART_TIMEOUT)
+    digest = hashlib.sha256()
+    received = 0
+    try:
+        connection.request("GET", request_path, headers=headers)
+        response = connection.getresponse()
+        if response.status != 200:
+            raise RuntimeError(f"OSS verify failed with HTTP {response.status}")
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            received += len(chunk)
+            if received > expected_size:
+                raise RuntimeError("OSS verify downloaded more bytes than expected")
+            digest.update(chunk)
+    finally:
+        connection.close()
+    actual = digest.hexdigest()
+    if received != expected_size or actual != expected_sha256:
+        raise RuntimeError("OSS verify size or SHA-256 mismatch")
+    print(f"verified_object_size={received}")
+    print(f"verified_object_sha256={actual}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -207,13 +263,20 @@ def main(argv: list[str] | None = None) -> int:
     delete_parser = subparsers.add_parser("delete")
     delete_parser.add_argument("--endpoint", default=UPLOAD_ENDPOINT)
     delete_parser.add_argument("--key", required=True)
+    verify_parser = subparsers.add_parser("verify")
+    verify_parser.add_argument("--endpoint", default=UPLOAD_ENDPOINT)
+    verify_parser.add_argument("--key", required=True)
+    verify_parser.add_argument("--size", type=int, required=True)
+    verify_parser.add_argument("--sha256", required=True)
     args = parser.parse_args(argv)
     if args.command == "upload":
         upload(args.file, args.endpoint, args.key)
     elif args.command == "presign":
         print(presigned_url(args.endpoint, args.key, args.expires_in))
-    else:
+    elif args.command == "delete":
         delete_object(args.endpoint, args.key)
+    else:
+        verify_object(args.endpoint, args.key, args.size, args.sha256)
     return 0
 
 

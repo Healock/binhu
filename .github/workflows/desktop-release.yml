@@ -24,7 +24,8 @@ env:
   BINHU_UPDATE_PORT: "51234"
   BINHU_UPDATE_USER: binhu-update-publish
   ALIYUN_OSS_BUCKET: binhu-update
-  ALIYUN_OSS_UPLOAD_ENDPOINT: binhu-update.oss-cn-shanghai.aliyuncs.com
+  ALIYUN_OSS_STANDARD_ENDPOINT: binhu-update.oss-cn-shanghai.aliyuncs.com
+  ALIYUN_OSS_UPLOAD_ENDPOINT: binhu-update.oss-accelerate.aliyuncs.com
   ALIYUN_OSS_SERVER_ENDPOINT: binhu-update.oss-cn-shanghai-internal.aliyuncs.com
   ELECTRON_ARCHIVE_URL: https://github.com/electron/electron/releases/download/v36.0.0/electron-v36.0.0-win32-x64.zip
   ELECTRON_ARCHIVE_SHA256: 3690467f4cb67752cdad90962bb3bee252dafcbfb12834d853e36d97117cd5b2
@@ -511,6 +512,59 @@ jobs:
           sha256sum release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz > release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256
           cp release-input/combined/win7-x64/checksums.sha256 release-input/win7-x64-checksums.sha256
           cp release-input/combined/win10-x64/checksums.sha256 release-input/win10-x64-checksums.sha256
+      - name: Compare standard and accelerated OSS endpoints
+        id: oss_probe
+        env:
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -Eeuo pipefail
+          probe_dir="$RUNNER_TEMP/binhu-oss-probe"
+          mkdir -p "$probe_dir"
+          probe_file="$probe_dir/probe.tar.gz"
+          dd if=/dev/zero of="$probe_file" bs=1M count=8 status=none
+          probe_size=$(wc -c < "$probe_file")
+          probe_sha256=$(sha256sum "$probe_file" | awk '{print $1}')
+          probe_key="client-transfer/${{ needs.prepare.outputs.version }}/${{ needs.prepare.outputs.commit }}/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz"
+          measure() {
+            local label="$1" endpoint="$2" log="$probe_dir/$1.log" start end elapsed retries failed
+            start=$(date +%s%3N)
+            python desktop/scripts/aliyun_oss_transfer.py upload \
+              --endpoint "$endpoint" --key "$probe_key" --file "$probe_file" > "$log" 2>&1
+            end=$(date +%s%3N)
+            elapsed=$((end - start))
+            python desktop/scripts/aliyun_oss_transfer.py verify \
+              --endpoint "$endpoint" --key "$probe_key" --size "$probe_size" --sha256 "$probe_sha256" >> "$log"
+            python desktop/scripts/aliyun_oss_transfer.py delete \
+              --endpoint "$endpoint" --key "$probe_key" >> "$log"
+            retries=$(awk -F= '/^upload_retries=/{v=$2} END{print v+0}' "$log")
+            failed=$(awk -F= '/^upload_failed_parts=/{v=$2} END{print v+0}' "$log")
+            python - "$label" "$endpoint" "$probe_size" "$elapsed" "$retries" "$failed" <<'PY' >> "$probe_dir/results.jsonl"
+          import json, sys
+          label, endpoint, size, elapsed, retries, failed = sys.argv[1:]
+          elapsed = int(elapsed)
+          print(json.dumps({
+              "endpoint": label,
+              "host": endpoint,
+              "bytes": int(size),
+              "duration_ms": elapsed,
+              "average_bytes_per_second": int(int(size) * 1000 / elapsed) if elapsed else 0,
+              "failed_parts": int(failed),
+              "retries": int(retries),
+          }, sort_keys=True))
+          PY
+            echo "probe_${label}_duration_ms=$elapsed"
+            echo "probe_${label}_retries=$retries"
+            echo "probe_${label}_failed_parts=$failed"
+          }
+          measure standard "$ALIYUN_OSS_STANDARD_ENDPOINT"
+          measure accelerated "$ALIYUN_OSS_UPLOAD_ENDPOINT"
+          python - "$probe_dir/results.jsonl" "release-input/oss-endpoint-probe.json" "$probe_sha256" <<'PY'
+          import json, pathlib, sys
+          rows = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+          pathlib.Path(sys.argv[2]).write_text(json.dumps({"probe_sha256": sys.argv[3], "results": rows}, indent=2) + "\n")
+          PY
+          cat release-input/oss-endpoint-probe.json
       - name: Upload transfer bundle to private Aliyun OSS
         id: transfer
         env:
@@ -567,6 +621,7 @@ jobs:
             release-input/win7-x64-checksums.sha256 release-input/win10-x64-checksums.sha256 \
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz \
             release-input/binhu-clients-${{ needs.prepare.outputs.version }}.tar.gz.sha256 \
+            release-input/oss-endpoint-probe.json \
             release-notes/release-notes.json
       - name: Delete transfer object after successful release
         env:

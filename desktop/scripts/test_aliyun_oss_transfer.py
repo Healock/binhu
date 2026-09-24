@@ -35,6 +35,15 @@ class AliyunOssTransferTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             oss.presigned_url(oss.INTERNAL_ENDPOINT, "other/file.tar.gz", 3600)
 
+    def test_upload_and_delete_allow_only_fixed_standard_or_accelerated_endpoints(self):
+        self.assertEqual(oss.UPLOAD_ENDPOINT, oss.ACCELERATED_UPLOAD_ENDPOINT)
+        self.assertEqual(
+            oss.signature("secret", "PUT", "date", self.key),
+            oss.signature("secret", "PUT", "date", self.key),
+        )
+        with self.assertRaises(SystemExit):
+            oss.delete_object("binhu-update.example.invalid", self.key)
+
     def test_delete_uses_fixed_endpoint_and_namespace(self):
         class Response:
             status = 204
@@ -106,6 +115,21 @@ class AliyunOssTransferTests(unittest.TestCase):
                 oss.upload(path, oss.UPLOAD_ENDPOINT, self.key)
             part_requests = [request for requests in Connection.all_requests for request in requests if request[0] == "PUT"]
             self.assertEqual(len(part_requests), 2)
+
+    def test_retry_metrics_count_transient_part_retry(self):
+        calls = 0
+
+        def request(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise TimeoutError("temporary")
+            return 200, {}, b""
+
+        stats = {"retries": 0}
+        with mock.patch.object(oss, "oss_request", side_effect=request):
+            self.assertEqual(oss.retryable_request(oss.ACCELERATED_UPLOAD_ENDPOINT, self.key, "PUT", stats=stats)[0], 200)
+        self.assertEqual(stats["retries"], 1)
 
 
 if __name__ == "__main__":
