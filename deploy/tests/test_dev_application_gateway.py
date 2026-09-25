@@ -49,6 +49,9 @@ class DevApplicationGatewayTests(unittest.TestCase):
     def test_install_script_has_no_production_or_staging_target(self):
         script = (ROOT / 'deploy/environments/install-dev-application-gateway.sh').read_text()
         self.assertIn('development_application_gateway.py', script)
+        for module in ('artifact.py', 'image.py', 'runtime.py', 'update.py'):
+            self.assertIn(f'deploy/environments/{module}', script)
+        self.assertIn('/usr/local/libexec/binhu-dev-application/deploy/environments', script)
         self.assertIn('binhu-dev-app-deploy', script)
         self.assertNotIn('production', script.lower())
         self.assertNotIn('staging', script.lower())
