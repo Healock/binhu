@@ -116,6 +116,14 @@ class DevApplicationGatewayTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 gateway._replace_manifest(root, manifest)
 
+    def test_mutable_report_replacement_updates_existing_file_atomically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'result.json'
+            path.write_text(json.dumps({'state': 'applied'}))
+            gateway._replace_json(path, {'state': 'accepted'})
+            self.assertEqual({'state': 'accepted'}, json.loads(path.read_text()))
+            self.assertFalse((Path(tmp) / 'result.json.candidate').exists())
+
     def test_workflow_has_fixed_four_actions_and_dev_secrets(self):
         workflow = (ROOT / '.github/workflows/promote-dev-application.yml').read_text()
         self.assertIn('options: [prepare, measure, reconcile, apply, accept]', workflow)

@@ -152,6 +152,15 @@ def _replace_manifest(root: Path, manifest: dict) -> None:
     os.replace(temporary, target)
 
 
+def _replace_json(path: Path, value: dict) -> None:
+    """Atomically replace a mutable state report while preserving file permissions."""
+    temporary = path.with_name(path.name + ".candidate")
+    if temporary.exists() or temporary.is_symlink():
+        refuse("Dev application report update unresolved")
+    write_json(temporary, value)
+    os.replace(temporary, path)
+
+
 def _extract_artifact(data: bytes, target: Path) -> None:
     """Extract only the fixed three-file transport envelope into a new directory."""
     if len(data) > 256 * 1024 * 1024:
@@ -273,7 +282,7 @@ def accept(run_id: str, artifact_id: str) -> dict:
                    "commit": manifest["commit"], "version": manifest["version"],
                    "health": True, "accepted": True, "accepted_at": int(time.time())})
     write_json(EVIDENCE_ROOT / run_id / "accept.json", {**result, **health_report})
-    write_json(result_path, result)
+    _replace_json(result_path, result)
     manifest["state"] = "accepted"
     _replace_manifest(root, manifest)
     _audit("accept", run_id=run_id, outcome="passed", details=manifest)
