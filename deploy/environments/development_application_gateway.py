@@ -141,6 +141,17 @@ def _read_manifest(run_id: str) -> tuple[Path, dict]:
     return root, manifest
 
 
+def _replace_manifest(root: Path, manifest: dict) -> None:
+    """Atomically persist the fixed Dev promotion state without overwriting a pending file."""
+    target = root / "promotion.json"
+    temporary = root / "promotion.json.candidate"
+    if temporary.exists() or temporary.is_symlink():
+        refuse("Dev application manifest update unresolved")
+    write_json(temporary, manifest)
+    temporary.chmod(0o600)
+    os.replace(temporary, target)
+
+
 def _extract_artifact(data: bytes, target: Path) -> None:
     """Extract only the fixed three-file transport envelope into a new directory."""
     if len(data) > 256 * 1024 * 1024:

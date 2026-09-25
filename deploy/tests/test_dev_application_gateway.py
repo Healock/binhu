@@ -106,6 +106,16 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertEqual('candidate_validation_failed',
                          gateway._operation_failure_code(ValueError('details are not a contract code')))
 
+    def test_manifest_replacement_is_atomic_and_rejects_pending_file(self):
+        manifest = {'schema': 1, 'state': 'measured'}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gateway._replace_manifest(root, manifest)
+            self.assertEqual(manifest, json.loads((root / 'promotion.json').read_text()))
+            (root / 'promotion.json.candidate').write_text('{}')
+            with self.assertRaises(ValueError):
+                gateway._replace_manifest(root, manifest)
+
     def test_workflow_has_fixed_four_actions_and_dev_secrets(self):
         workflow = (ROOT / '.github/workflows/promote-dev-application.yml').read_text()
         self.assertIn('options: [prepare, measure, reconcile, apply, accept]', workflow)
