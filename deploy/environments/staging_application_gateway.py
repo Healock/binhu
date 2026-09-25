@@ -228,12 +228,12 @@ def measure(run_id: str, artifact_id: str) -> dict:
 
 
 def reconcile(run_id: str, artifact_id: str) -> dict:
-    root, manifest = _read_manifest(run_id)
-    if artifact_id != manifest["artifact_id"] or manifest["state"] not in {"prepared", "measured"}:
-        refuse("Staging application reconciliation identity invalid")
-    _dev_acceptance(manifest["dev_acceptance_run_id"], manifest)
-    evidence = EVIDENCE_ROOT / ("staging-reconcile-" + RUN_RE.fullmatch(run_id).group(1))
     try:
+        root, manifest = _read_manifest(run_id)
+        if artifact_id != manifest["artifact_id"] or manifest["state"] not in {"prepared", "measured"}:
+            refuse("Staging application reconciliation identity invalid")
+        _dev_acceptance(manifest["dev_acceptance_run_id"], manifest)
+        evidence = EVIDENCE_ROOT / ("staging-reconcile-" + RUN_RE.fullmatch(run_id).group(1))
         return reconcile_staging(root / "artifact", root / "image", artifact_id, evidence)
     except Exception as exc:
         _reconcile_failure_diagnostic(run_id, exc)
