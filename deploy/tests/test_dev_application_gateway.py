@@ -1,4 +1,6 @@
 import json
+import io
+import tarfile
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,6 +11,32 @@ from deploy.environments import development_application_gateway as gateway
 ROOT = Path(__file__).parents[2]
 
 class DevApplicationGatewayTests(unittest.TestCase):
+    def _transport(self, members):
+        output = io.BytesIO()
+        with tarfile.open(fileobj=output, mode='w:gz') as archive:
+            for name, payload in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+        return output.getvalue()
+
+    def test_extract_artifact_accepts_fixed_transport(self):
+        data = self._transport({name: name.encode() for name in ('artifact.json', 'source.tar', 'frontend.tar')})
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'artifact'
+            target.mkdir()
+            gateway._extract_artifact(data, target)
+            self.assertEqual({'artifact.json', 'source.tar', 'frontend.tar'},
+                             {path.name for path in target.iterdir()})
+
+    def test_extract_artifact_rejects_empty_corrupt_and_missing_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'empty'
+            target.mkdir()
+            for data in (b'', b'not-a-tar', self._transport({'artifact.json': b'{}'})):
+                with self.subTest(data=data[:8]), self.assertRaises(ValueError):
+                    gateway._extract_artifact(data, target)
+
     def test_fixed_run_and_environment_contract(self):
         self.assertTrue(gateway.RUN_RE.fullmatch('dev-update-' + 'a' * 16))
         for value in ('staging-app-' + 'a' * 16, 'dev-' + 'a' * 16, '../dev-update-' + 'a' * 16):
@@ -34,6 +62,11 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertNotIn('monitor40', source)
         self.assertIn('accepted', source)
         self.assertIn('health("development"', source)
+
+    def test_prepare_failure_has_specific_error_code(self):
+        self.assertEqual('gateway_missing_symbol', gateway._failure_code(NameError('x')))
+        self.assertEqual('candidate_validation_failed', gateway._failure_code(ValueError('x')))
+        self.assertEqual('candidate_runtime_failed', gateway._failure_code(RuntimeError('x')))
 
     def test_workflow_has_fixed_four_actions_and_dev_secrets(self):
         workflow = (ROOT / '.github/workflows/promote-dev-application.yml').read_text()
