@@ -7,7 +7,7 @@ on:
         description: Fixed gateway action
         required: true
         type: choice
-        options: [prepare, measure, apply, accept]
+        options: [prepare, reconcile, measure, apply, accept]
       run_id:
         description: staging-app plus 16 lowercase hex characters
         required: true
@@ -52,7 +52,7 @@ jobs:
           [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ ]]
           case "$ACTION" in
             prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
-            measure|apply) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
+            reconcile|measure|apply) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
             accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]] ;;
           esac
       - name: Configure deploy SSH
@@ -98,6 +98,6 @@ jobs:
             prepare)
               version="$(git show "${COMMIT}:VERSION" | tr -d '\r\n')"
               cat "$RUNNER_TEMP/artifact.tar.gz" | "${ssh_command[@]}" "prepare $RUN_ID $COMMIT $version $ARTIFACT_ID $DEV_RUN" ;;
-            measure|apply) "${ssh_command[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
+            reconcile|measure|apply) "${ssh_command[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
             accept) "${ssh_command[@]}" "accept $RUN_ID $ARTIFACT_ID $DEV_RUN" ;;
           esac

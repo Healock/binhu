@@ -68,12 +68,13 @@ class StagingApplicationGatewayTests(unittest.TestCase):
     def test_wrapper_and_sudo_contract_have_no_environment_selector(self):
         wrapper = (ENVIRONMENTS / 'binhu-staging-application-gateway').read_text(encoding='utf-8')
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
-        for action in ('prepare)', 'measure|apply)', 'accept)'):
+        for action in ('prepare)', 'measure|reconcile|apply)', 'accept)'):
             self.assertIn(action, wrapper)
         self.assertNotIn('--environment', wrapper)
         self.assertNotIn('production-deploy', installer)
         self.assertIn('binhu-staging-app-deploy', installer)
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway apply *', installer)
+        self.assertIn('/usr/local/libexec/binhu-staging-application-gateway reconcile *', installer)
         self.assertIn('staging_gateway_authorization_boundary_installed', installer)
         self.assertIn('control-commit', installer)
         self.assertIn(
@@ -95,6 +96,15 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertNotIn('build_image(', source)
         self.assertIn('_adopt_dev_image(', source)
         self.assertIn('_dev_acceptance(manifest["dev_acceptance_run_id"], manifest)', source)
+
+    def test_staging_reconcile_is_explicitly_staging_only(self):
+        source = (ENVIRONMENTS / 'staging_application_gateway.py').read_text(encoding='utf-8')
+        wrapper = (ENVIRONMENTS / 'binhu-staging-application-gateway').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/promote-staging-application.yml').read_text(encoding='utf-8')
+        self.assertIn('def reconcile(run_id: str, artifact_id: str)', source)
+        self.assertIn('measure|reconcile|apply', wrapper)
+        self.assertIn('options: [prepare, reconcile, measure, apply, accept]', workflow)
+        self.assertIn('only\npermits Staging', source)
 
 
 class StagingDataGatewayTests(unittest.TestCase):

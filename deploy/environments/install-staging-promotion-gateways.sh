@@ -106,6 +106,7 @@ cat > /etc/sudoers.d/binhu-staging-application <<'EOF'
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway status
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway prepare *
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway measure *
+binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway reconcile *
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway apply *
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway accept *
 EOF
