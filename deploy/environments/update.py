@@ -79,7 +79,11 @@ def candidate_configuration(environment, root, manifest, compose, env_text, imag
                 or not service.get('mem_limit') or not service.get('cpus')
                 or not service.get('logging', {}).get('options', {}).get('max-size')):
             raise ValueError('environment_service_isolation_invalid')
-        if service.get('image') != manifest.get('images', {}).get(name if name != 'environment-mysql' else 'mysql'):
+        configured_image = service.get('image')
+        if isinstance(configured_image, str) and '@sha256:' in configured_image:
+            configured_image = configured_image.rsplit('@', 1)[1]
+        expected_image = manifest.get('images', {}).get(name if name != 'environment-mysql' else 'mysql')
+        if configured_image != expected_image:
             raise ValueError('environment_image_drift')
     backend = compose['services']['backend']
     if (backend.get('ports') != [f'127.0.0.1:{port}:37125'] or backend.get('env_file') != ['backend.env']
