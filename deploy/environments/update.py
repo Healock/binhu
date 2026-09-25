@@ -436,6 +436,93 @@ def measure_staging(artifact, image_directory, expected_id):
     return measure_environment('staging', artifact, image_directory, expected_id)
 
 
+def reconcile_staging(artifact, image_directory, expected_id, evidence):
+    """Rebind only the isolated Staging manifest to its live configuration.
+
+    This repairs configuration metadata drift observed before a candidate can
+    be measured. It never changes images, containers, databases, or volumes;
+    the normal candidate measurement remains the final gate.
+    """
+    from .database_identity import run as verify_database_identity
+
+    environment = 'staging'
+    root = root_for(environment)
+    evidence = Path(evidence).absolute()
+    if evidence.parent != EVIDENCE_ROOT or evidence.resolve() != evidence or evidence.exists():
+        raise ValueError('environment_reconcile_evidence_path_invalid')
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError('environment_root_invalid')
+    image = verify_image(artifact, expected_id, image_directory)
+    live_manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+    compose = json.loads((root / 'compose.json').read_text(encoding='utf-8'))
+    previous_env_text = (root / 'backend.env').read_text(encoding='utf-8')
+    env_values = parse_environment(previous_env_text)
+    added_disabled_flags = [key for key in DISABLED_EXTERNAL_FLAGS if key not in env_values]
+    env_text = previous_env_text + ''.join(f'{key}=false\\n' for key in added_disabled_flags)
+    # Validate the live Staging identity while allowing only the recorded
+    # image/manifest drift to be rebound.
+    candidate_configuration(environment, root,
+                            {**live_manifest,
+                             'hashes': {name: file_hash(root / name)
+                                        for name in ('compose.json', 'backend.env', 'init.sql')},
+                             'images': {name: compose['services'][service]['image']
+                                        for name, service in (('backend', 'backend'),
+                                                              ('mysql', 'environment-mysql'),
+                                                              ('redis', 'redis'))}},
+                            compose, env_text, {
+                                **image,
+                                'image_id': compose['services']['backend']['image'],
+                            })
+    if not verify_database_identity(environment)['all_markers_present']:
+        raise ValueError('environment_database_identity_incomplete')
+    evidence.mkdir(mode=0o700)
+    previous = evidence / 'previous'
+    previous.mkdir(mode=0o700)
+    for name in ('manifest.json', 'compose.json', 'backend.env', 'init.sql'):
+        shutil.copyfile(root / name, previous / name)
+    rebound = dict(live_manifest)
+    rebound['hashes'] = {
+        'compose.json': file_hash(root / 'compose.json'),
+        'backend.env': file_hash(root / 'backend.env'),
+        'init.sql': file_hash(root / 'init.sql'),
+    }
+    rebound['images'] = {name: compose['services'][service]['image']
+                         for name, service in (('backend', 'backend'),
+                                               ('mysql', 'environment-mysql'),
+                                               ('redis', 'redis'))}
+    rebound['reconciled_from_drift'] = True
+    rebound['reconciled_at'] = int(time.time())
+    temporary = root / 'manifest.json.reconcile'
+    try:
+        write_json(temporary, rebound)
+        os.replace(temporary, root / 'manifest.json')
+        measure_environment(environment, artifact, image_directory, expected_id)
+        write_json(evidence / 'result.json', {
+            'environment': environment,
+            'artifact_id': expected_id,
+            'live_image_id': rebound['images']['backend'],
+            'rebound_manifest_hashes': rebound['hashes'],
+            'rebound_images': rebound['images'],
+            'added_disabled_flags': added_disabled_flags,
+            'containers_or_volumes_changed': False,
+            'database_identity_verified': True,
+        })
+        return {'environment': environment, 'reconciled': True,
+                'measure': 'passed', 'artifact_id': expected_id,
+                'image_id': image['image_id']}
+    except Exception:
+        if temporary.exists():
+            temporary.unlink()
+        shutil.copyfile(previous / 'manifest.json', root / 'manifest.json')
+        shutil.copyfile(previous / 'backend.env', root / 'backend.env')
+        write_json(evidence / 'failure.json', {
+            'environment': environment,
+            'reconciled': False,
+            'manifest_restored': True,
+        })
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=[

@@ -10,7 +10,7 @@ case "${parts[0]:-}" in
     [[ ${#parts[@]} -eq 6 ]] || exit 64
     [[ "${parts[1]}" =~ ^staging-app-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{40}$ && "${parts[3]}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "${parts[4]}" =~ ^[0-9a-f]{64}$ && "${parts[5]}" =~ ^dev-update-[0-9a-f]{16}$ ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway prepare "${parts[1]}" "${parts[2]}" "${parts[3]}" "${parts[4]}" "${parts[5]}" ;;
-  measure|apply)
+  measure|reconcile|apply)
     [[ ${#parts[@]} -eq 3 ]] || exit 64
     [[ "${parts[1]}" =~ ^staging-app-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{64}$ ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway "${parts[0]}" "${parts[1]}" "${parts[2]}" ;;
