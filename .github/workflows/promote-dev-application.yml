@@ -8,7 +8,7 @@ on:
         description: Fixed Dev application action
         required: true
         type: choice
-        options: [prepare, measure, apply, accept]
+        options: [prepare, measure, reconcile, apply, accept]
       run_id:
         description: dev-update plus 16 lowercase hex characters
         required: true
@@ -48,7 +48,7 @@ jobs:
           [[ "$RUN_ID" =~ ^dev-update-[0-9a-f]{16}$ ]]
           case "$ACTION" in
             prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && ( "$ARTIFACT_ID" == auto || "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ) ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
-            measure|apply|accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
+            measure|reconcile|apply|accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
           esac
       - name: Build exact artifact for prepare
         if: inputs.action == 'prepare'
@@ -91,5 +91,5 @@ jobs:
           app=(ssh -p "$PORT" -i ~/.ssh/dev-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-dev-app-deploy@$HOST")
           case "$ACTION" in
             prepare) version="$(git show "$COMMIT:VERSION" | tr -d '\r\n')"; cat "$RUNNER_TEMP/artifact.tar.gz" | "${app[@]}" "prepare $RUN_ID $COMMIT $version ${ARTIFACT_ID_BOUND:-$ARTIFACT_ID}" ;;
-            measure|apply|accept) "${app[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
+            measure|reconcile|apply|accept) "${app[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
           esac
