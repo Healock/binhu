@@ -17,7 +17,7 @@ import time
 from .artifact import verify_artifact, write_json
 from .image import build_image, verify_image
 from .runtime import root_for
-from .update import health, measure_development, apply_development, read_configuration
+from .update import health, measure_development, apply_development, read_configuration, reconcile_development
 
 
 BASE = Path("/var/lib/binhu-dev-application")
@@ -209,6 +209,17 @@ def measure(run_id: str, artifact_id: str) -> dict:
     _audit("measure", run_id=run_id, outcome="passed", details=manifest)
     return report
 
+
+def reconcile(run_id: str, artifact_id: str) -> dict:
+    root, manifest = _read_manifest(run_id)
+    if artifact_id != manifest["artifact_id"] or manifest["state"] != "prepared":
+        refuse("Dev application reconcile requires prepared candidate")
+    evidence = EVIDENCE_ROOT / ("dev-reconcile-" + run_id.removeprefix("dev-update-"))
+    report = reconcile_development(root / "artifact", root / "image", artifact_id, evidence)
+    write_json(root / "reconcile.json", report)
+    _audit("reconcile", run_id=run_id, outcome="passed", details=manifest)
+    return report
+
 def apply(run_id: str, artifact_id: str) -> dict:
     root, manifest = _read_manifest(run_id)
     if artifact_id != manifest["artifact_id"] or manifest["state"] != "measured":
@@ -286,8 +297,8 @@ def main() -> None:
                 result = status()
             elif len(sys.argv) == 6 and sys.argv[1] == "prepare":
                 result = prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
-            elif len(sys.argv) == 4 and sys.argv[1] in {"measure", "apply"}:
-                result = {"measure": measure, "apply": apply}[sys.argv[1]](sys.argv[2], sys.argv[3])
+            elif len(sys.argv) == 4 and sys.argv[1] in {"measure", "reconcile", "apply"}:
+                result = {"measure": measure, "reconcile": reconcile, "apply": apply}[sys.argv[1]](sys.argv[2], sys.argv[3])
             elif len(sys.argv) == 4 and sys.argv[1] == "accept":
                 result = accept(sys.argv[2], sys.argv[3])
             else:

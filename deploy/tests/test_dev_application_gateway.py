@@ -108,7 +108,7 @@ class DevApplicationGatewayTests(unittest.TestCase):
 
     def test_workflow_has_fixed_four_actions_and_dev_secrets(self):
         workflow = (ROOT / '.github/workflows/promote-dev-application.yml').read_text()
-        self.assertIn('options: [prepare, measure, apply, accept]', workflow)
+        self.assertIn('options: [prepare, measure, reconcile, apply, accept]', workflow)
         self.assertIn('BINHU_DEV_APP_SSH_KEY', workflow)
         self.assertIn('binhu-dev-app-deploy@', workflow)
         self.assertIn('ARTIFACT_ID_BOUND', workflow)
@@ -118,6 +118,13 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('BINHU_DEV_APP_ADMIN_SSH_KEY', install)
         self.assertIn('BINHU_DEV_APP_DEPLOY_PUBLIC_KEY', install)
         self.assertIn('binhu-dev-app-deploy', install)
+
+    def test_reconcile_is_dev_only_and_preserves_volumes(self):
+        wrapper = (ROOT / 'deploy/environments/binhu-dev-application-gateway').read_text()
+        update = (ROOT / 'deploy/environments/update.py').read_text()
+        self.assertIn('measure|reconcile|apply|accept', wrapper)
+        self.assertIn('reconcile_development', update)
+        self.assertIn("'containers_or_volumes_changed': False", update)
 
     def test_install_script_has_no_production_or_staging_target(self):
         script = (ROOT / 'deploy/environments/install-dev-application-gateway.sh').read_text()
