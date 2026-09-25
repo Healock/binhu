@@ -28,7 +28,8 @@ install -d -o binhu-dev-app-deploy -g binhu-dev-app-deploy -m 0700 /home/binhu-d
 printf 'restrict,command="/usr/local/bin/binhu-dev-application-gateway" %s\n' "$key" > /home/binhu-dev-app-deploy/.ssh/authorized_keys
 chown binhu-dev-app-deploy:binhu-dev-app-deploy /home/binhu-dev-app-deploy/.ssh/authorized_keys
 chmod 0600 /home/binhu-dev-app-deploy/.ssh/authorized_keys
-install -d -o root -g root -m 0700 /var/lib/binhu-dev-application/candidates /var/log/binhu-dev-application-gateway
+install -d -o root -g root -m 0700 /var/lib/binhu-dev-application /var/lib/binhu-dev-application/candidates /var/log/binhu-dev-application-gateway
+chmod 0700 /var/lib/binhu-dev-application /var/lib/binhu-dev-application/candidates /var/log/binhu-dev-application-gateway
 cat > /etc/sudoers.d/binhu-dev-application <<'EOF'
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway status
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway prepare *

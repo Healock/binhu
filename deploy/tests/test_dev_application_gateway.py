@@ -52,6 +52,7 @@ class DevApplicationGatewayTests(unittest.TestCase):
         for module in ('artifact.py', 'image.py', 'runtime.py', 'update.py'):
             self.assertIn(module, script)
         self.assertIn('/usr/local/libexec/binhu-dev-application/deploy/environments', script)
+        self.assertIn('chmod 0700 /var/lib/binhu-dev-application', script)
         self.assertIn('binhu-dev-app-deploy', script)
         self.assertNotIn('production', script.lower())
         self.assertNotIn('staging', script.lower())
