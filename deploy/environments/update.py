@@ -19,6 +19,12 @@ from .image import verify_image
 from .runtime import DOMAINS, KEYS, SPEC, root_for
 
 EVIDENCE_ROOT = Path('/srv/deploy-backups/environment-triad')
+DISABLED_EXTERNAL_FLAGS = (
+    'TXDOCS_ENABLED', 'TXDOCS_MONITORING_ENABLED',
+    'QMF_SOURCE_ACQUISITION_ENABLED', 'QMF_REGISTRATION_ENABLED',
+    'VENUE_CLOUD_SYNC_ENABLED', 'VENUE_CLOUD_PULL_ENABLED',
+    'CERTIFICATE_SOURCE_DAILY_ENABLED', 'LOCAL_REPORT_SCHEDULER_ENABLED',
+)
 
 
 def parse_environment(text):
@@ -48,10 +54,7 @@ def candidate_configuration(environment, root, manifest, compose, env_text, imag
             or values.get('MYSQL_PORT', '3306') != '3306'
             or values.get('LOCAL_DATA_SOURCE_ENABLED') != 'true'):
         raise ValueError('environment_identity_mismatch')
-    for key in ('TXDOCS_ENABLED', 'TXDOCS_MONITORING_ENABLED',
-                'QMF_SOURCE_ACQUISITION_ENABLED', 'QMF_REGISTRATION_ENABLED',
-                'VENUE_CLOUD_SYNC_ENABLED', 'VENUE_CLOUD_PULL_ENABLED',
-                'CERTIFICATE_SOURCE_DAILY_ENABLED', 'LOCAL_REPORT_SCHEDULER_ENABLED'):
+    for key in DISABLED_EXTERNAL_FLAGS:
         if values.get(key) != 'false':
             raise ValueError('environment_external_access_enabled')
     databases = [values.get('MYSQL_' + key + '_DB', '') for key in KEYS]
@@ -360,7 +363,10 @@ def reconcile_development(artifact, image_directory, expected_id, evidence):
     image = verify_image(artifact, expected_id, image_directory)
     live_manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
     compose = json.loads((root / 'compose.json').read_text(encoding='utf-8'))
-    env_text = (root / 'backend.env').read_text(encoding='utf-8')
+    previous_env_text = (root / 'backend.env').read_text(encoding='utf-8')
+    env_values = parse_environment(previous_env_text)
+    added_disabled_flags = [key for key in DISABLED_EXTERNAL_FLAGS if key not in env_values]
+    env_text = previous_env_text + ''.join(f'{key}=false\n' for key in added_disabled_flags)
     candidate = candidate_configuration(environment, root,
                                         {**live_manifest,
                                          'hashes': {name: file_hash(root / name)
@@ -378,8 +384,14 @@ def reconcile_development(artifact, image_directory, expected_id, evidence):
     for name in ('manifest.json', 'compose.json', 'backend.env', 'init.sql'):
         shutil.copyfile(root / name, previous / name)
     rebound = dict(live_manifest)
-    rebound['hashes'] = {name: file_hash(root / name)
-                         for name in ('compose.json', 'backend.env', 'init.sql')}
+    repaired_env = root / 'backend.env.reconcile'
+    repaired_env.write_text(env_text, encoding='utf-8', newline='\n')
+    repaired_env.chmod(0o600)
+    rebound['hashes'] = {
+        'compose.json': file_hash(root / 'compose.json'),
+        'backend.env': file_hash(repaired_env),
+        'init.sql': file_hash(root / 'init.sql'),
+    }
     rebound['images'] = {name: compose['services'][service]['image']
                          for name, service in (('backend', 'backend'),
                                                ('mysql', 'environment-mysql'),
@@ -389,6 +401,7 @@ def reconcile_development(artifact, image_directory, expected_id, evidence):
     temporary = root / 'manifest.json.reconcile'
     try:
         write_json(temporary, rebound)
+        os.replace(repaired_env, root / 'backend.env')
         os.replace(temporary, root / 'manifest.json')
         measure_environment(environment, artifact, image_directory, expected_id)
         write_json(evidence / 'result.json', {
@@ -397,6 +410,7 @@ def reconcile_development(artifact, image_directory, expected_id, evidence):
             'image_id': image['image_id'],
             'rebound_manifest_hashes': rebound['hashes'],
             'rebound_images': rebound['images'],
+            'added_disabled_flags': added_disabled_flags,
             'containers_or_volumes_changed': False,
             'database_identity_verified': True,
         })
@@ -406,7 +420,10 @@ def reconcile_development(artifact, image_directory, expected_id, evidence):
     except Exception:
         if temporary.exists():
             temporary.unlink()
+        if repaired_env.exists():
+            repaired_env.unlink()
         shutil.copyfile(previous / 'manifest.json', root / 'manifest.json')
+        shutil.copyfile(previous / 'backend.env', root / 'backend.env')
         write_json(evidence / 'failure.json', {
             'environment': environment,
             'reconciled': False,
