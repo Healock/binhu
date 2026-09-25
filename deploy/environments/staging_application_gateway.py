@@ -75,6 +75,20 @@ def _alert(action: str, run_id: str, reason: str) -> None:
     path.chmod(0o600)
 
 
+def _reconcile_failure_diagnostic(run_id: str, exc: Exception) -> None:
+    """Persist a redacted preflight failure without overwriting evidence."""
+    _safe_root(EVIDENCE_ROOT, create=True)
+    reason = str(exc).split(';', 1)[0]
+    if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', reason):
+        reason = 'staging_reconcile_preflight_failed'
+    stamp = f'{int(time.time())}-{os.getpid()}'
+    path = EVIDENCE_ROOT / f'staging-reconcile-{RUN_RE.fullmatch(run_id).group(1)}-diagnostic-{stamp}.json'
+    write_json(path, {'environment': 'staging', 'run_id': run_id,
+                      'action': 'reconcile', 'error_type': type(exc).__name__,
+                      'reason': reason, 'evidence_preserved': True})
+    path.chmod(0o600)
+
+
 def _run_root(run_id: str) -> Path:
     if not RUN_RE.fullmatch(run_id):
         refuse("fixed Staging application run id required")
@@ -219,8 +233,11 @@ def reconcile(run_id: str, artifact_id: str) -> dict:
         refuse("Staging application reconciliation identity invalid")
     _dev_acceptance(manifest["dev_acceptance_run_id"], manifest)
     evidence = EVIDENCE_ROOT / ("staging-reconcile-" + RUN_RE.fullmatch(run_id).group(1))
-    report = reconcile_staging(root / "artifact", root / "image", artifact_id, evidence)
-    return report
+    try:
+        return reconcile_staging(root / "artifact", root / "image", artifact_id, evidence)
+    except Exception as exc:
+        _reconcile_failure_diagnostic(run_id, exc)
+        raise
 
 
 def apply(run_id: str, artifact_id: str) -> dict:
