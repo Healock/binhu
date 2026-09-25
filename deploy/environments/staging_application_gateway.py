@@ -77,12 +77,13 @@ def _alert(action: str, run_id: str, reason: str) -> None:
 
 def _reconcile_failure_diagnostic(run_id: str, exc: Exception) -> None:
     """Persist a redacted preflight failure without overwriting evidence."""
-    _safe_root(EVIDENCE_ROOT, create=True)
+    candidate = _run_root(run_id)
+    _safe_root(candidate)
     reason = str(exc).split(';', 1)[0]
     if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', reason):
         reason = 'staging_reconcile_preflight_failed'
     stamp = f'{int(time.time())}-{os.getpid()}'
-    path = EVIDENCE_ROOT / f'staging-reconcile-{RUN_RE.fullmatch(run_id).group(1)}-diagnostic-{stamp}.json'
+    path = candidate / f'reconcile-diagnostic-{stamp}.json'
     write_json(path, {'environment': 'staging', 'run_id': run_id,
                       'action': 'reconcile', 'error_type': type(exc).__name__,
                       'reason': reason, 'evidence_preserved': True})
