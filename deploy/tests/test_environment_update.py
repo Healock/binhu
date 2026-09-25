@@ -13,7 +13,8 @@ from unittest.mock import Mock, patch
 from deploy.environments import runtime
 from deploy.environments import update
 from deploy.environments.artifact import tree_hashes
-from deploy.environments.update import candidate_configuration, image_digest_reference, parse_environment, read_configuration
+from deploy.environments.update import (candidate_configuration, canonical_database_manifest,
+                                         image_digest_reference, parse_environment, read_configuration)
 from deploy.tests import test_environment_static_preparation as fixtures
 
 
@@ -26,6 +27,12 @@ class EnvironmentUpdateTests(unittest.TestCase):
     def test_image_digest_reference_rejects_mutable_or_malformed_reference(self):
         with self.assertRaisesRegex(ValueError, 'environment_image_reference_invalid'):
             image_digest_reference('binhu-backend:latest')
+
+    def test_canonical_database_manifest_maps_legacy_runtime_keys(self):
+        values = {f'MYSQL_{key}_DB': 'Staging_' + domain
+                  for key, domain in zip(update.KEYS, update.DOMAINS)}
+        self.assertEqual(canonical_database_manifest(values),
+                         dict(zip(update.DOMAINS, ('Staging_' + domain for domain in update.DOMAINS))))
 
     def fixture(self, root, environment='development'):
         args = fixtures.EnvironmentStaticPreparationTests().prepare(

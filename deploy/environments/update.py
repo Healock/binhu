@@ -454,6 +454,18 @@ def image_digest_reference(value):
     raise ValueError('environment_image_reference_invalid')
 
 
+def canonical_database_manifest(values):
+    """Map current runtime database variables to the canonical manifest keys.
+
+    Older Staging manifests used the environment-variable keys
+    (``ONLINE_DATA``/``ARCHIVE``/...) while the current contract stores the
+    corresponding domain names (``OnlineData``/``OnlineDataArchive``/...).
+    Reconcile is the only operation allowed to adopt this known metadata
+    drift; it derives the mapping from the live, already-validated env file.
+    """
+    return dict(zip(DOMAINS, (values['MYSQL_' + key + '_DB'] for key in KEYS)))
+
+
 def reconcile_staging(artifact, image_directory, expected_id, evidence):
     """Rebind only the isolated Staging manifest to its live configuration.
 
@@ -480,10 +492,12 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
     # Validate the live Staging identity while allowing only the recorded
     # image/manifest drift to be rebound.
     live_backend_digest = image_digest_reference(compose['services']['backend']['image'])
+    canonical_databases = canonical_database_manifest(env_values)
     candidate_configuration(environment, root,
                             {**live_manifest,
                              'hashes': {name: file_hash(root / name)
                                         for name in ('compose.json', 'backend.env', 'init.sql')},
+                             'databases': canonical_databases,
                              'images': {name: compose['services'][service]['image']
                                         for name, service in (('backend', 'backend'),
                                                               ('mysql', 'environment-mysql'),
@@ -500,6 +514,7 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
     for name in ('manifest.json', 'compose.json', 'backend.env', 'init.sql'):
         shutil.copyfile(root / name, previous / name)
     rebound = dict(live_manifest)
+    rebound['databases'] = canonical_databases
     rebound['hashes'] = {
         'compose.json': file_hash(root / 'compose.json'),
         'backend.env': file_hash(root / 'backend.env'),
