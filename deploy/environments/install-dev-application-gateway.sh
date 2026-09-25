@@ -34,6 +34,7 @@ cat > /etc/sudoers.d/binhu-dev-application <<'EOF'
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway status
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway prepare *
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway measure *
+binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway reconcile *
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway apply *
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway accept *
 EOF

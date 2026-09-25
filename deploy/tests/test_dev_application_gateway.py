@@ -126,6 +126,14 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('reconcile_development', update)
         self.assertIn("'containers_or_volumes_changed': False", update)
 
+    def test_install_sudo_contract_covers_every_fixed_action(self):
+        script = (ROOT / 'deploy/environments/install-dev-application-gateway.sh').read_text()
+        for action in ('status', 'prepare', 'measure', 'reconcile', 'apply', 'accept'):
+            self.assertIn(
+                f'/usr/local/libexec/binhu-dev-application-gateway {action}',
+                script,
+            )
+
     def test_install_script_has_no_production_or_staging_target(self):
         script = (ROOT / 'deploy/environments/install-dev-application-gateway.sh').read_text()
         self.assertIn('development_application_gateway.py', script)
