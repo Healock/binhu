@@ -18,8 +18,8 @@ on:
         required: false
         type: string
       artifact_id:
-        description: Exact immutable artifact ID
-        required: false
+        description: Exact immutable artifact ID, or auto to bind the bundle built in this run
+        required: true
         type: string
 
 permissions:
@@ -47,7 +47,7 @@ jobs:
           set -euo pipefail
           [[ "$RUN_ID" =~ ^dev-update-[0-9a-f]{16}$ ]]
           case "$ACTION" in
-            prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
+            prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && ( "$ARTIFACT_ID" == auto || "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ) ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
             measure|apply|accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
           esac
       - name: Build exact artifact for prepare
@@ -60,8 +60,12 @@ jobs:
           python -m deploy.environments.artifact build --repository . --commit "$COMMIT" --output "$RUNNER_TEMP/artifact"
           python - "$RUNNER_TEMP/artifact/artifact.json" "$ARTIFACT_ID" <<'PY'
           import json, pathlib, sys
-          if json.loads(pathlib.Path(sys.argv[1]).read_text())['artifact_id'] != sys.argv[2]: raise SystemExit('artifact mismatch')
+          actual = json.loads(pathlib.Path(sys.argv[1]).read_text())['artifact_id']
+          if sys.argv[2] != 'auto' and actual != sys.argv[2]: raise SystemExit('artifact mismatch')
+          print(f'bound_artifact_id={actual}')
           PY
+          ARTIFACT_ID_BOUND=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifact_id"])' "$RUNNER_TEMP/artifact/artifact.json")
+          echo "ARTIFACT_ID_BOUND=$ARTIFACT_ID_BOUND" >> "$GITHUB_ENV"
           tar -C "$RUNNER_TEMP/artifact" -czf "$RUNNER_TEMP/artifact.tar.gz" artifact.json source.tar frontend.tar
       - name: Configure deploy SSH
         env:
@@ -86,7 +90,6 @@ jobs:
           [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
           app=(ssh -p "$PORT" -i ~/.ssh/dev-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-dev-app-deploy@$HOST")
           case "$ACTION" in
-            prepare) version="$(git show "$COMMIT:VERSION" | tr -d '\r\n')"; cat "$RUNNER_TEMP/artifact.tar.gz" | "${app[@]}" "prepare $RUN_ID $COMMIT $version $ARTIFACT_ID" ;;
+            prepare) version="$(git show "$COMMIT:VERSION" | tr -d '\r\n')"; cat "$RUNNER_TEMP/artifact.tar.gz" | "${app[@]}" "prepare $RUN_ID $COMMIT $version ${ARTIFACT_ID_BOUND:-$ARTIFACT_ID}" ;;
             measure|apply|accept) "${app[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
           esac
-
