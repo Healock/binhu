@@ -73,6 +73,8 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('options: [prepare, measure, apply, accept]', workflow)
         self.assertIn('BINHU_DEV_APP_SSH_KEY', workflow)
         self.assertIn('binhu-dev-app-deploy@', workflow)
+        self.assertIn('ARTIFACT_ID_BOUND', workflow)
+        self.assertIn('artifact_id: auto', workflow)
         self.assertNotIn('BINHU_STAGING', workflow)
         install = (ROOT / '.github/workflows/install-dev-application-gateway.yml').read_text()
         self.assertIn('BINHU_DEV_APP_ADMIN_SSH_KEY', install)
