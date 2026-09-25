@@ -37,6 +37,38 @@ class DevApplicationGatewayTests(unittest.TestCase):
                 with self.subTest(data=data[:8]), self.assertRaises(ValueError):
                     gateway._extract_artifact(data, target)
 
+    def test_prepare_persists_identity_after_full_transport_path(self):
+        run_id = 'dev-update-' + 'a' * 16
+        commit = 'b' * 40
+        artifact_id = 'c' * 64
+        image_id = 'sha256:' + 'd' * 64
+        transport = self._transport({name: name.encode() for name in
+                                     ('artifact.json', 'source.tar', 'frontend.tar')})
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve() / 'state'
+            control = Path(tmp) / 'control-commit'
+            control.write_text(commit)
+            def local_root(path, *, create=False):
+                if create:
+                    path.mkdir(parents=True, exist_ok=True)
+                return path
+            with (patch.object(gateway, 'BASE', base),
+                  patch.object(gateway, 'CONTROL_COMMIT', control),
+                  patch.object(gateway, '_safe_root', side_effect=local_root),
+                  patch.object(gateway, 'verify_artifact', return_value={
+                      'artifact_id': artifact_id, 'commit': commit, 'version': '0.30.24'}),
+                  patch.object(gateway, 'build_image', return_value={'image_id': image_id}) as build,
+                  patch.object(gateway, '_audit')):
+                result = gateway.prepare(run_id, commit, '0.30.24', artifact_id,
+                                         stream=io.BytesIO(transport))
+            self.assertEqual('prepared', result['state'])
+            self.assertEqual(image_id, result['image_id'])
+            self.assertEqual(artifact_id, result['artifact_id'])
+            self.assertEqual({'artifact.json', 'source.tar', 'frontend.tar'},
+                             {path.name for path in (base / 'candidates' / run_id / 'artifact').iterdir()})
+            self.assertEqual(result, json.loads((base / 'candidates' / run_id / 'promotion.json').read_text()))
+            build.assert_called_once()
+
     def test_fixed_run_and_environment_contract(self):
         self.assertTrue(gateway.RUN_RE.fullmatch('dev-update-' + 'a' * 16))
         for value in ('staging-app-' + 'a' * 16, 'dev-' + 'a' * 16, '../dev-update-' + 'a' * 16):
@@ -84,8 +116,10 @@ class DevApplicationGatewayTests(unittest.TestCase):
     def test_install_script_has_no_production_or_staging_target(self):
         script = (ROOT / 'deploy/environments/install-dev-application-gateway.sh').read_text()
         self.assertIn('development_application_gateway.py', script)
-        for module in ('artifact.py', 'image.py', 'runtime.py', 'update.py'):
+        for module in ('artifact.py', 'database_identity.py', 'image.py', 'runtime.py', 'update.py'):
             self.assertIn(module, script)
+        update = (ROOT / 'deploy/environments/update.py').read_text()
+        self.assertIn('from .database_identity import run as verify_database_identity', update)
         self.assertIn('/usr/local/libexec/binhu-dev-application/deploy/environments', script)
         self.assertIn('chmod 0700 /var/lib/binhu-dev-application', script)
         self.assertIn('binhu-dev-app-deploy', script)

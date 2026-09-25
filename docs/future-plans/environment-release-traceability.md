@@ -309,3 +309,5 @@ python tools/environment_status.py --environment production --history 10 --forma
 `0.30.24` 应用晋级使用精确 `origin/main` commit、artifact ID 和 Backend image digest。Dev 应用接受成功后，Staging 才能绑定同一制品执行应用晋级、受控数据库迁移和脱敏快照链。应用晋级链与 Kafka/Flink/Redis event-pipeline 验收链分开记录。
 
 Staging 此前停留在 `0.28.17` 的原因是应用晋级 workflow 没有成功执行记录；此前安装的是 Staging promotion gateway 和脱敏快照 gateway，而不是一次成功的应用晋级。该流程缺口已通过独立 Dev 应用接受入口补齐。生产仍保持现有版本和运行路径，架构升级不包含在本次 `0.30.24` 应用晋级中。
+
+2026-09-25 阶段状态：PR #833 已补齐 Dev 网关缺失的 `_extract_artifact`，PR #834 已修正同一次 workflow 内的制品 ID 绑定。运行 `dev-update-5e57b85a36febda9` 的 `prepare` 已成功，候选的 artifact 和 Backend image 已生成；随后 `measure` 失败，尚未执行 `apply` 或 `accept`，不得据此推进 Staging。代码核对发现安装脚本遗漏了 `measure_environment()` 动态导入的 `database_identity.py`，本次补入安装清单和完整 `prepare` 路径测试。须重新安装并以新运行编号验证 `measure`；若仍失败，应读取安全错误码定位门禁，不能绕过数据库身份或资源检查。旧失败运行和候选目录保留。
