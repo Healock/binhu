@@ -104,6 +104,12 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertIn('def reconcile(run_id: str, artifact_id: str)', source)
         self.assertIn('measure|reconcile|apply', wrapper)
         self.assertIn('options: [prepare, reconcile, measure, apply, accept]', workflow)
+
+    def test_reconcile_preflight_failure_writes_redacted_diagnostic(self):
+        source = (ENVIRONMENTS / 'staging_application_gateway.py').read_text(encoding='utf-8')
+        self.assertIn('def _reconcile_failure_diagnostic', source)
+        self.assertIn("'error_type': type(exc).__name__", source)
+        self.assertIn("'evidence_preserved': True", source)
         self.assertIn('only\npermits Staging', source)
 
 
