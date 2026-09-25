@@ -436,6 +436,24 @@ def measure_staging(artifact, image_directory, expected_id):
     return measure_environment('staging', artifact, image_directory, expected_id)
 
 
+def image_digest_reference(value):
+    """Return the immutable digest from a Docker image reference.
+
+    Compose may persist a qualified reference such as
+    ``binhu-backend@sha256:<digest>`` while the environment contract and
+    artifact metadata use the canonical ``sha256:<digest>`` form.  Reconcile
+    must compare the digest, never reject a qualified reference merely for
+    carrying its repository name.
+    """
+    if isinstance(value, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', value):
+        return value
+    if isinstance(value, str):
+        match = re.search(r'@(?P<digest>sha256:[0-9a-f]{64})$', value)
+        if match:
+            return match.group('digest')
+    raise ValueError('environment_image_reference_invalid')
+
+
 def reconcile_staging(artifact, image_directory, expected_id, evidence):
     """Rebind only the isolated Staging manifest to its live configuration.
 
@@ -461,6 +479,7 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
     env_text = previous_env_text + ''.join(f'{key}=false\\n' for key in added_disabled_flags)
     # Validate the live Staging identity while allowing only the recorded
     # image/manifest drift to be rebound.
+    live_backend_digest = image_digest_reference(compose['services']['backend']['image'])
     candidate_configuration(environment, root,
                             {**live_manifest,
                              'hashes': {name: file_hash(root / name)
@@ -471,7 +490,7 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
                                                               ('redis', 'redis'))}},
                             compose, env_text, {
                                 **image,
-                                'image_id': compose['services']['backend']['image'],
+                                'image_id': live_backend_digest,
                             })
     if not verify_database_identity(environment)['all_markers_present']:
         raise ValueError('environment_database_identity_incomplete')

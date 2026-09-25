@@ -13,11 +13,20 @@ from unittest.mock import Mock, patch
 from deploy.environments import runtime
 from deploy.environments import update
 from deploy.environments.artifact import tree_hashes
-from deploy.environments.update import candidate_configuration, parse_environment, read_configuration
+from deploy.environments.update import candidate_configuration, image_digest_reference, parse_environment, read_configuration
 from deploy.tests import test_environment_static_preparation as fixtures
 
 
 class EnvironmentUpdateTests(unittest.TestCase):
+    def test_image_digest_reference_accepts_qualified_compose_reference(self):
+        digest = 'sha256:' + 'a' * 64
+        self.assertEqual(update.image_digest_reference('binhu-backend@' + digest), digest)
+        self.assertEqual(image_digest_reference(digest), digest)
+
+    def test_image_digest_reference_rejects_mutable_or_malformed_reference(self):
+        with self.assertRaisesRegex(ValueError, 'environment_image_reference_invalid'):
+            image_digest_reference('binhu-backend:latest')
+
     def fixture(self, root, environment='development'):
         args = fixtures.EnvironmentStaticPreparationTests().prepare(
             root, '<html><head><script type="module" src="./assets/app.js"></script></head></html>')
