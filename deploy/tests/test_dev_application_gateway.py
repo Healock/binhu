@@ -118,6 +118,8 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('development_application_gateway.py', script)
         for module in ('artifact.py', 'database_identity.py', 'image.py', 'runtime.py', 'update.py'):
             self.assertIn(module, script)
+        update = (ROOT / 'deploy/environments/update.py').read_text()
+        self.assertIn('from .database_identity import run as verify_database_identity', update)
         self.assertIn('/usr/local/libexec/binhu-dev-application/deploy/environments', script)
         self.assertIn('chmod 0700 /var/lib/binhu-dev-application', script)
         self.assertIn('binhu-dev-app-deploy', script)
