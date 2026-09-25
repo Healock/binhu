@@ -71,6 +71,19 @@ def _alert(action: str, run_id: str, reason: str) -> None:
     path.chmod(0o600)
 
 
+def _failure_code(error: BaseException) -> str:
+    """Return a stable, non-sensitive diagnostic code for private evidence."""
+    if isinstance(error, NameError):
+        return "gateway_missing_symbol"
+    if isinstance(error, ValueError):
+        return "candidate_validation_failed"
+    if isinstance(error, RuntimeError):
+        return "candidate_runtime_failed"
+    if isinstance(error, (OSError, tarfile.TarError)):
+        return "candidate_io_failed"
+    return "candidate_prepare_failed"
+
+
 def _run_root(run_id: str) -> Path:
     if not RUN_RE.fullmatch(run_id):
         refuse("fixed Dev application run id required")
@@ -103,6 +116,25 @@ def _read_manifest(run_id: str) -> tuple[Path, dict]:
         refuse("Dev application immutable identity changed")
     return root, manifest
 
+
+def _extract_artifact(data: bytes, target: Path) -> None:
+    """Extract only the fixed three-file transport envelope into a new directory."""
+    if len(data) > 256 * 1024 * 1024:
+        refuse("Dev application artifact too large")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            members = archive.getmembers()
+            names = {PurePosixPath(item.name).as_posix() for item in members}
+            if (names != ARCHIVE_MEMBERS
+                    or any(not item.isfile() or item.issym() or item.islnk() for item in members)):
+                refuse("Dev application artifact contents invalid")
+            for item in members:
+                if item.size < 1 or item.size > 192 * 1024 * 1024:
+                    refuse("Dev application artifact member invalid")
+            archive.extractall(target, filter="data")
+    except (tarfile.TarError, OSError):
+        refuse("Dev application artifact archive invalid")
+
 def prepare(run_id: str, commit: str, version: str, artifact_id: str, stream=None) -> dict:
     if (not COMMIT_RE.fullmatch(commit) or not VERSION_RE.fullmatch(version)
             or not ARTIFACT_RE.fullmatch(artifact_id) or not RUN_RE.fullmatch(run_id)):
@@ -133,12 +165,13 @@ def prepare(run_id: str, commit: str, version: str, artifact_id: str, stream=Non
         write_json(root / "promotion.json", manifest)
         _audit("prepare", run_id=run_id, outcome="passed", details=manifest)
         return manifest
-    except Exception:
+    except Exception as error:
+        reason = _failure_code(error)
         write_json(root / "failure.json", {"run_id": run_id, "action": "prepare",
-                                            "reason": "candidate_prepare_failed"})
+                                            "reason": reason, "error_type": type(error).__name__})
         _audit("prepare", run_id=run_id, outcome="failed",
-               details={"reason": "candidate_prepare_failed"})
-        _alert("prepare", run_id, "candidate_prepare_failed")
+               details={"reason": reason})
+        _alert("prepare", run_id, reason)
         raise
 
 def measure(run_id: str, artifact_id: str) -> dict:
