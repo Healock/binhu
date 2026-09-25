@@ -100,6 +100,12 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertEqual('candidate_validation_failed', gateway._failure_code(ValueError('x')))
         self.assertEqual('candidate_runtime_failed', gateway._failure_code(RuntimeError('x')))
 
+    def test_operation_failure_preserves_stable_contract_code(self):
+        self.assertEqual('environment_configuration_drift',
+                         gateway._operation_failure_code(ValueError('environment_configuration_drift; details hidden')))
+        self.assertEqual('candidate_validation_failed',
+                         gateway._operation_failure_code(ValueError('details are not a contract code')))
+
     def test_workflow_has_fixed_four_actions_and_dev_secrets(self):
         workflow = (ROOT / '.github/workflows/promote-dev-application.yml').read_text()
         self.assertIn('options: [prepare, measure, apply, accept]', workflow)

@@ -29,6 +29,22 @@ VERSION_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 ARTIFACT_RE = re.compile(r"[0-9a-f]{64}")
 IMAGE_RE = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHIVE_MEMBERS = {"artifact.json", "source.tar", "frontend.tar"}
+OPERATION_FAILURE_CODES = {
+    "environment_configuration_drift",
+    "environment_configuration_hashes_missing",
+    "environment_external_access_enabled",
+    "environment_image_drift",
+    "environment_identity_mismatch",
+    "environment_database_mismatch",
+    "environment_database_identity_incomplete",
+    "environment_services_unreviewed",
+    "environment_network_mismatch",
+    "environment_volume_mismatch",
+    "environment_service_isolation_invalid",
+    "environment_backend_override_invalid",
+    "environment_static_mount_unreviewed",
+    "environment_update_resources_insufficient",
+}
 CONTROL_COMMIT = Path('/usr/local/libexec/binhu-dev-application/control-commit')
 
 
@@ -82,6 +98,14 @@ def _failure_code(error: BaseException) -> str:
     if isinstance(error, (OSError, tarfile.TarError)):
         return "candidate_io_failed"
     return "candidate_prepare_failed"
+
+
+def _operation_failure_code(error: BaseException) -> str:
+    """Keep private operation evidence specific without exposing exception text."""
+    message = str(error).split(";", 1)[0].strip()
+    if message in OPERATION_FAILURE_CODES:
+        return message
+    return _failure_code(error)
 
 
 def _run_root(run_id: str) -> Path:
@@ -271,11 +295,21 @@ def main() -> None:
             if action == "status":
                 _audit("status", outcome="passed")
             print(json.dumps(result, sort_keys=True))
-        except Exception:
+        except Exception as error:
             if action != "prepare":
-                _audit(action, run_id=run_id, outcome="failed", details={"reason": "gateway_operation_failed"})
+                reason = _operation_failure_code(error)
+                _audit(action, run_id=run_id, outcome="failed", details={"reason": reason})
+                if run_id:
+                    root = _run_root(run_id)
+                    if root.is_dir() and not root.is_symlink():
+                        write_json(root / f"{action}-failure-{time.time_ns()}.json", {
+                            "action": action,
+                            "reason": reason,
+                            "run_id": run_id,
+                            "error_type": type(error).__name__,
+                        })
                 if run_id and action in {"measure", "accept"}:
-                    _alert(action, run_id, "gateway_operation_failed")
+                    _alert(action, run_id, reason)
             raise SystemExit("Dev application gateway refused; inspect private evidence") from None
 
 
