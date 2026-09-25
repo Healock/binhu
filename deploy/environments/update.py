@@ -394,8 +394,8 @@ def reconcile_development(artifact, image_directory, expected_id, evidence):
     }
     rebound['images'] = {name: compose['services'][service]['image']
                          for name, service in (('backend', 'backend'),
-                                               ('mysql', 'environment-mysql'),
-                                               ('redis', 'redis'))}
+                                              ('mysql', 'environment-mysql'),
+                                              ('redis', 'redis'))}
     rebound['reconciled_from_drift'] = True
     rebound['reconciled_at'] = int(time.time())
     temporary = root / 'manifest.json.reconcile'
@@ -527,8 +527,13 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
     rebound['reconciled_from_drift'] = True
     rebound['reconciled_at'] = int(time.time())
     temporary = root / 'manifest.json.reconcile'
+    repaired_env = root / 'backend.env.reconcile'
     try:
+        repaired_env.write_text(env_text, encoding='utf-8', newline='\n')
+        repaired_env.chmod(0o600)
+        rebound['hashes']['backend.env'] = file_hash(repaired_env)
         write_json(temporary, rebound)
+        os.replace(repaired_env, root / 'backend.env')
         os.replace(temporary, root / 'manifest.json')
         measure_environment(environment, artifact, image_directory, expected_id)
         write_json(evidence / 'result.json', {
@@ -547,6 +552,8 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
     except Exception:
         if temporary.exists():
             temporary.unlink()
+        if repaired_env.exists():
+            repaired_env.unlink()
         shutil.copyfile(previous / 'manifest.json', root / 'manifest.json')
         shutil.copyfile(previous / 'backend.env', root / 'backend.env')
         write_json(evidence / 'failure.json', {
