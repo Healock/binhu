@@ -125,6 +125,8 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('measure|reconcile|apply|accept', wrapper)
         self.assertIn('reconcile_development', update)
         self.assertIn("'containers_or_volumes_changed': False", update)
+        self.assertIn("'added_disabled_flags': added_disabled_flags", update)
+        self.assertIn("TXDOCS_MONITORING_ENABLED", update)
 
     def test_install_sudo_contract_covers_every_fixed_action(self):
         script = (ROOT / 'deploy/environments/install-dev-application-gateway.sh').read_text()
