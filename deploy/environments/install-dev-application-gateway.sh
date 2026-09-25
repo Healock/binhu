@@ -11,7 +11,7 @@ control_commit="$(tr -d '\r\n' < "$2")"
 command -v useradd >/dev/null && command -v visudo >/dev/null && command -v openssl >/dev/null || { echo 'required tools missing' >&2; exit 1; }
 install -d -o root -g root -m 0755 /usr/local/libexec/binhu-dev-application/deploy/environments
 install -o root -g root -m 0644 deploy/__init__.py /usr/local/libexec/binhu-dev-application/deploy/__init__.py
-for module in artifact.py development_application_gateway.py image.py runtime.py update.py; do
+for module in artifact.py database_identity.py development_application_gateway.py image.py runtime.py update.py; do
   install -o root -g root -m 0644 \
     "deploy/environments/$module" \
     "/usr/local/libexec/binhu-dev-application/deploy/environments/$module"
