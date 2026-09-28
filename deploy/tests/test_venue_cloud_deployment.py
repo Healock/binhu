@@ -35,8 +35,6 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("/venue/", nginx)
         self.assertIn("location ^~ /drinking-report/", nginx)
         self.assertIn("/api/public/", nginx)
-        self.assertIn("/api/public/venues/", nginx)
-        self.assertIn("location = /api/public/submissions", nginx)
         self.assertIn("binhu_venue_public_ip", nginx)
         self.assertIn("/api/internal/", nginx)
         self.assertIn("$ssl_client_verify", nginx)
@@ -48,10 +46,12 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertNotIn("location /updates", nginx)
         venue_location = nginx.split("location ^~ /venue/", 1)[1].split("}", 1)[0]
         self.assertNotIn("binhu_venue_public_ip", venue_location)
-        public_venue_location = nginx.split("location ^~ /api/public/venues/", 1)[1].split("}", 1)[0]
-        self.assertNotIn("binhu_venue_public_ip", public_venue_location)
-        submission_location = nginx.split("location = /api/public/submissions", 1)[1].split("}", 1)[0]
-        self.assertNotIn("binhu_venue_public_ip", submission_location)
+        public_location = nginx.split("location ^~ /api/public/ {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("limit_req", public_location)
+        drinking_location = nginx.split("location ^~ /drinking-report/", 1)[1].split("}", 1)[0]
+        self.assertIn("binhu_venue_public_ip", drinking_location)
+        public_forms_location = nginx.split("location ^~ /api/public/forms/", 1)[1].split("}", 1)[0]
+        self.assertIn("binhu_venue_public_ip", public_forms_location)
         drinking_location = nginx.split("location ^~ /drinking-report/", 1)[1].split("}", 1)[0]
         self.assertIn("access_log off;", drinking_location)
         public_forms_location = nginx.split("location ^~ /api/public/forms/", 1)[1].split("}", 1)[0]
