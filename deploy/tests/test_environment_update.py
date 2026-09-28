@@ -13,12 +13,27 @@ from unittest.mock import Mock, patch
 from deploy.environments import runtime
 from deploy.environments import update
 from deploy.environments.artifact import tree_hashes
-from deploy.environments.update import (candidate_configuration, canonical_database_manifest,
-                                         image_digest_reference, parse_environment, read_configuration)
+from deploy.environments.update import (add_disabled_external_flags, candidate_configuration,
+                                         canonical_database_manifest, image_digest_reference,
+                                         parse_environment, read_configuration)
 from deploy.tests import test_environment_static_preparation as fixtures
 
 
 class EnvironmentUpdateTests(unittest.TestCase):
+    def test_reconcile_adds_missing_external_flags_as_parseable_lines(self):
+        original = 'APP_ENVIRONMENT=staging\nTXDOCS_ENABLED=false\n'
+        repaired, added = add_disabled_external_flags(original)
+        self.assertIn('TXDOCS_MONITORING_ENABLED=false\n', repaired)
+        self.assertNotIn('\\n', repaired)
+        self.assertEqual(parse_environment(repaired)['TXDOCS_MONITORING_ENABLED'], 'false')
+        self.assertIn('TXDOCS_MONITORING_ENABLED', added)
+
+    def test_reconcile_does_not_duplicate_existing_external_flags(self):
+        original = ''.join(f'{key}=false\n' for key in update.DISABLED_EXTERNAL_FLAGS)
+        repaired, added = add_disabled_external_flags(original)
+        self.assertEqual(repaired, original)
+        self.assertEqual(added, [])
+
     def test_image_digest_reference_accepts_qualified_compose_reference(self):
         digest = 'sha256:' + 'a' * 64
         self.assertEqual(update.image_digest_reference('binhu-backend@' + digest), digest)
