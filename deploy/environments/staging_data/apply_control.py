@@ -129,6 +129,21 @@ async def schema_signature(cur,database,table):
     constraints=list(await cur.fetchall())
     return {'columns':[list(row) for row in columns],'indexes':[list(row) for row in indexes],
         'constraints':[list(row) for row in constraints]}
+def signature_diff(expected,actual):
+    """Return bounded structural names and digests without schema values."""
+    def names(value,index):
+        return sorted({row[index] for row in value if row and isinstance(row[index],str)})
+    digest=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=True,separators=(',',':')).encode()).hexdigest()
+    return {
+        'expected_signature_sha256':digest(expected),
+        'actual_signature_sha256':digest(actual),
+        'missing_columns':sorted(set(names(expected['columns'],0))-set(names(actual['columns'],0))),
+        'extra_columns':sorted(set(names(actual['columns'],0))-set(names(expected['columns'],0))),
+        'missing_indexes':sorted(set(names(expected['indexes'],0))-set(names(actual['indexes'],0))),
+        'extra_indexes':sorted(set(names(actual['indexes'],0))-set(names(expected['indexes'],0))),
+        'missing_constraints':sorted(set(names(expected['constraints'],0))-set(names(actual['constraints'],0))),
+        'extra_constraints':sorted(set(names(actual['constraints'],0))-set(names(expected['constraints'],0))),
+    }
 async def verify_current_schema(conn,snapshot,current):
     production_contract=snapshot.get('schema_contract')
     if not isinstance(production_contract,dict):raise SnapshotError('source_schema_contract_missing')
@@ -146,9 +161,13 @@ async def verify_current_schema(conn,snapshot,current):
             for table in tables:
                 if table in excluded_schema_tables or split_domain_schema_tables.get(table, domain) != domain:
                     continue
-                if table!='_environment_identity' and await schema_signature(cur,database,table)!=production_contract[domain][table]:
-                    raise SnapshotError('production_staging_schema_mismatch', diagnostics={
-                        'domain':domain,'table_name':table,'schema_signature_mismatch':True})
+                if table!='_environment_identity':
+                    expected=production_contract[domain][table]
+                    actual=await schema_signature(cur,database,table)
+                    if actual!=expected:
+                        raise SnapshotError('production_staging_schema_mismatch', diagnostics={
+                            'domain':domain,'table_name':table,'schema_signature_mismatch':True,
+                            **signature_diff(expected,actual)})
     return True
 async def verify_target(conn,settings,snapshot,current,candidate):
     expected=materialize(snapshot,settings.registry_hmac_key)
@@ -184,7 +203,8 @@ async def verify_target(conn,settings,snapshot,current,candidate):
                 actual_signature=signatures[1]
                 if table!='_environment_identity' and expected_signature!=actual_signature:
                     raise SnapshotError('production_staging_schema_mismatch', diagnostics={
-                        'domain':domain,'table_name':table,'schema_signature_mismatch':True})
+                        'domain':domain,'table_name':table,'schema_signature_mismatch':True,
+                        **signature_diff(expected_signature,actual_signature)})
                 logical=domain+'.'+table
                 expected_count=expected_counts.get(logical,0)
                 if logical=='PlatformData._users':expected_count+=1
@@ -318,6 +338,17 @@ def execute(action,snapshot_id):
                         safe[key]=value
                 if diagnostics.get('schema_signature_mismatch') is True:
                     safe['schema_signature_mismatch']=True
+                for key in ('expected_signature_sha256','actual_signature_sha256'):
+                    value=diagnostics.get(key)
+                    if isinstance(value,str) and re.fullmatch('[0-9a-f]{64}',value):
+                        safe[key]=value
+                for key in ('missing_columns','extra_columns','missing_indexes','extra_indexes',
+                            'missing_constraints','extra_constraints'):
+                    value=diagnostics.get(key)
+                    if (isinstance(value,list) and len(value)<=256
+                            and all(isinstance(item,str) and re.fullmatch('[A-Za-z0-9_$.-]{1,128}',item)
+                                    for item in value)):
+                        safe[key]=value
                 if safe:
                     failure['diagnostics']=safe
             exit_code=getattr(exc,'diagnostics',{}).get('exit_code')
