@@ -55,7 +55,7 @@ docker compose -f /etc/binhu-venue/docker-compose.yml ps
 - MySQL 与 Receiver 只加入 `venue_private` 内部网络，均不映射宿主机端口。
 - 无密钥、无数据库凭据的 Ingress 只做固定 TCP 转发，并将宿主机 `127.0.0.1:48727` 转给 Receiver；这是因为 Docker 的 internal 网络本身不会创建宿主机端口网关。
 - Docker 网络标记为 `internal`，接收容器不能主动访问滨湖内网或生产数据库。
-- 公共接口由 Nginx 做 IP 限流，应用用 MySQL 做全局、场所和设备限流。
+- 公共接口由 Nginx 做 IP 限流，应用用 MySQL 做全局、场所和设备限流。场所登记页与取令牌共用页面桶，提交使用独立写入桶，两个桶均为 120 次/分钟并允许 100 个突发请求；应用层默认全局 300 次/分钟、单场所 120 次/分钟、单设备 10 次/分钟，以支持同一出口下的集中登记；饮酒报备等其他公共表单继续使用原有 30 次/分钟 IP 桶。
 - `/api/internal/` 同时要求 mTLS 和 Ed25519 签名；Nginx 只向上游传递验证结果。
 - 日志 URI 会把 `/venue/{token}` 记录为 `/venue/[redacted]`，应用关闭 Uvicorn access log。
 - 加密登记最长排队 7 天；成功确认的正文和照片默认 24 小时内清理，审计只保留安全原因码。

@@ -27,6 +27,7 @@ class FakeRepository:
         self.public_form_tokens = {}
         self.submissions = {}
         self.nonces = set()
+        self.rate_limits = []
 
     async def ping(self):
         return None
@@ -36,7 +37,8 @@ class FakeRepository:
             return self.venue
         return None
 
-    async def check_rate_limits(self, _limits):
+    async def check_rate_limits(self, limits):
+        self.rate_limits.append(limits)
         return True
 
     async def issue_form_token(self, token_hmac, venue_id, expires_at):
@@ -234,6 +236,11 @@ def test_public_submission_is_encrypted_and_idempotent(tmp_path):
     assert second.status_code == 202
     assert len(repo.submissions) == 1
     assert list(config.PHOTO_DIR.glob("*.bin"))
+    assert repo.rate_limits[0] == [
+        (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), config.PUBLIC_RATE_GLOBAL_LIMIT),
+        (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-venue", "7"), config.PUBLIC_RATE_VENUE_LIMIT),
+        (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-device", "device-id-for-tests-0001"), config.PUBLIC_RATE_DEVICE_LIMIT),
+    ]
 
 
 def test_public_submission_rejects_bad_identity_checksum_before_consuming_token(tmp_path):
@@ -465,6 +472,7 @@ def test_registration_page_uses_uuid_fallback_for_legacy_webviews(tmp_path):
     assert "const submissionId=makeUuid();" in response.text
     assert "deviceId=makeUuid()" in response.text
     assert "Date.now()}-0000-4000-8000" not in response.text
+    assert "当前登记人数较多，请稍后再试" in response.text
 
 
 def test_wait_returns_immediately_when_queue_already_has_data(tmp_path):

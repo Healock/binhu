@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     FORM_TOKEN_TTL_SECONDS: int = 15 * 60
     DRINKING_REPORT_TIMEZONE: str = "Asia/Shanghai"
     LEASE_SECONDS: int = 5 * 60
+    # Many real registrants can share one school/office/Wi-Fi egress. Keep
+    # the per-device guard tight while allowing a venue session to complete.
+    PUBLIC_RATE_GLOBAL_LIMIT: int = 300
+    PUBLIC_RATE_VENUE_LIMIT: int = 120
+    PUBLIC_RATE_DEVICE_LIMIT: int = 10
 
     PUBLIC_TOKEN_HMAC_KEY: str = ""
     FORM_TOKEN_HMAC_KEY: str = ""
