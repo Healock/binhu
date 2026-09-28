@@ -238,6 +238,10 @@ def test_public_submission_is_encrypted_and_idempotent(tmp_path):
     assert list(config.PHOTO_DIR.glob("*.bin"))
     assert repo.rate_limits[0] == [
         (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), config.PUBLIC_RATE_GLOBAL_LIMIT),
+        (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-public-token-venue", "7"), config.PUBLIC_RATE_VENUE_LIMIT),
+    ]
+    assert repo.rate_limits[1] == [
+        (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), config.PUBLIC_RATE_GLOBAL_LIMIT),
         (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-venue", "7"), config.PUBLIC_RATE_VENUE_LIMIT),
         (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-device", "device-id-for-tests-0001"), config.PUBLIC_RATE_DEVICE_LIMIT),
     ]
@@ -473,6 +477,10 @@ def test_registration_page_uses_uuid_fallback_for_legacy_webviews(tmp_path):
     assert "deviceId=makeUuid()" in response.text
     assert "Date.now()}-0000-4000-8000" not in response.text
     assert "当前登记人数较多，请稍后再试" in response.text
+    assert repo.rate_limits == [[
+        (keyed_digest(_config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), _config.PUBLIC_RATE_GLOBAL_LIMIT),
+        (keyed_digest(_config.REQUEST_FINGERPRINT_KEY, "rate-public-page-venue", "7"), _config.PUBLIC_RATE_VENUE_LIMIT),
+    ]]
 
 
 def test_wait_returns_immediately_when_queue_already_has_data(tmp_path):

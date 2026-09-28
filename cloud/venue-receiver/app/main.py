@@ -341,6 +341,12 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
                     "Cache-Control": "no-store",
                 },
             )
+        rate_keys = [
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), app_config.PUBLIC_RATE_GLOBAL_LIMIT),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-public-page-venue", str(venue["local_venue_id"])), app_config.PUBLIC_RATE_VENUE_LIMIT),
+        ]
+        if not await request.app.state.repo.check_rate_limits(rate_keys):
+            raise HTTPException(429, "当前登记人数较多，请稍后再试")
         return HTMLResponse(
             _registration_page(),
             headers={
@@ -359,6 +365,12 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "场所不存在或二维码已停用")
         if venue["status"] != "active":
             raise HTTPException(410, "二维码已更换，请联系工作人员获取新场所码")
+        rate_keys = [
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-global", "all"), app_config.PUBLIC_RATE_GLOBAL_LIMIT),
+            (keyed_digest(app_config.REQUEST_FINGERPRINT_KEY, "rate-public-token-venue", str(venue["local_venue_id"])), app_config.PUBLIC_RATE_VENUE_LIMIT),
+        ]
+        if not await request.app.state.repo.check_rate_limits(rate_keys):
+            raise HTTPException(429, "当前登记人数较多，请稍后再试")
         form_token = secrets.token_urlsafe(32)
         form_digest = keyed_digest(app_config.FORM_TOKEN_HMAC_KEY, "form-token", form_token)
         await request.app.state.repo.issue_form_token(
