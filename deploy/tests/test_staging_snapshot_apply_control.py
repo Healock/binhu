@@ -95,6 +95,23 @@ class ApplyControlTests(unittest.TestCase):
         self.assertIn("'missing_constraints':sorted",code)
         self.assertIn("'expected_signature_sha256':digest(expected)",code)
 
+    def test_embedded_signature_diff_runs_with_its_declared_imports(self):
+        code,_=program('staging-'+'a'*16,'measure')
+        parsed=ast.parse(code)
+        signature_diff=next(node for node in parsed.body
+                            if isinstance(node,ast.FunctionDef) and node.name=='signature_diff')
+        imports=[node for node in parsed.body if isinstance(node,ast.Import) and node.lineno==1]
+        namespace={}
+        exec(compile(ast.Module(body=imports+[signature_diff],type_ignores=[]),
+                     '<embedded-signature-diff>','exec'),namespace)
+        expected={'columns':[['old_col']],'indexes':[],'constraints':[]}
+        actual={'columns':[['new_col']],'indexes':[],'constraints':[]}
+        diff=namespace['signature_diff'](expected,actual)
+        self.assertEqual(diff['missing_columns'],['old_col'])
+        self.assertEqual(diff['extra_columns'],['new_col'])
+        self.assertRegex(diff['expected_signature_sha256'],r'^[0-9a-f]{64}$')
+        self.assertRegex(diff['actual_signature_sha256'],r'^[0-9a-f]{64}$')
+
     def test_job_failure_preserves_signature_diff_without_values(self):
         code,_=program('staging-'+'a'*16,'measure')
         output=('{{"ok":false,"reason":"production_staging_schema_mismatch",'
