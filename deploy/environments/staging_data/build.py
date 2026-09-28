@@ -92,6 +92,10 @@ def normalize_schema_contract(contract):
     contract failure rather than something the Staging gateway may guess at.
     """
     normalized = {domain: {} for domain in SCHEMA_DOMAINS}
+    # Prefer the schema in the owning domain when a legacy duplicate is still
+    # present in OnlineData.  Old installations may have a different legacy
+    # signature there; that copy is ignored by the runtime and must not make a
+    # valid split-domain contract fail.
     for domain, tables in contract.items():
         if domain not in normalized or not isinstance(tables, dict):
             continue
@@ -99,9 +103,25 @@ def normalize_schema_contract(contract):
             if table in EXCLUDED_SCHEMA_TABLES:
                 continue
             target_domain = SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain)
+            if target_domain != domain:
+                continue
             existing = normalized[target_domain].get(table)
             if existing is not None and existing != signature:
                 raise SnapshotError("source_schema_contract_conflict")
+            normalized[target_domain][table] = signature
+    # If a routed table is absent from its owning domain (an older production
+    # deployment), retain the legacy signature as a diagnostic fallback.  The
+    # Staging side still applies the same ownership filter and will report a
+    # missing target table instead of guessing a migration.
+    for domain, tables in contract.items():
+        if domain not in normalized or not isinstance(tables, dict):
+            continue
+        for table, signature in tables.items():
+            if table in EXCLUDED_SCHEMA_TABLES:
+                continue
+            target_domain = SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain)
+            if target_domain == domain or table in normalized[target_domain]:
+                continue
             normalized[target_domain][table] = signature
     return normalized
 

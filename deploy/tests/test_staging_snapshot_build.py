@@ -76,7 +76,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized['PlatformData'], {'_announcements': signature})
         self.assertEqual(normalized['DispatchData'], {'_police_dispatch_publish_runs': signature})
 
-    def test_schema_contract_rejects_conflicting_duplicate_split_table(self):
+    def test_schema_contract_prefers_owned_split_table_signature(self):
         first = {'columns': [['id']], 'indexes': [], 'constraints': []}
         second = {'columns': [['different']], 'indexes': [], 'constraints': []}
         contract = {domain: {} for domain in (
@@ -84,8 +84,8 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
             'VisitData', 'DispatchData', 'RegistryData', 'WorkflowData')}
         contract['OnlineData']['_announcements'] = first
         contract['PlatformData']['_announcements'] = second
-        with self.assertRaisesRegex(SnapshotError, '^source_schema_contract_conflict$'):
-            normalize_schema_contract(contract)
+        normalized = normalize_schema_contract(contract)
+        self.assertEqual(normalized['PlatformData']['_announcements'], second)
 
     def fixture(self):
         settings = SimpleNamespace(APP_ENVIRONMENT='production', MYSQL_DOMAIN_DATABASES_ENABLED=True,
