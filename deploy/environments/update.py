@@ -91,6 +91,8 @@ def candidate_configuration(environment, root, manifest, compose, env_text, imag
         if isinstance(configured_image, str) and '@sha256:' in configured_image:
             configured_image = configured_image.rsplit('@', 1)[1]
         expected_image = manifest.get('images', {}).get(name if name != 'environment-mysql' else 'mysql')
+        if isinstance(expected_image, str) and '@sha256:' in expected_image:
+            expected_image = expected_image.rsplit('@', 1)[1]
         if configured_image != expected_image:
             raise ValueError('environment_image_drift')
     backend = compose['services']['backend']

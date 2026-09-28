@@ -103,6 +103,17 @@ class EnvironmentUpdateTests(unittest.TestCase):
             self.assertEqual(candidate['services']['backend']['ports'], ['127.0.0.1:48126:37125'])
             self.assertNotIn('Dev_', new_env)
 
+    def test_candidate_accepts_qualified_digest_in_live_manifest_and_compose(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target, (manifest, compose, env_text) = self.fixture(Path(directory), 'staging')
+            for name, service in (('backend', 'backend'), ('mysql', 'environment-mysql'), ('redis', 'redis')):
+                digest = manifest['images'][name]
+                compose['services'][service]['image'] = 'registry.example/' + service + '@' + digest
+                manifest['images'][name] = 'registry.example/' + service + '@' + digest
+            candidate, _, _ = candidate_configuration(
+                'staging', target, manifest, compose, env_text, self.image())
+            self.assertEqual(candidate['services']['backend']['image'], self.image()['image_id'])
+
     def test_staging_rejects_development_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             target, (manifest, compose, env_text) = self.fixture(Path(directory))
