@@ -39,6 +39,11 @@ class ApplyControlTests(unittest.TestCase):
     def test_embedded_candidate_program_includes_runtime_table_filter(self):
         code,_=program('staging-'+'a'*16,'measure')
         self.assertIn('def runtime_tables(tables, domain):',code)
+        for action in ('measure','verify'):
+            generated,_=program('staging-'+'a'*16,action)
+            names={node.id for node in ast.walk(ast.parse(generated))
+                   if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Load)}
+            self.assertNotIn('SPLIT_DOMAIN_SCHEMA_TABLES',names)
         namespace={}
         # Execute only the self-contained loader prefix; imports requiring the
         # server runtime are intentionally outside this unit test boundary.
