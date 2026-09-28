@@ -144,7 +144,7 @@ async def verify_current_schema(conn,snapshot,current):
                     'extra_tables':sorted(actual_tables-expected_tables),
                     'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in tables:
-                if table in excluded_schema_tables or SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain) != domain:
+                if table in excluded_schema_tables or split_domain_schema_tables.get(table, domain) != domain:
                     continue
                 if table!='_environment_identity' and await schema_signature(cur,database,table)!=production_contract[domain][table]:
                     raise SnapshotError('production_staging_schema_mismatch', diagnostics={
@@ -174,7 +174,7 @@ async def verify_target(conn,settings,snapshot,current,candidate):
                     'extra_tables':sorted(actual_tables-expected_tables),
                     'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in current_tables:
-                if table in excluded_schema_tables or SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain) != domain:
+                if table in excluded_schema_tables or split_domain_schema_tables.get(table, domain) != domain:
                     continue
                 signatures=[]
                 for database in (current[domain],candidate[domain]):
