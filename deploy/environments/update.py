@@ -39,6 +39,14 @@ def parse_environment(text):
     return values
 
 
+def add_disabled_external_flags(previous_env_text):
+    """Append missing external-disable flags as real dotenv lines."""
+    env_values = parse_environment(previous_env_text)
+    added_disabled_flags = [key for key in DISABLED_EXTERNAL_FLAGS if key not in env_values]
+    env_text = previous_env_text + ''.join(f'{key}=false\n' for key in added_disabled_flags)
+    return env_text, added_disabled_flags
+
+
 def candidate_configuration(environment, root, manifest, compose, env_text, image):
     if environment not in SPEC:
         raise ValueError('nonproduction_environment_required')
@@ -369,8 +377,7 @@ def reconcile_development(artifact, image_directory, expected_id, evidence):
     compose = json.loads((root / 'compose.json').read_text(encoding='utf-8'))
     previous_env_text = (root / 'backend.env').read_text(encoding='utf-8')
     env_values = parse_environment(previous_env_text)
-    added_disabled_flags = [key for key in DISABLED_EXTERNAL_FLAGS if key not in env_values]
-    env_text = previous_env_text + ''.join(f'{key}=false\n' for key in added_disabled_flags)
+    env_text, added_disabled_flags = add_disabled_external_flags(previous_env_text)
     candidate = candidate_configuration(environment, root,
                                         {**live_manifest,
                                          'hashes': {name: file_hash(root / name)
@@ -491,8 +498,7 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
     compose = json.loads((root / 'compose.json').read_text(encoding='utf-8'))
     previous_env_text = (root / 'backend.env').read_text(encoding='utf-8')
     env_values = parse_environment(previous_env_text)
-    added_disabled_flags = [key for key in DISABLED_EXTERNAL_FLAGS if key not in env_values]
-    env_text = previous_env_text + ''.join(f'{key}=false\\n' for key in added_disabled_flags)
+    env_text, added_disabled_flags = add_disabled_external_flags(previous_env_text)
     # Validate the live Staging identity while allowing only the recorded
     # image/manifest drift to be rebound.
     live_backend_digest = image_digest_reference(compose['services']['backend']['image'])
