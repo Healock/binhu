@@ -35,6 +35,11 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("/venue/", nginx)
         self.assertIn("location ^~ /drinking-report/", nginx)
         self.assertIn("/api/public/", nginx)
+        self.assertIn("/api/public/venues/", nginx)
+        self.assertIn("location = /api/public/submissions", nginx)
+        self.assertIn("binhu_venue_public_page", nginx)
+        self.assertIn("binhu_venue_public_write", nginx)
+        self.assertIn("limit_req_status 429", nginx)
         self.assertIn("/api/internal/", nginx)
         self.assertIn("$ssl_client_verify", nginx)
         self.assertIn('Cache-Control "no-store"', nginx)
@@ -43,6 +48,11 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("proxy_read_timeout 40s", nginx)
         self.assertNotIn("/var/log/nginx", nginx)
         self.assertNotIn("location /updates", nginx)
+        venue_location = nginx.split("location ^~ /venue/", 1)[1].split("}", 1)[0]
+        self.assertIn("binhu_venue_public_page", venue_location)
+        self.assertNotIn("binhu_venue_public_ip", venue_location)
+        submission_location = nginx.split("location = /api/public/submissions", 1)[1].split("}", 1)[0]
+        self.assertIn("binhu_venue_public_write", submission_location)
         drinking_location = nginx.split("location ^~ /drinking-report/", 1)[1].split("}", 1)[0]
         self.assertIn("access_log off;", drinking_location)
         public_forms_location = nginx.split("location ^~ /api/public/forms/", 1)[1].split("}", 1)[0]
@@ -51,6 +61,7 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("client_max_body_size 6m", public_location)
         log_format = (ROOT / "deploy/venue-cloud/nginx-http-context.conf").read_text(encoding="utf-8")
         self.assertNotIn("$http_referer", log_format)
+        self.assertIn("rate=120r/m", log_format)
 
     def test_platform_venue_submission_has_exact_upload_location(self):
         for path in (ROOT / "nginx/binhu.conf", ROOT / "nginx/migration/new-app-locations.conf"):
