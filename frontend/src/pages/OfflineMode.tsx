@@ -20,6 +20,7 @@ import {
   type OfflineResidenceQueryResult,
 } from '../utils/offlineResidenceClient'
 import { readOfflineWorkbook, writeOfflineWorkbook, type OfflineWorkbook } from '../utils/offlineResidenceXlsx'
+import { makeOfflineResidenceRowDetail, type OfflineResidenceRowDetail } from '../utils/offlineResidenceResults'
 
 const { Dragger } = Upload
 type QueryState = 'idle' | 'running' | 'completed' | 'partial' | 'failed'
@@ -62,9 +63,13 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
   const [workbook, setWorkbook] = useState<OfflineWorkbook | null>(null)
   const [statuses, setStatuses] = useState<string[]>([])
   const [registeredAddresses, setRegisteredAddresses] = useState<string[]>([])
+  const [rowDetails, setRowDetails] = useState<Array<OfflineResidenceRowDetail | null>>([])
+  const [detailFilter, setDetailFilter] = useState<'all' | 'issues'>('issues')
+  const [detailPage, setDetailPage] = useState(1)
   const [queryState, setQueryState] = useState<QueryState>('idle')
   const [completed, setCompleted] = useState(0)
   const [successCount, setSuccessCount] = useState(0)
+  const [reviewCount, setReviewCount] = useState(0)
   const [error, setError] = useState('')
   const [exporting, setExporting] = useState(false)
   const [errorCounts, setErrorCounts] = useState<Record<string, number>>({})
@@ -73,6 +78,11 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
 
   const total = workbook?.rows.length ?? 0
   const running = queryState === 'running'
+  const visibleDetails = rowDetails.filter((item): item is OfflineResidenceRowDetail => Boolean(item))
+    .filter(item => detailFilter === 'all' || item.category !== 'result')
+  const pageSize = 20
+  const pageCount = Math.max(1, Math.ceil(visibleDetails.length / pageSize))
+  const pageDetails = visibleDetails.slice((Math.min(detailPage, pageCount) - 1) * pageSize, Math.min(detailPage, pageCount) * pageSize)
   const notifySummary = (next: Partial<{ state: QueryState; total: number; completed: number; successCount: number; errorCounts: Record<string, number>; diagnosticCounts: Record<string, number>; identityInputSummary: typeof identityInputSummary }> = {}) => {
     onSummary?.({ mode, state: next.state ?? queryState, total: next.total ?? total, completed: next.completed ?? completed, successCount: next.successCount ?? successCount, errorCounts: next.errorCounts ?? errorCounts, diagnosticCounts: next.diagnosticCounts ?? diagnosticCounts, identityInputSummary: next.identityInputSummary ?? identityInputSummary })
   }
@@ -83,9 +93,13 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
     setWorkbook(null)
     setStatuses([])
     setRegisteredAddresses([])
+    setRowDetails([])
+    setDetailFilter('issues')
+    setDetailPage(1)
     setQueryState('idle')
     setCompleted(0)
     setSuccessCount(0)
+    setReviewCount(0)
     setError('')
     setErrorCounts({})
     setDiagnosticCounts({})
@@ -103,9 +117,13 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
     setWorkbook(null)
     setStatuses([])
     setRegisteredAddresses([])
+    setRowDetails([])
+    setDetailFilter('issues')
+    setDetailPage(1)
     setQueryState('idle')
     setCompleted(0)
     setSuccessCount(0)
+    setReviewCount(0)
     setError('')
     setErrorCounts({})
     setDiagnosticCounts({})
@@ -120,6 +138,10 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
     setQueryState('running')
     setCompleted(0)
     setSuccessCount(0)
+    setReviewCount(0)
+    setRowDetails([])
+    setDetailFilter('issues')
+    setDetailPage(1)
     setErrorCounts({})
     setDiagnosticCounts({})
     setIdentityInputSummary({ empty: 0, lengths: {}, valid_format: 0, invalid_format: 0 })
@@ -130,10 +152,12 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
       setWorkbook(book)
       const nextStatuses = Array.from({ length: book.rows.length }, () => '查询中')
       setStatuses(nextStatuses)
+      setRowDetails(Array.from({ length: book.rows.length }, () => null))
       setRegisteredAddresses(Array.from({ length: book.rows.length }, () => ''))
       const client = new OfflineResidenceClient(config)
       let completedCount = 0
       let successfulCount = 0
+      let pendingReviewCount = 0
       const nextErrorCounts: Record<string, number> = {}
       const nextDiagnosticCounts: Record<string, number> = {}
       const identitySummary = { empty: 0, lengths: {} as Record<string, number>, valid_format: 0, invalid_format: 0 }
@@ -161,10 +185,13 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
             result = { status: '查询失败', error: 'request_error' }
           }
           results[index] = result.status
+          const detail = makeOfflineResidenceRowDetail(book, index, result)
+          setRowDetails(current => { const next = [...current]; next[index] = detail; return next })
           if (mode === 'address') {
             setRegisteredAddresses(current => { const next = [...current]; next[index] = result.registered_address || ''; return next })
           }
           if (!result.error) successfulCount += 1
+          if (result.review) pendingReviewCount += 1
           if (result.error) nextErrorCounts[result.error] = (nextErrorCounts[result.error] || 0) + 1
           for (const event of result.diagnostics || []) {
             const key = [event.stage, event.error_code, event.http_status ?? '', event.business_code ?? '', event.result_type ?? '', event.message_category ?? ''].join('|')
@@ -176,6 +203,7 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
           setStatuses([...results])
           setCompleted(completedCount)
           setSuccessCount(successfulCount)
+          setReviewCount(pendingReviewCount)
           notifySummary({ state: 'running', total: book.rows.length, completed: completedCount, successCount: successfulCount, errorCounts: { ...nextErrorCounts }, diagnosticCounts: { ...nextDiagnosticCounts }, identityInputSummary: { ...identitySummary, lengths: { ...identitySummary.lengths } } })
         }
       }
@@ -218,9 +246,27 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
       </div>
       {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
         <Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} />
-        <div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}</span></div>
+        <div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}，待核对 {reviewCount}，失败 {Object.values(errorCounts).reduce((sum, count) => sum + count, 0)}</span></div>
         {mode === 'address' && <div className="text-xs text-[var(--app-text-secondary)]">已找到登记地址 {registeredAddresses.filter(Boolean).length} 条；未登记、查询失败或上游缺少地址的记录保持空白。</div>}
         {Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}
+        {completed === total && <div className="grid gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-medium">逐行查询情况（按原表顺序）</span>
+            <div className="flex flex-wrap gap-2">
+              <Button size="small" type={detailFilter === 'issues' ? 'primary' : 'default'} onClick={() => { setDetailFilter('issues'); setDetailPage(1) }}>仅看无效、失败和待核对（{rowDetails.filter(item => item && item.category !== 'result').length}）</Button>
+              <Button size="small" type={detailFilter === 'all' ? 'primary' : 'default'} onClick={() => { setDetailFilter('all'); setDetailPage(1) }}>查看全部（{rowDetails.filter(Boolean).length}）</Button>
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-[var(--app-border)]">
+            <table className="w-full min-w-[760px] text-left text-sm">
+              <thead className="bg-[var(--app-surface)]"><tr><th className="p-2">原表行号</th><th className="p-2">原始身份证号</th><th className="p-2">查询情况</th><th className="p-2">原因与处理建议</th></tr></thead>
+              <tbody>{pageDetails.map(item => <tr key={item.index} className="border-t border-[var(--app-border)] align-top"><td className="p-2">{item.sourceRow}</td><td className="p-2 font-mono break-all">{item.identity || '（空）'}</td><td className="p-2">{item.status}</td><td className="p-2">{item.reason}{item.category !== 'result' && <div className="mt-1 text-[var(--app-text-secondary)]">{item.action}</div>}</td></tr>)}</tbody>
+            </table>
+            {pageDetails.length === 0 && <div className="p-3 text-sm text-[var(--app-text-secondary)]">没有需要核对的记录。可切换到“查看全部”。</div>}
+          </div>
+          {pageCount > 1 && <div className="flex items-center justify-end gap-2 text-sm"><Button size="small" disabled={detailPage <= 1} onClick={() => setDetailPage(page => page - 1)}>上一页</Button><span>{Math.min(detailPage, pageCount)} / {pageCount}</span><Button size="small" disabled={detailPage >= pageCount} onClick={() => setDetailPage(page => page + 1)}>下一页</Button></div>}
+          <div className="text-xs text-[var(--app-text-secondary)]">身份证号仅在当前页面和您主动导出的业务文件中显示，不会加入脱敏诊断信息。</div>
+        </div>}
         {completed === total && <div className="flex justify-end"><Button type="primary" onClick={() => void exportResult()} loading={exporting}>导出{mode === 'address' ? '登记地址' : '登记情况'}结果 XLSX</Button></div>}
       </div>}
     </div>

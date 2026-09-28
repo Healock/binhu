@@ -13,6 +13,7 @@ import {
   summarizeResidencePayload,
 } from '../src/utils/offlineResidenceClient.ts'
 import { selectIdentityColumn } from '../src/utils/offlineResidenceHeaders.ts'
+import { makeOfflineResidenceRowDetail } from '../src/utils/offlineResidenceResults.ts'
 
 const pageSource = readFileSync(new URL('../src/pages/OfflineMode.tsx', import.meta.url), 'utf8')
 const clientSource = readFileSync(new URL('../src/utils/offlineResidenceClient.ts', import.meta.url), 'utf8')
@@ -53,9 +54,11 @@ test('离线批量查询不依赖滨湖平台批量接口', () => {
   assert.doesNotMatch(apiSource, /startResidenceBatchQuery|getResidenceBatchQuery|exportResidenceBatchQuery/)
 })
 
-test('离线页面展示整体进度和查询成功人数', () => {
+test('离线页面展示整体进度、明确结果及逐行失败定位', () => {
   assert.match(pageSource, /<Progress[\s\S]*completed \/ total/)
-  assert.match(pageSource, /总人数 \{total\}，查询成功 \{successCount\}/)
+  assert.match(pageSource, /总人数 \{total\}，查询成功 \{successCount\}，待核对 \{reviewCount\}/)
+  assert.match(pageSource, /逐行查询情况（按原表顺序）/)
+  assert.match(pageSource, /原表行号.*原始身份证号.*查询情况/)
   assert.match(pageSource, /setCompleted\(completedCount\)/)
 })
 
@@ -391,6 +394,48 @@ test('常住人口预检索响应异常时停止，不继续流动人口查询',
   }).lookupRegistrationAddress('11010519491231002X')
   assert.equal(result.error, 'resident_response_contract_changed')
   assert.equal(floatingCalls, 0)
+})
+
+test('常住人口预检索返回非空资料时单独标为待核对，不误报接口契约异常或未登记', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  let floatingCalls = 0
+  Object.defineProperty(globalThis, 'fetch', { configurable: true, value: async (url: string) => {
+    if (url.endsWith('/szjzz/searchzzrk')) floatingCalls += 1
+    return new Response(JSON.stringify(url === 'http://127.0.0.1:23333' ? { mac: '02:11:22:33:44:66' }
+      : url.includes('/sys/randomImage/') ? { success: true }
+        : url.endsWith('/sys/login') ? { success: true, result: { token: 'fixture-token', userInfo: { departCode: '320584037700' } } }
+          : { success: true, code: 200, result: { synthetic_marker: 'fixture-only' } }), { status: 200 })
+  } })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(), base_url: 'https://residence.invalid', password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '虚构社区', username: 'fixture-user', community_code: '3205840377' }],
+  }).lookupRegistrationAddress('11010519491231002X')
+  assert.equal(result.status, '常住人口预检索命中（待核对）')
+  assert.equal(result.review, 'resident_status_unconfirmed')
+  assert.equal(result.error, undefined)
+  assert.equal(result.registered_address, '')
+  assert.equal(floatingCalls, 0)
+  assert.equal(JSON.stringify(result).includes('synthetic_marker'), false)
+})
+
+test('逐行明细定位原表物理行号与原始身份证号，且不给诊断信息加入身份证号', () => {
+  const book = {
+    sheetName: '虚构名单', header: ['身份证号'], rows: [["'123"], ['11010519491231002X']], identityColumn: 0,
+    source: { files: {}, sheetPath: 'xl/worksheets/sheet1.xml', headerRow: 3, dataRows: [5, 9] },
+  }
+  const invalid = makeOfflineResidenceRowDetail(book, 0, { status: '身份证号格式无效', error: 'invalid_identity' })
+  assert.equal(invalid.sourceRow, 5)
+  assert.equal(invalid.identity, "'123")
+  assert.equal(invalid.category, 'invalid')
+  assert.match(invalid.action, /原表/)
+  const failed = makeOfflineResidenceRowDetail(book, 1, { status: '查询失败', error: 'resident_response_contract_changed', diagnostics: [
+    { stage: 'search_resident', error_code: 'resident_response_contract_changed', http_status: 200, business_code: '500' },
+  ] })
+  assert.equal(failed.sourceRow, 9)
+  assert.equal(failed.category, 'failure')
+  assert.match(failed.reason, /常住人口预检索.*HTTP 200.*业务码 500/)
+  assert.equal(JSON.stringify(failed).includes('fixture-token'), false)
+  assert.doesNotMatch(JSON.stringify(failed.reason), /11010519491231002X/)
 })
 
 test('并发查询同一社区只建立一次登录 session', async () => {
