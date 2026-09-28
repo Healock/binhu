@@ -18,18 +18,50 @@ MODULES=('codec','digests','target','candidate','import_data')
 # candidate job is embedded and runs without importing the production reader,
 # so the ownership/filter rules must be carried into its isolated program.
 SPLIT_DOMAIN_SCHEMA_TABLES = {
+    '_users': 'PlatformData', '_sessions': 'PlatformData', '_grid_members': 'PlatformData',
+    '_departments': 'PlatformData', '_communities': 'PlatformData', '_community_aliases': 'PlatformData',
+    '_areas': 'PlatformData', '_area_leader_links': 'PlatformData',
+    '_grid_member_department_links': 'PlatformData', '_permission_groups': 'PlatformData',
+    '_position_permission_groups': 'PlatformData', '_position_permission_group_links': 'PlatformData',
+    '_user_permission_group_links': 'PlatformData', '_permission_change_log': 'PlatformData',
+    '_notifications': 'PlatformData',
     '_announcements': 'PlatformData',
     '_announcement_reads': 'PlatformData',
+    '_help_documents': 'PlatformData', '_admin_audit_log': 'PlatformData',
+    '_personnel_attendance_history': 'PlatformData', '_personnel_weekend_duty': 'PlatformData',
+    '_system_config': 'PlatformData', '_backup_schedule': 'PlatformData', '_backup_jobs': 'PlatformData',
     '_work_activity_events': 'PlatformData',
     '_qmf_registration_runs': 'PlatformData',
+    '_administrative_areas': 'PlatformData',
+    '_visit_import_batches': 'VisitData', 't_visit_details': 'VisitData',
+    '_visit_import_issues': 'VisitData', '_visit_source_runs': 'VisitData',
+    '_code_summary_runs': 'VisitData', '_code_daily_snapshots': 'VisitData',
+    '_code_summary_location_labels': 'VisitData', '_code_summary_location_counts': 'VisitData',
+    '_police_dispatch_batches': 'DispatchData', '_police_dispatch_tasks': 'DispatchData',
+    '_police_dispatch_publish_results': 'DispatchData',
     '_police_dispatch_publish_runs': 'DispatchData',
     '_police_dispatch_publish_run_items': 'DispatchData',
+    '_work_log_drafts': 'daily_report', '_daily_task_ledger': 'daily_report',
+    '_daily_task_ledger_runs': 'daily_report', '_daily_report_meta': 'daily_report',
+    '_police_address_entries': 'RegistryData', '_police_address_sources': 'RegistryData',
+    '_police_address_imports': 'RegistryData', '_police_address_import_conflicts': 'RegistryData',
+    '_venue_codes': 'RegistryData', '_venue_visits': 'RegistryData',
+    '_venue_visit_photos': 'RegistryData', '_venue_form_tokens': 'RegistryData',
+    '_public_form_codes': 'RegistryData', '_public_form_cloud_outbox': 'RegistryData',
+    '_drinking_reports': 'RegistryData',
 }
 EXCLUDED_SCHEMA_TABLES = {
     '_continuation_import_runs',
     '_domain_migration_state',
     't_test_mock',
 }
+
+
+def runtime_tables(tables, domain):
+    """Remove legacy copies from a source domain before contract comparison."""
+    return {table for table in tables
+            if table not in EXCLUDED_SCHEMA_TABLES
+            and SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain) == domain}
 
 
 def command(args, *, stdin=None, timeout=30):
@@ -95,15 +127,15 @@ async def verify_current_schema(conn,snapshot,current):
         for domain,database in current.items():
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(database,'BASE TABLE'))
             tables=[row[0] for row in await cur.fetchall()]
-            expected_tables=(set(production_contract.get(domain,{}))-excluded_schema_tables)|{'_environment_identity'}
-            actual_tables=set(tables)-excluded_schema_tables
+            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
+            actual_tables=runtime_tables(tables, domain)|{'_environment_identity'}
             if actual_tables!=expected_tables:
                 raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
                     'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
                     'extra_tables':sorted(actual_tables-expected_tables),
                     'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in tables:
-                if table in excluded_schema_tables:
+                if table in excluded_schema_tables or SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain) != domain:
                     continue
                 if table!='_environment_identity' and await schema_signature(cur,database,table)!=production_contract[domain][table]:
                     raise SnapshotError('production_staging_schema_mismatch', diagnostics={
@@ -125,15 +157,15 @@ async def verify_target(conn,settings,snapshot,current,candidate):
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(candidate[domain],'BASE TABLE'))
             candidate_tables=[row[0] for row in await cur.fetchall()]
             if current_tables!=candidate_tables:raise SnapshotError('target_schema_table_mismatch')
-            expected_tables=(set(production_contract.get(domain,{}))-excluded_schema_tables)|{'_environment_identity'}
-            actual_tables=set(candidate_tables)-excluded_schema_tables
+            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
+            actual_tables=runtime_tables(candidate_tables, domain)|{'_environment_identity'}
             if actual_tables!=expected_tables:
                 raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
                     'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
                     'extra_tables':sorted(actual_tables-expected_tables),
                     'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in current_tables:
-                if table in excluded_schema_tables:
+                if table in excluded_schema_tables or SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain) != domain:
                     continue
                 signatures=[]
                 for database in (current[domain],candidate[domain]):

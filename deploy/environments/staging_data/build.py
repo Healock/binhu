@@ -32,12 +32,45 @@ SCHEMA_KEYS = ("ONLINE_DATA", "ARCHIVE", "DAILY_REPORT", "PLATFORM", "VISIT",
 # These tables are created by the normal application bootstrap in their target
 # domain and therefore remain part of the contract after being moved below.
 SPLIT_DOMAIN_SCHEMA_TABLES = {
-    "_announcements": "PlatformData",
-    "_announcement_reads": "PlatformData",
-    "_work_activity_events": "PlatformData",
-    "_qmf_registration_runs": "PlatformData",
+    # Platform domain
+    "_users": "PlatformData", "_sessions": "PlatformData",
+    "_grid_members": "PlatformData", "_departments": "PlatformData",
+    "_communities": "PlatformData", "_community_aliases": "PlatformData",
+    "_areas": "PlatformData", "_area_leader_links": "PlatformData",
+    "_grid_member_department_links": "PlatformData",
+    "_permission_groups": "PlatformData",
+    "_position_permission_groups": "PlatformData",
+    "_position_permission_group_links": "PlatformData",
+    "_user_permission_group_links": "PlatformData",
+    "_permission_change_log": "PlatformData", "_notifications": "PlatformData",
+    "_announcements": "PlatformData", "_announcement_reads": "PlatformData",
+    "_help_documents": "PlatformData", "_admin_audit_log": "PlatformData",
+    "_personnel_attendance_history": "PlatformData",
+    "_personnel_weekend_duty": "PlatformData", "_system_config": "PlatformData",
+    "_backup_schedule": "PlatformData", "_backup_jobs": "PlatformData",
+    "_work_activity_events": "PlatformData", "_qmf_registration_runs": "PlatformData",
+    "_administrative_areas": "PlatformData",
+    # Visit domain
+    "_visit_import_batches": "VisitData", "t_visit_details": "VisitData",
+    "_visit_import_issues": "VisitData", "_visit_source_runs": "VisitData",
+    "_code_summary_runs": "VisitData", "_code_daily_snapshots": "VisitData",
+    "_code_summary_location_labels": "VisitData",
+    "_code_summary_location_counts": "VisitData",
+    # Dispatch domain
+    "_police_dispatch_batches": "DispatchData", "_police_dispatch_tasks": "DispatchData",
+    "_police_dispatch_publish_results": "DispatchData",
     "_police_dispatch_publish_runs": "DispatchData",
     "_police_dispatch_publish_run_items": "DispatchData",
+    # Daily report domain
+    "_work_log_drafts": "daily_report", "_daily_task_ledger": "daily_report",
+    "_daily_task_ledger_runs": "daily_report", "_daily_report_meta": "daily_report",
+    # Registry domain
+    "_police_address_entries": "RegistryData", "_police_address_sources": "RegistryData",
+    "_police_address_imports": "RegistryData",
+    "_police_address_import_conflicts": "RegistryData", "_venue_codes": "RegistryData",
+    "_venue_visits": "RegistryData", "_venue_visit_photos": "RegistryData",
+    "_venue_form_tokens": "RegistryData", "_public_form_codes": "RegistryData",
+    "_public_form_cloud_outbox": "RegistryData", "_drinking_reports": "RegistryData",
 }
 
 # Migration bookkeeping and test-only tables are not application schema and
