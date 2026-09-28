@@ -16,6 +16,20 @@ ENVIRONMENTS = ROOT / 'deploy/environments'
 
 
 class StagingApplicationGatewayTests(unittest.TestCase):
+    def test_reconcile_retry_allocates_new_evidence_without_overwriting(self):
+        run_id = 'staging-app-' + 'a' * 16
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = root / ('staging-reconcile-' + 'a' * 16)
+            base.mkdir()
+            with patch.object(application, 'EVIDENCE_ROOT', root), \
+                    patch.object(application.time, 'time', return_value=123), \
+                    patch.object(application.os, 'getpid', return_value=456):
+                retry = application._reconcile_evidence_path(run_id)
+            self.assertNotEqual(retry, base)
+            self.assertIn('retry-123-456-0', retry.name)
+            self.assertTrue(base.is_dir())
+
     def test_artifact_archive_has_exact_fixed_members(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

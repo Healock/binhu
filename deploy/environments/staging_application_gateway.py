@@ -90,6 +90,20 @@ def _reconcile_failure_diagnostic(run_id: str, exc: Exception) -> None:
     path.chmod(0o600)
 
 
+def _reconcile_evidence_path(run_id: str) -> Path:
+    """Allocate a fresh path while preserving any earlier retry evidence."""
+    suffix = RUN_RE.fullmatch(run_id).group(1)
+    evidence = EVIDENCE_ROOT / ("staging-reconcile-" + suffix)
+    if not evidence.exists() and not evidence.is_symlink():
+        return evidence
+    stem = evidence.name
+    for attempt in range(10):
+        candidate = EVIDENCE_ROOT / f"{stem}-retry-{int(time.time())}-{os.getpid()}-{attempt}"
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    refuse("Staging reconciliation evidence paths exhausted")
+
+
 def _run_root(run_id: str) -> Path:
     if not RUN_RE.fullmatch(run_id):
         refuse("fixed Staging application run id required")
@@ -234,7 +248,7 @@ def reconcile(run_id: str, artifact_id: str) -> dict:
         if artifact_id != manifest["artifact_id"] or manifest["state"] not in {"prepared", "measured"}:
             refuse("Staging application reconciliation identity invalid")
         _dev_acceptance(manifest["dev_acceptance_run_id"], manifest)
-        evidence = EVIDENCE_ROOT / ("staging-reconcile-" + RUN_RE.fullmatch(run_id).group(1))
+        evidence = _reconcile_evidence_path(run_id)
         return reconcile_staging(root / "artifact", root / "image", artifact_id, evidence)
     except Exception as exc:
         _reconcile_failure_diagnostic(run_id, exc)
