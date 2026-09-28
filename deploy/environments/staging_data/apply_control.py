@@ -14,6 +14,23 @@ from ..database_identity import validate_resources
 
 MODULES=('codec','digests','target','candidate','import_data')
 
+# Keep this list in sync with the source snapshot contract normalization.  The
+# candidate job is embedded and runs without importing the production reader,
+# so the ownership/filter rules must be carried into its isolated program.
+SPLIT_DOMAIN_SCHEMA_TABLES = {
+    '_announcements': 'PlatformData',
+    '_announcement_reads': 'PlatformData',
+    '_work_activity_events': 'PlatformData',
+    '_qmf_registration_runs': 'PlatformData',
+    '_police_dispatch_publish_runs': 'DispatchData',
+    '_police_dispatch_publish_run_items': 'DispatchData',
+}
+EXCLUDED_SCHEMA_TABLES = {
+    '_continuation_import_runs',
+    '_domain_migration_state',
+    't_test_mock',
+}
+
 
 def command(args, *, stdin=None, timeout=30):
     result=subprocess.run(args,input=stdin,capture_output=True,text=True,timeout=timeout)
@@ -49,6 +66,8 @@ def program(snapshot_id, action):
     code+='sources='+repr(modules)+'\n'
     code+="for name,source in sources.items():\n    module=types.ModuleType('snapshot_tool.'+name);module.__package__='snapshot_tool';sys.modules[module.__name__]=module;exec(compile(source,'<snapshot_tool.'+name+'>','exec'),module.__dict__)\n"
     code+='snapshot_id='+repr(snapshot_id)+'\naction='+repr(action)+'\n'
+    code+='split_domain_schema_tables='+repr(SPLIT_DOMAIN_SCHEMA_TABLES)+'\n'
+    code+='excluded_schema_tables='+repr(EXCLUDED_SCHEMA_TABLES)+'\n'
     # Parse data as JSON, not as a Python literal. Large snapshots otherwise
     # expand into millions of compiler AST nodes before the job can start,
     # exhausting the bounded container even though the data fits in memory.
@@ -76,14 +95,16 @@ async def verify_current_schema(conn,snapshot,current):
         for domain,database in current.items():
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(database,'BASE TABLE'))
             tables=[row[0] for row in await cur.fetchall()]
-            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
-            actual_tables=set(tables)
+            expected_tables=(set(production_contract.get(domain,{}))-excluded_schema_tables)|{'_environment_identity'}
+            actual_tables=set(tables)-excluded_schema_tables
             if actual_tables!=expected_tables:
                 raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
                     'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
                     'extra_tables':sorted(actual_tables-expected_tables),
                     'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in tables:
+                if table in excluded_schema_tables:
+                    continue
                 if table!='_environment_identity' and await schema_signature(cur,database,table)!=production_contract[domain][table]:
                     raise SnapshotError('production_staging_schema_mismatch', diagnostics={
                         'domain':domain,'table_name':table,'schema_signature_mismatch':True})
@@ -104,14 +125,16 @@ async def verify_target(conn,settings,snapshot,current,candidate):
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(candidate[domain],'BASE TABLE'))
             candidate_tables=[row[0] for row in await cur.fetchall()]
             if current_tables!=candidate_tables:raise SnapshotError('target_schema_table_mismatch')
-            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
-            actual_tables=set(candidate_tables)
+            expected_tables=(set(production_contract.get(domain,{}))-excluded_schema_tables)|{'_environment_identity'}
+            actual_tables=set(candidate_tables)-excluded_schema_tables
             if actual_tables!=expected_tables:
                 raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
                     'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
                     'extra_tables':sorted(actual_tables-expected_tables),
                     'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
             for table in current_tables:
+                if table in excluded_schema_tables:
+                    continue
                 signatures=[]
                 for database in (current[domain],candidate[domain]):
                     signatures.append(await schema_signature(cur,database,table))

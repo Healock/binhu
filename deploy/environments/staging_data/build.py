@@ -25,6 +25,53 @@ SCHEMA_DOMAINS = ("OnlineData", "OnlineDataArchive", "daily_report", "PlatformDa
 SCHEMA_KEYS = ("ONLINE_DATA", "ARCHIVE", "DAILY_REPORT", "PLATFORM", "VISIT",
                "DISPATCH", "REGISTRY", "WORKFLOW")
 
+# The production installation still contains a handful of tables in the
+# historical OnlineData schema even though the split-domain runtime routes
+# them to their owning database.  A Staging schema must be compared against
+# the runtime ownership, rather than requiring a second copy in OnlineData.
+# These tables are created by the normal application bootstrap in their target
+# domain and therefore remain part of the contract after being moved below.
+SPLIT_DOMAIN_SCHEMA_TABLES = {
+    "_announcements": "PlatformData",
+    "_announcement_reads": "PlatformData",
+    "_work_activity_events": "PlatformData",
+    "_qmf_registration_runs": "PlatformData",
+    "_police_dispatch_publish_runs": "DispatchData",
+    "_police_dispatch_publish_run_items": "DispatchData",
+}
+
+# Migration bookkeeping and test-only tables are not application schema and
+# are intentionally excluded from a sanitized Staging snapshot contract.
+# They may exist in a source installation or be created by a maintenance
+# command, but they must not block a candidate import or be copied as data.
+EXCLUDED_SCHEMA_TABLES = frozenset({
+    "_continuation_import_runs",
+    "_domain_migration_state",
+    "t_test_mock",
+})
+
+
+def normalize_schema_contract(contract):
+    """Normalize production table ownership for the split-domain runtime.
+
+    The input is structural metadata only.  Duplicate ownership is accepted
+    only when the signatures are identical; a disagreement is a source
+    contract failure rather than something the Staging gateway may guess at.
+    """
+    normalized = {domain: {} for domain in SCHEMA_DOMAINS}
+    for domain, tables in contract.items():
+        if domain not in normalized or not isinstance(tables, dict):
+            continue
+        for table, signature in tables.items():
+            if table in EXCLUDED_SCHEMA_TABLES:
+                continue
+            target_domain = SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain)
+            existing = normalized[target_domain].get(table)
+            if existing is not None and existing != signature:
+                raise SnapshotError("source_schema_contract_conflict")
+            normalized[target_domain][table] = signature
+    return normalized
+
 
 def source_settings(settings):
     if (settings.APP_ENVIRONMENT != "production" or not settings.MYSQL_DOMAIN_DATABASES_ENABLED
@@ -92,7 +139,9 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
         async with conn.cursor() as cur:
             await cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             await cur.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
-            schema_contract = await source_schema_contract(cur, settings)
+            schema_contract = normalize_schema_contract(
+                await source_schema_contract(cur, settings)
+            )
             raw_organization = {table: await select(cur, table, columns) for table, columns in ORGANIZATION_FIELDS.items()}
             raw_registry = {table: await select(cur, table, columns) for table, columns in FIELDS.items()}
             sources = await select(cur, "OnlineData._online_source_rows",

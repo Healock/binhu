@@ -53,6 +53,9 @@ class ApplyControlTests(unittest.TestCase):
         self.assertIn("'expected_table_count':len(expected_tables)",code)
         self.assertIn("'actual_table_count':len(actual_tables)",code)
         self.assertIn("'schema_signature_mismatch':True",code)
+        self.assertIn("'_domain_migration_state'",code)
+        self.assertIn("'_police_dispatch_publish_run_items'",code)
+        self.assertIn("set(tables)-excluded_schema_tables",code)
 
     def test_job_failure_preserves_safe_schema_diagnostics(self):
         code,_=program('staging-'+'a'*16,'measure')

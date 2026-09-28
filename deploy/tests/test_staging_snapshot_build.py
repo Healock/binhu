@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from services.parsers import get_parser
-from deploy.environments.staging_data.build import build
+from deploy.environments.staging_data.build import build, normalize_schema_contract
 from deploy.environments.staging_data.codec import SnapshotError
 from deploy.environments.staging_data.registry import FIELDS
 from deploy.environments.staging_data.organization import FIELDS as ORG_FIELDS
@@ -54,6 +54,39 @@ class Cursor:
 
 
 class BuildTests(unittest.IsolatedAsyncioTestCase):
+    def test_schema_contract_normalizes_split_domain_and_excludes_runtime_tables(self):
+        signature = {'columns': [['id']], 'indexes': [], 'constraints': []}
+        contract = {
+            domain: {} for domain in (
+                'OnlineData', 'OnlineDataArchive', 'daily_report', 'PlatformData',
+                'VisitData', 'DispatchData', 'RegistryData', 'WorkflowData')
+        }
+        contract['OnlineData'] = {
+            '_announcements': signature,
+            '_police_dispatch_publish_runs': signature,
+            '_continuation_import_runs': signature,
+            '_domain_migration_state': signature,
+            't_test_mock': signature,
+            't_fullchain': signature,
+        }
+        contract['PlatformData'] = {'_announcements': signature}
+        contract['DispatchData'] = {'_police_dispatch_publish_runs': signature}
+        normalized = normalize_schema_contract(contract)
+        self.assertEqual(normalized['OnlineData'], {'t_fullchain': signature})
+        self.assertEqual(normalized['PlatformData'], {'_announcements': signature})
+        self.assertEqual(normalized['DispatchData'], {'_police_dispatch_publish_runs': signature})
+
+    def test_schema_contract_rejects_conflicting_duplicate_split_table(self):
+        first = {'columns': [['id']], 'indexes': [], 'constraints': []}
+        second = {'columns': [['different']], 'indexes': [], 'constraints': []}
+        contract = {domain: {} for domain in (
+            'OnlineData', 'OnlineDataArchive', 'daily_report', 'PlatformData',
+            'VisitData', 'DispatchData', 'RegistryData', 'WorkflowData')}
+        contract['OnlineData']['_announcements'] = first
+        contract['PlatformData']['_announcements'] = second
+        with self.assertRaisesRegex(SnapshotError, '^source_schema_contract_conflict$'):
+            normalize_schema_contract(contract)
+
     def fixture(self):
         settings = SimpleNamespace(APP_ENVIRONMENT='production', MYSQL_DOMAIN_DATABASES_ENABLED=True,
             PLATFORM_DOMAIN_ACTIVE=True, REGISTRY_ADDRESS_DOMAIN_ACTIVE=True,
