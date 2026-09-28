@@ -18,5 +18,9 @@ case "${parts[0]:-}" in
     [[ ${#parts[@]} -eq 4 ]] || exit 64
     [[ "${parts[1]}" =~ ^staging-app-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{64}$ && "${parts[3]}" =~ ^dev-update-[0-9a-f]{16}$ ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway accept "${parts[1]}" "${parts[2]}" "${parts[3]}" ;;
+  migrate)
+    [[ ${#parts[@]} -eq 4 ]] || exit 64
+    [[ "${parts[1]}" =~ ^staging-migrate-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{64}$ && "${parts[3]}" =~ ^(measure|apply|verify)$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway migrate "${parts[1]}" "${parts[2]}" "${parts[3]}" ;;
   *) echo 'fixed Staging application prepare/measure/apply/accept contract required' >&2; exit 64 ;;
 esac

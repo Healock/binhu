@@ -21,6 +21,7 @@ from .artifact import verify_artifact, write_json
 from .image import verify_image
 from .runtime import root_for
 from .update import health, measure_staging, reconcile_staging, apply_staging, read_configuration
+from . import staging_migration
 
 
 BASE = Path("/var/lib/binhu-staging-application")
@@ -342,6 +343,16 @@ def status() -> dict:
     return {"gateway": "staging-application", "environment": "staging", "runs": runs[-10:]}
 
 
+def migrate(run_id: str, artifact_id: str, phase: str) -> dict:
+    """Run the fixed Staging-only measure/apply/verify migration contract."""
+    if phase not in {"measure", "apply", "verify"}:
+        refuse("Staging migration phase invalid")
+    operation = {"measure": staging_migration.measure,
+                 "apply": staging_migration.apply,
+                 "verify": staging_migration.verify}[phase]
+    return operation(run_id, artifact_id)
+
+
 def main() -> None:
     import fcntl
     if os.name != "posix" or os.geteuid() != 0:
@@ -361,6 +372,8 @@ def main() -> None:
                 result = {"measure": measure, "reconcile": reconcile, "apply": apply}[sys.argv[1]](sys.argv[2], sys.argv[3])
             elif len(sys.argv) == 5 and sys.argv[1] == "accept":
                 result = accept(sys.argv[2], sys.argv[3], sys.argv[4])
+            elif len(sys.argv) == 5 and sys.argv[1] == "migrate":
+                result = migrate(sys.argv[2], sys.argv[3], sys.argv[4])
             else:
                 refuse()
             if action == "status":

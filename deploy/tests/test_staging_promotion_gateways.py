@@ -88,6 +88,7 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertNotIn('production-deploy', installer)
         self.assertIn('binhu-staging-app-deploy', installer)
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway apply *', installer)
+        self.assertIn('/usr/local/libexec/binhu-staging-application-gateway migrate *', installer)
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway reconcile *', installer)
         self.assertIn('staging_gateway_authorization_boundary_installed', installer)
         self.assertIn('control-commit', installer)
@@ -110,6 +111,7 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertNotIn('build_image(', source)
         self.assertIn('_adopt_dev_image(', source)
         self.assertIn('_dev_acceptance(manifest["dev_acceptance_run_id"], manifest)', source)
+        self.assertIn('def migrate(run_id: str, artifact_id: str, phase: str)', source)
 
     def test_staging_reconcile_is_explicitly_staging_only(self):
         source = (ENVIRONMENTS / 'staging_application_gateway.py').read_text(encoding='utf-8')
@@ -117,7 +119,7 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/promote-staging-application.yml').read_text(encoding='utf-8')
         self.assertIn('def reconcile(run_id: str, artifact_id: str)', source)
         self.assertIn('measure|reconcile|apply', wrapper)
-        self.assertIn('options: [prepare, reconcile, measure, apply, accept]', workflow)
+        self.assertIn('options: [prepare, reconcile, measure, apply, accept, migrate]', workflow)
 
     def test_reconcile_preflight_failure_writes_redacted_diagnostic(self):
         source = (ENVIRONMENTS / 'staging_application_gateway.py').read_text(encoding='utf-8')
