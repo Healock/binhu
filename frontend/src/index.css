@@ -117,15 +117,47 @@ html.desktop-shell .ant-notification-topRight {
   color: var(--app-text-secondary);
 }
 
-.admin-task-queue-float {
+.app-speed-dial__main {
   right: 22px !important;
   bottom: 24px !important;
-  z-index: 38;
+  z-index: 40;
 }
 
-.admin-task-queue-float .ant-float-btn-body {
+.app-speed-dial__main .ant-float-btn-body,
+.admin-task-queue-float .ant-float-btn-body,
+.my-task-history-float .ant-float-btn-body {
   border: 1px solid var(--app-border);
   box-shadow: 0 10px 28px rgb(15 23 42 / 0.16);
+}
+
+.app-speed-dial__main .ant-float-btn-body {
+  width: 52px;
+  height: 52px;
+}
+
+.admin-task-queue-float,
+.my-task-history-float {
+  right: 24px !important;
+  bottom: 96px !important;
+  z-index: 39;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(12px) scale(0.8);
+  transition: opacity 160ms ease, transform 160ms ease, visibility 160ms;
+}
+
+.my-task-history-float {
+  right: 96px !important;
+  bottom: 82px !important;
+}
+
+.admin-task-queue-float.is-speed-dial-visible,
+.my-task-history-float.is-speed-dial-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
 }
 
 .admin-task-queue-panel,
@@ -440,9 +472,19 @@ html.desktop-shell .ant-notification-topRight {
     justify-content: center;
   }
 
-  .admin-task-queue-float {
+  .app-speed-dial__main {
     right: 16px !important;
     bottom: calc(76px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .admin-task-queue-float {
+    right: 18px !important;
+    bottom: calc(148px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .my-task-history-float {
+    right: 88px !important;
+    bottom: calc(134px + env(safe-area-inset-bottom, 0px)) !important;
   }
 
   .admin-task-queue-panel {

@@ -25,6 +25,7 @@ import OnlinePresenceIndicator from './OnlinePresenceIndicator'
 import RealtimeCoordinator from './RealtimeCoordinator'
 import AdminTaskQueueFloat from './AdminTaskQueueFloat'
 import MyTaskHistoryFloat from './MyTaskHistoryFloat'
+import FloatingActionMenu from './FloatingActionMenu'
 import { AuthenticatedAvatar } from './AuthenticatedImage'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
@@ -209,8 +210,10 @@ export default function Layout() {
       </header>
 
       {!mobile && <OnlinePresenceIndicator />}
-      <AdminTaskQueueFloat />
-      <MyTaskHistoryFloat />
+      <FloatingActionMenu>
+        <AdminTaskQueueFloat />
+        <MyTaskHistoryFloat />
+      </FloatingActionMenu>
 
       {sidebarOpen && (
         <button
