@@ -88,6 +88,26 @@ class ApplyControlTests(unittest.TestCase):
         self.assertEqual(caught.exception.diagnostics['missing_tables'],['new_table'])
         self.assertEqual(caught.exception.diagnostics['extra_tables'],['old_table'])
 
+    def test_schema_signature_diagnostics_include_bounded_structural_diff(self):
+        code,_=program('staging-'+'a'*16,'measure')
+        self.assertIn("'missing_columns':sorted",code)
+        self.assertIn("'extra_indexes':sorted",code)
+        self.assertIn("'missing_constraints':sorted",code)
+        self.assertIn("'expected_signature_sha256':digest(expected)",code)
+
+    def test_job_failure_preserves_signature_diff_without_values(self):
+        code,_=program('staging-'+'a'*16,'measure')
+        output=('{{"ok":false,"reason":"production_staging_schema_mismatch",'
+                '"diagnostics":{{"domain":"OnlineData","table_name":"_online_source_projection",'
+                '"schema_signature_mismatch":true,"expected_signature_sha256":"{}",'
+                '"actual_signature_sha256":"{}","missing_columns":["new_col"],'
+                '"extra_indexes":["old_idx"]}}}}').format('a'*64,'b'*64)
+        with patch('deploy.environments.staging_data.apply_control.command',return_value=output):
+            with self.assertRaises(SnapshotError) as caught:
+                run_job({'Image':'sha256:'+'a'*64},code,'binhu-staging-snapshot-test')
+        self.assertEqual(caught.exception.diagnostics['missing_columns'],['new_col'])
+        self.assertEqual(caught.exception.diagnostics['extra_indexes'],['old_idx'])
+
     def test_import_data_is_json_on_stdin_not_python_source_or_arguments(self):
         data={'tables':{'fixture_only_payload_marker':[{'text':'虚构\\n\"sample', 'active':True, 'value':None}]*10000}}
         code,_=program('staging-'+'a'*16,'import')
