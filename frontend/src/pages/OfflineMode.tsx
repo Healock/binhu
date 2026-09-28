@@ -190,7 +190,7 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
           if (mode === 'address') {
             setRegisteredAddresses(current => { const next = [...current]; next[index] = result.registered_address || ''; return next })
           }
-          if (!result.error) successfulCount += 1
+          if (!result.error && !result.review) successfulCount += 1
           if (result.review) pendingReviewCount += 1
           if (result.error) nextErrorCounts[result.error] = (nextErrorCounts[result.error] || 0) + 1
           for (const event of result.diagnostics || []) {
@@ -246,7 +246,7 @@ function BatchQueryPanel({ mode, title, description, config, onSummary }: BatchQ
       </div>
       {workbook && <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-4">
         <Progress percent={total ? Math.round(completed / total * 100) : 0} status={queryState === 'failed' ? 'exception' : queryState === 'completed' ? 'success' : queryState === 'partial' ? 'exception' : undefined} format={() => `${completed}/${total}`} />
-        <div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，查询成功 {successCount}，待核对 {reviewCount}，失败 {Object.values(errorCounts).reduce((sum, count) => sum + count, 0)}</span></div>
+        <div className="flex flex-wrap justify-between gap-2 text-sm"><span>{queryState === 'running' ? '正在直接查询居住证系统' : queryState === 'completed' ? '查询完成' : '查询完成，部分记录需要复核'}</span><span>总人数 {total}，明确结果 {successCount}，待核对 {reviewCount}，失败 {Object.values(errorCounts).reduce((sum, count) => sum + count, 0)}</span></div>
         {mode === 'address' && <div className="text-xs text-[var(--app-text-secondary)]">已找到登记地址 {registeredAddresses.filter(Boolean).length} 条；未登记、查询失败或上游缺少地址的记录保持空白。</div>}
         {Object.keys(errorCounts).length > 0 && <div className="text-xs text-[var(--app-text-secondary)]">失败分类：{Object.entries(errorCounts).map(([code, count]) => `${code} ${count} 条`).join('、')}</div>}
         {completed === total && <div className="grid gap-3">

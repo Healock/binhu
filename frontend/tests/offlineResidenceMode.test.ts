@@ -56,7 +56,7 @@ test('离线批量查询不依赖滨湖平台批量接口', () => {
 
 test('离线页面展示整体进度、明确结果及逐行失败定位', () => {
   assert.match(pageSource, /<Progress[\s\S]*completed \/ total/)
-  assert.match(pageSource, /总人数 \{total\}，查询成功 \{successCount\}，待核对 \{reviewCount\}/)
+  assert.match(pageSource, /总人数 \{total\}，明确结果 \{successCount\}，待核对 \{reviewCount\}/)
   assert.match(pageSource, /逐行查询情况（按原表顺序）/)
   assert.match(pageSource, /原表行号.*原始身份证号.*查询情况/)
   assert.match(pageSource, /setCompleted\(completedCount\)/)
@@ -416,6 +416,23 @@ test('常住人口预检索返回非空资料时单独标为待核对，不误�
   assert.equal(result.registered_address, '')
   assert.equal(floatingCalls, 0)
   assert.equal(JSON.stringify(result).includes('synthetic_marker'), false)
+})
+
+test('登记对象的未知注销代码不计入明确结果，需逐行核对', async () => {
+  Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true })
+  Object.defineProperty(globalThis, 'fetch', { configurable: true, value: async (url: string) => new Response(JSON.stringify(
+    url === 'http://127.0.0.1:23333' ? { mac: '02:11:22:33:44:66' }
+      : url.includes('/sys/randomImage/') ? { success: true }
+        : url.endsWith('/sys/login') ? { success: true, result: { token: 'fixture-token', userInfo: { departCode: '320584037700' } } }
+          : url.endsWith('/szjzz/searchIsck') ? { success: true, code: 200, result: null }
+            : { success: true, code: 200, result: { rysfzx: 'unknown-fixture-code' } },
+  ), { status: 200 }) })
+  const result = await new OfflineResidenceClient({
+    ...loadOfflineResidenceConfig(), base_url: 'https://residence.invalid', password: 'fixture-password',
+    accounts: [{ community_id: 1, community_name: '虚构社区', username: 'fixture-user', community_code: '3205840377' }],
+  }).lookup('11010519491231002X')
+  assert.equal(result.status, '状态待核对')
+  assert.equal(result.review, 'registration_status_unconfirmed')
 })
 
 test('逐行明细定位原表物理行号与原始身份证号，且不给诊断信息加入身份证号', () => {

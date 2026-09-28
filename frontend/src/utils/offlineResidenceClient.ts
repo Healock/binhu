@@ -697,6 +697,9 @@ export class OfflineResidenceClient {
           result = attempt.result
         }
         if (result.state === 'registered') {
+          if (result.status === '状态待核对') {
+            return { status: '状态待核对', review: 'registration_status_unconfirmed', registered_address: '', diagnostics }
+          }
           if (!includeAddress) return { status: result.status || '状态待核对', diagnostics }
           if (attempt.registeredAddress) return { status: result.status || '状态待核对', registered_address: attempt.registeredAddress, diagnostics }
           return { status: '登记地址待核对', error: 'address_unavailable', registered_address: '', diagnostics }

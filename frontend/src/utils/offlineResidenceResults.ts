@@ -15,6 +15,7 @@ const REASONS: Record<string, [string, string]> = {
   invalid_identity: ['身份证号未通过本地格式、日期或校验位检查；没有发起外部查询。', '返回原表核对该行身份证号，修正后重新查询。'],
   resident_response_contract_changed: ['常住人口预检索响应不符合当前已核验格式。', '检查居住证系统该人员的查询页面；如能正常查询，请提供脱敏后的响应字段结构供适配。'],
   resident_status_unconfirmed: ['常住人口预检索返回了资料，但尚无经核验的字段契约来确定是否为常口。', '在居住证系统人工核对该人员的常住人口状态；不要把此行当作未登记。'],
+  registration_status_unconfirmed: ['流动人口登记资料已返回，但注销状态代码未能按当前枚举识别。', '在居住证系统人工核对该行的登记或注销状态。'],
   floating_response_contract_changed: ['流动人口查询响应结构发生变化。', '在居住证系统人工核对该行，并联系维护人员核对脱敏响应字段结构。'],
   floating_business_error: ['流动人口查询返回了非“没有查询到数据”的业务错误。', '在居住证系统人工核对该行，并检查账号查询权限。'],
   authentication_expired: ['居住证系统登录失效或认证被拒绝。', '检查当前客户端的社区账号、密码和 MAC 授权后重新查询。'],
