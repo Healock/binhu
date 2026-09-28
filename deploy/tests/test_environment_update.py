@@ -34,6 +34,12 @@ class EnvironmentUpdateTests(unittest.TestCase):
         self.assertEqual(repaired, original)
         self.assertEqual(added, [])
 
+    def test_repaired_environment_text_passes_external_access_gate(self):
+        original = 'APP_ENVIRONMENT=staging\nTXDOCS_ENABLED=false\n'
+        repaired, _ = add_disabled_external_flags(original)
+        for key in update.DISABLED_EXTERNAL_FLAGS:
+            self.assertEqual(parse_environment(repaired)[key], 'false')
+
     def test_image_digest_reference_accepts_qualified_compose_reference(self):
         digest = 'sha256:' + 'a' * 64
         self.assertEqual(update.image_digest_reference('binhu-backend@' + digest), digest)
