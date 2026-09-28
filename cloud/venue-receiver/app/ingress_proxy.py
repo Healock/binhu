@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 
 
 LISTEN_HOST = os.getenv("INGRESS_LISTEN_HOST", "0.0.0.0")
@@ -15,8 +16,16 @@ async def copy_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         while data := await reader.read(64 * 1024):
             writer.write(data)
             await writer.drain()
+    except (ConnectionError, OSError):
+        # The peer may disappear while the other half is still draining its
+        # response.  The proxy must not turn that into a cross-connection
+        # response or close the upstream before it can finish the response.
+        pass
     finally:
-        writer.close()
+        # A request body can finish before the response is available.  Half
+        # close only the write direction so the opposite stream can continue.
+        with suppress(Exception):
+            writer.write_eof()
 
 
 async def proxy_connection(
@@ -34,13 +43,11 @@ async def proxy_connection(
         asyncio.create_task(copy_stream(client_reader, upstream_writer)),
         asyncio.create_task(copy_stream(upstream_reader, client_writer)),
     }
-    done, pending = await asyncio.wait(transfers, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*done, *pending, return_exceptions=True)
+    await asyncio.gather(*transfers, return_exceptions=True)
     for writer in (client_writer, upstream_writer):
         writer.close()
-        await writer.wait_closed()
+        with suppress(Exception):
+            await writer.wait_closed()
 
 
 async def main() -> None:

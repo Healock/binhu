@@ -161,6 +161,12 @@ components:
           minItems: 1
           maxItems: 50
           items: { $ref: '#/components/schemas/AckItem' }
+    PublicSubmissionResponse:
+      type: object
+      required: [submission_id, status]
+      properties:
+        submission_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, accepted] }
     RenewLeaseRequest:
       type: object
       required: [request_id, lease_id, worker_id]
@@ -300,7 +306,11 @@ paths:
                 address: { type: string, maxLength: 500 }
                 photo: { type: string, format: binary }
       responses:
-        "202": { description: 已加密排队或返回原幂等结果 }
+        "202":
+          description: 已加密排队或返回原幂等结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicSubmissionResponse' }
         "409": { $ref: '#/components/responses/Conflict' }
         "422": { $ref: '#/components/responses/ValidationError' }
         "429": { description: 超出限流 }

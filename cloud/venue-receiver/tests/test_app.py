@@ -234,6 +234,9 @@ def test_public_submission_is_encrypted_and_idempotent(tmp_path):
 
     assert first.status_code == 202
     assert second.status_code == 202
+    assert first.headers["content-type"].startswith("application/json")
+    assert first.json() == {"submission_id": submission_id, "status": "queued"}
+    assert second.json() == {"submission_id": submission_id, "status": "queued"}
     assert len(repo.submissions) == 1
     assert list(config.PHOTO_DIR.glob("*.bin"))
     assert repo.rate_limits[0] == [
@@ -245,6 +248,25 @@ def test_public_submission_is_encrypted_and_idempotent(tmp_path):
         (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-venue", "7"), config.PUBLIC_RATE_VENUE_LIMIT),
         (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-device", "device-id-for-tests-0001"), config.PUBLIC_RATE_DEVICE_LIMIT),
     ]
+
+
+def test_registration_page_requires_a_confirmed_submission_response(tmp_path):
+    client, repo, config = make_client(tmp_path)
+    token = "response-contract-token-" + "x" * 32
+    repo.venue = {
+        "local_venue_id": 7,
+        "display_name": "测试场所",
+        "status": "active",
+        "token_hmac": keyed_digest(config.PUBLIC_TOKEN_HMAC_KEY, "venue-token", token),
+    }
+
+    with client:
+        response = client.get(f"/venue/{token}")
+
+    assert response.status_code == 200
+    assert "submissionResponse" in response.text
+    assert "提交结果未能确认，请勿重复提交" in response.text
+    assert "response.status!==202" in response.text
 
 
 def test_public_submission_rejects_bad_identity_checksum_before_consuming_token(tmp_path):
