@@ -100,6 +100,15 @@ def program(snapshot_id, action):
     code+='snapshot_id='+repr(snapshot_id)+'\naction='+repr(action)+'\n'
     code+='split_domain_schema_tables='+repr(SPLIT_DOMAIN_SCHEMA_TABLES)+'\n'
     code+='excluded_schema_tables='+repr(EXCLUDED_SCHEMA_TABLES)+'\n'
+    # The candidate runs in an isolated Python process and cannot see this
+    # module's helpers.  Embed the same table-ownership filtering contract so
+    # schema checks use the normalized runtime view there as well.
+    code+='''
+def runtime_tables(tables, domain):
+    return {table for table in tables
+            if table not in excluded_schema_tables
+            and split_domain_schema_tables.get(table, domain) == domain}
+'''
     # Parse data as JSON, not as a Python literal. Large snapshots otherwise
     # expand into millions of compiler AST nodes before the job can start,
     # exhausting the bounded container even though the data fits in memory.

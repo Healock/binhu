@@ -36,6 +36,23 @@ class ApplyControlTests(unittest.TestCase):
         self.assertNotIn('-v',args)
         self.assertIn('--read-only',args)
 
+    def test_embedded_candidate_program_includes_runtime_table_filter(self):
+        code,_=program('staging-'+'a'*16,'measure')
+        self.assertIn('def runtime_tables(tables, domain):',code)
+        namespace={}
+        # Execute only the self-contained loader prefix; imports requiring the
+        # server runtime are intentionally outside this unit test boundary.
+        prefix=code.split('from config import settings',1)[0]
+        import io
+        with patch('sys.stdin',io.StringIO('{}')):
+            exec(prefix,namespace)
+        self.assertEqual(
+            namespace['runtime_tables'](
+                {'_communities','_police_address_entries','_continuation_import_runs'},
+                'PlatformData'),
+            {'_communities'},
+        )
+
     def test_measure_and_verify_require_production_schema_contract(self):
         measure,_=program('staging-'+'a'*16,'measure')
         verify,_=program('staging-'+'a'*16,'verify')
