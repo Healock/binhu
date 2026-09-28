@@ -8,6 +8,20 @@
 
 ## 为什么需要这个项目
 
+### 2026-09-28 Staging 脱敏快照 schema 合同修复
+
+`staging-f771d9e41adcf7b7` 的 `create` 首次尝试被严格门禁拒绝，原因是
+`OnlineData` 当前表集合为 96 张，而未归一化的生产结构合同要求 105 张。
+缺少的 9 张表中，6 张属于应用已经按分域路由到 `PlatformData` 或
+`DispatchData` 的运行表；`_continuation_import_runs` 和
+`_domain_migration_state` 是维护运行状态表，`t_test_mock` 是生产遗留测试表。
+它们不应被重复要求出现在 Staging `OnlineData`，也不应进入脱敏业务快照。
+
+修复将生产结构合同在只读生成阶段归一化到运行时域，并显式过滤这 3 类非业务
+表；候选验证端使用同一过滤规则，同时保留缺表、多表和签名漂移诊断。该修复
+不修改 Production，不绕过 schema 门禁，不删除旧失败证据。修复合并后必须用
+新的快照候选目录重跑 `measure → export → create → import → verify → switch`。
+
 当前项目同时存在 `main`、`dev`、临时修复分支和紧急生产发布。PR 页面、Git 分支、CI、制品和服务器运行状态分别记录了一部分信息，缺少一个把它们绑定在一起的不可变发布记录，因此仅凭版本号无法可靠回答某个环境包含哪些 PR。
 
 当前已暴露出三个具体问题：
