@@ -94,7 +94,7 @@ def grant_sql(snapshot_id):
 
 def program(snapshot_id, action):
     modules={name:(Path(__file__).parent/(name+'.py')).read_text(encoding='utf-8') for name in MODULES}
-    code="import sys,types,json,asyncio\npackage=types.ModuleType('snapshot_tool');package.__path__=[];sys.modules['snapshot_tool']=package\n"
+    code="import sys,types,json,asyncio,hashlib\npackage=types.ModuleType('snapshot_tool');package.__path__=[];sys.modules['snapshot_tool']=package\n"
     code+='sources='+repr(modules)+'\n'
     code+="for name,source in sources.items():\n    module=types.ModuleType('snapshot_tool.'+name);module.__package__='snapshot_tool';sys.modules[module.__name__]=module;exec(compile(source,'<snapshot_tool.'+name+'>','exec'),module.__dict__)\n"
     code+='snapshot_id='+repr(snapshot_id)+'\naction='+repr(action)+'\n'
