@@ -7,7 +7,7 @@ on:
         description: Fixed gateway action
         required: true
         type: choice
-        options: [prepare, reconcile, measure, apply, accept]
+        options: [prepare, reconcile, measure, apply, accept, migrate]
       run_id:
         description: staging-app plus 16 lowercase hex characters
         required: true
@@ -24,6 +24,12 @@ on:
         description: Matching dev-update run for accept
         required: false
         type: string
+      migration_phase:
+        description: Fixed Staging migration phase
+        required: false
+        type: choice
+        options: [measure, apply, verify]
+        default: measure
 
 permissions:
   contents: read
@@ -47,13 +53,14 @@ jobs:
           COMMIT: ${{ inputs.commit }}
           ARTIFACT_ID: ${{ inputs.artifact_id }}
           DEV_RUN: ${{ inputs.dev_acceptance_run_id }}
+          MIGRATION_PHASE: ${{ inputs.migration_phase }}
         run: |
           set -euo pipefail
-          [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ ]]
           case "$ACTION" in
-            prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
-            reconcile|measure|apply) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
-            accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]] ;;
+            prepare) [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ && "$COMMIT" =~ ^[0-9a-f]{40}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
+            reconcile|measure|apply) [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
+            accept) [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]] ;;
+            migrate) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$RUN_ID" =~ ^staging-migrate-[0-9a-f]{16}$ && "$MIGRATION_PHASE" =~ ^(measure|apply|verify)$ ]] ;;
           esac
       - name: Configure deploy SSH
         env:
@@ -90,6 +97,7 @@ jobs:
           COMMIT: ${{ inputs.commit }}
           ARTIFACT_ID: ${{ inputs.artifact_id }}
           DEV_RUN: ${{ inputs.dev_acceptance_run_id }}
+          MIGRATION_PHASE: ${{ inputs.migration_phase }}
         run: |
           set -euo pipefail
           [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
@@ -100,4 +108,5 @@ jobs:
               cat "$RUNNER_TEMP/artifact.tar.gz" | "${ssh_command[@]}" "prepare $RUN_ID $COMMIT $version $ARTIFACT_ID $DEV_RUN" ;;
             reconcile|measure|apply) "${ssh_command[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
             accept) "${ssh_command[@]}" "accept $RUN_ID $ARTIFACT_ID $DEV_RUN" ;;
+            migrate) "${ssh_command[@]}" "migrate $RUN_ID $ARTIFACT_ID $MIGRATION_PHASE" ;;
           esac

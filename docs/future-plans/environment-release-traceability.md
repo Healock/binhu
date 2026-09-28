@@ -325,3 +325,24 @@ python tools/environment_status.py --environment production --history 10 --forma
 Staging 此前停留在 `0.28.17` 的原因是应用晋级 workflow 没有成功执行记录；此前安装的是 Staging promotion gateway 和脱敏快照 gateway，而不是一次成功的应用晋级。该流程缺口已通过独立 Dev 应用接受入口补齐。生产仍保持现有版本和运行路径，架构升级不包含在本次 `0.30.24` 应用晋级中。
 
 2026-09-25 阶段状态：PR #833 已补齐 Dev 网关缺失的 `_extract_artifact`，PR #834 已修正同一次 workflow 内的制品 ID 绑定。运行 `dev-update-5e57b85a36febda9` 的 `prepare` 已成功，候选的 artifact 和 Backend image 已生成；随后 `measure` 失败，尚未执行 `apply` 或 `accept`，不得据此推进 Staging。代码核对发现安装脚本遗漏了 `measure_environment()` 动态导入的 `database_identity.py`，本次补入安装清单和完整 `prepare` 路径测试。须重新安装并以新运行编号验证 `measure`；若仍失败，应读取安全错误码定位门禁，不能绕过数据库身份或资源检查。旧失败运行和候选目录保留。
+
+### 2026-09-28：Staging schema migration gate
+
+`0.30.24` 的 Dev application acceptance、Staging application acceptance 和快照
+export 已分别有独立证据；但 Staging application gateway 的 `apply` 只切换应用，
+不执行数据库 schema migration。最新快照 `staging-9d10b74f1136e464` 在 `create`
+阶段真实发现 `OnlineData._online_source_projection` schema drift，并按门禁停止，
+未执行 import 或 switch。旧失败目录和候选目录继续保留。
+
+后续使用同一已接受 artifact 通过 Staging application gateway 的固定
+`migrate <run_id> <artifact_id> <measure|apply|verify>` 合同。迁移入口只允许
+`staging`，先记录八库表集合与列/索引/约束签名，`apply` 前生成八库备份，然后在
+已验证的 Staging Backend 容器内调用该版本实际使用的幂等 `init_db()`；它不接收
+SQL、数据库名、路径、容器或任意命令。`verify` 必须确认迁移后 schema hash 未变化，
+并保留备份、前后签名、失败原因和回滚边界。该入口不访问 Production、Dev 或
+Shadow，也不删除数据库卷和历史失败证据。
+
+只有 migration `measure → migrate --apply → verify` 通过后，才允许使用新的快照
+编号继续 `create → import → verify → switch`。Staging 脱敏副本仍只覆盖批准的 150
+条正常样本；31 条来源账本冲突、230 条映射冲突及其他已知异常继续在报告中标注，
+不能把样本通过解释为生产全量通过。

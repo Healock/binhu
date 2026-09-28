@@ -109,6 +109,7 @@ binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-a
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway reconcile *
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway apply *
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway accept *
+binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway migrate *
 EOF
 cat > /etc/sudoers.d/binhu-staging-data <<'EOF'
 binhu-staging-data-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-data-gateway status
