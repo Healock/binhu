@@ -36,7 +36,7 @@ jobs:
           PORT: ${{ secrets.BINHU_STAGING_PORT }}
           KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
-          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
+          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}
         run: |
@@ -69,7 +69,7 @@ jobs:
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
           PORT: ${{ secrets.BINHU_STAGING_PORT }}
-          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
+          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}
           APP_ENVIRONMENT: staging
