@@ -157,8 +157,9 @@ class StagingDataGatewayTests(unittest.TestCase):
             root.mkdir()
             attempt = root / ('candidate-create-' + 'b' * 12)
             attempt.mkdir()
+            (attempt / 'code-hashes.json').write_text('{}')
             (attempt / 'failure.json').write_text(json.dumps({
-                'reason': 'production_staging_schema_table_mismatch',
+                'reason': 'staging_candidate_job_timeout',
                 'diagnostics': {
                     'domain': 'OnlineData',
                     'missing_tables': ['_safe_table'],
@@ -170,9 +171,23 @@ class StagingDataGatewayTests(unittest.TestCase):
         self.assertEqual(result['snapshot_id'], snapshot)
         self.assertEqual(result['failures'], [{
             'action': 'create',
-            'reason': 'production_staging_schema_table_mismatch',
+            'reason': 'staging_candidate_job_timeout',
+            'phase': 'candidate_creation',
             'diagnostics': {'domain': 'OnlineData', 'missing_tables': ['_safe_table']},
         }])
+
+    def test_timeout_diagnostic_distinguishes_precreate_schema_measure(self):
+        snapshot = 'staging-' + 'c' * 16
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / snapshot
+            root.mkdir()
+            attempt = root / ('candidate-create-' + 'd' * 12)
+            attempt.mkdir()
+            (attempt / 'failure.json').write_text(json.dumps({'reason': 'staging_candidate_job_timeout'}))
+            with patch.object(data, 'ROOT', base), patch.object(data, '_snapshot', return_value=root):
+                result = data.failure_diagnostics(snapshot)
+        self.assertEqual(result['failures'][0]['phase'], 'pre_create_schema_measure')
 
     def test_failure_diagnostics_contract_is_fixed_and_snapshot_scoped(self):
         wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')

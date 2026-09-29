@@ -202,6 +202,9 @@ def failure_diagnostics(snapshot_id):
                 if isinstance(item, str) and re.fullmatch(r'[0-9a-f]{64}', item):
                     safe[key] = item
         entry = {'action': match.group(1), 'reason': reason}
+        if match.group(1) == 'create' and reason == 'staging_candidate_job_timeout':
+            phase = 'candidate_creation' if (attempt / 'code-hashes.json').is_file() else 'pre_create_schema_measure'
+            entry['phase'] = phase
         if safe:
             entry['diagnostics'] = safe
         exit_code = value.get('exit_code')
