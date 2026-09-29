@@ -6,6 +6,7 @@ Only the sanitized result may be serialized by the caller.
 """
 from __future__ import annotations
 import json
+import hashlib
 import re
 from .codec import Codec, SnapshotError, normalized, integer, date_value, enum
 from .registry import FIELDS, transform as transform_registry
