@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'backend'))
 from services.parsers import get_parser
-from deploy.environments.staging_data.build import build, normalize_schema_contract
+from deploy.environments.staging_data.build import build, normalize_schema_contract, is_dynamic_daily_report_table
 from deploy.environments.staging_data.codec import SnapshotError
 from deploy.environments.staging_data.registry import FIELDS
 from deploy.environments.staging_data.organization import FIELDS as ORG_FIELDS
@@ -54,6 +54,23 @@ class Cursor:
 
 
 class BuildTests(unittest.IsolatedAsyncioTestCase):
+    def test_dynamic_daily_report_tables_are_excluded_from_fixed_contract(self):
+        signature = {'columns': [['id']], 'indexes': [], 'constraints': []}
+        self.assertTrue(is_dynamic_daily_report_table('daily_report', '2026-09-20_fullchain'))
+        self.assertTrue(is_dynamic_daily_report_table('daily_report', '_v010_2026-09-20_fullchain'))
+        self.assertTrue(is_dynamic_daily_report_table('daily_report', 'tmp_lreport_abc'))
+        self.assertFalse(is_dynamic_daily_report_table('daily_report', '_daily_report_meta'))
+        contract = {domain: {} for domain in (
+            'OnlineData', 'OnlineDataArchive', 'daily_report', 'PlatformData',
+            'VisitData', 'DispatchData', 'RegistryData', 'WorkflowData')}
+        contract['daily_report'] = {
+            '_daily_report_meta': signature,
+            '2026-09-20_fullchain': signature,
+            'tmp_lreport_abc': signature,
+        }
+        normalized = normalize_schema_contract(contract)
+        self.assertEqual(set(normalized['daily_report']), {'_daily_report_meta'})
+
     def test_schema_contract_normalizes_split_domain_and_excludes_runtime_tables(self):
         signature = {'columns': [['id']], 'indexes': [], 'constraints': []}
         contract = {
