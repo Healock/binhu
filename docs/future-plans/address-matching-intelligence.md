@@ -5,6 +5,10 @@
 - 首期选型：MGeo、BGE-small-zh、Qdrant、BGE-reranker 和独立校准器
 - 生产边界：不接入生产，不接入预发布，不使用外部模型 API
 
+## 2026-09-30：Rule-only 决策门槛复核
+
+当前默认路径仍是本地 `RuleMatcher`。MGeo、Embedding、Qdrant 和 Reranker 只是待评估的 Dev 候选，尚未进入 Staging 或 Production；本次没有新增模型、向量库、真实数据集或性能证据。必须先完成 Rule-only 的错误基线、地址簇守恒、社区/街道硬约束和人工确认冲突报告，再用可清理的 Dev 脱敏数据判断向量召回是否值得引入。模型选型或代码合入不等于批准生产架构。
+
 ## 目标与处理链路
 
 在现有本地 `RuleMatcher` 之上增加地址预处理、向量召回、候选重排和校准能力。MySQL 仍是业务唯一真相，Qdrant 只保存检索索引和必要候选元数据。

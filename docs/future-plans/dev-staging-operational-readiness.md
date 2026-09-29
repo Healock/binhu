@@ -193,3 +193,9 @@ PR #768 已修复 preflight 失败证据和网关安装身份保留，主线 CI 
 ### 2026-09-24：Staging 数据异常按样本排除
 
 根据 Staging 验证范围约束，主动采样模式下单条来源转换遇到无法识别日期、枚举/社区/字段合同等数据异常时，直接排除该行，不写入脱敏快照；报告记录 `excluded_staging_data_count` 和按固定原因码分类的 `excluded_staging_data_by_reason`，不包含业务正文或敏感字段。排除超过本轮采样候选一半时仍触发 `staging_sample_exclusion_scope_exceeded`，防止样本失去验证意义。该策略只作用于 Staging 快照，不修改 Production 数据或来源账本。
+
+## 2026-09-30：Staging 当前状态复核
+
+本次只核对仓库台账和主线文档，没有重新运行 Staging 网关、读取真实 MySQL 或执行浏览器、75 人压测。此前记录的网关安装成功、Dev 应用接受和 schema 合同修补，分别属于权限隔离、制品接受和代码/门禁阶段证据，不能替代 Staging 的 `measure → export → create → import → verify → switch` 闭环。
+
+当前仍需保留并逐项完成：脱敏副本成功生成、应用制品与 commit/摘要绑定、schema migration `measure → migrate --apply → verify`、样本关系核验、浏览器回归、75 人压测和回滚演练。低内存门禁、来源账本冲突、映射冲突、样本排除和 schema drift 的失败证据不得覆盖或解释为全量通过；未取得新的服务器证据前，Staging 不标记为已部署或可供日常开发使用，Production 也不因 Dev 代码合入而改变。
