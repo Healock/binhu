@@ -18,6 +18,7 @@ from ..update import backup_databases, command, health, parse_environment, read_
 
 EVIDENCE_ROOT = Path('/srv/deploy-backups/environment-triad/staging-switches')
 FAILURE_LIMIT = 3
+STARTUP_ATTEMPTS = 45
 
 
 def _sha256_tree(root: Path) -> dict[str, str]:
@@ -46,20 +47,26 @@ def _probe(version: str) -> dict:
 
 def _wait_stable(version: str) -> dict:
     failures = 0
+    successes = 0
+    ready_once = False
     last = None
-    for _ in range(45):
+    for _ in range(STARTUP_ATTEMPTS):
         try:
             last = _probe(version)
+            ready_once = True
             failures = 0
-            # Require three consecutive successful health rounds too.
-            for _ in range(FAILURE_LIMIT - 1):
-                time.sleep(2)
-                last = _probe(version)
-            return last
+            successes += 1
+            if successes >= FAILURE_LIMIT:
+                return last
         except (OSError, ValueError, urllib.error.URLError, SnapshotError):
+            successes = 0
             failures += 1
-            if failures >= FAILURE_LIMIT:
+            # Allow the new process a bounded startup window. Once it has
+            # served a healthy probe, three consecutive failures are a real
+            # post-start health regression and trigger the rollback gate.
+            if ready_once and failures >= FAILURE_LIMIT:
                 break
+        if _ < STARTUP_ATTEMPTS - 1:
             time.sleep(2)
     raise SnapshotError('staging_health_failed_three_times')
 
