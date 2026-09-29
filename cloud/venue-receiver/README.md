@@ -4,6 +4,8 @@
 
 生产部署必须通过 `deploy/venue-cloud/` 中的固定脚本完成。私钥、HMAC 密钥、数据库密码和证书不得写入仓库；服务只监听 `127.0.0.1:48727`，公网访问统一经过 Nginx。
 
+`/api/public/submissions` 是浏览器 multipart 图片提交入口。部署 Nginx location 对该精确 URI 覆盖继承的主机 Lua WAF；该 WAF 的通用 multipart 解析会误拒绝合法请求、回显请求片段并临时封锁来源。此例外不能扩展到其他路由或全局关闭 WAF。Nginx 仍限制请求体为 6 MB，Receiver 负责字段、图片内容、一次性令牌、幂等和应用层限流；该路径只使用不含请求正文的脱敏访问日志。
+
 开发检查：
 
 ```text

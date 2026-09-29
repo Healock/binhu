@@ -1,4 +1,5 @@
 import pathlib
+import re
 import unittest
 
 
@@ -58,6 +59,19 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("access_log off;", public_forms_location)
         public_location = nginx.split("location ^~ /api/public/", 1)[1].split("}", 1)[0]
         self.assertIn("client_max_body_size 6m", public_location)
+        submission_route = "location = /api/public/submissions {"
+        self.assertIn(submission_route, nginx)
+        submission_match = re.search(
+            r"location = /api/public/submissions \{(.*?)\n\}", nginx, re.DOTALL
+        )
+        self.assertIsNotNone(submission_match)
+        submission_location = submission_match.group(1)
+        self.assertIn("access_by_lua_block { return }", submission_location)
+        self.assertIn("client_max_body_size 6m", submission_location)
+        self.assertIn("binhu_venue_redacted", submission_location)
+        self.assertNotIn("limit_req", submission_location)
+        self.assertLess(nginx.index(submission_route), nginx.index("location ^~ /api/public/ {"))
+        self.assertIn("Receiver validation and rate limits are", nginx)
         log_format = (ROOT / "deploy/venue-cloud/nginx-http-context.conf").read_text(encoding="utf-8")
         self.assertNotIn("$http_referer", log_format)
         self.assertIn("rate=30r/m", log_format)

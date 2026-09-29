@@ -1,10 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import io
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
-from datetime import datetime
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
@@ -248,6 +249,69 @@ def test_public_submission_is_encrypted_and_idempotent(tmp_path):
         (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-venue", "7"), config.PUBLIC_RATE_VENUE_LIMIT),
         (keyed_digest(config.REQUEST_FINGERPRINT_KEY, "rate-device", "device-id-for-tests-0001"), config.PUBLIC_RATE_DEVICE_LIMIT),
     ]
+
+
+def test_public_submission_returns_contract_for_concurrent_synthetic_uploads(tmp_path):
+    client, repo, config = make_client(tmp_path)
+    token = "concurrent-venue-token-" + "x" * 32
+    repo.venue = {
+        "local_venue_id": 7,
+        "display_name": "合成并发测试场所",
+        "status": "active",
+        "token_hmac": keyed_digest(config.PUBLIC_TOKEN_HMAC_KEY, "venue-token", token),
+    }
+
+    with client:
+        scenarios = []
+        for concurrency in (10, 40, 100):
+            batch = []
+            for index in range(concurrency):
+                form_token = client.get(f"/api/public/venues/{token}").json()["form_token"]
+                batch.append((str(uuid.uuid4()), form_token, f"synthetic-device-{concurrency}-{index:03d}"))
+            scenarios.append((concurrency, batch))
+
+        for concurrency, batch in scenarios:
+            def submit(item):
+                submission_id, form_token, device_id = item
+                return submission_id, client.post(
+                    "/api/public/submissions",
+                    data={
+                        "submission_id": submission_id,
+                        "venue_token": token,
+                        "form_token": form_token,
+                        "device_id": device_id,
+                        "name": "合成测试人员",
+                        "identity_number": "000000200001010005",
+                        "phone": "19999999999",
+                        "address": "合成测试地址",
+                    },
+                    files={"photo": ("synthetic.jpg", jpeg_bytes(), "image/jpeg")},
+                )
+
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                responses = list(pool.map(submit, batch))
+
+            for expected_id, response in responses:
+                assert response.status_code == 202
+                assert response.headers["content-type"].startswith("application/json")
+                assert response.json() == {"submission_id": expected_id, "status": "queued"}
+
+    assert len(repo.submissions) == sum((10, 40, 100))
+
+
+def test_malformed_public_submission_returns_structured_client_error(tmp_path):
+    client, repo, _config = make_client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/public/submissions",
+            content=b"not a valid multipart body",
+            headers={"Content-Type": "multipart/form-data; boundary=broken"},
+        )
+
+    assert 400 <= response.status_code < 500
+    assert response.headers["content-type"].startswith("application/json")
+    assert isinstance(response.json(), dict)
+    assert not repo.submissions
 
 
 def test_registration_page_requires_a_confirmed_submission_response(tmp_path):
