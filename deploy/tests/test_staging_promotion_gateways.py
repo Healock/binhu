@@ -143,10 +143,45 @@ class StagingDataGatewayTests(unittest.TestCase):
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
         self.assertIn('approved-sanitized-scope-v1', wrapper)
         self.assertIn('create|import|verify|switch', wrapper)
+        self.assertIn('switch|diagnose', wrapper)
         self.assertNotIn('--path', wrapper)
         self.assertNotIn('--database', wrapper)
         self.assertIn('binhu-staging-data-deploy', installer)
         self.assertNotIn('ON *.*', installer)
+
+    def test_failure_diagnostics_only_expose_fixed_codes_and_allowlisted_aggregates(self):
+        snapshot = 'staging-' + 'a' * 16
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / snapshot
+            root.mkdir()
+            attempt = root / ('candidate-create-' + 'b' * 12)
+            attempt.mkdir()
+            (attempt / 'failure.json').write_text(json.dumps({
+                'reason': 'production_staging_schema_table_mismatch',
+                'diagnostics': {
+                    'domain': 'OnlineData',
+                    'missing_tables': ['_safe_table'],
+                    'private_detail': 'must not escape',
+                },
+            }))
+            with patch.object(data, 'ROOT', base), patch.object(data, '_snapshot', return_value=root):
+                result = data.failure_diagnostics(snapshot)
+        self.assertEqual(result['snapshot_id'], snapshot)
+        self.assertEqual(result['failures'], [{
+            'action': 'create',
+            'reason': 'production_staging_schema_table_mismatch',
+            'diagnostics': {'domain': 'OnlineData', 'missing_tables': ['_safe_table']},
+        }])
+
+    def test_failure_diagnostics_contract_is_fixed_and_snapshot_scoped(self):
+        wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')
+        installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/manage-staging-sanitized-snapshot.yml').read_text(encoding='utf-8')
+        self.assertIn('create|import|verify|switch|diagnose', wrapper)
+        self.assertIn('staging-data-gateway diagnose *', installer)
+        self.assertIn('switch, diagnose', workflow)
+        self.assertIn('switch|diagnose', workflow)
 
     def test_export_enables_only_two_reviewed_recovery_policies(self):
         with tempfile.TemporaryDirectory() as directory, \
