@@ -33,10 +33,10 @@ jobs:
       - name: Prepare, measure and apply through fixed Staging gateway
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
           KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
           RUN_ID: ${{ inputs.run_id }}
           COMMIT: ${{ inputs.commit }}
           EXPECTED_SHA: ${{ inputs.bundle_sha256 }}

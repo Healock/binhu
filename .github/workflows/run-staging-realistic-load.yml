@@ -32,10 +32,10 @@ jobs:
       - name: Seed fictional fixtures and verify query smoke path
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
           KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
           BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}
@@ -67,8 +67,8 @@ jobs:
       - name: Run 75 users with independent background polling and streams
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
           BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}

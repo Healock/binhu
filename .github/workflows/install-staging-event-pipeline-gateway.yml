@@ -18,11 +18,11 @@ jobs:
       - name: Install only the Staging gateway
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
-          ADMIN_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
           PUBLIC_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_DEPLOY_PUBLIC_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
         run: |
           set -Eeuo pipefail
           [[ -n "$HOST" && "$PORT" =~ ^[0-9]+$ && -n "$ADMIN_KEY" && -n "$PUBLIC_KEY" && -n "$KNOWN_HOSTS" ]]
