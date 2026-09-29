@@ -143,7 +143,7 @@ class StagingDataGatewayTests(unittest.TestCase):
         wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
         self.assertIn('approved-sanitized-scope-v1', wrapper)
-        self.assertIn('create|import|verify|switch', wrapper)
+        self.assertIn('create|import|verify|reverify|switch', wrapper)
         self.assertIn('switch|diagnose', wrapper)
         self.assertNotIn('--path', wrapper)
         self.assertNotIn('--database', wrapper)
@@ -382,9 +382,10 @@ class StagingDataGatewayTests(unittest.TestCase):
         wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
         workflow = (ROOT / '.github/workflows/manage-staging-sanitized-snapshot.yml').read_text(encoding='utf-8')
-        self.assertIn('create|import|verify|switch|diagnose', wrapper)
+        self.assertIn('create|import|verify|reverify|switch|diagnose', wrapper)
         self.assertIn('staging-data-gateway diagnose *', installer)
         self.assertIn('switch, diagnose', workflow)
+        self.assertIn('reverify', workflow)
         self.assertIn('switch|diagnose', workflow)
 
     def test_export_enables_only_two_reviewed_recovery_policies(self):
@@ -414,6 +415,22 @@ class StagingDataGatewayTests(unittest.TestCase):
                     patch.object(data, 'candidate_execute') as execute:
                 self.assertEqual(data.candidate('import', snapshot), expected)
                 execute.assert_not_called()
+
+    def test_reverify_bypasses_cached_verify_record_and_keeps_new_evidence(self):
+        snapshot = 'staging-' + '7' * 16
+        expected = {'snapshot_id': snapshot, 'ready_for_application_switch': True}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'gateway-export.json').write_text('{}')
+            (root / 'gateway-verify.json').write_text(json.dumps({'stale': True}))
+            with patch.object(data, '_snapshot', return_value=root), \
+                    patch.object(data, 'candidate_execute', return_value=expected), \
+                    patch.object(data, '_audit'):
+                result = data.reverify(snapshot)
+            self.assertEqual(result, expected)
+            records = list(root.glob('gateway-reverify-*.json'))
+            self.assertEqual(len(records), 1)
+            self.assertEqual(json.loads(records[0].read_text()), expected)
 
     def test_switch_refuses_before_verification(self):
         snapshot = 'staging-' + 'a' * 16

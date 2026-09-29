@@ -7,7 +7,7 @@ on:
         description: Fixed snapshot action
         required: true
         type: choice
-        options: [status, measure, export, create, import, verify, switch, diagnose]
+        options: [status, measure, export, create, import, verify, reverify, switch, diagnose]
       snapshot_id:
         description: staging plus 16 lowercase hex characters for target actions
         required: false
@@ -31,7 +31,7 @@ jobs:
           SNAPSHOT_ID: ${{ inputs.snapshot_id }}
         run: |
           set -euo pipefail
-          if [[ "$ACTION" =~ ^(create|import|verify|switch|diagnose)$ ]]; then
+          if [[ "$ACTION" =~ ^(create|import|verify|reverify|switch|diagnose)$ ]]; then
             [[ "$SNAPSHOT_ID" =~ ^staging-[0-9a-f]{16}$ ]]
           else
             [[ -z "$SNAPSHOT_ID" ]]
@@ -59,5 +59,5 @@ jobs:
           case "$ACTION" in
             status|measure) "${ssh_command[@]}" "$ACTION" ;;
             export) "${ssh_command[@]}" 'export approved-sanitized-scope-v1' ;;
-            create|import|verify|switch|diagnose) "${ssh_command[@]}" "$ACTION $SNAPSHOT_ID" ;;
+            create|import|verify|reverify|switch|diagnose) "${ssh_command[@]}" "$ACTION $SNAPSHOT_ID" ;;
           esac
