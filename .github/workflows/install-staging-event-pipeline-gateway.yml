@@ -51,11 +51,10 @@ jobs:
           printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/staging-ssh/"*
-          {
-            printf '%s\n' "$LOAD_PASSWORD"
-            cat <<'REMOTE_SCRIPT'
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            "LOAD_PASSWORD=$(printf '%q' "$LOAD_PASSWORD") /bin/bash -s" <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
-          IFS= read -r load_password
+          load_password=${LOAD_PASSWORD:?}
           config=/etc/binhu-staging-event-pipeline.conf
           if [[ -e "$config" ]]; then
             [[ -f "$config" && ! -L "$config" && "$(stat -c %a "$config")" == 600 ]]
@@ -78,7 +77,6 @@ jobs:
           trap - EXIT
           chmod 600 "$config"
           REMOTE_SCRIPT
-          } | ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" /bin/bash -s
       - name: Record fixed Staging pipeline configuration digest
         shell: bash
         env:
