@@ -189,6 +189,40 @@ class StagingDataGatewayTests(unittest.TestCase):
                 result = data.failure_diagnostics(snapshot)
         self.assertEqual(result['failures'][0]['phase'], 'pre_create_schema_measure')
 
+    def test_switch_diagnostics_report_only_fixed_failure_and_rollback_fields(self):
+        snapshot = 'staging-' + 'e' * 16
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / snapshot).mkdir()
+            evidence_root = base / 'switches'
+            evidence = evidence_root / snapshot
+            evidence.mkdir(parents=True)
+            (evidence / 'failure.json').write_text(json.dumps({
+                'environment': 'staging', 'snapshot_id': snapshot,
+                'reason': 'staging_snapshot_switch_failed',
+                'rollback': 'previous_staging_application_restored',
+                'production_modified': False, 'private_path': '/not/exposed',
+            }))
+            audit_root = base / 'audit'
+            audit_root.mkdir()
+            (audit_root / f'data-alert-{snapshot}-123.json').write_text(json.dumps({
+                'action': 'switch', 'snapshot_id': snapshot,
+                'reason': 'staging_snapshot_switch_failed', 'private_detail': 'not exposed',
+            }))
+            with patch.object(data, 'ROOT', base), \
+                    patch.object(data, '_snapshot', return_value=base / snapshot), \
+                    patch.object(data.switch_control, 'EVIDENCE_ROOT', evidence_root), \
+                    patch.object(data, 'AUDIT_ROOT', audit_root), \
+                    patch.object(data, 'safe_directory'), \
+                    patch.object(data, '_safe_root'):
+                result = data.failure_diagnostics(snapshot)
+        self.assertEqual(result['switch'], {
+            'reason': 'staging_snapshot_switch_failed',
+            'rollback': 'previous_staging_application_restored',
+            'production_modified': False,
+            'gateway_reason': 'staging_snapshot_switch_failed',
+        })
+
     def test_failure_diagnostics_contract_is_fixed_and_snapshot_scoped(self):
         wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
