@@ -38,6 +38,47 @@ jobs:
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
             'cd /tmp && /usr/bin/bash /tmp/install-staging-gateway.sh /tmp/deploy-key.pub'
+      - name: Provision missing Staging pipeline credentials
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          {
+            printf '%s\n' "$LOAD_PASSWORD"
+            cat <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+          IFS= read -r load_password
+          config=/etc/binhu-staging-event-pipeline.conf
+          if [[ -e "$config" ]]; then
+            [[ -f "$config" && ! -L "$config" && "$(stat -c %a "$config")" == 600 ]]
+            exit 0
+          fi
+          backend=/srv/binhu-environments/staging/backend.env
+          [[ -f "$backend" && ! -L "$backend" ]]
+          redis_url=$(awk -F= '$1=="REDIS_URL" {print substr($0,index($0,"=")+1); exit}' "$backend")
+          mysql_password=$(awk -F= '$1=="MYSQL_PASSWORD" {print substr($0,index($0,"=")+1); exit}' "$backend")
+          [[ "$redis_url" == redis://* && ${#mysql_password} -ge 32 ]]
+          [[ ${#load_password} -ge 16 && "$load_password" != *$'\n'* && "$load_password" != *$'\r'* ]]
+          tmp=$(mktemp /etc/.binhu-staging-event-pipeline.conf.XXXXXX)
+          trap 'rm -f "$tmp"' EXIT
+          umask 077
+          printf 'STAGING_PIPELINE_MYSQL_PASSWORD=%s\nSTAGING_PIPELINE_MYSQL_ROOT_PASSWORD=%s\nSTAGING_PIPELINE_REDIS_PASSWORD=%s\nSTAGING_BACKEND_MYSQL_PASSWORD=%s\nSTAGING_BACKEND_REDIS_URL=%s\nSTAGING_LOAD_TEST_PASSWORD=%s\n' \
+            "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" \
+            "$mysql_password" "$redis_url" "$load_password" > "$tmp"
+          chmod 600 "$tmp"
+          mv -f "$tmp" "$config"
+          trap - EXIT
+          chmod 600 "$config"
+          REMOTE_SCRIPT
+          } | ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" /bin/bash -s
       - name: Record fixed Staging pipeline configuration digest
         shell: bash
         env:
