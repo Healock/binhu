@@ -56,6 +56,8 @@ EXCLUDED_SCHEMA_TABLES = {
     '_continuation_import_runs',
     '_domain_migration_state',
     '_assignment_projection_backfill',
+    '_local_source_migration_runs',
+    '_local_source_migration_issues',
     't_test_mock',
 }
 
