@@ -222,7 +222,12 @@ async def verify_target(conn,settings,snapshot,current,candidate):
                 if logical=='PlatformData._users':expected_count+=1
                 if table=='_environment_identity':expected_count=1
                 await cur.execute('SELECT COUNT(*) FROM `'+candidate[domain]+'`.`'+table+'`')
-                if (await cur.fetchone())[0]!=expected_count:raise SnapshotError('target_row_count_mismatch')
+                actual_count=(await cur.fetchone())[0]
+                if actual_count!=expected_count:
+                    raise SnapshotError('target_row_count_mismatch', diagnostics={
+                        'domain':domain, 'table_name':table,
+                        'expected_row_count':expected_count,
+                        'actual_row_count':actual_count})
                 schema_objects+=1
         await cur.execute('SELECT COUNT(*) FROM `'+candidate['PlatformData']+'`._users WHERE username=%s',('observer@staging',))
         if (await cur.fetchone())[0]!=1:raise SnapshotError('observer_initialization_failed')
@@ -345,7 +350,8 @@ def execute(action,snapshot_id):
                     value=diagnostics.get(key)
                     if isinstance(value,list) and all(isinstance(item,str) and len(item)<=128 for item in value):
                         safe[key]=value
-                for key in ('expected_table_count','actual_table_count'):
+                for key in ('expected_table_count','actual_table_count',
+                            'expected_row_count','actual_row_count'):
                     value=diagnostics.get(key)
                     if type(value) is int and 0<=value<=10000:
                         safe[key]=value
