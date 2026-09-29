@@ -222,8 +222,16 @@ def failure_diagnostics(snapshot_id):
 
 def _switch_failure_diagnostics(snapshot_id):
     result = {}
-    evidence_dir = switch_control.EVIDENCE_ROOT / snapshot_id
-    if evidence_dir.is_dir() and not evidence_dir.is_symlink():
+    evidence_root = switch_control.EVIDENCE_ROOT / snapshot_id
+    evidence_dirs = []
+    if evidence_root.is_dir() and not evidence_root.is_symlink():
+        evidence_dirs.append(evidence_root)
+        evidence_dirs.extend(sorted(
+            path for path in evidence_root.iterdir()
+            if path.is_dir() and not path.is_symlink() and re.fullmatch(r'retry-[0-9]+-[0-9]+', path.name)
+        ))
+    evidence_dir = evidence_dirs[-1] if evidence_dirs else evidence_root
+    if evidence_dirs:
         names = {
             'database_backup_complete': 'backup.json',
             'verification_evidence_saved': 'verification.json',
@@ -235,7 +243,7 @@ def _switch_failure_diagnostics(snapshot_id):
             path = evidence_dir / name
             milestones[field] = path.is_dir() if name == 'candidate' else path.is_file() and not path.is_symlink()
         result['milestones'] = milestones
-    if (evidence_dir.is_dir() and not evidence_dir.is_symlink()
+    if (evidence_dirs
             and (evidence_dir / 'failure.json').is_file()
             and not (evidence_dir / 'failure.json').is_symlink()):
         try:
@@ -262,6 +270,27 @@ def _switch_failure_diagnostics(snapshot_id):
                     if exception_type in {'SnapshotError', 'OSError', 'ValueError', 'RuntimeError',
                                           'TimeoutExpired', 'URLError', 'HTTPError'}:
                         result['exception_type'] = exception_type
+                    probe = value.get('probe')
+                    if isinstance(probe, dict):
+                        safe_probe = {}
+                        stage = probe.get('stage')
+                        if stage in {'', 'bootstrap', 'health', 'query'}:
+                            safe_probe['stage'] = stage
+                        for key in ('bootstrap_status_code', 'health_status_code',
+                                    'critical_query_status_code'):
+                            item = probe.get(key)
+                            if item is None or (type(item) is int and 100 <= item <= 599):
+                                safe_probe[key] = item
+                        for key in ('bootstrap_environment_match', 'bootstrap_version_match',
+                                    'bootstrap_api_entry_match'):
+                            item = probe.get(key)
+                            if type(item) is bool:
+                                safe_probe[key] = item
+                        error_code = probe.get('error_code')
+                        if isinstance(error_code, str) and _REASON.fullmatch(error_code):
+                            safe_probe['error_code'] = error_code
+                        if safe_probe:
+                            result['probe'] = safe_probe
         except (OSError, ValueError, SnapshotError):
             pass
     try:

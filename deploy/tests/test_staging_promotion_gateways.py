@@ -244,6 +244,137 @@ class StagingDataGatewayTests(unittest.TestCase):
         self.assertEqual(switch_control._failure_code(RuntimeError('private path /srv/secret')),
                          'staging_snapshot_switch_failed')
 
+    def test_switch_retry_allocates_child_evidence_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = 'staging-' + 'f' * 16
+            with patch.object(switch_control, 'EVIDENCE_ROOT', root):
+                root.mkdir(exist_ok=True)
+                first = switch_control._new_evidence_path(snapshot)
+                (first / 'failure.json').write_text('{}')
+                with patch.object(switch_control, 'safe_directory'):
+                    second = switch_control._new_evidence_path(snapshot)
+            self.assertEqual(first, root / snapshot)
+            self.assertTrue(second.name.startswith('retry-'))
+            self.assertNotEqual(first, second)
+            self.assertTrue((first / 'failure.json').is_file())
+
+    def test_probe_records_allowlisted_success_statuses(self):
+        bootstrap = {'environment': 'staging', 'server_version': '0.30.25',
+                     'api_entry': '/staging/api'}
+        with patch.object(switch_control, '_http_status_and_json', side_effect=[
+            (200, bootstrap), (200, None), (401, None),
+        ]):
+            result = switch_control._probe('0.30.25')
+        self.assertEqual(result['environment'], 'staging')
+        self.assertEqual(result['version'], '0.30.25')
+        self.assertEqual(result['bootstrap_status_code'], 200)
+        self.assertTrue(result['bootstrap_environment_match'])
+        self.assertTrue(result['bootstrap_version_match'])
+        self.assertTrue(result['bootstrap_api_entry_match'])
+        self.assertEqual(result['health_status_code'], 200)
+        self.assertEqual(result['critical_query_status_code'], 401)
+        self.assertEqual(result['error_code'], '')
+
+    def test_probe_reports_bootstrap_identity_mismatch_without_payload(self):
+        with patch.object(switch_control, '_http_status_and_json', return_value=(200, {
+                'environment': 'development', 'server_version': '0.28.17',
+                'api_entry': '/dev/api', 'secret': 'must not escape'})):
+            with self.assertRaises(SnapshotError) as raised:
+                switch_control._probe('0.30.25')
+        self.assertEqual(raised.exception.reason, 'staging_bootstrap_identity_mismatch')
+        self.assertEqual(raised.exception.diagnostics, {
+            'stage': 'bootstrap', 'bootstrap_status_code': 200,
+            'bootstrap_environment_match': False,
+            'bootstrap_version_match': False,
+            'bootstrap_api_entry_match': False,
+            'health_status_code': None, 'critical_query_status_code': None,
+            'error_code': 'staging_bootstrap_identity_mismatch',
+        })
+        self.assertNotIn('secret', json.dumps(raised.exception.diagnostics))
+
+    def test_probe_reports_health_and_query_failure_stages(self):
+        bootstrap = {'environment': 'staging', 'server_version': '0.30.25',
+                     'api_entry': '/staging/api'}
+        with patch.object(switch_control, '_http_status_and_json', side_effect=[
+            (200, bootstrap), (503, None),
+        ]):
+            with self.assertRaises(SnapshotError) as raised:
+                switch_control._probe('0.30.25')
+        self.assertEqual(raised.exception.reason, 'staging_health_http_error')
+        self.assertEqual(raised.exception.diagnostics['stage'], 'health')
+        self.assertEqual(raised.exception.diagnostics['health_status_code'], 503)
+
+        with patch.object(switch_control, '_http_status_and_json', side_effect=[
+            (200, bootstrap), (200, None), (500, None),
+        ]):
+            with self.assertRaises(SnapshotError) as raised:
+                switch_control._probe('0.30.25')
+        self.assertEqual(raised.exception.reason, 'staging_critical_endpoint_failed')
+        self.assertEqual(raised.exception.diagnostics['stage'], 'query')
+        self.assertEqual(raised.exception.diagnostics['critical_query_status_code'], 500)
+
+    def test_wait_stable_retains_bounded_probe_diagnostics(self):
+        diagnostic = {'stage': 'health', 'bootstrap_status_code': 200,
+                      'bootstrap_environment_match': True,
+                      'bootstrap_version_match': True,
+                      'bootstrap_api_entry_match': True,
+                      'health_status_code': 503,
+                      'critical_query_status_code': None,
+                      'error_code': 'staging_health_http_error'}
+        with patch.object(switch_control, 'STARTUP_ATTEMPTS', 3), \
+                patch.object(switch_control.time, 'sleep'), \
+                patch.object(switch_control, '_probe', side_effect=SnapshotError(
+                    'staging_health_http_error', diagnostics=diagnostic)):
+            with self.assertRaises(SnapshotError) as raised:
+                switch_control._wait_stable('0.30.25')
+        self.assertEqual(raised.exception.reason, 'staging_health_failed_three_times')
+        self.assertEqual(raised.exception.diagnostics['probe'], diagnostic)
+        self.assertEqual(len(raised.exception.diagnostics['probe_attempts']), 3)
+
+    def test_switch_diagnostics_exposes_only_fixed_probe_fields(self):
+        snapshot = 'staging-' + '9' * 16
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / snapshot).mkdir()
+            evidence_root = base / 'switches'
+            evidence = evidence_root / snapshot
+            evidence.mkdir(parents=True)
+            (evidence / 'failure.json').write_text(json.dumps({
+                'environment': 'staging', 'snapshot_id': snapshot,
+                'reason': 'staging_snapshot_switch_failed',
+                'rollback': 'previous_staging_application_restored',
+                'production_modified': False, 'phase': 'health_probe',
+                'exception_type': 'SnapshotError',
+                'probe': {
+                    'stage': 'health', 'bootstrap_status_code': 200,
+                    'bootstrap_environment_match': True,
+                    'bootstrap_version_match': True,
+                    'bootstrap_api_entry_match': True,
+                    'health_status_code': 503,
+                    'critical_query_status_code': None,
+                    'error_code': 'staging_health_http_error',
+                    'response_body': 'private-body-do-not-expose',
+                },
+            }))
+            with patch.object(data, 'ROOT', base), \
+                    patch.object(data, '_snapshot', return_value=base / snapshot), \
+                    patch.object(data.switch_control, 'EVIDENCE_ROOT', evidence_root), \
+                    patch.object(data, 'AUDIT_ROOT', base / 'audit'), \
+                    patch.object(data, 'safe_directory'), \
+                    patch.object(data, '_safe_root'):
+                result = data.failure_diagnostics(snapshot)
+        self.assertEqual(result['switch']['probe'], {
+            'stage': 'health', 'bootstrap_status_code': 200,
+            'bootstrap_environment_match': True,
+            'bootstrap_version_match': True,
+            'bootstrap_api_entry_match': True,
+            'health_status_code': 503,
+            'critical_query_status_code': None,
+            'error_code': 'staging_health_http_error',
+        })
+        self.assertNotIn('response_body', json.dumps(result))
+
     def test_failure_diagnostics_contract_is_fixed_and_snapshot_scoped(self):
         wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
