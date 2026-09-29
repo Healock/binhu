@@ -19,10 +19,36 @@ class StagingSnapshotSwitchTests(unittest.TestCase):
         self.assertEqual(call.call_count, 4)
 
     def test_three_consecutive_failures_trigger_rollback_gate(self):
-        with patch.object(switch_control, '_probe', side_effect=OSError), \
+        responses = [{'health': True}, OSError(), OSError(), OSError()]
+        def probe(_version):
+            value = responses.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        with patch.object(switch_control, '_probe', side_effect=probe) as call, \
                 patch.object(switch_control.time, 'sleep'):
             with self.assertRaisesRegex(SnapshotError, 'staging_health_failed_three_times'):
                 switch_control._wait_stable('1.2.3')
+        self.assertEqual(call.call_count, 4)
+
+    def test_startup_failures_are_bounded_but_do_not_trigger_early_rollback(self):
+        responses = [OSError(), OSError(), {'health': True}, {'health': True}, {'health': True}]
+        def probe(_version):
+            value = responses.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        with patch.object(switch_control, '_probe', side_effect=probe) as call, \
+                patch.object(switch_control.time, 'sleep'):
+            self.assertTrue(switch_control._wait_stable('1.2.3')['health'])
+        self.assertEqual(call.call_count, 5)
+
+    def test_never_ready_times_out_after_startup_attempt_limit(self):
+        with patch.object(switch_control, '_probe', side_effect=OSError) as call, \
+                patch.object(switch_control.time, 'sleep'):
+            with self.assertRaisesRegex(SnapshotError, 'staging_health_failed_three_times'):
+                switch_control._wait_stable('1.2.3')
+        self.assertEqual(call.call_count, switch_control.STARTUP_ATTEMPTS)
 
     def test_snapshot_error_is_counted_before_three_successes(self):
         responses = [SnapshotError('critical'), {'health': True}, {'health': True}, {'health': True}]
