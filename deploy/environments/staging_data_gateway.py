@@ -17,6 +17,7 @@ from .artifact import write_json
 from .staging_data.apply_control import execute as candidate_execute
 from .staging_data.codec import SnapshotError
 from .staging_data.control import ROOT, execute as source_execute, safe_directory
+from .staging_data import switch_control
 from .staging_data.switch_control import switch as switch_snapshot
 from .staging_data.target import database_names
 
@@ -212,7 +213,55 @@ def failure_diagnostics(snapshot_id):
             entry['exit_code'] = exit_code
         failures.append((evidence.stat().st_mtime_ns, entry))
     failures.sort(key=lambda item: item[0], reverse=True)
-    return {'snapshot_id': snapshot_id, 'failures': [entry for _, entry in failures[:8]]}
+    result = {'snapshot_id': snapshot_id, 'failures': [entry for _, entry in failures[:8]]}
+    switch_info = _switch_failure_diagnostics(snapshot_id)
+    if switch_info:
+        result['switch'] = switch_info
+    return result
+
+
+def _switch_failure_diagnostics(snapshot_id):
+    result = {}
+    evidence_dir = switch_control.EVIDENCE_ROOT / snapshot_id
+    if (evidence_dir.is_dir() and not evidence_dir.is_symlink()
+            and (evidence_dir / 'failure.json').is_file()
+            and not (evidence_dir / 'failure.json').is_symlink()):
+        try:
+            safe_directory(evidence_dir)
+            if (evidence_dir / 'failure.json').stat().st_size <= 16384:
+                value = json.loads((evidence_dir / 'failure.json').read_text(encoding='utf-8'))
+                if (isinstance(value, dict) and value.get('environment') == 'staging'
+                        and value.get('snapshot_id') == snapshot_id
+                        and value.get('production_modified') is False):
+                    reason = value.get('reason')
+                    rollback = value.get('rollback')
+                    if isinstance(reason, str) and _REASON.fullmatch(reason):
+                        result['reason'] = reason
+                    if rollback in {'not_required', 'previous_staging_application_restored',
+                                    'staging_application_restore_failed'}:
+                        result['rollback'] = rollback
+                    result['production_modified'] = False
+        except (OSError, ValueError, SnapshotError):
+            pass
+    try:
+        _safe_root(AUDIT_ROOT)
+        matches = sorted(AUDIT_ROOT.glob(f'data-alert-{snapshot_id}-*.json'))[-8:]
+        for path in reversed(matches):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
+                continue
+            try:
+                value = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            reason = value.get('reason') if isinstance(value, dict) else None
+            if (isinstance(value, dict) and value.get('action') == 'switch'
+                    and value.get('snapshot_id') == snapshot_id
+                    and isinstance(reason, str) and _REASON.fullmatch(reason)):
+                result['gateway_reason'] = reason
+                break
+    except (OSError, SnapshotError):
+        pass
+    return result
 
 
 def status():
