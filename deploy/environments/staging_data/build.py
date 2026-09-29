@@ -81,6 +81,7 @@ SPLIT_DOMAIN_SCHEMA_TABLES = {
 EXCLUDED_SCHEMA_TABLES = frozenset({
     "_continuation_import_runs",
     "_domain_migration_state",
+    "_assignment_projection_backfill",
     "t_test_mock",
 })
 
