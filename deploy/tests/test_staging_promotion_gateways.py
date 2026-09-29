@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from deploy.environments import staging_application_gateway as application
 from deploy.environments import staging_data_gateway as data
+from deploy.environments.staging_data import switch_control
 from deploy.environments.staging_data.codec import SnapshotError
 
 
@@ -201,8 +202,14 @@ class StagingDataGatewayTests(unittest.TestCase):
                 'environment': 'staging', 'snapshot_id': snapshot,
                 'reason': 'staging_snapshot_switch_failed',
                 'rollback': 'previous_staging_application_restored',
-                'production_modified': False, 'private_path': '/not/exposed',
+                'production_modified': False, 'phase': 'health_probe',
+                'exception_type': 'SnapshotError',
+                'private_path': '/not/exposed',
             }))
+            (evidence / 'backup.json').write_text('{}')
+            (evidence / 'verification.json').write_text('{}')
+            (evidence / 'candidate').mkdir()
+            (evidence / 'previous-config-sha256.json').write_text('{}')
             audit_root = base / 'audit'
             audit_root.mkdir()
             (audit_root / f'data-alert-{snapshot}-123.json').write_text(json.dumps({
@@ -221,7 +228,21 @@ class StagingDataGatewayTests(unittest.TestCase):
             'rollback': 'previous_staging_application_restored',
             'production_modified': False,
             'gateway_reason': 'staging_snapshot_switch_failed',
+            'phase': 'health_probe',
+            'exception_type': 'SnapshotError',
+            'milestones': {
+                'database_backup_complete': True,
+                'verification_evidence_saved': True,
+                'candidate_configuration_prepared': True,
+                'previous_configuration_saved': True,
+            },
         })
+
+    def test_switch_failure_code_is_fixed_and_excludes_exception_text(self):
+        self.assertEqual(switch_control._failure_code(SnapshotError('staging_health_failed_three_times')),
+                         'staging_health_failed_three_times')
+        self.assertEqual(switch_control._failure_code(RuntimeError('private path /srv/secret')),
+                         'staging_snapshot_switch_failed')
 
     def test_failure_diagnostics_contract_is_fixed_and_snapshot_scoped(self):
         wrapper = (ENVIRONMENTS / 'binhu-staging-data-gateway').read_text(encoding='utf-8')

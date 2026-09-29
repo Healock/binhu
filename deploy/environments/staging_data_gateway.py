@@ -223,6 +223,18 @@ def failure_diagnostics(snapshot_id):
 def _switch_failure_diagnostics(snapshot_id):
     result = {}
     evidence_dir = switch_control.EVIDENCE_ROOT / snapshot_id
+    if evidence_dir.is_dir() and not evidence_dir.is_symlink():
+        names = {
+            'database_backup_complete': 'backup.json',
+            'verification_evidence_saved': 'verification.json',
+            'candidate_configuration_prepared': 'candidate',
+            'previous_configuration_saved': 'previous-config-sha256.json',
+        }
+        milestones = {}
+        for field, name in names.items():
+            path = evidence_dir / name
+            milestones[field] = path.is_dir() if name == 'candidate' else path.is_file() and not path.is_symlink()
+        result['milestones'] = milestones
     if (evidence_dir.is_dir() and not evidence_dir.is_symlink()
             and (evidence_dir / 'failure.json').is_file()
             and not (evidence_dir / 'failure.json').is_symlink()):
@@ -241,6 +253,15 @@ def _switch_failure_diagnostics(snapshot_id):
                                     'staging_application_restore_failed'}:
                         result['rollback'] = rollback
                     result['production_modified'] = False
+                    phase = value.get('phase')
+                    if phase in {'database_backup', 'verification_evidence', 'candidate_preparation',
+                                 'configuration_switch', 'backend_restart', 'health_probe',
+                                 'live_identity_check'}:
+                        result['phase'] = phase
+                    exception_type = value.get('exception_type')
+                    if exception_type in {'SnapshotError', 'OSError', 'ValueError', 'RuntimeError',
+                                          'TimeoutExpired', 'URLError', 'HTTPError'}:
+                        result['exception_type'] = exception_type
         except (OSError, ValueError, SnapshotError):
             pass
     try:

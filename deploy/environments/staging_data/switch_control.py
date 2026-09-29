@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import time
 import urllib.error
@@ -19,6 +20,14 @@ from ..update import backup_databases, command, health, parse_environment, read_
 EVIDENCE_ROOT = Path('/srv/deploy-backups/environment-triad/staging-switches')
 FAILURE_LIMIT = 3
 STARTUP_ATTEMPTS = 45
+FAILURE_REASON_RE = re.compile(r'[a-z0-9_]{1,100}')
+
+
+def _failure_code(exc: BaseException) -> str:
+    reason = getattr(exc, 'reason', '')
+    if not reason and exc.args and isinstance(exc.args[0], str):
+        reason = exc.args[0]
+    return reason if isinstance(reason, str) and FAILURE_REASON_RE.fullmatch(reason) else 'staging_snapshot_switch_failed'
 
 
 def _sha256_tree(root: Path) -> dict[str, str]:
@@ -112,6 +121,7 @@ def switch(snapshot_id: str) -> dict:
         private_json(evidence / 'verification.json', verification)
         started = time.monotonic()
         changed = False
+        phase = 'candidate_preparation'
         try:
             for key, domain in zip(KEYS, DOMAINS):
                 values['MYSQL_' + key + '_DB'] = candidate[domain]
@@ -129,10 +139,14 @@ def switch(snapshot_id: str) -> dict:
             }
             private_json(prepared / 'manifest.json', new_manifest)
             changed = True
+            phase = 'configuration_switch'
             replace_file(prepared / 'backend.env', root / 'backend.env')
             replace_file(prepared / 'manifest.json', root / 'manifest.json')
+            phase = 'backend_restart'
             command(['docker', 'compose', '-f', str(root / 'compose.json'), 'up', '-d', '--no-deps', 'backend'])
+            phase = 'health_probe'
             stable = _wait_stable(values['APP_VERSION'])
+            phase = 'live_identity_check'
             live, _, live_env = read_configuration(root)
             if live.get('staging_snapshot_id') != snapshot_id or parse_environment(live_env).get('MYSQL_ONLINE_DATA_DB') != candidate['OnlineData']:
                 raise SnapshotError('staging_snapshot_switch_identity_mismatch')
@@ -142,7 +156,7 @@ def switch(snapshot_id: str) -> dict:
                       'production_modified': False}
             private_json(evidence / 'result.json', report)
             return report
-        except Exception:
+        except Exception as exc:
             rollback = 'not_required'
             if changed:
                 try:
@@ -155,8 +169,8 @@ def switch(snapshot_id: str) -> dict:
                 except Exception:
                     rollback = 'staging_application_restore_failed'
             private_json(evidence / 'failure.json', {'environment': 'staging', 'snapshot_id': snapshot_id,
-                'reason': 'staging_snapshot_switch_failed', 'rollback': rollback,
-                'production_modified': False})
+                'reason': _failure_code(exc), 'phase': phase, 'exception_type': type(exc).__name__,
+                'rollback': rollback, 'production_modified': False})
             raise SnapshotError('staging_snapshot_switch_failed') from None
 
 
