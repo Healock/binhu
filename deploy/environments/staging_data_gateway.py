@@ -152,6 +152,66 @@ def switch(snapshot_id):
     return result
 
 
+def failure_diagnostics(snapshot_id):
+    """Return bounded, fixed-code failure evidence for one Staging snapshot."""
+    _snapshot(snapshot_id)
+    root = ROOT / snapshot_id
+    failures = []
+    attempt_re = re.compile(r'candidate-(create|import|verify)-[0-9a-f]{12}')
+    domains = set(database_names(snapshot_id))
+    for attempt in root.iterdir():
+        match = attempt_re.fullmatch(attempt.name)
+        if not match or attempt.is_symlink() or not attempt.is_dir():
+            continue
+        evidence = attempt / 'failure.json'
+        if evidence.is_symlink() or not evidence.is_file() or evidence.stat().st_size > 65536:
+            continue
+        try:
+            value = json.loads(evidence.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(value, dict) or set(value) - {'reason', 'diagnostics', 'exit_code'}:
+            continue
+        reason = value.get('reason')
+        if not isinstance(reason, str) or not _REASON.fullmatch(reason):
+            reason = 'staging_candidate_operation_failed'
+        diagnostics = value.get('diagnostics')
+        safe = {}
+        if isinstance(diagnostics, dict) and len(diagnostics) <= 16:
+            domain = diagnostics.get('domain')
+            if isinstance(domain, str) and domain in domains:
+                safe['domain'] = domain
+            table_name = diagnostics.get('table_name')
+            if isinstance(table_name, str) and re.fullmatch(r'[A-Za-z0-9_$.-]{1,128}', table_name):
+                safe['table_name'] = table_name
+            for key in ('missing_tables', 'extra_tables', 'missing_columns', 'extra_columns',
+                        'missing_indexes', 'extra_indexes', 'missing_constraints', 'extra_constraints'):
+                items = diagnostics.get(key)
+                if (isinstance(items, list) and len(items) <= 256
+                        and all(isinstance(item, str)
+                                and re.fullmatch(r'[A-Za-z0-9_$.-]{1,128}', item) for item in items)):
+                    safe[key] = items
+            for key in ('expected_table_count', 'actual_table_count'):
+                item = diagnostics.get(key)
+                if type(item) is int and 0 <= item <= 10000:
+                    safe[key] = item
+            if diagnostics.get('schema_signature_mismatch') is True:
+                safe['schema_signature_mismatch'] = True
+            for key in ('expected_signature_sha256', 'actual_signature_sha256'):
+                item = diagnostics.get(key)
+                if isinstance(item, str) and re.fullmatch(r'[0-9a-f]{64}', item):
+                    safe[key] = item
+        entry = {'action': match.group(1), 'reason': reason}
+        if safe:
+            entry['diagnostics'] = safe
+        exit_code = value.get('exit_code')
+        if type(exit_code) is int and -255 <= exit_code <= 255:
+            entry['exit_code'] = exit_code
+        failures.append((evidence.stat().st_mtime_ns, entry))
+    failures.sort(key=lambda item: item[0], reverse=True)
+    return {'snapshot_id': snapshot_id, 'failures': [entry for _, entry in failures[:8]]}
+
+
 def status():
     snapshots = []
     if ROOT.is_dir() and not ROOT.is_symlink():
@@ -177,6 +237,9 @@ def main():
         try:
             if sys.argv[1:] == ['status']:
                 result = status()
+            elif len(sys.argv) == 3 and action == 'diagnose' and SNAPSHOT_RE.fullmatch(snapshot_id):
+                result = failure_diagnostics(snapshot_id)
+                _audit('diagnose', 'read', snapshot_id=snapshot_id)
             elif sys.argv[1:] == ['measure']:
                 result = measure()
             elif len(sys.argv) == 3 and action == 'export':

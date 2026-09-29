@@ -119,6 +119,7 @@ binhu-staging-data-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-
 binhu-staging-data-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-data-gateway import *
 binhu-staging-data-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-data-gateway verify *
 binhu-staging-data-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-data-gateway switch *
+binhu-staging-data-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-data-gateway diagnose *
 EOF
 chmod 0440 /etc/sudoers.d/binhu-staging-application /etc/sudoers.d/binhu-staging-data
 visudo -cf /etc/sudoers.d/binhu-staging-application >/dev/null

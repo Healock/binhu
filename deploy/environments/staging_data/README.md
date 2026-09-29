@@ -4,7 +4,8 @@
 独立编号的脱敏材料；`apply_control measure/create/import/verify` 可向独立候选八库导入，
 `switch_control` 只在完整验证通过后原子切换 Staging Backend。日常操作必须经过
 `binhu-staging-data-gateway` 的固定 `measure → export → create → import → verify → switch`
-合同，不能直接调用模块、传入任意路径或数据库名。
+合同，不能直接调用模块、传入任意路径或数据库名。失败诊断只允许以快照编号读取
+私有失败材料中的固定原因码和字段白名单聚合信息，不返回文件路径、异常正文或业务数据。
 
 ```sh
 python -m deploy.environments.staging_data.control measure
