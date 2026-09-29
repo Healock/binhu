@@ -37,5 +37,5 @@ jobs:
             deploy/environments/event_pipeline/install-staging-gateway.sh \
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
-            'cd /tmp && ./install-staging-gateway.sh /tmp/deploy-key.pub'
+            'cd /tmp && /usr/bin/bash /tmp/install-staging-gateway.sh /tmp/deploy-key.pub'
           rm -f "$RUNNER_TEMP/staging-ssh/"*
