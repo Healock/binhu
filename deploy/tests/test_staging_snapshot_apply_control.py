@@ -90,6 +90,13 @@ class ApplyControlTests(unittest.TestCase):
         self.assertIn("'_police_dispatch_publish_run_items'",code)
         self.assertIn("runtime_tables(tables, domain)",code)
 
+    def test_verify_row_count_diagnostics_include_safe_table_and_counts(self):
+        code,_=program('staging-'+'a'*16,'verify')
+        self.assertIn("'target_row_count_mismatch'",code)
+        self.assertIn("'table_name':table",code)
+        self.assertIn("'expected_row_count':expected_count",code)
+        self.assertIn("'actual_row_count':actual_count",code)
+
     def test_job_failure_preserves_safe_schema_diagnostics(self):
         code,_=program('staging-'+'a'*16,'measure')
         output='{"ok":false,"reason":"production_staging_schema_table_mismatch","diagnostics":{"domain":"OnlineData","missing_tables":["new_table"],"extra_tables":["old_table"],"expected_table_count":4,"actual_table_count":4}}'
@@ -98,6 +105,17 @@ class ApplyControlTests(unittest.TestCase):
                 run_job({'Image':'sha256:'+'a'*64},code,'binhu-staging-snapshot-test')
         self.assertEqual(caught.exception.diagnostics['missing_tables'],['new_table'])
         self.assertEqual(caught.exception.diagnostics['extra_tables'],['old_table'])
+
+    def test_job_failure_preserves_safe_row_count_diagnostics(self):
+        code,_=program('staging-'+'a'*16,'verify')
+        output='{"ok":false,"reason":"target_row_count_mismatch","diagnostics":{"domain":"OnlineData","table_name":"safe_table","expected_row_count":150,"actual_row_count":149,"private_value":"must not escape"}}'
+        with patch('deploy.environments.staging_data.apply_control.command',return_value=output):
+            with self.assertRaises(SnapshotError) as caught:
+                run_job({'Image':'sha256:'+'a'*64},code,'binhu-staging-snapshot-test')
+        self.assertEqual(caught.exception.diagnostics['domain'],'OnlineData')
+        self.assertEqual(caught.exception.diagnostics['table_name'],'safe_table')
+        self.assertEqual(caught.exception.diagnostics['expected_row_count'],150)
+        self.assertEqual(caught.exception.diagnostics['actual_row_count'],149)
 
     def test_schema_signature_diagnostics_include_bounded_structural_diff(self):
         code,_=program('staging-'+'a'*16,'measure')

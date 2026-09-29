@@ -192,7 +192,8 @@ def failure_diagnostics(snapshot_id):
                         and all(isinstance(item, str)
                                 and re.fullmatch(r'[A-Za-z0-9_$.-]{1,128}', item) for item in items)):
                     safe[key] = items
-            for key in ('expected_table_count', 'actual_table_count'):
+            for key in ('expected_table_count', 'actual_table_count',
+                        'expected_row_count', 'actual_row_count'):
                 item = diagnostics.get(key)
                 if type(item) is int and 0 <= item <= 10000:
                     safe[key] = item

@@ -164,6 +164,8 @@ class StagingDataGatewayTests(unittest.TestCase):
                 'diagnostics': {
                     'domain': 'OnlineData',
                     'missing_tables': ['_safe_table'],
+                    'expected_row_count': 150,
+                    'actual_row_count': 149,
                     'private_detail': 'must not escape',
                 },
             }))
@@ -174,7 +176,8 @@ class StagingDataGatewayTests(unittest.TestCase):
             'action': 'create',
             'reason': 'staging_candidate_job_timeout',
             'phase': 'candidate_creation',
-            'diagnostics': {'domain': 'OnlineData', 'missing_tables': ['_safe_table']},
+            'diagnostics': {'domain': 'OnlineData', 'missing_tables': ['_safe_table'],
+                            'expected_row_count': 150, 'actual_row_count': 149},
         }])
 
     def test_timeout_diagnostic_distinguishes_precreate_schema_measure(self):
