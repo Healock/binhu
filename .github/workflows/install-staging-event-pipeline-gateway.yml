@@ -38,4 +38,18 @@ jobs:
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
             'cd /tmp && /usr/bin/bash /tmp/install-staging-gateway.sh /tmp/deploy-key.pub'
+      - name: Record fixed Staging pipeline configuration digest
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            'test -f /etc/binhu-staging-event-pipeline.conf && test ! -L /etc/binhu-staging-event-pipeline.conf && sha256sum /etc/binhu-staging-event-pipeline.conf | awk '\''{print "configuration_sha256=" $1}'\'''
           rm -f "$RUNNER_TEMP/staging-ssh/"*
