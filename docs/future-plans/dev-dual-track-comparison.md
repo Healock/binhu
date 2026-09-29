@@ -412,3 +412,9 @@ checkpoint 推进、内存/连接/磁盘无持续增长趋势。证书续签、�
 主动任务中，元数据双轨对账、Schema Registry 合同核对和状态汇总通过；日报刷新、业务清理及其他周期任务标记为当前元数据域不适用，未越过 Dev 网关访问生产或 Staging。长期内存泄漏、证书续签、Kafka/Redis 自然保留过期、跨天状态累积和长期磁盘趋势仍是非阻塞未验证项。旧 savepoint 的 operator ID 兼容恢复门禁仍未通过，继续保持 `allowNonRestoredState` 禁用，不能以本次干净状态观察替代该独立门禁。
 
 据此，任务元数据投影/计数域满足 Dev 核心规模和六小时持续运行门禁，可以提交 Staging 晋级评估；这不等同于 Staging 已部署或生产架构已切换。
+
+## 2026-09-30：当前证据边界复核
+
+本次以 `origin/main@7ee31b3f7c3350908df682def987bd85de5a2d53` 的计划台账为准，未重新连接 Dev、Staging 或 Production，也未重新执行真实 Flink、Kafka、Redis 或 MySQL 验证。现有记录仍支持以下分层结论：`monitor40` 的 1002、10000、100000 三档和 6 小时、13 个采样点的强化观察已作为 Dev 核心门禁证据；checkpoint/savepoint 的旧 operator ID 兼容恢复门禁仍为未通过；Staging 晋级、页面回归、75 人压测和生产切换仍未由本文件证明。
+
+失败运行、暂停状态和旧证据目录继续保留。后续恢复演练必须使用新的运行编号，不能用干净启动、代码合入或 CI 通过替代 checkpoint/savepoint 恢复；没有新的服务器证据时，不得把本项目状态推进为 Staging 已部署或 Production 已切换。

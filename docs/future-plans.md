@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | 事件总线与实时计算基础设施 | dev 长期架构线承接；历史停止线及待验收项保留 | [事件总线与实时计算基础设施](future-plans/eventbus-realtime-infrastructure.md) |
 | Dev Kafka、Flink 与 Redis 架构升级 | Dev 元数据链路已合入主线，开发验收中；未切换生产 | [Dev Kafka、Flink 与 Redis 架构升级](future-plans/dev-kafka-flink-redis-runtime.md) |
+| Dev Python/Flink 双轨比对 | Dev 三档规模验收有记录；恢复门禁未通过，Staging 未验证 | [Dev Python/Flink 双轨比对](future-plans/dev-dual-track-comparison.md) |
 | 腾讯表时代数据模型退场 | 长期迁移规划，实施前重新盘点 | [腾讯表时代数据模型退场](future-plans/legacy-task-model-retirement.md) |
 | 生产接口拥堵诊断与抗压治理 | 排查记录已归档，整改另行推进 | [生产接口拥堵治理](future-plans/production-congestion-observability.md) |
 | 外部出勤和请假系统对接 | 已确定方向，未开始 | [外部出勤和请假系统](future-plans/external-attendance-leave.md) |
@@ -29,4 +30,3 @@
 - 已完成项目应迁移到 `docs/plans/` 或链接明确的完成台账，不能继续伪装成未开始计划。
 - 历史归档文件不回写；当前计划不得包含凭据、完整地址、身份证号、手机号或其他敏感正文。
 - 生产、预发布和 Dev 的称呼和边界按项目文档及当前运行规则保持一致。
-| 生产、预发布与 Dev 环境建设 | 架构调整中，尚未完成服务器验收 | [环境建设](future-plans/environment-triad.md) |\r\n

@@ -168,3 +168,7 @@ Redis 版本缓存合同已实现并通过 27 项单测。高水位指针不设�
 ## 2026-09-14 更新：Dev relay 接入证据
 
 Dev Backend outbox relay 已在服务器部署并验证一条合成业务事件闭环，证据目录为 `dev-backend-outbox-relay-20260914-ef5ddb80`。该结果证明 Backend outbox 能进入 Dev Redis 和现有 Kafka/Flink 派生链路；不代表完整 Dev 11 项、双轨比对、Staging 晋级或 Production 架构切换已通过。
+
+## 2026-09-30：基础设施计划边界复核
+
+现有影子组件、Dev 事件流和合成 Outbox 证据继续作为分项台账保留；它们不构成 Production 或 Staging 的业务主数据切换。Kafka、Flink、Redis、Outbox、Relay、回放和 75 人复测仍需按各自停止条件分别验收，不能用单元测试、代码合入、容器存在或单次合成事件替代。腾讯文档路径保持下线，MySQL 本地业务表仍是唯一业务真相。
