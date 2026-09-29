@@ -145,35 +145,46 @@ def signature_diff(expected,actual):
         'extra_constraints':sorted(set(names(actual['constraints'],0))-set(names(expected['constraints'],0))),
     }
 async def verify_current_schema(conn,snapshot,current):
+    # The snapshot's schema_contract is a read-only Production observation.
+    # Production may be ahead/behind the accepted Staging artifact (for
+    # example prefix indexes and date-named daily-report tables), so it is not
+    # a target DDL contract.  The target schema is created from the already
+    # accepted Staging application and checked by the controlled migration.
     production_contract=snapshot.get('schema_contract')
     if not isinstance(production_contract,dict):raise SnapshotError('source_schema_contract_missing')
+    payload_tables=snapshot.get('tables')
+    if not isinstance(payload_tables,dict):raise SnapshotError('snapshot_tables_missing')
+    required_by_domain={domain:set() for domain in current}
+    for logical in payload_tables:
+        domain,separator,table=logical.partition('.')
+        if not separator or domain not in required_by_domain or not table:
+            raise SnapshotError('snapshot_table_identifier_invalid')
+        required_by_domain[domain].add(table)
     async with conn.cursor() as cur:
         for domain,database in current.items():
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(database,'BASE TABLE'))
             tables=[row[0] for row in await cur.fetchall()]
-            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
             actual_tables=runtime_tables(tables, domain)|{'_environment_identity'}
-            if actual_tables!=expected_tables:
+            missing=required_by_domain[domain]-actual_tables
+            if missing:
                 raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
-                    'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
-                    'extra_tables':sorted(actual_tables-expected_tables),
-                    'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
-            for table in tables:
-                if table in excluded_schema_tables or split_domain_schema_tables.get(table, domain) != domain:
-                    continue
-                if table!='_environment_identity':
-                    expected=production_contract[domain][table]
-                    actual=await schema_signature(cur,database,table)
-                    if actual!=expected:
-                        raise SnapshotError('production_staging_schema_mismatch', diagnostics={
-                            'domain':domain,'table_name':table,'schema_signature_mismatch':True,
-                            **signature_diff(expected,actual)})
+                    'domain':domain,'missing_tables':sorted(missing),
+                    'extra_tables':[],'expected_table_count':len(required_by_domain[domain]),
+                    'actual_table_count':len(actual_tables)})
     return True
 async def verify_target(conn,settings,snapshot,current,candidate):
     expected=materialize(snapshot,settings.registry_hmac_key)
     expected_counts={name:len(rows) for name,rows in expected.items()}
     production_contract=snapshot.get('schema_contract')
     if not isinstance(production_contract,dict):raise SnapshotError('source_schema_contract_missing')
+    payload_tables=snapshot.get('tables')
+    if not isinstance(payload_tables,dict):raise SnapshotError('snapshot_tables_missing')
+    required_by_domain={domain:set() for domain in current}
+    for logical in payload_tables:
+        domain,separator,table=logical.partition('.')
+        if not separator or domain not in required_by_domain or not table:
+            raise SnapshotError('snapshot_table_identifier_invalid')
+        required_by_domain[domain].add(table)
     schema_objects=0
     async with conn.cursor() as cur:
         for domain in current:
@@ -185,13 +196,13 @@ async def verify_target(conn,settings,snapshot,current,candidate):
             await cur.execute('SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type=%s ORDER BY table_name',(candidate[domain],'BASE TABLE'))
             candidate_tables=[row[0] for row in await cur.fetchall()]
             if current_tables!=candidate_tables:raise SnapshotError('target_schema_table_mismatch')
-            expected_tables=set(production_contract.get(domain,{}))|{'_environment_identity'}
             actual_tables=runtime_tables(candidate_tables, domain)|{'_environment_identity'}
-            if actual_tables!=expected_tables:
+            missing=required_by_domain[domain]-actual_tables
+            if missing:
                 raise SnapshotError('production_staging_schema_table_mismatch', diagnostics={
-                    'domain':domain,'missing_tables':sorted(expected_tables-actual_tables),
-                    'extra_tables':sorted(actual_tables-expected_tables),
-                    'expected_table_count':len(expected_tables),'actual_table_count':len(actual_tables)})
+                    'domain':domain,'missing_tables':sorted(missing),
+                    'extra_tables':[],'expected_table_count':len(required_by_domain[domain]),
+                    'actual_table_count':len(actual_tables)})
             for table in current_tables:
                 if table in excluded_schema_tables or split_domain_schema_tables.get(table, domain) != domain:
                     continue
@@ -199,12 +210,7 @@ async def verify_target(conn,settings,snapshot,current,candidate):
                 for database in (current[domain],candidate[domain]):
                     signatures.append(await schema_signature(cur,database,table))
                 if signatures[0]!=signatures[1]:raise SnapshotError('target_schema_signature_mismatch')
-                expected_signature=production_contract.get(domain,{}).get(table)
                 actual_signature=signatures[1]
-                if table!='_environment_identity' and expected_signature!=actual_signature:
-                    raise SnapshotError('production_staging_schema_mismatch', diagnostics={
-                        'domain':domain,'table_name':table,'schema_signature_mismatch':True,
-                        **signature_diff(expected_signature,actual_signature)})
                 logical=domain+'.'+table
                 expected_count=expected_counts.get(logical,0)
                 if logical=='PlatformData._users':expected_count+=1

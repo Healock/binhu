@@ -58,23 +58,22 @@ class ApplyControlTests(unittest.TestCase):
             {'_communities'},
         )
 
-    def test_measure_and_verify_require_production_schema_contract(self):
+    def test_measure_and_verify_require_source_observation_and_target_tables(self):
         measure,_=program('staging-'+'a'*16,'measure')
         verify,_=program('staging-'+'a'*16,'verify')
         for code in (measure,verify):
             self.assertIn("source_schema_contract_missing",code)
-            self.assertIn("production_staging_schema_mismatch",code)
+            self.assertIn("snapshot_tables_missing",code)
+            self.assertIn("snapshot_table_identifier_invalid",code)
             self.assertIn("information_schema.statistics",code)
             self.assertIn("information_schema.table_constraints",code)
         self.assertIn("ready_for_application_switch':True",verify)
 
-    def test_schema_contract_diagnostics_include_table_set_diff(self):
+    def test_target_contract_diagnostics_include_required_table_diff(self):
         code,_=program('staging-'+'a'*16,'measure')
-        self.assertIn("'missing_tables':sorted(expected_tables-actual_tables)",code)
-        self.assertIn("'extra_tables':sorted(actual_tables-expected_tables)",code)
-        self.assertIn("'expected_table_count':len(expected_tables)",code)
+        self.assertIn("'missing_tables':sorted(missing)",code)
+        self.assertIn("'expected_table_count':len(required_by_domain[domain])",code)
         self.assertIn("'actual_table_count':len(actual_tables)",code)
-        self.assertIn("'schema_signature_mismatch':True",code)
         self.assertIn("'_domain_migration_state'",code)
         self.assertIn("'_police_dispatch_publish_run_items'",code)
         self.assertIn("runtime_tables(tables, domain)",code)

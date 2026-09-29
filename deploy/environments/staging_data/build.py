@@ -83,6 +83,18 @@ EXCLUDED_SCHEMA_TABLES = frozenset({
     "t_test_mock",
 })
 
+# Daily reports are materialized as date/version-named tables.  They are
+# operational history, not part of the fixed application schema copied into a
+# bounded Staging sample.  Keep the four metadata/ledger tables in the
+# contract; record the other names only as a redacted source observation.
+DAILY_REPORT_DYNAMIC_RE = re.compile(
+    r"^(?:\d{4}[_-]\d{1,2}[_-]\d{1,2}.*|_v\d+_\d{4}-\d{2}-\d{2}_.+|tmp_lreport_.+)$"
+)
+
+
+def is_dynamic_daily_report_table(domain, table):
+    return domain == "daily_report" and bool(DAILY_REPORT_DYNAMIC_RE.fullmatch(table))
+
 
 def normalize_schema_contract(contract):
     """Normalize production table ownership for the split-domain runtime.
@@ -100,7 +112,7 @@ def normalize_schema_contract(contract):
         if domain not in normalized or not isinstance(tables, dict):
             continue
         for table, signature in tables.items():
-            if table in EXCLUDED_SCHEMA_TABLES:
+            if table in EXCLUDED_SCHEMA_TABLES or is_dynamic_daily_report_table(domain, table):
                 continue
             target_domain = SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain)
             if target_domain != domain:
@@ -117,7 +129,7 @@ def normalize_schema_contract(contract):
         if domain not in normalized or not isinstance(tables, dict):
             continue
         for table, signature in tables.items():
-            if table in EXCLUDED_SCHEMA_TABLES:
+            if table in EXCLUDED_SCHEMA_TABLES or is_dynamic_daily_report_table(domain, table):
                 continue
             target_domain = SPLIT_DOMAIN_SCHEMA_TABLES.get(table, domain)
             if target_domain == domain or table in normalized[target_domain]:
@@ -192,9 +204,14 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
         async with conn.cursor() as cur:
             await cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             await cur.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
-            schema_contract = normalize_schema_contract(
-                await source_schema_contract(cur, settings)
+            raw_schema_contract = await source_schema_contract(cur, settings)
+            dynamic_schema_tables = sorted(
+                f"{domain}.{table}"
+                for domain, tables in raw_schema_contract.items()
+                for table in tables
+                if is_dynamic_daily_report_table(domain, table)
             )
+            schema_contract = normalize_schema_contract(raw_schema_contract)
             raw_organization = {table: await select(cur, table, columns) for table, columns in ORGANIZATION_FIELDS.items()}
             raw_registry = {table: await select(cur, table, columns) for table, columns in FIELDS.items()}
             sources = await select(cur, "OnlineData._online_source_rows",
@@ -564,6 +581,12 @@ async def build(conn, snapshot_id, salt, *, settings, exclude_orphan_property_li
                 "excluded_staging_data_by_reason": excluded_staging_data_by_reason,
                 "recovery_scope": recovery_scope,
                 "scope":"current_tasks_organization_and_registry_graph","ready_for_application_switch":False})
+            result["report"].update({
+                "dynamic_schema_table_count_excluded": len(dynamic_schema_tables),
+                "dynamic_schema_table_names_sha256": hashlib.sha256(
+                    "\n".join(dynamic_schema_tables).encode("utf-8")
+                ).hexdigest() if dynamic_schema_tables else None,
+            })
             result["schema_contract"] = schema_contract
             return result
     finally:
