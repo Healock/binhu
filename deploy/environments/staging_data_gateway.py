@@ -139,6 +139,21 @@ def candidate(action, snapshot_id):
     return result
 
 
+def reverify(snapshot_id):
+    """Run the read-only target verification again without changing cached records."""
+    path = _snapshot(snapshot_id)
+    if _record(path, 'export') is None:
+        refuse('snapshot_export_gate_missing')
+    result = candidate_execute('verify', snapshot_id)
+    evidence = path / f'gateway-reverify-{int(time.time())}.json'
+    if evidence.exists() or evidence.is_symlink():
+        refuse('snapshot_reverify_evidence_exists')
+    write_json(evidence, result)
+    evidence.chmod(0o600)
+    _audit('reverify', 'passed', snapshot_id=snapshot_id)
+    return result
+
+
 def switch(snapshot_id):
     path = _snapshot(snapshot_id)
     verified = _record(path, 'verify')
@@ -349,6 +364,8 @@ def main():
                 result = export(snapshot_id)
             elif len(sys.argv) == 3 and action in {'create','import','verify'}:
                 result = candidate(action, snapshot_id)
+            elif len(sys.argv) == 3 and action == 'reverify':
+                result = reverify(snapshot_id)
             elif len(sys.argv) == 3 and action == 'switch':
                 result = switch(snapshot_id)
             else:
@@ -359,13 +376,13 @@ def main():
         except SnapshotError as exc:
             reason = _safe_failure_reason(exc)
             _audit(action or 'invalid', 'failed', snapshot_id=snapshot_id, reason=reason)
-            if action in {'export','create','import','verify','switch'}:
+            if action in {'export','create','import','verify','reverify','switch'}:
                 _alert(action, snapshot_id, reason)
             raise SystemExit('Staging data gateway refused; inspect private evidence') from None
         except Exception:
             reason = 'staging_data_operation_failed'
             _audit(action or 'invalid', 'failed', snapshot_id=snapshot_id, reason=reason)
-            if action in {'export','create','import','verify','switch'}:
+            if action in {'export','create','import','verify','reverify','switch'}:
                 _alert(action, snapshot_id, reason)
             raise SystemExit('Staging data gateway refused; inspect private evidence') from None
 
