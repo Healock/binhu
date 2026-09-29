@@ -4,11 +4,22 @@ import sys
 import subprocess
 import unittest
 from unittest.mock import patch
-from deploy.environments.staging_data.apply_control import command,grant_sql,program,run_job
+from deploy.environments.staging_data.apply_control import (
+    CANDIDATE_CREATE_TIMEOUT_SECONDS, CANDIDATE_JOB_TIMEOUT_SECONDS,
+    candidate_action_timeout, command, grant_sql, program, run_job,
+)
 from deploy.environments.staging_data.codec import SnapshotError
 
 
 class ApplyControlTests(unittest.TestCase):
+    def test_create_job_has_a_separate_bounded_timeout(self):
+        self.assertEqual(candidate_action_timeout('create'), CANDIDATE_CREATE_TIMEOUT_SECONDS)
+        self.assertEqual(candidate_action_timeout('create'), 900)
+        for action in ('measure', 'import', 'verify'):
+            with self.subTest(action=action):
+                self.assertEqual(candidate_action_timeout(action), CANDIDATE_JOB_TIMEOUT_SECONDS)
+                self.assertEqual(candidate_action_timeout(action), 300)
+
     def test_command_failure_keeps_exit_code_without_driver_output(self):
         result=subprocess.CompletedProcess(['synthetic'],137,'private-output','private-error')
         with patch('subprocess.run',return_value=result):
@@ -28,13 +39,14 @@ class ApplyControlTests(unittest.TestCase):
         code,_=program('staging-'+'a'*16,'measure')
         compile(code,'<candidate-job>','exec')
         with patch('deploy.environments.staging_data.apply_control.command',return_value='{"ok":true,"result":{}}') as call:
-            run_job({'Image':'sha256:'+'a'*64},code,'binhu-staging-snapshot-test')
+            run_job({'Image':'sha256:'+'a'*64},code,'binhu-staging-snapshot-test',timeout=900)
         args=call.call_args.args[0]
         self.assertEqual(args[args.index('--network')+1],'binhu-staging_internal')
         self.assertIn('--memory',args)
         self.assertNotIn('--volume',args)
         self.assertNotIn('-v',args)
         self.assertIn('--read-only',args)
+        self.assertEqual(call.call_args.kwargs['timeout'],900)
 
     def test_embedded_candidate_program_includes_runtime_table_filter(self):
         code,_=program('staging-'+'a'*16,'measure')

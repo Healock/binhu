@@ -6,6 +6,8 @@
 `binhu-staging-data-gateway` 的固定 `measure → export → create → import → verify → switch`
 合同，不能直接调用模块、传入任意路径或数据库名。失败诊断只允许以快照编号读取
 私有失败材料中的固定原因码和字段白名单聚合信息，不返回文件路径、异常正文或业务数据。
+候选 schema 测量、导入和验证的容器作业时限为 300 秒；实际创建候选八库的作业有独立
+的 900 秒上限，以覆盖受控的多表结构复制。该参数不改变 MySQL 锁等待时限。
 
 ```sh
 python -m deploy.environments.staging_data.control measure

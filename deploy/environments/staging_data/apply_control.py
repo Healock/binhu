@@ -13,6 +13,8 @@ from .target import database_names
 from ..database_identity import validate_resources
 
 MODULES=('codec','digests','target','candidate','import_data')
+CANDIDATE_JOB_TIMEOUT_SECONDS=300
+CANDIDATE_CREATE_TIMEOUT_SECONDS=900
 
 # Keep this list in sync with the source snapshot contract normalization.  The
 # candidate job is embedded and runs without importing the production reader,
@@ -71,6 +73,10 @@ def command(args, *, stdin=None, timeout=30):
         raise SnapshotError('staging_candidate_command_failed',
                             diagnostics={'exit_code':result.returncode})
     return result.stdout
+
+
+def candidate_action_timeout(action):
+    return CANDIDATE_CREATE_TIMEOUT_SECONDS if action=='create' else CANDIDATE_JOB_TIMEOUT_SECONDS
 
 
 def resources():
@@ -254,7 +260,7 @@ except Exception:print(json.dumps({'ok':False,'reason':'staging_candidate_job_fa
     return code, {name:hashlib.sha256(source.encode()).hexdigest() for name,source in modules.items()}
 
 
-def run_job(backend, code, name, *, snapshot=None):
+def run_job(backend, code, name, *, snapshot=None, timeout=CANDIDATE_JOB_TIMEOUT_SECONDS):
     args=['docker','run','--rm','-i','--name',name,'--network','binhu-staging_internal',
         '--label','binhu.environment=staging','--label','binhu.snapshot-job=true',
         '--memory','1g','--cpus','1','--pids-limit','128','--read-only',
@@ -262,7 +268,7 @@ def run_job(backend, code, name, *, snapshot=None):
         '--security-opt','no-new-privileges:true','--env-file','/srv/binhu-environments/staging/backend.env',
         '--entrypoint','python',backend['Image'],'-c',code]
     try:
-        output=command(args,stdin=json.dumps(snapshot,ensure_ascii=True) if snapshot is not None else None,timeout=300)
+        output=command(args,stdin=json.dumps(snapshot,ensure_ascii=True) if snapshot is not None else None,timeout=timeout)
     except subprocess.TimeoutExpired:
         # Stop only this exact temporary job after proving its labels. It has
         # no state volume and never shares the application container's cgroup.
@@ -317,7 +323,8 @@ def execute(action,snapshot_id):
             code,hashes=program(snapshot_id,action)
             private_json(attempt/'code-hashes.json',hashes)
             result=run_job(backend,code,'binhu-staging-snapshot-'+secrets.token_hex(6),
-                           snapshot=snapshot if action in {'measure','import','verify'} else None)
+                           snapshot=snapshot if action in {'measure','import','verify'} else None,
+                           timeout=candidate_action_timeout(action))
             after=preflight()
             if any(before[key]!=after[key] for key in ('container_id','started_at','restart_count')):
                 raise SnapshotError('production_baseline_changed')
