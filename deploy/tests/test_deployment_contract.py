@@ -161,6 +161,11 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("ensure_assignment_projection_backfill_schema(cur)", database)
         self.assertNotIn("await run_assignment_projection_backfill(conn)", database)
 
+    def test_local_source_migration_is_production_only_for_immutable_staging_snapshots(self) -> None:
+        database = (ROOT / "backend/database.py").read_text(encoding="utf-8")
+        self.assertIn('if settings.APP_ENVIRONMENT == "production":', database)
+        self.assertIn('await run_local_source_migration(conn)', database)
+
     @unittest.skipIf(os.name == "nt", "受限部署网关测试需要 Linux bash")
     def test_gateway_rejects_any_command_outside_fixed_grammar(self) -> None:
         gateway = ROOT / "deploy/binhu-deploy-gateway"

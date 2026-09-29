@@ -3080,7 +3080,12 @@ class DatabaseManager:
             from services.txdocs_statistics_monitor import ensure_txdocs_monitor_config_schema
             async with conn.cursor() as cur:
                 await ensure_txdocs_monitor_config_schema(cur)
-            await run_local_source_migration(conn)
+            # Production performs the one-time local-source mirror during
+            # startup. Staging and development receive an immutable local
+            # source snapshot; replaying the production mirror there would
+            # append rows using live table IDs and invalidate snapshot counts.
+            if settings.APP_ENVIRONMENT == "production":
+                await run_local_source_migration(conn)
         return cls
 
     @classmethod
