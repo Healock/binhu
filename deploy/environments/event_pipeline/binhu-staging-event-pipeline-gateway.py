@@ -123,10 +123,37 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
             args += [f"--{name.replace('_', '-')}-image", manifest["images"][name]]
     else:
         args = [sys.executable, "-m", "event_pipeline.staging_control", module, "--run-id", run_id]
-    result = subprocess.run(
-        args, cwd=source, env=env, check=True, capture_output=True, text=True,
-        timeout=900 if module == "apply" else 300,
-    )
+    try:
+        result = subprocess.run(
+            args, cwd=source, env=env, check=True, capture_output=True, text=True,
+            timeout=900 if module == "apply" else 300,
+        )
+    except subprocess.CalledProcessError as error:
+        # Forward only the fixed, redacted apply failure contract.  Never emit
+        # child stderr/stdout because it may contain runtime configuration.
+        if module == "apply":
+            for line in (error.stdout or "").splitlines():
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(payload, dict)
+                        and payload.get("environment") == "staging"
+                        and payload.get("run_id") == run_id
+                        and payload.get("status") == "failed"
+                        and payload.get("phase") in {
+                            "compose_brokers", "create_topics", "start_schema_dependencies",
+                            "apply_schema_registry", "migrate_delivery_schema",
+                            "start_pipeline_services", "start_flink_job",
+                        }
+                        and payload.get("error_type") in {
+                            "ValueError", "RuntimeError", "OSError", "TimeoutExpired",
+                        }
+                        and isinstance(payload.get("error_code"), str)
+                        and re.fullmatch(r"[A-Za-z0-9_. -]{1,96}", payload["error_code"] or "")):
+                    print(json.dumps(payload, sort_keys=True))
+                    break
+        raise
     lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
     if not lines:
         fail("fixed control result missing")

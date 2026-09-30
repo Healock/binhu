@@ -284,10 +284,15 @@ def apply(run_id: str) -> dict[str, Any]:
         error_code = str(error)
         if not re.fullmatch(r"[A-Za-z0-9_. -]{1,96}", error_code):
             error_code = "staging_apply_failed"
-        (evidence / "failure.json").write_text(json.dumps({
+        failure = {
             "environment": "staging", "run_id": run_id, "acceptance": "failed",
             "phase": phase, "error_type": type(error).__name__, "error_code": error_code,
-        }) + "\n", encoding="utf-8")
+        }
+        (evidence / "failure.json").write_text(json.dumps(failure) + "\n", encoding="utf-8")
+        print(json.dumps({"environment": "staging", "run_id": run_id,
+                          "status": "failed", "phase": phase,
+                          "error_type": type(error).__name__, "error_code": error_code},
+                         sort_keys=True))
         raise
 
 
