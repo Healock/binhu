@@ -60,6 +60,7 @@ jobs:
           DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
         run: |
           set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/dev-ssh"
           printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/dev-ssh/key"
           printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/dev-ssh/"*
