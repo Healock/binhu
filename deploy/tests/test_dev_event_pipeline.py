@@ -25,6 +25,7 @@ from deploy.environments.event_pipeline.services import kafka_delivery_store
 from deploy.environments.event_pipeline.services.derived_revision_cache import RevisionCache, CacheContractError
 from deploy.environments.event_pipeline import schema_registry
 from deploy.environments.event_pipeline import registry_runtime
+from deploy.environments.event_pipeline import dev_image_source_diagnostic
 from deploy.environments.event_pipeline import checkpoint
 from deploy.environments.event_pipeline import control
 from deploy.environments.event_pipeline import flink_compose
@@ -59,6 +60,29 @@ def event():
 
 
 class FlinkStateContractTests(unittest.TestCase):
+    def test_dev_image_source_diagnostic_redacts_to_fixed_identity(self):
+        payload = {
+            "Image": "sha256:" + "a" * 64,
+            "Config": {"Image": "quay.io/apicurio/apicurio-registry-kafkasql:2.6.5.Final"},
+            "RepoDigests": ["quay.io/apicurio/apicurio-registry-kafkasql@sha256:" + "b" * 64,
+                            "not-a-digest"],
+            "RepoTags": ["quay.io/apicurio/apicurio-registry-kafkasql:2.6.5.Final", "bad tag"],
+        }
+        with patch.object(dev_image_source_diagnostic, "_inspect", return_value=payload):
+            result = dev_image_source_diagnostic.diagnose()
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["image_id"], "sha256:" + "a" * 64)
+        self.assertEqual(len(result["repo_digests"]), 1)
+        self.assertEqual(len(result["repo_tags"]), 1)
+        self.assertNotIn("Config", result)
+
+    def test_dev_image_source_diagnostic_rejects_unbounded_source(self):
+        payload = {"Image": "sha256:" + "a" * 64,
+                   "Config": {"Image": "--format={{.Config.Env}}"}}
+        with patch.object(dev_image_source_diagnostic, "_inspect", return_value=payload):
+            with self.assertRaises(ValueError):
+                dev_image_source_diagnostic.diagnose()
+
     def test_monitor_runtime_failure_detail_exposes_only_type_and_stage(self):
         detail = runtime_failure_detail(PermissionError("password=must-not-leak"), "evidence_directory")
         self.assertEqual(
