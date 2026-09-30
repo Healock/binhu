@@ -46,6 +46,18 @@ def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) ->
             code = "staging_container_conflict"
         elif "pull access denied" in text or "manifest unknown" in text or "image not found" in text:
             code = "staging_image_missing"
+        elif "no such image" in text:
+            code = "staging_image_missing"
+        elif "failed to create endpoint" in text or "network is not connected" in text:
+            code = "staging_network_attachment_failed"
+        elif "invalid mount config" in text or "failed to mount" in text:
+            code = "staging_volume_mount_failed"
+        elif "permission denied" in text:
+            code = "staging_docker_permission_denied"
+        elif "no such service" in text:
+            code = "staging_service_missing"
+        elif "error response from daemon" in text:
+            code = "staging_docker_daemon_error"
         elif "cannot connect to the docker daemon" in text:
             code = "staging_docker_unavailable"
         else:
