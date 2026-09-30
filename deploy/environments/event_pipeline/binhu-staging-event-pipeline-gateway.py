@@ -129,7 +129,7 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
             timeout=900 if module == "apply" else 300,
         )
     except subprocess.CalledProcessError as error:
-        if module == "apply":
+        if module in {"prepare", "apply"}:
             for line in (error.stdout or "").splitlines():
                 try:
                     payload = json.loads(line)
@@ -140,6 +140,7 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
                         and payload.get("run_id") == run_id
                         and payload.get("status") == "failed"
                         and payload.get("phase") in {
+                            "prepare",
                             "compose_brokers", "create_topics", "start_schema_dependencies",
                             "apply_schema_registry", "migrate_delivery_schema",
                             "start_pipeline_services", "start_flink_job",

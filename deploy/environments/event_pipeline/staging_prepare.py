@@ -29,6 +29,23 @@ SECRET_RE = re.compile(r"^[0-9a-f]{48}$")
 PUBLIC_FILES = frozenset({"compose.json", "init.sql", "redis.conf", "pipeline.sql", "pipeline-job.jar"})
 
 
+def _safe_prepare_error_code(error: Exception) -> str:
+    """Map preparation failures to a bounded, non-sensitive diagnostic code."""
+    message = str(error)
+    known = {
+        "Staging image identity mismatch": "staging_image_identity_mismatch",
+        "independent Staging pipeline credentials required": "staging_credentials_missing",
+        "independent Staging Redis credential required": "staging_redis_credential_invalid",
+        "Staging application environment missing": "staging_application_environment_missing",
+        "Staging snapshot identity invalid": "staging_snapshot_identity_invalid",
+        "Staging run directory already exists": "staging_run_directory_conflict",
+        "fixed Staging root required": "staging_root_invalid",
+        "compiled Staging PipelineJob JAR missing": "staging_pipeline_jar_missing",
+        "Staging preparation command failed": "staging_preparation_command_failed",
+    }
+    return known.get(message, "staging_prepare_failed")
+
+
 def root_for(run_id: str) -> Path:
     return BASE / run_id
 
@@ -257,7 +274,12 @@ def main() -> None:
         print(json.dumps(prepare(args.run_id, images, source=args.source,
                                  pipeline_jar=args.pipeline_jar,
                                  snapshot_id=args.staging_snapshot_id), sort_keys=True))
-    except Exception:
+    except Exception as error:
+        print(json.dumps({
+            "environment": "staging", "run_id": args.run_id, "status": "failed",
+            "phase": "prepare", "error_type": type(error).__name__,
+            "error_code": _safe_prepare_error_code(error),
+        }, sort_keys=True))
         raise SystemExit("Staging event-pipeline preparation refused; inspect private evidence") from None
 
 
