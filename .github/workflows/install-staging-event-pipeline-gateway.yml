@@ -115,6 +115,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "$ACTION" =~ ^(measure|apply)$ ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh"
           printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/staging-ssh/"*
