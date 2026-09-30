@@ -257,6 +257,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"phase": phase', control)
         self.assertIn('"error_type": type(error).__name__', control)
         self.assertIn('"error_code": error_code', control)
+        self.assertIn('payload.get("status") == "failed"', gateway)
 
     def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
         self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")
