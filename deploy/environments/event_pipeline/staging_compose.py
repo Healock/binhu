@@ -20,7 +20,7 @@ BROKERS = ("staging-kafka-1", "staging-kafka-2", "staging-kafka-3")
 EVENT_TOPIC = "staging.task.events.v1"
 DLQ_TOPIC = "staging.task.events.dlq.v1"
 REGISTRY_TOPIC = "staging.registry.storage.v1"
-BACKEND_NETWORK = "binhu-staging_internal"
+BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 LOGGING = {"driver": "json-file", "options": {"max-size": "5m", "max-file": "2"}}
 
 
