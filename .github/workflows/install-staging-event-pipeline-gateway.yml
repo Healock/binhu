@@ -2,6 +2,13 @@ name: Install Staging event-pipeline gateway
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: Install or verify/apply the isolated Staging pipeline backend network
+        required: true
+        default: install
+        type: choice
+        options: [install, measure, apply]
 
 permissions:
   contents: read
@@ -16,13 +23,14 @@ jobs:
         with:
           ref: main
       - name: Install only the Staging gateway
+        if: inputs.action == 'install'
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
-          ADMIN_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
           PUBLIC_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_DEPLOY_PUBLIC_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
         run: |
           set -Eeuo pipefail
           [[ -n "$HOST" && "$PORT" =~ ^[0-9]+$ && -n "$ADMIN_KEY" && -n "$PUBLIC_KEY" && -n "$KNOWN_HOSTS" ]]
@@ -34,8 +42,82 @@ jobs:
           scp -P "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" \
             deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway \
             deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway.py \
+            deploy/environments/event_pipeline/staging_backend_network.py \
             deploy/environments/event_pipeline/install-staging-gateway.sh \
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
-            'cd /tmp && ./install-staging-gateway.sh /tmp/deploy-key.pub'
+            'cd /tmp && /usr/bin/bash /tmp/install-staging-gateway.sh /tmp/deploy-key.pub'
+      - name: Provision missing Staging pipeline credentials
+        if: inputs.action == 'install'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            "LOAD_PASSWORD=$(printf '%q' "$LOAD_PASSWORD") /bin/bash -s" <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+          load_password=${LOAD_PASSWORD:?}
+          config=/etc/binhu-staging-event-pipeline.conf
+          if [[ -e "$config" ]]; then
+            [[ -f "$config" && ! -L "$config" && "$(stat -c %a "$config")" == 600 ]]
+            exit 0
+          fi
+          backend=/srv/binhu-environments/staging/backend.env
+          [[ -f "$backend" && ! -L "$backend" ]]
+          redis_url=$(awk -F= '$1=="REDIS_URL" {print substr($0,index($0,"=")+1); exit}' "$backend")
+          mysql_password=$(awk -F= '$1=="MYSQL_PASSWORD" {print substr($0,index($0,"=")+1); exit}' "$backend")
+          [[ "$redis_url" == redis://* && ${#mysql_password} -ge 32 ]]
+          [[ ${#load_password} -ge 16 && "$load_password" != *$'\n'* && "$load_password" != *$'\r'* ]]
+          tmp=$(mktemp /etc/.binhu-staging-event-pipeline.conf.XXXXXX)
+          trap 'rm -f "$tmp"' EXIT
+          umask 077
+          printf 'STAGING_PIPELINE_MYSQL_PASSWORD=%s\nSTAGING_PIPELINE_MYSQL_ROOT_PASSWORD=%s\nSTAGING_PIPELINE_REDIS_PASSWORD=%s\nSTAGING_BACKEND_MYSQL_PASSWORD=%s\nSTAGING_BACKEND_REDIS_URL=%s\nSTAGING_LOAD_TEST_PASSWORD=%s\n' \
+            "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" \
+            "$mysql_password" "$redis_url" "$load_password" > "$tmp"
+          chmod 600 "$tmp"
+          mv -f "$tmp" "$config"
+          trap - EXIT
+          chmod 600 "$config"
+          REMOTE_SCRIPT
+      - name: Record fixed Staging pipeline configuration digest
+        if: inputs.action == 'install'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            'test -f /etc/binhu-staging-event-pipeline.conf && test ! -L /etc/binhu-staging-event-pipeline.conf && sha256sum /etc/binhu-staging-event-pipeline.conf | awk '\''{print "configuration_sha256=" $1}'\'''
+          rm -f "$RUNNER_TEMP/staging-ssh/"*
+      - name: Verify or apply isolated Staging pipeline backend network
+        if: inputs.action != 'install'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$ACTION" =~ ^(measure|apply)$ ]]
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            "/usr/bin/python3 /usr/local/libexec/binhu-staging-backend-network.py $ACTION"
           rm -f "$RUNNER_TEMP/staging-ssh/"*

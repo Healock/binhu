@@ -10,6 +10,7 @@ command -v useradd >/dev/null && command -v visudo >/dev/null && command -v open
 
 wrapper=/usr/local/bin/binhu-staging-event-pipeline-gateway
 install -o root -g root -m 0755 binhu-staging-event-pipeline-gateway.py /usr/local/libexec/binhu-staging-event-pipeline-gateway.py
+install -o root -g root -m 0755 staging_backend_network.py /usr/local/libexec/binhu-staging-backend-network.py
 install -o root -g root -m 0755 binhu-staging-event-pipeline-gateway "$wrapper"
 id binhu-staging-deploy >/dev/null 2>&1 || useradd --create-home --home-dir /home/binhu-staging-deploy --shell "$wrapper" binhu-staging-deploy
 password_hash="$(openssl rand -hex 48 | openssl passwd -6 -stdin)"

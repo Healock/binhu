@@ -41,4 +41,18 @@ jobs:
             "root@$DEV_HOST:/tmp/"
           ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "root@$DEV_HOST" \
             "cd /tmp && ./install-dev-gateway.sh /tmp/dev-deploy-key.pub"
+      - name: Record fixed Dev eventbus image identities
+        shell: bash
+        env:
+          DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          DEV_PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/dev-ssh/key"
+          printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/dev-ssh/"*
+          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "root@$DEV_HOST" \
+            'set -Eeuo pipefail; for service in kafka-1 schema-registry; do id=$(docker ps -aq --filter label=com.docker.compose.project=binhu-development-eventbus --filter label=com.docker.compose.service="$service"); test -n "$id"; image=$(docker inspect --format "{{.Image}}" "$id"); [[ "$image" =~ ^sha256:[0-9a-f]{64}$ ]]; printf "%s=%s\n" "$service" "$image"; done'
           rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts" "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub"

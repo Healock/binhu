@@ -188,6 +188,19 @@ Dev 派生 Redis 固定使用 192 MiB `maxmemory`、256 MiB 容器内存和 384 
 
 ### Flink JobGraph identity
 
+### Staging backend network boundary
+
+The existing `binhu-staging_internal` network remains the Staging application
+network and is never rebuilt by the event-pipeline workflow. The administrator
+workflow creates the separate internal bridge `binhu-staging-pipeline-backend`
+with fixed Staging labels. Only the existing Staging `environment-mysql` and
+`redis` containers and the current run's `business-bridge` and
+`backend-outbox-relay` may join it. The workflow records the application
+network membership and service identities before and after the change, checks
+the Staging health endpoints, and disconnects only connections it created if
+verification fails. Production, Dev, Shadow, volumes, and the existing
+application network are outside this operation.
+
 `PipelineJob` 使用一个 `StatementSet` 把 `dev_revisions` 和
 `dev_task_metadata` 两个 INSERT 分支提交为一个 JobGraph。两个分支共享一个
 Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到当前运行编号的

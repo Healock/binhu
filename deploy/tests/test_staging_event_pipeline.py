@@ -6,7 +6,8 @@ from unittest.mock import patch
 import zipfile
 
 from deploy.environments.event_pipeline import (
-    staging_compose, staging_control, staging_deploy, staging_metrics_probe, staging_prepare,
+    staging_backend_network, staging_compose, staging_control, staging_deploy,
+    staging_metrics_probe, staging_prepare,
 )
 
 
@@ -24,7 +25,7 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
         self.assertEqual(spec["name"], "binhu-staging-event-pipeline-stg-20260920-01")
         self.assertTrue(spec["networks"]["internal"]["internal"])
         self.assertEqual(spec["networks"]["backend"], {
-            "external": True, "name": "binhu-staging_internal",
+            "external": True, "name": "binhu-staging-pipeline-backend",
         })
         self.assertEqual(set(spec["services"]), {
             "staging-kafka-1", "staging-kafka-2", "staging-kafka-3", "schema-registry",
@@ -248,6 +249,31 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
         self.assertNotIn("binhu-production", wrapper + gateway + installer)
+
+    def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
+        self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")
+        self.assertEqual(staging_backend_network.APP_NETWORK, "binhu-staging_internal")
+        self.assertEqual(staging_backend_network.LABELS, {
+            "binhu.environment": "staging", "binhu.role": "pipeline-backend-access",
+        })
+        source = Path(staging_backend_network.__file__).read_text(encoding="utf-8")
+        self.assertIn('"--internal"', source)
+        self.assertIn('"docker", "network", "disconnect"', source)
+        self.assertIn("staging_application_network_changed", source)
+        self.assertNotIn("binhu-production", source)
+
+    def test_network_validation_rejects_foreign_members(self):
+        valid = {
+            "Name": staging_backend_network.NETWORK, "Driver": "bridge", "Internal": True,
+            "Labels": dict(staging_backend_network.LABELS),
+            "Containers": {},
+        }
+        with patch.object(staging_backend_network, "inspect", return_value={
+            "Config": {"Labels": {"binhu.environment": "production"}},
+        }):
+            valid["Containers"] = {"foreign": {"Name": "binhu-production-backend-1"}}
+            with self.assertRaisesRegex(ValueError, "foreign_member"):
+                staging_backend_network.validate_network(valid)
 
     def test_staging_gateway_rejects_reseeding_before_starting_seed_container(self):
         gateway = (

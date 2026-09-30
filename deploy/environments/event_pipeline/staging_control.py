@@ -19,7 +19,7 @@ from typing import Any
 
 from . import flink_submission
 from .staging_compose import (
-    BROKERS, DLQ_TOPIC, EVENT_TOPIC, REGISTRY_TOPIC, compose, model_sha256,
+    BACKEND_NETWORK, BROKERS, DLQ_TOPIC, EVENT_TOPIC, REGISTRY_TOPIC, compose, model_sha256,
     network_for, project_for,
 )
 from .staging_prepare import BASE, root_for, snapshot_database
@@ -90,13 +90,30 @@ def _validate_no_cross_environment(spec: dict) -> None:
             raise ValueError("Staging runtime references a forbidden environment")
 
 
-def _backend_network() -> dict:
-    network = _docker_json(["docker", "network", "inspect", "binhu-staging_internal"])[0]
+def _backend_network(run_id: str) -> dict:
+    network = _docker_json(["docker", "network", "inspect", BACKEND_NETWORK])[0]
     labels = network.get("Labels", {}) or {}
-    if labels.get("com.docker.compose.project") != "binhu-staging" or not network.get("Internal"):
+    if (network.get("Name") != BACKEND_NETWORK or network.get("Driver") != "bridge"
+            or labels.get("binhu.environment") != "staging"
+            or labels.get("binhu.role") != "pipeline-backend-access"
+            or network.get("Internal") is not True):
         raise ValueError("isolated Staging Backend network required")
-    for item in (network.get("Containers") or {}).values():
-        if not str(item.get("Name", "")).startswith("binhu-staging-"):
+    names = {str(item.get("Name", "")) for item in (network.get("Containers") or {}).values()}
+    required = {"binhu-staging-environment-mysql-1", "binhu-staging-redis-1"}
+    allowed = required | {f"{project_for(run_id)}-{service}-1"
+                          for service in ("business-bridge", "backend-outbox-relay")}
+    if not required <= names or not names <= allowed:
+        raise ValueError("foreign or missing member on Staging Backend network")
+    for item in _docker_json(["docker", "inspect", *sorted(names)]):
+        container_labels = item.get("Config", {}).get("Labels", {}) or {}
+        name = item.get("Name", "").lstrip("/")
+        if (container_labels.get("binhu.environment") != "staging"
+                or item.get("State", {}).get("Status") != "running"):
+            raise ValueError("foreign member on Staging Backend network")
+        if name not in required and (container_labels.get("binhu.run_id") != run_id
+                or container_labels.get("com.docker.compose.project") != project_for(run_id)):
+            raise ValueError("foreign member on Staging Backend network")
+        if name in required and container_labels.get("com.docker.compose.project") != "binhu-staging":
             raise ValueError("foreign member on Staging Backend network")
     return network
 
@@ -123,7 +140,7 @@ def _active_staging_snapshot(manifest: dict[str, Any]) -> str:
 def measure(run_id: str) -> dict[str, Any]:
     root, manifest, spec = _load(run_id)
     _validate_no_cross_environment(spec)
-    backend = _backend_network()
+    backend = _backend_network(run_id)
     snapshot_id = _active_staging_snapshot(manifest)
     for image in manifest["images"].values():
         if _run(["docker", "image", "inspect", "--format", "{{.Id}}", image]).stdout.strip() != image:
