@@ -8,7 +8,7 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, measure, apply, diagnose]
+        options: [install, measure, apply, diagnose, diagnose-runtime]
       run_id:
         description: Existing STG run for the read-only measure diagnostic
         required: false
@@ -49,6 +49,7 @@ jobs:
             deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway.py \
             deploy/environments/event_pipeline/staging_backend_network.py \
             deploy/environments/event_pipeline/staging_measure_diagnostic.py \
+            deploy/environments/event_pipeline/staging_apply_runtime_diagnostic.py \
             deploy/environments/event_pipeline/install-staging-gateway.sh \
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
@@ -129,7 +130,7 @@ jobs:
             "/usr/bin/python3 /usr/local/libexec/binhu-staging-backend-network.py $ACTION"
           rm -f "$RUNNER_TEMP/staging-ssh/"*
       - name: Run fixed read-only measure diagnostic
-        if: inputs.action == 'diagnose'
+        if: inputs.action == 'diagnose' || inputs.action == 'diagnose-runtime'
         shell: bash
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
@@ -137,6 +138,7 @@ jobs:
           ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
           RUN_ID: ${{ inputs.run_id }}
+          ACTION: ${{ inputs.action }}
         run: |
           set -Eeuo pipefail
           [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]]
@@ -144,6 +146,11 @@ jobs:
           printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          if [[ "$ACTION" == diagnose ]]; then
+            script=/usr/local/libexec/binhu-staging-measure-diagnostic.py
+          else
+            script=/usr/local/libexec/binhu-staging-apply-runtime-diagnostic.py
+          fi
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
-            "/usr/bin/python3 /usr/local/libexec/binhu-staging-measure-diagnostic.py $RUN_ID"
+            "/usr/bin/python3 $script $RUN_ID"
           rm -f "$RUNNER_TEMP/staging-ssh/"*

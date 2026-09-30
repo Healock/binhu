@@ -261,6 +261,9 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('staging_container_conflict', control)
         self.assertIn('staging_image_missing', control)
         self.assertIn('staging_network_attachment_failed', control)
+        runtime = (root / "staging_apply_runtime_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn('"services"', runtime)
+        self.assertNotIn('stderr', runtime)
 
     def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
         self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")
