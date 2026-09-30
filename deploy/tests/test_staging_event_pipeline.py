@@ -253,6 +253,10 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"error_type"', diagnostic)
         self.assertIn('"error_code"', diagnostic)
         self.assertNotIn("backend.env", diagnostic)
+        control = (root / "staging_control.py").read_text(encoding="utf-8")
+        self.assertIn('"phase": phase', control)
+        self.assertIn('"error_type": type(error).__name__', control)
+        self.assertIn('"error_code": error_code', control)
 
     def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
         self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")

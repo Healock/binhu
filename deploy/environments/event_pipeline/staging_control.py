@@ -247,11 +247,15 @@ def apply(run_id: str) -> dict[str, Any]:
     evidence_root.mkdir(mode=0o700, exist_ok=True)
     evidence = Path(tempfile.mkdtemp(prefix="apply-", dir=evidence_root))
     started = time.monotonic()
+    phase = "compose_brokers"
     try:
         _compose(root, "up", "-d", *BROKERS)
+        phase = "create_topics"
         topics = _create_topics(manifest["project"])
+        phase = "start_schema_dependencies"
         _compose(root, "up", "-d", "schema-registry", "staging-derived-mysql", "staging-derived-redis")
         schema = None
+        phase = "apply_schema_registry"
         for attempt in range(6):
             try:
                 schema = _compose(root, "run", "--rm", "--no-deps", "relay", "python", "-m",
@@ -264,18 +268,25 @@ def apply(run_id: str) -> dict[str, Any]:
         if schema is None:
             raise ValueError("Staging Schema Registry did not become ready")
         (evidence / "schema.log").write_text(schema.stdout, encoding="utf-8")
+        phase = "migrate_delivery_schema"
         _compose(root, "run", "--rm", "--no-deps", "relay", "python", "-m",
                  "event_pipeline.delivery_schema_migrate", timeout=120)
+        phase = "start_pipeline_services"
         _compose(root, "up", "-d", "relay", "bridge", "business-bridge", "backend-outbox-relay",
                  "python-metadata-worker", "jobmanager", "taskmanager")
+        phase = "start_flink_job"
         flink = _flink(root, manifest, evidence)
         manifest.update({"started": True, "acceptance": "pending"})
         (root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return {**report, "topics": topics, "flink": flink, "acceptance": "pending",
                 "elapsed_seconds": round(time.monotonic() - started, 3)}
-    except BaseException:
+    except BaseException as error:
+        error_code = str(error)
+        if not re.fullmatch(r"[A-Za-z0-9_. -]{1,96}", error_code):
+            error_code = "staging_apply_failed"
         (evidence / "failure.json").write_text(json.dumps({
             "environment": "staging", "run_id": run_id, "acceptance": "failed",
+            "phase": phase, "error_type": type(error).__name__, "error_code": error_code,
         }) + "\n", encoding="utf-8")
         raise
 
