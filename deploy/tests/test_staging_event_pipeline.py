@@ -270,6 +270,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"error_code": _safe_prepare_error_code(error)', prepare)
         self.assertIn('staging_image_inspect_failed', prepare)
         self.assertIn('staging_docker_unavailable', prepare)
+        self.assertIn('"image_key"', prepare)
 
     def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
         self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")
