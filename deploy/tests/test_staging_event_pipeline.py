@@ -249,6 +249,10 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
         self.assertNotIn("binhu-production", wrapper + gateway + installer)
+        diagnostic = (root / "staging_measure_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn('"error_type"', diagnostic)
+        self.assertIn('"error_code"', diagnostic)
+        self.assertNotIn("backend.env", diagnostic)
 
     def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
         self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")
