@@ -93,17 +93,8 @@ def _validate_no_cross_environment(spec: dict) -> None:
 def _backend_network() -> dict:
     network = _docker_json(["docker", "network", "inspect", "binhu-staging_internal"])[0]
     labels = network.get("Labels", {}) or {}
-    # This is the existing Staging application bridge used only to reach the
-    # Staging backend.  It is intentionally shared with the backend, Redis and
-    # environment MySQL, so Docker's ``Internal`` flag is false.  The
-    # event-pipeline's own run-scoped network remains internal and carries all
-    # broker/derived services.  Do not require the application bridge itself
-    # to be internal or measure will reject the controlled Staging topology.
-    if (network.get("Name") != "binhu-staging_internal"
-            or network.get("Driver") != "bridge"
-            or labels.get("com.docker.compose.project") != "binhu-staging"
-            or labels.get("binhu.environment") != "staging"):
-        raise ValueError("shared Staging Backend bridge required")
+    if labels.get("com.docker.compose.project") != "binhu-staging" or not network.get("Internal"):
+        raise ValueError("isolated Staging Backend network required")
     for item in (network.get("Containers") or {}).values():
         if not str(item.get("Name", "")).startswith("binhu-staging-"):
             raise ValueError("foreign member on Staging Backend network")

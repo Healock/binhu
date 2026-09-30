@@ -156,29 +156,6 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             staging_control._validate_no_cross_environment({"networks": {"x": "binhu-production_internal"}})
 
-    def test_shared_staging_backend_bridge_is_allowed_without_internal_flag(self):
-        network = {
-            "Name": "binhu-staging_internal",
-            "Driver": "bridge",
-            "Internal": False,
-            "Labels": {"com.docker.compose.project": "binhu-staging", "binhu.environment": "staging"},
-            "Containers": {"backend": {"Name": "binhu-staging-backend-1"}},
-        }
-        with patch.object(staging_control, "_docker_json", return_value=[network]):
-            self.assertEqual(staging_control._backend_network(), network)
-
-    def test_backend_bridge_rejects_foreign_environment(self):
-        network = {
-            "Name": "binhu-staging_internal",
-            "Driver": "bridge",
-            "Internal": False,
-            "Labels": {"com.docker.compose.project": "binhu-production", "binhu.environment": "production"},
-            "Containers": {"backend": {"Name": "binhu-production-backend-1"}},
-        }
-        with patch.object(staging_control, "_docker_json", return_value=[network]), \
-                self.assertRaises(ValueError):
-            staging_control._backend_network()
-
     def test_compose_json_parser_accepts_array_and_json_lines(self):
         self.assertEqual(staging_control._json_array_or_lines('[{"Service":"worker"}]')[0]["Service"], "worker")
         self.assertEqual(

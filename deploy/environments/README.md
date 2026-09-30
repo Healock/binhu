@@ -112,15 +112,6 @@ contract, durable delivery ledger, fixed Flink aggregation and revision-fenced
 Redis bridge. Its preparation/startup and minimal synthetic acceptance are separate
 from schema-registry, recovery and full business integration acceptance.
 
-The Staging event pipeline uses a run-scoped Docker `internal` network for Kafka,
-Flink, Schema Registry and derived stores. Its two backend bridge services also
-join the existing `binhu-staging_internal` application bridge so they can reach
-the Staging backend. That application bridge is shared by the Staging backend,
-Redis and environment MySQL and is therefore not required to have Docker's
-`Internal=true` flag; the gateway instead requires the fixed Staging project and
-environment labels and rejects every foreign network member. The shared bridge
-must never be replaced or rebuilt during pipeline deployment.
-
 Before a Dev runtime acceptance, verify the current Bootstrap identity with
 `python -m deploy.environments.dev_bootstrap_acceptance verify
 --expected-version <candidate-version>`. The verifier uses only the fixed
