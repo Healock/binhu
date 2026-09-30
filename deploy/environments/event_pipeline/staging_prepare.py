@@ -41,6 +41,10 @@ def _safe_prepare_error_code(error: Exception) -> str:
         "Staging run directory already exists": "staging_run_directory_conflict",
         "fixed Staging root required": "staging_root_invalid",
         "compiled Staging PipelineJob JAR missing": "staging_pipeline_jar_missing",
+        "staging_image_missing": "staging_image_missing",
+        "staging_docker_daemon_error": "staging_docker_daemon_error",
+        "staging_docker_unavailable": "staging_docker_unavailable",
+        "staging_image_inspect_failed": "staging_image_inspect_failed",
         "Staging preparation command failed": "staging_preparation_command_failed",
     }
     return known.get(message, "staging_prepare_failed")
@@ -53,7 +57,16 @@ def root_for(run_id: str) -> Path:
 def checked(command: list[str], *, timeout: int = 60) -> str:
     result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
-        raise ValueError("Staging preparation command failed")
+        text = f"{result.stdout}\n{result.stderr}".lower()
+        if "no such image" in text or "image not found" in text or "manifest unknown" in text:
+            code = "staging_image_missing"
+        elif "error response from daemon" in text:
+            code = "staging_docker_daemon_error"
+        elif "cannot connect to the docker daemon" in text:
+            code = "staging_docker_unavailable"
+        else:
+            code = "staging_image_inspect_failed"
+        raise ValueError(code)
     return result.stdout
 
 
