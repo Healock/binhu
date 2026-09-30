@@ -33,7 +33,24 @@ FORBIDDEN_TOKENS = ("production", "shadow", "development", "dev_")
 def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
-        raise ValueError("Staging event-pipeline command failed")
+        text = f"{result.stdout}\n{result.stderr}".lower()
+        if "no space left" in text:
+            code = "staging_insufficient_disk"
+        elif "out of memory" in text or "cannot allocate memory" in text:
+            code = "staging_resource_exhausted"
+        elif "port is already allocated" in text or "address already in use" in text:
+            code = "staging_port_conflict"
+        elif "network" in text and "not found" in text:
+            code = "staging_network_missing"
+        elif "already in use" in text or "container name" in text or "conflict" in text:
+            code = "staging_container_conflict"
+        elif "pull access denied" in text or "manifest unknown" in text or "image not found" in text:
+            code = "staging_image_missing"
+        elif "cannot connect to the docker daemon" in text:
+            code = "staging_docker_unavailable"
+        else:
+            code = "staging_event_pipeline_command_failed"
+        raise ValueError(code)
     return result
 
 
