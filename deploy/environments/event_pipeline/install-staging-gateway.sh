@@ -13,6 +13,7 @@ install -o root -g root -m 0755 binhu-staging-event-pipeline-gateway.py /usr/loc
 install -o root -g root -m 0755 staging_backend_network.py /usr/local/libexec/binhu-staging-backend-network.py
 install -o root -g root -m 0755 staging_measure_diagnostic.py /usr/local/libexec/binhu-staging-measure-diagnostic.py
 install -o root -g root -m 0755 staging_apply_runtime_diagnostic.py /usr/local/libexec/binhu-staging-apply-runtime-diagnostic.py
+install -o root -g root -m 0755 staging_image_diagnostic.py /usr/local/libexec/binhu-staging-image-diagnostic.py
 install -o root -g root -m 0755 binhu-staging-event-pipeline-gateway "$wrapper"
 id binhu-staging-deploy >/dev/null 2>&1 || useradd --create-home --home-dir /home/binhu-staging-deploy --shell "$wrapper" binhu-staging-deploy
 password_hash="$(openssl rand -hex 48 | openssl passwd -6 -stdin)"
