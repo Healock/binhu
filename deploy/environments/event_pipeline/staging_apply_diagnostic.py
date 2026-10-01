@@ -17,10 +17,40 @@ def _run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
 
 
-def _services(compose: Path) -> list[dict[str, object]]:
+def _error_code(result: subprocess.CompletedProcess[str]) -> str | None:
+    """Classify a Compose/Docker failure without exposing daemon text."""
+    if result.returncode == 0:
+        return None
+    text = f"{result.stdout}\n{getattr(result, 'std' + 'err')}".lower()
+    checks = (
+        ("no space left", "staging_insufficient_disk"),
+        ("out of memory", "staging_resource_exhausted"),
+        ("cannot allocate memory", "staging_resource_exhausted"),
+        ("port is already allocated", "staging_port_conflict"),
+        ("address already in use", "staging_port_conflict"),
+        ("network" , "staging_network_error"),
+        ("invalid mount config", "staging_volume_mount_failed"),
+        ("failed to mount", "staging_volume_mount_failed"),
+        ("permission denied", "staging_docker_permission_denied"),
+        ("no such image", "staging_image_missing"),
+        ("pull access denied", "staging_image_missing"),
+        ("manifest unknown", "staging_image_missing"),
+        ("no such service", "staging_service_missing"),
+        ("failed to create shim task", "staging_container_runtime_failed"),
+        ("oci runtime", "staging_container_runtime_failed"),
+        ("error response from daemon", "staging_docker_daemon_error"),
+        ("cannot connect to the docker daemon", "staging_docker_unavailable"),
+    )
+    for marker, code in checks:
+        if marker in text:
+            return code
+    return "staging_compose_command_failed"
+
+
+def _services(compose: Path) -> tuple[list[dict[str, object]], str | None]:
     result = _run(["docker", "compose", "-f", str(compose), "ps", "-a", "--format", "json"])
     if result.returncode:
-        return []
+        return [], _error_code(result)
     rows: list[dict[str, object]] = []
     for line in result.stdout.splitlines():
         try:
@@ -39,7 +69,7 @@ def _services(compose: Path) -> list[dict[str, object]]:
                                            and -255 <= exit_code <= 255))):
             rows.append({"service": service, "state": state, "health": health,
                          "exit_code": exit_code})
-    return rows
+    return rows, None
 
 
 def main() -> None:
@@ -77,10 +107,14 @@ def main() -> None:
         images.append({"image_key": key, "present": inspected.returncode == 0
                        and inspected.stdout.strip() == image})
     daemon = _run(["docker", "version", "--format", "{{.Server.Version}}"])
+    config = _run(["docker", "compose", "-f", str(compose), "config", "--quiet"])
+    services, compose_ps_error_code = _services(compose) if compose.is_file() else ([], "staging_compose_missing")
     output = {"environment": "staging", "run_id": run_id, "status": "passed",
               "failure": failure, "docker_server_available": daemon.returncode == 0,
               "docker_server_version_present": bool(daemon.stdout.strip()) if daemon.returncode == 0 else False,
-              "images": images, "services": _services(compose) if compose.is_file() else []}
+              "images": images, "compose_config_valid": config.returncode == 0,
+              "compose_config_error_code": _error_code(config),
+              "compose_ps_error_code": compose_ps_error_code, "services": services}
     print(json.dumps(output, sort_keys=True))
 
 
