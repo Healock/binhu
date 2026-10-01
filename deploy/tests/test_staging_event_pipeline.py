@@ -284,6 +284,10 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
         self.assertIn('"images"', image_diag)
         self.assertNotIn('stderr', image_diag)
+        apply_diag = (root / "staging_apply_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn('SAFE_FIELDS', apply_diag)
+        self.assertIn('docker_server_available', apply_diag)
+        self.assertNotIn('stderr', apply_diag)
 
     def test_schema_registry_preload_uses_separate_fixed_archive_upload_and_import_phases(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /

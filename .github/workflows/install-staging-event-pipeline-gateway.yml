@@ -8,7 +8,7 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, measure, apply, diagnose, diagnose-runtime, diagnose-images, preload-schema-registry]
+        options: [install, measure, apply, diagnose, diagnose-runtime, diagnose-apply, diagnose-images, preload-schema-registry]
       run_id:
         description: Existing STG run for the read-only measure diagnostic
         required: false
@@ -69,6 +69,7 @@ jobs:
             deploy/environments/event_pipeline/staging_backend_network.py \
             deploy/environments/event_pipeline/staging_measure_diagnostic.py \
             deploy/environments/event_pipeline/staging_apply_runtime_diagnostic.py \
+            deploy/environments/event_pipeline/staging_apply_diagnostic.py \
             deploy/environments/event_pipeline/staging_image_diagnostic.py \
             deploy/environments/event_pipeline/staging_schema_registry_preload.py \
             deploy/environments/event_pipeline/install-staging-gateway.sh \
@@ -151,7 +152,7 @@ jobs:
             "/usr/bin/python3 /usr/local/libexec/binhu-staging-backend-network.py $ACTION"
           rm -f "$RUNNER_TEMP/staging-ssh/"*
       - name: Run fixed read-only measure diagnostic
-        if: inputs.action == 'diagnose' || inputs.action == 'diagnose-runtime' || inputs.action == 'diagnose-images'
+        if: inputs.action == 'diagnose' || inputs.action == 'diagnose-runtime' || inputs.action == 'diagnose-apply' || inputs.action == 'diagnose-images'
         shell: bash
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
@@ -177,6 +178,8 @@ jobs:
               "/usr/bin/python3 $script $RUN_ID"
             rm -f "$RUNNER_TEMP/staging-ssh/"*
             exit 0
+          elif [[ "$ACTION" == diagnose-apply ]]; then
+            script=/usr/local/libexec/binhu-staging-apply-diagnostic.py
           else
             script=/usr/local/libexec/binhu-staging-apply-runtime-diagnostic.py
           fi
