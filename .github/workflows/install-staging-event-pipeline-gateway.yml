@@ -201,6 +201,7 @@ jobs:
           printf '%s\n' "$STAGING_KEY" > "$RUNNER_TEMP/staging-preload-ssh/key"
           printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
+          # Resolve the exact artifact ID before downloading its immutable ZIP.
           artifact_name="dev-schema-registry-$DEV_EXPORT_RUN_ID"
           artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DEV_EXPORT_RUN_ID/artifacts" \
             --jq ".artifacts[] | select(.name == \"$artifact_name\" and .expired == false) | .id" | head -n 1)
