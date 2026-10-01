@@ -20,6 +20,12 @@ IMAGE_REF_RE = re.compile(
     r"(?:@sha256:[0-9a-f]{64})?$"
 )
 TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$")
+LABEL_KEYS = (
+    "org.opencontainers.image.source",
+    "org.opencontainers.image.version",
+    "org.opencontainers.image.revision",
+    "org.opencontainers.image.ref.name",
+)
 
 
 def _inspect() -> dict:
@@ -61,6 +67,12 @@ def diagnose() -> dict:
         value for value in (item.get("RepoTags") or [])
         if isinstance(value, str) and TAG_RE.fullmatch(value)
     })
+    labels = config.get("Labels") or {}
+    image_labels = {
+        key: str(labels[key])[:256]
+        for key in LABEL_KEYS
+        if isinstance(labels.get(key), str)
+    }
     return {
         "environment": "development",
         "project": PROJECT,
@@ -69,6 +81,7 @@ def diagnose() -> dict:
         "image_source": source,
         "repo_digests": repo_digests,
         "repo_tags": repo_tags,
+        "image_labels": image_labels,
         "status": "passed",
     }
 
