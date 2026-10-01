@@ -295,6 +295,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             "preload_stage=server_preload",
             "server_archive_metadata=",
             "schema-registry-image.tar",
+            "chmod 600 -- '$remote_archive'",
         ):
             self.assertIn(marker, workflow)
         self.assertNotIn('cat "$archive" | ssh', workflow)
