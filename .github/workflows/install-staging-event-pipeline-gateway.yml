@@ -221,6 +221,10 @@ jobs:
           echo "manifest_image=$manifest_image"
           echo "manifest_status=$manifest_status"
           echo "manifest_archive_size_type=$manifest_size_type"
+          echo "manifest_image_len=${#manifest_image}"
+          echo "image_id_len=${#IMAGE_ID}"
+          echo "manifest_image_sha=$(printf '%s' "$manifest_image" | sha256sum | awk '{print $1}')"
+          echo "image_id_sha=$(printf '%s' "$IMAGE_ID" | sha256sum | awk '{print $1}')"
           [[ "$manifest_source" == development ]] || { echo 'manifest_error=source_environment'; exit 1; }
           [[ "$manifest_image" == "$IMAGE_ID" ]] || { echo 'manifest_error=image_id'; exit 1; }
           [[ "$manifest_status" == passed ]] || { echo 'manifest_error=status'; exit 1; }
