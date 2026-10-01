@@ -9,7 +9,7 @@ import re
 import subprocess
 
 RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
-BASE = Path("/var/lib/binhu-staging-event-pipeline/candidates")
+BASE = Path("/srv/binhu-environments/staging-event-pipeline")
 
 
 def main() -> None:
