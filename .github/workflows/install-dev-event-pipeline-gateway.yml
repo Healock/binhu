@@ -9,7 +9,7 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, diagnose-image-source]
+        options: [install, diagnose-image-source, export-schema-registry]
 
 permissions:
   contents: read
@@ -84,3 +84,36 @@ jobs:
           ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "root@$DEV_HOST" \
             '/usr/bin/python3 /usr/local/libexec/binhu-dev-image-source-diagnostic.py'
           rm -f "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts"
+      - name: Export fixed Dev Schema Registry image artifact
+        if: inputs.action == 'export-schema-registry'
+        shell: bash
+        env:
+          DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          DEV_PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          expected='sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4'
+          install -d -m 700 "$RUNNER_TEMP/dev-export-ssh" "$RUNNER_TEMP/dev-schema-registry"
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/dev-export-ssh/key"
+          printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-export-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/dev-export-ssh/"*
+          actual=$(ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-export-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-export-ssh/known_hosts" "root@$DEV_HOST" \
+            "docker image inspect --format '{{.Id}}' '$expected'")
+          [[ "$actual" == "$expected" ]]
+          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-export-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-export-ssh/known_hosts" "root@$DEV_HOST" \
+            "docker save '$expected'" > "$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
+          archive_sha=$(sha256sum "$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar" | awk '{print $1}')
+          archive_size=$(stat -c %s "$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar")
+          printf '{"source_environment":"development","image_id":"%s","archive_sha256":"%s","archive_size":%s,"status":"passed"}\n' \
+            "$expected" "$archive_sha" "$archive_size" > "$RUNNER_TEMP/dev-schema-registry/manifest.json"
+          rm -f "$RUNNER_TEMP/dev-export-ssh/"*
+      - name: Upload fixed Dev Schema Registry image artifact
+        if: inputs.action == 'export-schema-registry'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dev-schema-registry-${{ github.run_id }}
+          path: ${{ runner.temp }}/dev-schema-registry
+          if-no-files-found: error
+          retention-days: 3

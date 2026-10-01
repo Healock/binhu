@@ -24,9 +24,15 @@ on:
         required: false
         default: sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4
         type: string
+      dev_export_run_id:
+        description: GitHub run ID of the Dev fixed-image export
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   install:
@@ -182,26 +188,28 @@ jobs:
           STAGING_PORT: ${{ secrets.BINHU_STAGING_PORT }}
           STAGING_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
           STAGING_KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
-          DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
-          DEV_PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
-          DEV_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_ADMIN_SSH_KEY }}
-          DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
           RUN_ID: ${{ inputs.run_id }}
           IMAGE_ID: ${{ inputs.schema_registry_image }}
+          DEV_EXPORT_RUN_ID: ${{ inputs.dev_export_run_id }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]]
           [[ "$IMAGE_ID" == 'sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10dc9f1807a53531a2b4' ]]
-          install -d -m 700 "$RUNNER_TEMP/staging-preload-ssh" "$RUNNER_TEMP/dev-preload-ssh"
+          [[ "$DEV_EXPORT_RUN_ID" =~ ^[0-9]+$ ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-preload-ssh" "$RUNNER_TEMP/dev-schema-registry"
           printf '%s\n' "$STAGING_KEY" > "$RUNNER_TEMP/staging-preload-ssh/key"
           printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
-          printf '%s\n' "$DEV_KEY" > "$RUNNER_TEMP/dev-preload-ssh/key"
-          printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-preload-ssh/known_hosts"
-          chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts" "$RUNNER_TEMP/dev-preload-ssh/key" "$RUNNER_TEMP/dev-preload-ssh/known_hosts"
-          dev_image=$(ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-preload-ssh/known_hosts" "root@$DEV_HOST" \
-            "docker image inspect --format '{{.Id}}' '$IMAGE_ID'")
-          [[ "$dev_image" == "$IMAGE_ID" ]]
-          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-preload-ssh/known_hosts" "root@$DEV_HOST" \
-            "docker save '$IMAGE_ID'" | ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" "root@$STAGING_HOST" \
+          chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
+          gh run download "$DEV_EXPORT_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "dev-schema-registry-$DEV_EXPORT_RUN_ID" --dir "$RUNNER_TEMP/dev-schema-registry"
+          manifest="$RUNNER_TEMP/dev-schema-registry/manifest.json"
+          archive="$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
+          [[ -f "$manifest" && -f "$archive" ]]
+          jq -e --arg image "$IMAGE_ID" '.source_environment == "development" and .image_id == $image and .status == "passed" and (.archive_size|type == "number")' "$manifest" >/dev/null
+          archive_sha=$(sha256sum "$archive" | awk '{print $1}')
+          [[ "$archive_sha" == "$(jq -r .archive_sha256 "$manifest")" ]]
+          cat "$archive" | ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" "root@$STAGING_HOST" \
             "/usr/bin/python3 /usr/local/libexec/binhu-staging-schema-registry-preload.py '$RUN_ID' '$IMAGE_ID'"
-          rm -f "$RUNNER_TEMP/staging-preload-ssh/"* "$RUNNER_TEMP/dev-preload-ssh/"*
+          rm -f "$RUNNER_TEMP/staging-preload-ssh/"*
+          rm -rf "$RUNNER_TEMP/dev-schema-registry"
