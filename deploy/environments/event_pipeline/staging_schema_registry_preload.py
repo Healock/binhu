@@ -15,6 +15,7 @@ RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 APPROVED_IMAGE = "sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4"
 EVIDENCE_ROOT = Path("/var/lib/binhu-staging-event-pipeline/evidence")
+INCOMING_ROOT = Path("/var/lib/binhu-staging-event-pipeline/incoming")
 MAX_BYTES = 4 * 1024 * 1024 * 1024
 
 
@@ -29,28 +30,56 @@ def _write_once(path: Path, payload: dict) -> None:
     os.chmod(path, 0o600)
 
 
-def preload(run_id: str, image_id: str) -> dict:
+def _fixed_archive_path(run_id: str, archive_path: str | Path) -> Path:
+    expected = INCOMING_ROOT / run_id / "schema-registry-image.tar"
+    candidate = Path(archive_path)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("image archive missing") from error
+    if resolved != expected or candidate.is_symlink() or not candidate.is_file():
+        raise ValueError("image archive path refused")
+    stat = candidate.stat()
+    if stat.st_uid != 0 or stat.st_mode & 0o077:
+        raise ValueError("image archive permissions refused")
+    return candidate
+
+
+def preload(run_id: str, image_id: str, archive_path: str | Path | None = None) -> dict:
     if not RUN_RE.fullmatch(run_id) or image_id != APPROVED_IMAGE or not DIGEST_RE.fullmatch(image_id):
         raise ValueError("fixed preload identity required")
     evidence = EVIDENCE_ROOT / run_id
     if evidence.exists() or evidence.is_symlink():
         raise ValueError("preload run already exists")
     evidence.mkdir(mode=0o700, parents=True)
-    archive = evidence / "schema-registry-image.tar.partial"
+    archive = (_fixed_archive_path(run_id, archive_path)
+               if archive_path is not None
+               else evidence / "schema-registry-image.tar.partial")
     report = evidence / "schema-registry-preload.json"
     digest = hashlib.sha256()
     size = 0
     try:
-        with archive.open("xb") as output:
-            while True:
-                block = sys.stdin.buffer.read(1024 * 1024)
-                if not block:
-                    break
-                size += len(block)
-                if size > MAX_BYTES:
-                    raise ValueError("image archive exceeds fixed limit")
-                output.write(block)
-                digest.update(block)
+        if archive_path is None:
+            with archive.open("xb") as output:
+                while True:
+                    block = sys.stdin.buffer.read(1024 * 1024)
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > MAX_BYTES:
+                        raise ValueError("image archive exceeds fixed limit")
+                    output.write(block)
+                    digest.update(block)
+        else:
+            with archive.open("rb") as input_file:
+                while True:
+                    block = input_file.read(1024 * 1024)
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > MAX_BYTES:
+                        raise ValueError("image archive exceeds fixed limit")
+                    digest.update(block)
         if size == 0:
             raise ValueError("image archive is empty")
         loaded = subprocess.run(
@@ -95,10 +124,11 @@ def preload(run_id: str, image_id: str) -> dict:
 
 
 def main() -> None:
-    if os.geteuid() != 0 or len(sys.argv) != 3:
+    if os.geteuid() != 0 or len(sys.argv) not in (3, 4):
         raise SystemExit("staging_schema_registry_preload_refused")
     try:
-        print(json.dumps(preload(sys.argv[1], sys.argv[2]), sort_keys=True))
+        archive_path = sys.argv[3] if len(sys.argv) == 4 else None
+        print(json.dumps(preload(sys.argv[1], sys.argv[2], archive_path), sort_keys=True))
     except Exception:
         # The report contains only fixed identity fields and a bounded error code.
         # Echo it so the controlled workflow can diagnose a failed preload without

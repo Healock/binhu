@@ -37,9 +37,10 @@ permissions:
 jobs:
   install:
     runs-on: ubuntu-latest
-    # The approved Schema Registry archive is ~428 MB; allow the fixed SSH
-    # transfer and docker load to finish without changing the server contract.
-    timeout-minutes: 90
+    # The approved Schema Registry archive is ~428 MB; upload it as a fixed
+    # server-side file before docker load so transport and import have separate
+    # bounded phases and can be diagnosed independently.
+    timeout-minutes: 180
     environment: staging
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -239,9 +240,41 @@ jobs:
           echo 'preload_stage=archive_hash_check'
           archive_sha=$(sha256sum "$archive" | awk '{print $1}')
           [[ "$archive_sha" == "$(jq -r .archive_sha256 "$manifest")" ]]
+          remote_dir="/var/lib/binhu-staging-event-pipeline/incoming/$RUN_ID"
+          remote_archive="$remote_dir/schema-registry-image.tar"
+          cleanup_remote() {
+            ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+              -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+              "root@$STAGING_HOST" "rm -f -- '$remote_archive'" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+          echo 'preload_stage=server_archive_prepare'
+          ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" "install -d -m 700 -- '$remote_dir' && rm -f -- '$remote_archive'"
+          echo 'preload_stage=server_archive_upload'
+          scp -P "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "$archive" "root@$STAGING_HOST:$remote_archive"
+          echo 'preload_stage=server_archive_hash_check'
+          remote_sha=$(ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" "stat -c '%a %u %F' -- '$remote_archive' && sha256sum -- '$remote_archive'" )
+          echo "server_archive_metadata=$(printf '%s' "$remote_sha" | head -n 1)"
+          remote_hash=$(printf '%s' "$remote_sha" | tail -n 1 | awk '{print $1}')
+          [[ "$remote_hash" == "$(jq -r .archive_sha256 "$manifest")" ]]
           echo 'preload_stage=server_preload'
-          cat "$archive" | ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" "root@$STAGING_HOST" \
-            "/usr/bin/python3 /usr/local/libexec/binhu-staging-schema-registry-preload.py '$RUN_ID' '$IMAGE_ID'"
+          ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" \
+            "/usr/bin/python3 /usr/local/libexec/binhu-staging-schema-registry-preload.py '$RUN_ID' '$IMAGE_ID' '$remote_archive'"
           echo 'preload_stage=server_preload_complete'
+          trap - EXIT
+          cleanup_remote
           rm -f "$RUNNER_TEMP/staging-preload-ssh/"*
           rm -rf "$RUNNER_TEMP/dev-schema-registry"
