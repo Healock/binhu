@@ -262,6 +262,8 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('staging_container_conflict', control)
         self.assertIn('staging_image_missing', control)
         self.assertIn('staging_network_attachment_failed', control)
+        installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
+        self.assertIn('staging_apply_diagnostic.py', installer)
         runtime = (root / "staging_apply_runtime_diagnostic.py").read_text(encoding="utf-8")
         self.assertIn('"services"', runtime)
         self.assertNotIn('stderr', runtime)
