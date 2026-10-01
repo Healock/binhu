@@ -259,6 +259,10 @@ jobs:
             -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
             "$archive" "root@$STAGING_HOST:$remote_archive"
+          ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" "chmod 600 -- '$remote_archive'"
           echo 'preload_stage=server_archive_hash_check'
           remote_sha=$(ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
             -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
