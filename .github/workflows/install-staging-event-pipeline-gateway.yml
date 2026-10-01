@@ -225,6 +225,11 @@ jobs:
           echo "image_id_len=${#IMAGE_ID}"
           echo "manifest_image_sha=$(printf '%s' "$manifest_image" | sha256sum | awk '{print $1}')"
           echo "image_id_sha=$(printf '%s' "$IMAGE_ID" | sha256sum | awk '{print $1}')"
+          mismatch_index=-1
+          for ((i=0; i<${#manifest_image}; i++)); do
+            if [[ "${manifest_image:i:1}" != "${IMAGE_ID:i:1}" ]]; then mismatch_index=$i; break; fi
+          done
+          echo "image_id_mismatch_index=$mismatch_index"
           [[ "$manifest_source" == development ]] || { echo 'manifest_error=source_environment'; exit 1; }
           [[ "$manifest_image" == "$IMAGE_ID" ]] || { echo 'manifest_error=image_id'; exit 1; }
           [[ "$manifest_status" == passed ]] || { echo 'manifest_error=status'; exit 1; }
