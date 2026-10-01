@@ -201,8 +201,15 @@ jobs:
           printf '%s\n' "$STAGING_KEY" > "$RUNNER_TEMP/staging-preload-ssh/key"
           printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
-          gh run download "$DEV_EXPORT_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "dev-schema-registry-$DEV_EXPORT_RUN_ID" --dir "$RUNNER_TEMP/dev-schema-registry"
+          artifact_name="dev-schema-registry-$DEV_EXPORT_RUN_ID"
+          artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DEV_EXPORT_RUN_ID/artifacts" \
+            --jq ".artifacts[] | select(.name == \"$artifact_name\" and .expired == false) | .id" | head -n 1)
+          [[ "$artifact_id" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
+            > "$RUNNER_TEMP/dev-schema-registry/export.zip"
+          unzip -q "$RUNNER_TEMP/dev-schema-registry/export.zip" -d "$RUNNER_TEMP/dev-schema-registry/unpacked"
+          mv "$RUNNER_TEMP/dev-schema-registry/unpacked/manifest.json" "$RUNNER_TEMP/dev-schema-registry/manifest.json"
+          mv "$RUNNER_TEMP/dev-schema-registry/unpacked/schema-registry-image.tar" "$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
           manifest="$RUNNER_TEMP/dev-schema-registry/manifest.json"
           archive="$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
           [[ -f "$manifest" && -f "$archive" ]]
