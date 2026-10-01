@@ -8,7 +8,7 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, measure, apply, diagnose, diagnose-runtime, diagnose-images]
+        options: [install, measure, apply, diagnose, diagnose-runtime, diagnose-images, preload-schema-registry]
       run_id:
         description: Existing STG run for the read-only measure diagnostic
         required: false
@@ -18,6 +18,11 @@ on:
         description: JSON object with the six approved Staging image digests for read-only diagnostics
         required: false
         default: ''
+        type: string
+      schema_registry_image:
+        description: Fixed approved Schema Registry image digest
+        required: false
+        default: sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4
         type: string
 
 permissions:
@@ -56,6 +61,7 @@ jobs:
             deploy/environments/event_pipeline/staging_measure_diagnostic.py \
             deploy/environments/event_pipeline/staging_apply_runtime_diagnostic.py \
             deploy/environments/event_pipeline/staging_image_diagnostic.py \
+            deploy/environments/event_pipeline/staging_schema_registry_preload.py \
             deploy/environments/event_pipeline/install-staging-gateway.sh \
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
@@ -168,3 +174,34 @@ jobs:
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
             "/usr/bin/python3 $script $RUN_ID"
           rm -f "$RUNNER_TEMP/staging-ssh/"*
+      - name: Preload fixed Schema Registry image from Dev
+        if: inputs.action == 'preload-schema-registry'
+        shell: bash
+        env:
+          STAGING_HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          STAGING_PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          STAGING_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          DEV_HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
+          DEV_PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
+          DEV_KEY: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          DEV_KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
+          RUN_ID: ${{ inputs.run_id }}
+          IMAGE_ID: ${{ inputs.schema_registry_image }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]]
+          [[ "$IMAGE_ID" == 'sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10dc9f1807a53531a2b4' ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-preload-ssh" "$RUNNER_TEMP/dev-preload-ssh"
+          printf '%s\n' "$STAGING_KEY" > "$RUNNER_TEMP/staging-preload-ssh/key"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
+          printf '%s\n' "$DEV_KEY" > "$RUNNER_TEMP/dev-preload-ssh/key"
+          printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-preload-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts" "$RUNNER_TEMP/dev-preload-ssh/key" "$RUNNER_TEMP/dev-preload-ssh/known_hosts"
+          dev_image=$(ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-preload-ssh/known_hosts" "root@$DEV_HOST" \
+            "docker image inspect --format '{{.Id}}' '$IMAGE_ID'")
+          [[ "$dev_image" == "$IMAGE_ID" ]]
+          ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-preload-ssh/known_hosts" "root@$DEV_HOST" \
+            "docker save '$IMAGE_ID'" | ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" "root@$STAGING_HOST" \
+            "/usr/bin/python3 /usr/local/libexec/binhu-staging-schema-registry-preload.py '$RUN_ID' '$IMAGE_ID'"
+          rm -f "$RUNNER_TEMP/staging-preload-ssh/"* "$RUNNER_TEMP/dev-preload-ssh/"*
