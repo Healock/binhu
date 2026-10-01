@@ -202,7 +202,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]]
-          [[ "$IMAGE_ID" == 'sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10dc9f1807a53531a2b4' ]]
+          [[ "$IMAGE_ID" == 'sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4' ]]
           install -d -m 700 "$RUNNER_TEMP/staging-preload-ssh" "$RUNNER_TEMP/dev-schema-registry"
           printf '%s\n' "$STAGING_KEY" > "$RUNNER_TEMP/staging-preload-ssh/key"
           printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
