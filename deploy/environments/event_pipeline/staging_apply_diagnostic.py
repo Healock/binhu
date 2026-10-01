@@ -72,6 +72,60 @@ def _services(compose: Path) -> tuple[list[dict[str, object]], str | None]:
     return rows, None
 
 
+def _runtime_resources(compose: Path, run_id: str) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Inspect only the controlled internal network and named volumes."""
+    try:
+        spec = json.loads(compose.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {"present": False}, []
+    networks = spec.get("networks") if isinstance(spec, dict) else None
+    internal = networks.get("internal") if isinstance(networks, dict) else None
+    network_name = internal.get("name") if isinstance(internal, dict) else None
+    network_result = {"present": False}
+    if isinstance(network_name, str) and re.fullmatch(r"[a-z0-9_-]{1,128}", network_name):
+        inspected = _run(["docker", "network", "inspect", network_name])
+        if inspected.returncode == 0:
+            try:
+                value = json.loads(inspected.stdout)[0]
+            except (IndexError, TypeError, json.JSONDecodeError):
+                value = {}
+            labels = value.get("Labels") if isinstance(value, dict) else {}
+            network_result = {
+                "present": isinstance(value, dict),
+                "name_matches": value.get("Name") == network_name if isinstance(value, dict) else False,
+                "internal": value.get("Internal") is True if isinstance(value, dict) else False,
+                "driver_bridge": value.get("Driver") == "bridge" if isinstance(value, dict) else False,
+                "labels_match": isinstance(labels, dict) and labels.get("binhu.environment") == "staging"
+                and labels.get("binhu.run_id") == run_id and labels.get("binhu.production_data") == "false",
+                "container_count": len(value.get("Containers") or {}) if isinstance(value, dict) else 0,
+            }
+    volumes_result: list[dict[str, object]] = []
+    project = spec.get("name") if isinstance(spec, dict) else None
+    volumes = spec.get("volumes") if isinstance(spec, dict) else None
+    if isinstance(project, str) and re.fullmatch(r"[a-z0-9_-]{1,128}", project) and isinstance(volumes, dict):
+        for key in sorted(volumes):
+            if not isinstance(key, str) or not re.fullmatch(r"[a-z0-9_-]{1,128}", key):
+                continue
+            name = f"{project}_{key}"
+            inspected = _run(["docker", "volume", "inspect", name])
+            item: dict[str, object] = {"volume": key, "present": inspected.returncode == 0}
+            if inspected.returncode == 0:
+                try:
+                    value = json.loads(inspected.stdout)[0]
+                except (IndexError, TypeError, json.JSONDecodeError):
+                    value = {}
+                labels = value.get("Labels") if isinstance(value, dict) else {}
+                usage = value.get("UsageData") if isinstance(value, dict) else None
+                ref_count = usage.get("RefCount") if isinstance(usage, dict) else None
+                item.update({
+                    "labels_match": isinstance(labels, dict) and labels.get("binhu.environment") == "staging"
+                    and labels.get("binhu.run_id") == run_id and labels.get("binhu.production_data") == "false",
+                    "ref_count": ref_count if isinstance(ref_count, int) and 0 <= ref_count <= 10000 else None,
+                })
+            volumes_result.append(item)
+    return network_result, volumes_result
+
+
 def main() -> None:
     if len(sys.argv) != 2 or not RUN_RE.fullmatch(sys.argv[1]):
         raise SystemExit("staging_apply_diagnostic_refused")
@@ -109,12 +163,14 @@ def main() -> None:
     daemon = _run(["docker", "version", "--format", "{{.Server.Version}}"])
     config = _run(["docker", "compose", "-f", str(compose), "config", "--quiet"])
     services, compose_ps_error_code = _services(compose) if compose.is_file() else ([], "staging_compose_missing")
+    network, volumes = _runtime_resources(compose, run_id) if compose.is_file() else ({"present": False}, [])
     output = {"environment": "staging", "run_id": run_id, "status": "passed",
               "failure": failure, "docker_server_available": daemon.returncode == 0,
               "docker_server_version_present": bool(daemon.stdout.strip()) if daemon.returncode == 0 else False,
               "images": images, "compose_config_valid": config.returncode == 0,
               "compose_config_error_code": _error_code(config),
-              "compose_ps_error_code": compose_ps_error_code, "services": services}
+              "compose_ps_error_code": compose_ps_error_code, "network": network,
+              "volumes": volumes, "services": services}
     print(json.dumps(output, sort_keys=True))
 
 
