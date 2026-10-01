@@ -208,9 +208,13 @@ jobs:
           [[ "$artifact_id" =~ ^[0-9]+$ ]]
           echo "preload_artifact_id=$artifact_id"
 <<<<<<< HEAD
+<<<<<<< HEAD
           echo 'preload_stage=artifact_download_verified'
 =======
 >>>>>>> 34997880 (diag: classify staging image artifact download)
+=======
+          echo 'preload_stage=artifact_download_verified'
+>>>>>>> 393e5de1 (chore: mark verified staging artifact download)
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
             > "$RUNNER_TEMP/dev-schema-registry/export.zip" || { echo 'preload_error=artifact_zip_download_failed'; exit 1; }
           unzip -q "$RUNNER_TEMP/dev-schema-registry/export.zip" -d "$RUNNER_TEMP/dev-schema-registry/unpacked" || { echo 'preload_error=artifact_zip_extract_failed'; exit 1; }
