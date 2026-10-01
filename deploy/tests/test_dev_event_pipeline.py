@@ -63,7 +63,9 @@ class FlinkStateContractTests(unittest.TestCase):
     def test_dev_image_source_diagnostic_redacts_to_fixed_identity(self):
         payload = {
             "Image": "sha256:" + "a" * 64,
-            "Config": {"Image": "quay.io/apicurio/apicurio-registry-kafkasql:2.6.5.Final"},
+            "Config": {"Image": "quay.io/apicurio/apicurio-registry-kafkasql:2.6.5.Final",
+                        "Labels": {"org.opencontainers.image.source": "https://quay.io/apicurio",
+                                   "secret": "must-not-appear"}},
             "RepoDigests": ["quay.io/apicurio/apicurio-registry-kafkasql@sha256:" + "b" * 64,
                             "not-a-digest"],
             "RepoTags": ["quay.io/apicurio/apicurio-registry-kafkasql:2.6.5.Final", "bad tag"],
@@ -74,6 +76,8 @@ class FlinkStateContractTests(unittest.TestCase):
         self.assertEqual(result["image_id"], "sha256:" + "a" * 64)
         self.assertEqual(len(result["repo_digests"]), 1)
         self.assertEqual(len(result["repo_tags"]), 1)
+        self.assertEqual(result["image_labels"],
+                         {"org.opencontainers.image.source": "https://quay.io/apicurio"})
         self.assertNotIn("Config", result)
 
     def test_dev_image_source_diagnostic_rejects_unbounded_source(self):
