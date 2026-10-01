@@ -265,6 +265,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
         self.assertIn('staging_apply_diagnostic.py', installer)
         runtime = (root / "staging_apply_runtime_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn('/srv/binhu-environments/staging-event-pipeline', runtime)
         self.assertIn('"services"', runtime)
         self.assertNotIn('stderr', runtime)
         prepare = (root / "staging_prepare.py").read_text(encoding="utf-8")
@@ -288,6 +289,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertNotIn('stderr', image_diag)
         apply_diag = (root / "staging_apply_diagnostic.py").read_text(encoding="utf-8")
         self.assertIn('SAFE_FIELDS', apply_diag)
+        self.assertIn('/srv/binhu-environments/staging-event-pipeline', apply_diag)
         self.assertIn('docker_server_available', apply_diag)
         self.assertNotIn('stderr', apply_diag)
 

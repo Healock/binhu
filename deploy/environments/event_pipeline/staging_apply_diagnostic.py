@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
-BASE = Path("/var/lib/binhu-staging-event-pipeline/candidates")
+BASE = Path("/srv/binhu-environments/staging-event-pipeline")
 SAFE_FIELDS = ("environment", "run_id", "acceptance", "phase", "error_type", "error_code")
 
 
