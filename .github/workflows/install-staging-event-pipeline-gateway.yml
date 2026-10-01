@@ -220,7 +220,10 @@ jobs:
           echo "manifest_image=$manifest_image"
           echo "manifest_status=$manifest_status"
           echo "manifest_archive_size_type=$manifest_size_type"
-          [[ "$manifest_source" == development && "$manifest_image" == "$IMAGE_ID" && "$manifest_status" == passed && "$manifest_size_type" == number ]]
+          [[ "$manifest_source" == development ]] || { echo 'manifest_error=source_environment'; exit 1; }
+          [[ "$manifest_image" == "$IMAGE_ID" ]] || { echo 'manifest_error=image_id'; exit 1; }
+          [[ "$manifest_status" == passed ]] || { echo 'manifest_error=status'; exit 1; }
+          [[ "$manifest_size_type" == number ]] || { echo 'manifest_error=archive_size_type'; exit 1; }
           echo 'preload_stage=archive_hash_check'
           archive_sha=$(sha256sum "$archive" | awk '{print $1}')
           [[ "$archive_sha" == "$(jq -r .archive_sha256 "$manifest")" ]]
