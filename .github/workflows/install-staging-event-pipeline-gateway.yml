@@ -37,7 +37,9 @@ permissions:
 jobs:
   install:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The approved Schema Registry archive is ~428 MB; allow the fixed SSH
+    # transfer and docker load to finish without changing the server contract.
+    timeout-minutes: 30
     environment: staging
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -238,7 +240,7 @@ jobs:
           archive_sha=$(sha256sum "$archive" | awk '{print $1}')
           [[ "$archive_sha" == "$(jq -r .archive_sha256 "$manifest")" ]]
           echo 'preload_stage=server_preload'
-          cat "$archive" | ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" "root@$STAGING_HOST" \
+          cat "$archive" | ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" "root@$STAGING_HOST" \
             "/usr/bin/python3 /usr/local/libexec/binhu-staging-schema-registry-preload.py '$RUN_ID' '$IMAGE_ID'"
           echo 'preload_stage=server_preload_complete'
           rm -f "$RUNNER_TEMP/staging-preload-ssh/"*
