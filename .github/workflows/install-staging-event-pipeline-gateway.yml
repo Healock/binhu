@@ -207,6 +207,7 @@ jobs:
           artifact_id=$(printf '%s' "$artifact_list" | jq -r --arg name "$artifact_name" '.artifacts[] | select(.name == $name and .expired == false) | .id' | head -n 1)
           [[ "$artifact_id" =~ ^[0-9]+$ ]]
           echo "preload_artifact_id=$artifact_id"
+          echo 'preload_stage=artifact_download_verified'
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
             > "$RUNNER_TEMP/dev-schema-registry/export.zip" || { echo 'preload_error=artifact_zip_download_failed'; exit 1; }
           unzip -q "$RUNNER_TEMP/dev-schema-registry/export.zip" -d "$RUNNER_TEMP/dev-schema-registry/unpacked" || { echo 'preload_error=artifact_zip_extract_failed'; exit 1; }
