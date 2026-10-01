@@ -213,13 +213,10 @@ jobs:
           [[ -f "$manifest" && -f "$archive" ]]
           echo 'preload_stage=manifest_check'
           manifest_source=$(jq -r '.source_environment // "missing"' "$manifest")
-          manifest_image=$(jq -r '.image_id // "missing"' "$manifest")
+          manifest_image=$(jq -r '.image_id // "missing"' "$manifest" | tr -d '[:space:]')
           manifest_status=$(jq -r '.status // "missing"' "$manifest")
           manifest_size_type=$(jq -r '.archive_size | type' "$manifest")
-          manifest_image=${manifest_image//$'\r'/}
-          manifest_image=${manifest_image//$'\n'/}
-          IMAGE_ID=${IMAGE_ID//$'\r'/}
-          IMAGE_ID=${IMAGE_ID//$'\n'/}
+          IMAGE_ID=$(printf '%s' "$IMAGE_ID" | tr -d '[:space:]')
           echo "manifest_source=$manifest_source"
           echo "manifest_image=$manifest_image"
           echo "manifest_status=$manifest_status"
