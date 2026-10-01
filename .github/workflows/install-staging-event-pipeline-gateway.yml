@@ -180,6 +180,15 @@ jobs:
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
             "/usr/bin/python3 $script $RUN_ID"
           rm -f "$RUNNER_TEMP/staging-ssh/"*
+      - name: Download fixed Dev Schema Registry artifact
+        if: inputs.action == 'preload-schema-registry'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v7.0.0
+        with:
+          name: dev-schema-registry-${{ inputs.dev_export_run_id }}
+          path: ${{ runner.temp }}/dev-schema-registry
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.dev_export_run_id }}
       - name: Preload fixed Schema Registry image from Dev
         if: inputs.action == 'preload-schema-registry'
         shell: bash
@@ -190,29 +199,14 @@ jobs:
           STAGING_KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
           RUN_ID: ${{ inputs.run_id }}
           IMAGE_ID: ${{ inputs.schema_registry_image }}
-          DEV_EXPORT_RUN_ID: ${{ inputs.dev_export_run_id }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]]
           [[ "$IMAGE_ID" == 'sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10dc9f1807a53531a2b4' ]]
-          [[ "$DEV_EXPORT_RUN_ID" =~ ^[0-9]+$ ]]
           install -d -m 700 "$RUNNER_TEMP/staging-preload-ssh" "$RUNNER_TEMP/dev-schema-registry"
           printf '%s\n' "$STAGING_KEY" > "$RUNNER_TEMP/staging-preload-ssh/key"
           printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
-          # Resolve the exact artifact ID before downloading its immutable ZIP.
-          artifact_name="dev-schema-registry-$DEV_EXPORT_RUN_ID"
-          artifact_list=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DEV_EXPORT_RUN_ID/artifacts") || { echo 'preload_error=artifact_list_failed'; exit 1; }
-          artifact_id=$(printf '%s' "$artifact_list" | jq -r --arg name "$artifact_name" '.artifacts[] | select(.name == $name and .expired == false) | .id' | head -n 1)
-          [[ "$artifact_id" =~ ^[0-9]+$ ]]
-          echo "preload_artifact_id=$artifact_id"
-          echo 'preload_stage=artifact_download_verified'
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
-            > "$RUNNER_TEMP/dev-schema-registry/export.zip" || { echo 'preload_error=artifact_zip_download_failed'; exit 1; }
-          unzip -q "$RUNNER_TEMP/dev-schema-registry/export.zip" -d "$RUNNER_TEMP/dev-schema-registry/unpacked" || { echo 'preload_error=artifact_zip_extract_failed'; exit 1; }
-          mv "$RUNNER_TEMP/dev-schema-registry/unpacked/manifest.json" "$RUNNER_TEMP/dev-schema-registry/manifest.json"
-          mv "$RUNNER_TEMP/dev-schema-registry/unpacked/schema-registry-image.tar" "$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
           manifest="$RUNNER_TEMP/dev-schema-registry/manifest.json"
           archive="$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
           [[ -f "$manifest" && -f "$archive" ]]
