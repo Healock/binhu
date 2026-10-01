@@ -7,7 +7,7 @@ import zipfile
 
 from deploy.environments.event_pipeline import (
     staging_backend_network, staging_compose, staging_control, staging_deploy,
-    staging_metrics_probe, staging_prepare,
+    staging_metrics_probe, staging_prepare, staging_schema_registry_preload,
 )
 
 
@@ -272,6 +272,13 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('staging_docker_unavailable', prepare)
         self.assertIn('"image_key"', prepare)
         image_diag = (root / "staging_image_diagnostic.py").read_text(encoding="utf-8")
+        preload = (root / "staging_schema_registry_preload.py").read_text(encoding="utf-8")
+        self.assertIn("APPROVED_IMAGE", preload)
+        self.assertIn("docker", preload)
+        self.assertIn("archive_sha256", preload)
+        self.assertIn("preload-schema-registry", (root.parents[2] / ".github/workflows/install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8"))
+        with self.assertRaises(ValueError):
+            staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
         self.assertIn('"images"', image_diag)
         self.assertNotIn('stderr', image_diag)
 
