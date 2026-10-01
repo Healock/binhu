@@ -212,7 +212,15 @@ jobs:
           echo 'preload_stage=artifact_files_check'
           [[ -f "$manifest" && -f "$archive" ]]
           echo 'preload_stage=manifest_check'
-          jq -e --arg image "$IMAGE_ID" '.source_environment == "development" and .image_id == $image and .status == "passed" and (.archive_size|type == "number")' "$manifest" >/dev/null
+          manifest_source=$(jq -r '.source_environment // "missing"' "$manifest")
+          manifest_image=$(jq -r '.image_id // "missing"' "$manifest")
+          manifest_status=$(jq -r '.status // "missing"' "$manifest")
+          manifest_size_type=$(jq -r '.archive_size | type' "$manifest")
+          echo "manifest_source=$manifest_source"
+          echo "manifest_image=$manifest_image"
+          echo "manifest_status=$manifest_status"
+          echo "manifest_archive_size_type=$manifest_size_type"
+          [[ "$manifest_source" == development && "$manifest_image" == "$IMAGE_ID" && "$manifest_status" == passed && "$manifest_size_type" == number ]]
           echo 'preload_stage=archive_hash_check'
           archive_sha=$(sha256sum "$archive" | awk '{print $1}')
           [[ "$archive_sha" == "$(jq -r .archive_sha256 "$manifest")" ]]
