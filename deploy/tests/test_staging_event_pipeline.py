@@ -277,11 +277,27 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn("APPROVED_IMAGE", preload)
         self.assertIn("docker", preload)
         self.assertIn("archive_sha256", preload)
+        self.assertIn("INCOMING_ROOT", preload)
+        self.assertIn("image archive path refused", preload)
         self.assertIn("preload-schema-registry", (root.parents[2] / ".github/workflows/install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8"))
         with self.assertRaises(ValueError):
             staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
         self.assertIn('"images"', image_diag)
         self.assertNotIn('stderr', image_diag)
+
+    def test_schema_registry_preload_uses_separate_fixed_archive_upload_and_import_phases(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
+        for marker in (
+            "preload_stage=server_archive_prepare",
+            "preload_stage=server_archive_upload",
+            "preload_stage=server_archive_hash_check",
+            "preload_stage=server_preload",
+            "server_archive_metadata=",
+            "schema-registry-image.tar",
+        ):
+            self.assertIn(marker, workflow)
+        self.assertNotIn('cat "$archive" | ssh', workflow)
 
     def test_schema_registry_export_and_preload_digest_contracts_agree(self):
         workflows = Path(__file__).parents[2] / ".github" / "workflows"
