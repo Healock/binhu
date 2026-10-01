@@ -266,6 +266,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('staging_resource_exhausted', control)
         self.assertIn('staging_resource_limit_unsupported', control)
         self.assertIn('staging_device_driver_missing', control)
+        self.assertIn('_ensure_internal_network', control)
         installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
         self.assertIn('staging_apply_diagnostic.py', installer)
         runtime = (root / "staging_apply_runtime_diagnostic.py").read_text(encoding="utf-8")

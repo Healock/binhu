@@ -166,6 +166,32 @@ def _backend_network(run_id: str) -> dict:
     return network
 
 
+def _ensure_internal_network(run_id: str) -> dict:
+    """Create the per-run internal network when Compose cannot bootstrap it."""
+    name = network_for(run_id)
+    try:
+        network = _docker_json(["docker", "network", "inspect", name])[0]
+    except ValueError as error:
+        if str(error) != "staging_network_missing":
+            raise
+        _run([
+            "docker", "network", "create", "--driver", "bridge", "--internal",
+            "--label", "binhu.environment=staging", "--label", f"binhu.run_id={run_id}",
+            "--label", "binhu.production_data=false", name,
+        ])
+        network = _docker_json(["docker", "network", "inspect", name])[0]
+    labels = network.get("Labels", {}) or {}
+    containers = network.get("Containers") or {}
+    if (network.get("Name") != name or network.get("Driver") != "bridge"
+            or network.get("Internal") is not True
+            or labels.get("binhu.environment") != "staging"
+            or labels.get("binhu.run_id") != run_id
+            or labels.get("binhu.production_data") != "false"
+            or containers):
+        raise ValueError("Staging internal network identity mismatch")
+    return network
+
+
 def _active_staging_snapshot(manifest: dict[str, Any]) -> str:
     snapshot_id = str(manifest.get("staging_snapshot_id") or "")
     expected = snapshot_database(snapshot_id, "OnlineData")
@@ -297,6 +323,7 @@ def apply(run_id: str) -> dict[str, Any]:
     started = time.monotonic()
     phase = "compose_brokers"
     try:
+        _ensure_internal_network(run_id)
         _compose(root, "up", "-d", *BROKERS)
         phase = "create_topics"
         topics = _create_topics(manifest["project"])
