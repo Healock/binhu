@@ -100,6 +100,15 @@ def main() -> None:
     try:
         print(json.dumps(preload(sys.argv[1], sys.argv[2]), sort_keys=True))
     except Exception:
+        # The report contains only fixed identity fields and a bounded error code.
+        # Echo it so the controlled workflow can diagnose a failed preload without
+        # exposing docker output, credentials, or archive contents.
+        try:
+            report = EVIDENCE_ROOT / sys.argv[1] / "schema-registry-preload.json"
+            if report.is_file() and not report.is_symlink():
+                print(report.read_text(encoding="utf-8"), file=sys.stderr, end="")
+        except (OSError, UnicodeDecodeError, IndexError):
+            pass
         raise SystemExit(1) from None
 
 
