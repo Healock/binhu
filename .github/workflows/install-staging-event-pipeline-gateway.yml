@@ -203,12 +203,14 @@ jobs:
           chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
           # Resolve the exact artifact ID before downloading its immutable ZIP.
           artifact_name="dev-schema-registry-$DEV_EXPORT_RUN_ID"
-          artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DEV_EXPORT_RUN_ID/artifacts" \
-            --jq ".artifacts[] | select(.name == \"$artifact_name\" and .expired == false) | .id" | head -n 1)
+          artifact_list=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DEV_EXPORT_RUN_ID/artifacts") || { echo 'preload_error=artifact_list_failed'; exit 1; }
+          artifact_id=$(printf '%s' "$artifact_list" | jq -r --arg name "$artifact_name" '.artifacts[] | select(.name == $name and .expired == false) | .id' | head -n 1)
           [[ "$artifact_id" =~ ^[0-9]+$ ]]
+          echo "preload_artifact_id=$artifact_id"
+          echo 'preload_stage=artifact_download_verified'
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
-            > "$RUNNER_TEMP/dev-schema-registry/export.zip"
-          unzip -q "$RUNNER_TEMP/dev-schema-registry/export.zip" -d "$RUNNER_TEMP/dev-schema-registry/unpacked"
+            > "$RUNNER_TEMP/dev-schema-registry/export.zip" || { echo 'preload_error=artifact_zip_download_failed'; exit 1; }
+          unzip -q "$RUNNER_TEMP/dev-schema-registry/export.zip" -d "$RUNNER_TEMP/dev-schema-registry/unpacked" || { echo 'preload_error=artifact_zip_extract_failed'; exit 1; }
           mv "$RUNNER_TEMP/dev-schema-registry/unpacked/manifest.json" "$RUNNER_TEMP/dev-schema-registry/manifest.json"
           mv "$RUNNER_TEMP/dev-schema-registry/unpacked/schema-registry-image.tar" "$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
           manifest="$RUNNER_TEMP/dev-schema-registry/manifest.json"
