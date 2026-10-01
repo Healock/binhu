@@ -54,6 +54,11 @@ def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) ->
             code = "staging_network_attachment_failed"
         elif "network" in text and "already exists" in text:
             code = "staging_network_conflict"
+        elif ("pool overlaps" in text or "failed to allocate gateway" in text
+              or "address space" in text):
+            code = "staging_network_address_pool_exhausted"
+        elif "iptables" in text or "bridge-nf" in text:
+            code = "staging_network_firewall_failed"
         elif "invalid mount config" in text or "failed to mount" in text:
             code = "staging_volume_mount_failed"
         elif "volume" in text and "already exists" in text:
@@ -71,6 +76,8 @@ def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) ->
             code = "staging_device_driver_missing"
         elif "invalid argument" in text:
             code = "staging_docker_invalid_argument"
+        elif "operation not permitted" in text:
+            code = "staging_docker_permission_denied"
         elif "permission denied" in text:
             code = "staging_docker_permission_denied"
         elif "no such service" in text:
