@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -281,6 +282,16 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
         self.assertIn('"images"', image_diag)
         self.assertNotIn('stderr', image_diag)
+
+    def test_schema_registry_export_and_preload_digest_contracts_agree(self):
+        workflows = Path(__file__).parents[2] / ".github" / "workflows"
+        approved = staging_schema_registry_preload.APPROVED_IMAGE
+        for filename in ("install-dev-event-pipeline-gateway.yml",
+                         "install-staging-event-pipeline-gateway.yml"):
+            source = (workflows / filename).read_text(encoding="utf-8")
+            schema_ids = re.findall(r"sha256:cac935[0-9a-f]{58}", source)
+            self.assertTrue(schema_ids, filename)
+            self.assertEqual(set(schema_ids), {approved}, filename)
 
     def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
         self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")
