@@ -52,13 +52,25 @@ def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) ->
             code = "staging_network_attachment_failed"
         elif "failed to set up container networking" in text or "network sandbox join failed" in text:
             code = "staging_network_attachment_failed"
+        elif "network" in text and "already exists" in text:
+            code = "staging_network_conflict"
         elif "invalid mount config" in text or "failed to mount" in text:
             code = "staging_volume_mount_failed"
+        elif "volume" in text and "already exists" in text:
+            code = "staging_volume_conflict"
         elif "failed to create task" in text or "failed to create shim task" in text or "oci runtime" in text:
+            code = "staging_container_runtime_failed"
+        elif "failed to set up container" in text:
             code = "staging_container_runtime_failed"
         elif ("not enough memory" in text or "insufficient memory" in text
               or "resource temporarily unavailable" in text):
             code = "staging_resource_exhausted"
+        elif "swap limit" in text or "cgroup" in text:
+            code = "staging_resource_limit_unsupported"
+        elif "could not select device driver" in text:
+            code = "staging_device_driver_missing"
+        elif "invalid argument" in text:
+            code = "staging_docker_invalid_argument"
         elif "permission denied" in text:
             code = "staging_docker_permission_denied"
         elif "no such service" in text:
