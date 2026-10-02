@@ -300,6 +300,9 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn("INCOMING_ROOT", preload)
         self.assertIn("image archive path refused", preload)
         self.assertIn("preload-schema-registry", (root.parents[2] / ".github/workflows/install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8"))
+        preload_diag = (root / "staging_schema_registry_preload_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn("preload_evidence_missing", preload_diag)
+        self.assertNotIn("stderr", preload_diag)
         with self.assertRaises(ValueError):
             staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
         self.assertIn('"images"', image_diag)

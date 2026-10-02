@@ -8,7 +8,7 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, measure, apply, diagnose, diagnose-runtime, diagnose-apply, diagnose-images, preload-schema-registry]
+        options: [install, measure, apply, diagnose, diagnose-runtime, diagnose-apply, diagnose-images, diagnose-preload, preload-schema-registry]
       run_id:
         description: Existing STG run for the read-only measure diagnostic
         required: false
@@ -71,6 +71,7 @@ jobs:
             deploy/environments/event_pipeline/staging_apply_runtime_diagnostic.py \
             deploy/environments/event_pipeline/staging_apply_diagnostic.py \
             deploy/environments/event_pipeline/staging_image_diagnostic.py \
+            deploy/environments/event_pipeline/staging_schema_registry_preload_diagnostic.py \
             deploy/environments/event_pipeline/staging_schema_registry_preload.py \
             deploy/environments/event_pipeline/install-staging-gateway.sh \
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
@@ -152,7 +153,7 @@ jobs:
             "/usr/bin/python3 /usr/local/libexec/binhu-staging-backend-network.py $ACTION"
           rm -f "$RUNNER_TEMP/staging-ssh/"*
       - name: Run fixed read-only measure diagnostic
-        if: inputs.action == 'diagnose' || inputs.action == 'diagnose-runtime' || inputs.action == 'diagnose-apply' || inputs.action == 'diagnose-images'
+        if: inputs.action == 'diagnose' || inputs.action == 'diagnose-runtime' || inputs.action == 'diagnose-apply' || inputs.action == 'diagnose-images' || inputs.action == 'diagnose-preload'
         shell: bash
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
@@ -180,6 +181,8 @@ jobs:
             exit 0
           elif [[ "$ACTION" == diagnose-apply ]]; then
             script=/usr/local/libexec/binhu-staging-apply-diagnostic.py
+          elif [[ "$ACTION" == diagnose-preload ]]; then
+            script=/usr/local/libexec/binhu-staging-schema-registry-preload-diagnostic.py
           else
             script=/usr/local/libexec/binhu-staging-apply-runtime-diagnostic.py
           fi
