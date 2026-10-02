@@ -234,6 +234,19 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         protected = {**empty, "Name": "binhu-staging_internal"}
         self.assertEqual(staging_network_cleanup._eligible(protected["Name"], protected), "protected_name")
 
+    def test_network_cleanup_allows_empty_unprotected_bridge(self):
+        empty = {
+            "Name": "old-ci-network", "Driver": "bridge", "Internal": False,
+            "Labels": {}, "Containers": {},
+        }
+        self.assertIsNone(staging_network_cleanup._eligible(empty["Name"], empty))
+
+    def test_network_cleanup_does_not_remove_running_or_frp_containers(self):
+        source = Path(staging_network_cleanup.__file__).read_text(encoding="utf-8")
+        self.assertIn('"docker", "ps", "-aq"', source)
+        self.assertIn('"running_container"', source)
+        self.assertIn('"frp_container"', source)
+
 
 class StagingEventPipelineCandidateTests(unittest.TestCase):
     def test_candidate_binds_same_dev_images_snapshot_and_application(self):
