@@ -47,6 +47,12 @@ def _child_error_code(stdout: str, stderr: str) -> str:
         ("cannot connect to the docker daemon", "staging_docker_unavailable"),
         ("error response from daemon", "staging_docker_daemon_error"),
         ("snapshot", "staging_snapshot_invalid"),
+        ("redis", "staging_redis_configuration_invalid"),
+        ("mysql", "staging_mysql_configuration_invalid"),
+        ("backend", "staging_backend_configuration_invalid"),
+        ("isolated", "staging_isolation_configuration_invalid"),
+        ("identity", "staging_identity_invalid"),
+        ("required", "staging_required_configuration_missing"),
         ("configuration", "staging_configuration_invalid"),
     )
     for marker, code in markers:
