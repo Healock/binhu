@@ -61,6 +61,12 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
         for index, name in enumerate(staging_compose.BROKERS, start=1):
             service = spec["services"][name]
             self.assertEqual(service["environment"]["KAFKA_NODE_ID"], str(index))
+            self.assertEqual(service["environment"]["KAFKA_HEAP_OPTS"], "-Xms256m -Xmx512m")
+            self.assertEqual(service["mem_limit"], "1g")
+            self.assertEqual(service["memswap_limit"], "1280m")
+            self.assertEqual(service["healthcheck"]["timeout"], "15s")
+            self.assertEqual(service["healthcheck"]["start_period"], "120s")
+            self.assertEqual(service["healthcheck"]["retries"], 30)
             self.assertEqual(service["environment"]["KAFKA_AUTO_CREATE_TOPICS_ENABLE"], "false")
             self.assertIn(f"{name}-data:/var/lib/kafka/data", service["volumes"])
             self.assertIn(f"{name}-secrets-tmpfs:/etc/kafka/secrets", service["volumes"])
@@ -68,6 +74,17 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
             for suffix in ("secrets-tmpfs", "config-tmpfs"):
                 volume = spec["volumes"][f"{name}-{suffix}"]
                 self.assertEqual(volume["driver_opts"]["type"], "tmpfs")
+
+    def test_flink_mounts_fixed_staging_connector_dependencies(self):
+        spec = staging_compose.compose(images(), RUN_ID)
+        volumes = spec["services"]["jobmanager"]["volumes"]
+        for name in staging_compose.DEPENDENCIES:
+            self.assertIn(
+                f"{staging_compose.DEPENDENCY_ROOT}/{name}:/opt/flink/lib/{name}:ro",
+                volumes,
+            )
+        self.assertNotIn("development", " ".join(volumes).lower())
+        self.assertNotIn("dev-pipeline", " ".join(volumes).lower())
         self.assertEqual(
             spec["services"]["schema-registry"]["environment"]["REGISTRY_KAFKASQL_TOPIC"],
             "staging.registry.storage.v1",
@@ -75,6 +92,91 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
         self.assertNotIn("dev.task.events", str(spec))
         self.assertNotIn("binhu-development", str(spec))
         self.assertNotIn("binhu-production", str(spec))
+
+    def test_kafka_quorum_wait_returns_only_aggregate_status(self):
+        calls = []
+
+        def checked(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "broker output", "")
+
+        with patch.object(staging_control, "_run", side_effect=checked):
+            result = staging_control._wait_for_kafka_quorum("binhu-staging-event-pipeline-stg-20260920-01")
+        self.assertTrue(result["ready"])
+        self.assertEqual(set(result["brokers"]), set(staging_compose.BROKERS))
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all("kafka-broker-api-versions.sh" in " ".join(command) for command in calls))
+        self.assertNotIn("broker output", json.dumps(result))
+
+    def test_kafka_quorum_wait_classifies_timeout(self):
+        with patch.object(staging_control, "_run", side_effect=ValueError("staging_resource_exhausted")), \
+                patch.object(staging_control.time, "monotonic", side_effect=[0, 181]), \
+                patch.object(staging_control.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "staging_kafka_quorum_timeout"):
+                staging_control._wait_for_kafka_quorum(
+                    "binhu-staging-event-pipeline-stg-20260920-01", timeout=180,
+                )
+
+    def test_kafka_quorum_wait_redacts_probe_timeout(self):
+        with patch.object(staging_control, "_run", side_effect=subprocess.TimeoutExpired("docker", 20)), \
+                patch.object(staging_control.time, "monotonic", side_effect=[0, 181]), \
+                patch.object(staging_control.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "staging_kafka_quorum_timeout"):
+                staging_control._wait_for_kafka_quorum(
+                    "binhu-staging-event-pipeline-stg-20260920-01", timeout=180,
+                )
+
+    def test_service_health_wait_returns_aggregate_status(self):
+        with patch.object(staging_control, "_docker_json", return_value=[{
+            "State": {"Status": "running", "Health": {"Status": "healthy"}},
+        }]):
+            result = staging_control._wait_for_service_healthy(
+                "binhu-staging-event-pipeline-stg-20260920-01", "staging-derived-mysql",
+            )
+        self.assertEqual(result, {
+            "service": "staging-derived-mysql", "status": "healthy", "attempts": 1,
+        })
+
+    def test_service_health_wait_classifies_timeout(self):
+        with patch.object(staging_control, "_docker_json", return_value=[{
+            "State": {"Status": "running", "Health": {"Status": "starting"}},
+        }]), patch.object(staging_control.time, "monotonic", side_effect=[0, 241]), \
+                patch.object(staging_control.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "staging_service_health_timeout"):
+                staging_control._wait_for_service_healthy(
+                    "binhu-staging-event-pipeline-stg-20260920-01", "staging-derived-mysql",
+                    timeout=240,
+                )
+
+    def test_missing_consumer_group_is_allowed_before_first_event(self):
+        with patch.object(staging_control, "_run", side_effect=ValueError("staging_consumer_group_not_created")):
+            self.assertEqual(
+                staging_control._consumer_group(
+                    "binhu-staging-event-pipeline-stg-20260920-01",
+                    "STG-20260920-01-flink",
+                ),
+                ["STG-20260920-01-flink"],
+            )
+
+    def test_checkpoint_volume_identity_is_required_before_owner_change(self):
+        from types import SimpleNamespace
+        import stat
+        volume = {
+            "Name": "binhu-staging-event-pipeline-stg-20260920-01_flink-checkpoints",
+            "Labels": {"binhu.environment": "staging", "binhu.run_id": "STG-20260920-01"},
+            "Mountpoint": "/data/docker/volumes/binhu-staging-event-pipeline-stg-20260920-01_flink-checkpoints/_data",
+        }
+        with patch.object(staging_control, "_docker_json", return_value=[volume]), \
+                patch.object(Path, "is_symlink", return_value=False), \
+                patch.object(Path, "stat", return_value=SimpleNamespace(st_mode=stat.S_IFDIR)), \
+                patch.object(staging_control.os, "chown", create=True) as chown:
+            result = staging_control._prepare_checkpoint_volume(
+                Path("/fixed/candidate"), "binhu-staging-event-pipeline-stg-20260920-01",
+                "STG-20260920-01",
+            )
+        self.assertEqual(result["owner_uid"], 9999)
+        self.assertEqual(result["owner_gid"], 9999)
+        chown.assert_called_once()
 
     def test_backend_relay_is_confined_to_staging_backend_network(self):
         spec = staging_compose.compose(images(), RUN_ID)
@@ -166,6 +268,8 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         source = Path(staging_control.__file__).read_text(encoding="utf-8")
         self.assertNotIn("down\", \"-v", source)
         self.assertNotIn("docker volume rm", source)
+        self.assertIn("event_pipeline.delivery_schema_migrate", source)
+        self.assertIn("for attempt in range(6)", source)
         with self.assertRaises(ValueError):
             staging_control._validate_no_cross_environment({"networks": {"x": "binhu-production_internal"}})
 
@@ -399,6 +503,20 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"docker", "network", "disconnect"', source)
         self.assertIn("staging_application_network_changed", source)
         self.assertNotIn("binhu-production", source)
+
+    def test_pipeline_job_failure_diagnostics_use_fixed_codes(self):
+        source = Path(staging_compose.__file__).with_name("PipelineJob.java").read_text(encoding="utf-8")
+        for code in (
+            "flink_multiple_distinct_aggregate_keys",
+            "flink_sql_function_signature_unmatched",
+            "flink_sql_type_mismatch",
+            "flink_sql_identifier_missing",
+            "flink_sql_feature_unsupported",
+            "flink_sql_validation_error_unclassified",
+        ):
+            self.assertIn(code, source)
+        self.assertIn("safeFailureCode(failure)", source)
+        self.assertNotIn('types.append(cause.getMessage())', source)
 
     def test_network_validation_rejects_foreign_members(self):
         valid = {

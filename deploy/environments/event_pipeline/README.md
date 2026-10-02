@@ -204,9 +204,10 @@ application network are outside this operation.
 `PipelineJob` 使用一个 `StatementSet` 把 `dev_revisions` 和
 `dev_task_metadata` 两个 INSERT 分支提交为一个 JobGraph。两个分支共享一个
 Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到当前运行编号的
-完整事件流。Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时
-包含两个受控 sink、运行编号和 development 过滤条件一致，并且 Kafka 消费组完全
-匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
+完整事件流。提交前会校验 SQL 中的环境与运行编号，运行时则以候选的精确 `job.name`
+作为唯一 run 身份；Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
+Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时包含两个受控
+sink、job name 和 Kafka 消费组完全匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
 checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
 
 10 万条规模验收要求 TaskManager 使用受控的 2 GiB 容器上限和 1792 MiB Flink
@@ -221,12 +222,14 @@ Kafka、Redis 和派生 MySQL 数据卷均不因该资源修补删除。
 近似配置。
 
 Compose 的 `up -d` 返回只表示容器已经启动，不表示 JobManager REST 已经监听 8081。
-Dev apply 在读取首次作业列表前，会对固定的 `Flink REST request failed` 启动错误执行
-最多 60 秒的有界等待；其他 REST、身份和合同错误立即失败。等待成功后仍必须完整核验
-当前 run_id、consumer group、development 过滤条件、单个 RUNNING JobGraph 和两个受控
-INSERT sink，不能把 REST 可访问误报为 Flink 验收通过。
-提交 JobGraph 后的 120 秒运行时收敛窗口同样只容忍这一固定 REST 传输错误，避免作业初始化
-短暂占用 REST 线程时提前退出；窗口耗尽、其他 REST 错误或身份门禁失败仍然停止 apply。
+Dev apply 在读取首次作业列表前，会对固定的 `flink_rest_transport_failed` 或
+`flink_rest_timeout` 启动错误执行最多 60 秒的有界等待；HTTP 状态、响应格式和身份合同错误立即
+失败，并在私有证据中记录 endpoint、状态码和固定错误码，不记录响应正文。等待成功后仍必须
+完整核验当前 JobGraph 的精确 job name、consumer group、SQL 预先校验的环境/运行编号和两个
+受控 INSERT sink，不能依赖 Flink 1.20 不稳定的 plan description 复原 SQL 过滤条件。
+提交 JobGraph 后的 120 秒运行时收敛窗口同样只容忍这两个固定 REST 传输错误，避免作业初始化
+短暂占用 REST 线程时提前退出；窗口耗尽时保留首个具体的 JobGraph/消费组校验错误，其他 REST
+错误或身份门禁失败仍然停止 apply。
 
 ### 固定规模双轨验收
 

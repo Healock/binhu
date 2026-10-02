@@ -58,21 +58,24 @@ CREATE TABLE dev_task_metadata (
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
 CREATE VIEW dev_unique_events AS
-SELECT DISTINCT schema_version, event_id, event_type, task_id, source_id, revision,
-       operation_id, changed_fields, `timestamp`, environment, run_id
+SELECT schema_version, event_id, event_type, task_id, source_id, revision,
+       operation_id, MAX(CARDINALITY(changed_fields)) AS changed_field_count,
+       `timestamp`, environment, run_id
 FROM dev_events
 WHERE environment = '{environment}' AND run_id = '{run}'
-  AND schema_version = 1 AND source_id > 0 AND revision >= 0;
+  AND schema_version = 1 AND source_id > 0 AND revision >= 0
+GROUP BY schema_version, event_id, event_type, task_id, source_id, revision,
+         operation_id, `timestamp`, environment, run_id;
 INSERT INTO dev_task_metadata
 SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),
- SUM(CARDINALITY(changed_fields)),
- COUNT(DISTINCT CASE WHEN event_type='task.created' THEN event_id END),
- COUNT(DISTINCT CASE WHEN event_type='task.saved' THEN event_id END),
- COUNT(DISTINCT CASE WHEN event_type='task.claimed' THEN event_id END),
- COUNT(DISTINCT CASE WHEN event_type='task.assigned' THEN event_id END),
- COUNT(DISTINCT CASE WHEN event_type='task.reviewed' THEN event_id END),
- COUNT(DISTINCT CASE WHEN event_type='task.archived' THEN event_id END),
- COUNT(DISTINCT CASE WHEN event_type='task.deleted' THEN event_id END)
+ SUM(changed_field_count),
+ SUM(CASE WHEN event_type='task.created' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.saved' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.claimed' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.assigned' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.reviewed' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.archived' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)
 FROM dev_unique_events
 GROUP BY run_id, task_id, source_id;
 """

@@ -1,5 +1,6 @@
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.StatementSet;
 import org.apache.flink.table.api.TableEnvironment;
@@ -22,6 +23,32 @@ public final class PipelineJob {
     private static void uid(TableEnvironment table, String prefix) {
         table.getConfig().getConfiguration().setString("table.exec.uid.generation", "ALWAYS");
         table.getConfig().getConfiguration().setString("table.exec.uid.format", uid(prefix));
+    }
+
+    private static String safeFailureCode(Throwable failure) {
+        Throwable cause = failure;
+        for (int depth = 0; depth < 12 && cause != null; depth++, cause = cause.getCause()) {
+            String message = cause.getMessage();
+            String lower = message == null ? "" : message.toLowerCase(Locale.ROOT);
+            if (lower.contains("distinct aggregates with different arguments")) {
+                return "flink_multiple_distinct_aggregate_keys";
+            }
+            if (lower.contains("no match found for function signature")) {
+                return "flink_sql_function_signature_unmatched";
+            }
+            if (lower.contains("cannot apply")) {
+                return "flink_sql_type_mismatch";
+            }
+            if (lower.contains("does not exist") || lower.contains("not found")) {
+                return "flink_sql_identifier_missing";
+            }
+            if (lower.contains("not supported")) {
+                return "flink_sql_feature_unsupported";
+            }
+        }
+        return failure.getClass().getSimpleName().equals("ValidationException")
+            ? "flink_sql_validation_error_unclassified"
+            : "flink_statement_error_unclassified";
     }
 
     public static void main(String[] args) throws Exception {
@@ -63,7 +90,8 @@ public final class PipelineJob {
             for (int depth = 0; depth < 12 && cause != null; depth++, cause = cause.getCause()) {
                 types.append(cause.getClass().getSimpleName()).append(" ");
             }
-            throw new IllegalStateException("Non-Production statement " + index + " failed: " + types);
+            throw new IllegalStateException("Non-Production statement " + index + " failed: "
+                + safeFailureCode(failure) + " " + types);
         }
     }
 }
