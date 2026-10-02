@@ -19,6 +19,34 @@ from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id, topic_
 
 EXPECTED_SINKS = frozenset(("dev_revisions", "dev_task_metadata"))
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
+REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
+
+
+class FlinkRestError(ValueError):
+    """A bounded REST diagnostic that never carries response content."""
+
+    def __init__(self, code: str, path: str, status: int | None = None) -> None:
+        self.code = code
+        self.path = path
+        self.status = status
+        super().__init__(code)
+
+    def diagnostic(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"endpoint": self.path, "error_code": self.code}
+        if self.status is not None:
+            result["http_status"] = self.status
+        return result
+
+
+class FlinkRuntimeValidationError(ValueError):
+    """A validation failure with a fixed stage, without exposing plan content."""
+
+    def __init__(self, message: str, stage: str) -> None:
+        self.stage = stage
+        super().__init__(message)
+
+    def diagnostic(self) -> dict[str, Any]:
+        return {"stage": self.stage, "error_code": str(self)}
 
 
 def _one(pattern: str, text: str, label: str) -> str:
@@ -87,24 +115,23 @@ def _job_text(job: dict[str, Any]) -> str:
 def validate_job_graph(job: dict[str, Any], expected_run_id: str) -> dict[str, Any]:
     environment = environment_for_run_id(expected_run_id)
     if job.get("state") != "RUNNING":
-        raise ValueError("Flink job is not RUNNING")
-    if expected_run_id not in str(job.get("name", "")):
-        raise ValueError("Flink JobGraph run_id does not match")
+        raise FlinkRuntimeValidationError("Flink job is not RUNNING", "job_state")
+    # Flink 1.20's REST plan descriptions contain operator names and sink
+    # labels, but do not reliably include SQL WHERE predicates.  The exact job
+    # name is the stable run identity; SQL identity is checked before submit.
+    if str(job.get("name", "")) != expected_run_id:
+        raise FlinkRuntimeValidationError("Flink JobGraph run_id does not match", "job_name")
     text = _job_text(job)
-    if expected_run_id not in text:
-        raise ValueError("Flink JobGraph run_id filter does not match")
-    if not re.search(r"environment\s*=\s*['\"]" + re.escape(environment) + r"['\"]", text, flags=re.IGNORECASE):
-        raise ValueError("Flink JobGraph environment filter is missing")
     # Table plans in Flink 1.20 do not always include connector options.  The
-    # SQL identity fence and Kafka group check cover that case; if a plan does
-    # expose a topic marker, it must still be the fixed Dev topic.
+    # SQL identity fence and Kafka group check cover that case.  If a plan does
+    # expose a topic marker, it must still be the fixed environment topic.
     topic_markers = set(re.findall(r"(?:topic|topics)\s*[=:]\s*['\"]?([A-Za-z0-9._-]+)", text, flags=re.IGNORECASE))
     if topic_markers and topic_markers != {topic_for(environment)}:
-        raise ValueError("Flink JobGraph topic does not match environment identity")
+        raise FlinkRuntimeValidationError("Flink JobGraph topic does not match environment identity", "job_topic")
     sinks = {sink for sink in EXPECTED_SINKS if sink in text}
     if sinks != EXPECTED_SINKS:
         missing = ",".join(sorted(EXPECTED_SINKS - sinks))
-        raise ValueError(f"Flink runtime missing INSERT sink: {missing}")
+        raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
     return {"jid": job.get("jid"), "name": job.get("name"), "state": job["state"],
             "sinks": sorted(sinks)}
 
@@ -120,7 +147,7 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
     environment = environment_for_run_id(expected_run_id)
     for item in jobs:
         name = str(item.get("name", ""))
-        if expected_run_id in name:
+        if name == expected_run_id:
             current.append(item)
         elif item.get("state") == "RUNNING" and (
             (environment == "development" and DUAL_TRACK_PREFIX_RE.search(name))
@@ -132,15 +159,15 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
 
 def validate_runtime(jobs: list[dict[str, Any]], consumer_groups: list[str], expected_run_id: str) -> dict[str, Any]:
     if len(jobs) != 1:
-        raise ValueError("Flink runtime must have exactly one matching job")
+        raise FlinkRuntimeValidationError("Flink runtime must have exactly one matching job", "job_count")
     job_reports = [validate_job_graph(item, expected_run_id) for item in jobs]
     sinks = {sink for report in job_reports for sink in report["sinks"]}
     if sinks != EXPECTED_SINKS:
         missing = ",".join(sorted(EXPECTED_SINKS - sinks))
-        raise ValueError(f"Flink runtime missing INSERT sink: {missing}")
+        raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
     expected_group = f"{expected_run_id}-flink"
     if set(consumer_groups) != {expected_group}:
-        raise ValueError("Flink consumer group does not match current run")
+        raise FlinkRuntimeValidationError("Flink consumer group does not match current run", "consumer_group")
     return {"run_id": expected_run_id, "job_count": len(jobs),
             "consumer_group": expected_group,
             "job_ids": sorted(str(item.get("jid")) for item in jobs)}
@@ -156,17 +183,30 @@ class FlinkRest:
     def request(self, path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> Any:
         if not path.startswith("/") or ".." in path:
             raise ValueError("invalid Flink REST path")
-        command = ["docker", "exec", self.container, "curl", "-fsS", "--max-time", "15",
-                   "-X", method, "http://127.0.0.1:8081" + path]
+        command = ["docker", "exec", self.container, "curl", "-sS", "--max-time", "15",
+                   "-w", "\n__BINHU_HTTP_STATUS__:%{http_code}", "-X", method,
+                   "http://127.0.0.1:8081" + path]
         if payload is not None:
             command += ["-H", "Content-Type: application/json", "--data-binary", json.dumps(payload)]
-        result = self.runner(command, capture_output=True, text=True, timeout=30)
-        if result.returncode:
-            raise ValueError("Flink REST request failed")
         try:
-            return json.loads(result.stdout or "{}")
+            result = self.runner(command, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            raise FlinkRestError("flink_rest_timeout", path) from None
+        except OSError:
+            raise FlinkRestError("flink_rest_transport_failed", path) from None
+        if result.returncode:
+            raise FlinkRestError("flink_rest_transport_failed", path) from None
+        marker = "\n__BINHU_HTTP_STATUS__:"
+        body, separator, status_text = result.stdout.rpartition(marker)
+        if not separator or not re.fullmatch(r"[0-9]{3}", status_text.strip()):
+            raise FlinkRestError("flink_rest_response_invalid", path) from None
+        status = int(status_text.strip())
+        if not 200 <= status < 300:
+            raise FlinkRestError(f"flink_rest_http_{status}", path, status) from None
+        try:
+            return json.loads(body or "{}")
         except json.JSONDecodeError:
-            return {}
+            raise FlinkRestError("flink_rest_invalid_json", path, status) from None
 
     def overview(self) -> list[dict[str, Any]]:
         return list((self.request("/jobs/overview") or {}).get("jobs", []))
@@ -175,16 +215,28 @@ class FlinkRest:
         """Upload the JAR compiled from the current candidate source."""
         if container_path not in {"/tmp/dev-pipeline-job.jar", "/opt/flink/private/pipeline-job.jar"}:
             raise ValueError("unexpected Dev Flink JAR path")
-        command = ["docker", "exec", self.container, "curl", "-fsS", "--max-time", "30",
-                   "-X", "POST", "http://127.0.0.1:8081/jars/upload",
+        command = ["docker", "exec", self.container, "curl", "-sS", "--max-time", "30",
+                   "-w", "\n__BINHU_HTTP_STATUS__:%{http_code}", "-X", "POST",
+                   "http://127.0.0.1:8081/jars/upload",
                    "-F", "path=@" + container_path]
-        result = self.runner(command, capture_output=True, text=True, timeout=45)
-        if result.returncode:
-            raise ValueError("Flink JAR upload failed")
         try:
-            payload = json.loads(result.stdout or "{}")
+            result = self.runner(command, capture_output=True, text=True, timeout=45)
+        except subprocess.TimeoutExpired:
+            raise FlinkRestError("flink_rest_timeout", "/jars/upload") from None
+        except OSError:
+            raise FlinkRestError("flink_rest_transport_failed", "/jars/upload") from None
+        if result.returncode:
+            raise FlinkRestError("flink_rest_transport_failed", "/jars/upload") from None
+        body, separator, status_text = result.stdout.rpartition("\n__BINHU_HTTP_STATUS__:")
+        if not separator or not re.fullmatch(r"[0-9]{3}", status_text.strip()):
+            raise FlinkRestError("flink_rest_response_invalid", "/jars/upload") from None
+        status = int(status_text.strip())
+        if not 200 <= status < 300:
+            raise FlinkRestError(f"flink_rest_http_{status}", "/jars/upload", status) from None
+        try:
+            payload = json.loads(body or "{}")
         except json.JSONDecodeError:
-            raise ValueError("Flink JAR upload response invalid") from None
+            raise FlinkRestError("flink_rest_invalid_json", "/jars/upload", status) from None
         filename = str(payload.get("filename", ""))
         # Flink returns filename as a path and status=success; use the final
         # path component as the stable JAR identifier for the run endpoint.
@@ -222,24 +274,25 @@ def wait_for_rest(client: FlinkRest, timeout: float = 60.0) -> list[dict[str, An
     while True:
         try:
             return client.overview()
-        except ValueError as exc:
-            if str(exc) != "Flink REST request failed":
+        except FlinkRestError as exc:
+            if exc.code not in REST_TRANSIENT_CODES:
                 raise
         if time.monotonic() >= deadline:
-            raise ValueError("Flink REST request failed") from None
+            raise FlinkRestError("flink_rest_timeout", "/jobs/overview") from None
         time.sleep(1)
 
 
 def wait_for_runtime(client: FlinkRest, expected_run_id: str, consumer_groups: Callable[[], list[str]], timeout: float = 120.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
-    last_error = "Flink jobs not ready"
+    last_error: ValueError | None = None
+    last_transient: FlinkRestError | None = None
     while time.monotonic() < deadline:
         try:
             overview = client.overview()
-        except ValueError as exc:
-            if str(exc) != "Flink REST request failed":
+        except FlinkRestError as exc:
+            if exc.code not in REST_TRANSIENT_CODES:
                 raise
-            last_error = str(exc)
+            last_transient = exc
             time.sleep(2)
             continue
         current, _ = partition_active_jobs(overview, expected_run_id)
@@ -247,10 +300,21 @@ def wait_for_runtime(client: FlinkRest, expected_run_id: str, consumer_groups: C
             try:
                 details = [client.details(str(item["jid"])) for item in current]
                 return validate_runtime(details, consumer_groups(), expected_run_id)
+            except FlinkRestError as exc:
+                if exc.code not in REST_TRANSIENT_CODES:
+                    raise
+                last_transient = exc
             except ValueError as exc:
-                last_error = str(exc)
+                # Keep the first concrete validation error.  A later transient
+                # REST failure must not erase the reason that blocked acceptance.
+                if last_error is None:
+                    last_error = exc
         time.sleep(2)
-    raise ValueError(last_error)
+    if last_error is not None:
+        raise last_error
+    if last_transient is not None:
+        raise last_transient
+    raise FlinkRuntimeValidationError("Flink jobs not ready", "job_discovery")
 
 
 def wait_for_stale_clear(client: FlinkRest, expected_run_id: str, timeout: float = 60.0) -> None:

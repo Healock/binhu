@@ -22,6 +22,12 @@ DLQ_TOPIC = "staging.task.events.dlq.v1"
 REGISTRY_TOPIC = "staging.registry.storage.v1"
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 LOGGING = {"driver": "json-file", "options": {"max-size": "5m", "max-file": "2"}}
+DEPENDENCY_ROOT = "/srv/binhu-environments/staging-event-pipeline-dependencies"
+DEPENDENCIES = (
+    "flink-sql-connector-kafka-3.3.0-1.20.jar",
+    "flink-connector-jdbc-3.3.0-1.20.jar",
+    "mysql-connector-j-8.4.0.jar",
+)
 
 
 def project_for(run_id: str) -> str:
@@ -108,9 +114,15 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
             "image": images["kafka"],
             "hostname": broker,
             "networks": ["internal"],
-            "environment": _broker_environment(index, run_id),
-            "mem_limit": "512m",
-            "memswap_limit": "640m",
+            "environment": {
+                **_broker_environment(index, run_id),
+                # The host also runs the Dev and Staging applications.  Keep
+                # Kafka's JVM bounded while leaving enough headroom for KRaft
+                # startup and metadata recovery.
+                "KAFKA_HEAP_OPTS": "-Xms256m -Xmx512m",
+            },
+            "mem_limit": "1g",
+            "memswap_limit": "1280m",
             "cpus": 0.5,
             "volumes": [
                 f"{broker}-data:/var/lib/kafka/data",
@@ -119,7 +131,7 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
             ],
             "healthcheck": {
                 "test": ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "127.0.0.1:9092", "--list"],
-                "interval": "10s", "timeout": "8s", "retries": 18, "start_period": "60s",
+                "interval": "10s", "timeout": "15s", "retries": 30, "start_period": "120s",
             },
         }
 
@@ -245,6 +257,7 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
             "flink-checkpoints:/opt/flink/checkpoints",
             "./pipeline.sql:/opt/flink/private/pipeline.sql:ro",
             "./pipeline-job.jar:/opt/flink/private/pipeline-job.jar:ro",
+            *[f"{DEPENDENCY_ROOT}/{name}:/opt/flink/lib/{name}:ro" for name in DEPENDENCIES],
         ],
     }
     services["jobmanager"] = {

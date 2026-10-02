@@ -33,8 +33,7 @@ GROUP BY run_id, task_id, source_id;
 def job(name: str = RUN_ID, state: str = "RUNNING", sinks: tuple[str, ...] =
         ("dev_revisions", "dev_task_metadata")) -> dict:
     descriptions = [
-        "Source: dev_events -> Calc where=[environment = 'development' and run_id = "
-        f"'{name}'] topic=dev.task.events.v1",
+        "Source: dev_events[1] -> (Calc[2], Calc[7])",
     ]
     descriptions.extend(f"Sink: {sink}" for sink in sinks)
     return {
@@ -54,7 +53,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             def overview(self):
                 self.calls += 1
                 if self.calls < 3:
-                    raise ValueError("Flink REST request failed")
+                    raise flink_submission.FlinkRestError("flink_rest_transport_failed", "/jobs/overview")
                 return [job()]
 
         client = Client()
@@ -78,11 +77,11 @@ class FlinkSubmissionContractTests(unittest.TestCase):
     def test_rest_readiness_has_a_fixed_timeout(self):
         class Client:
             def overview(self):
-                raise ValueError("Flink REST request failed")
+                raise flink_submission.FlinkRestError("flink_rest_timeout", "/jobs/overview")
 
         with patch.object(flink_submission.time, "monotonic", side_effect=[10.0, 11.0]), \
                 patch.object(flink_submission.time, "sleep") as sleep:
-            with self.assertRaisesRegex(ValueError, "Flink REST request failed"):
+            with self.assertRaisesRegex(ValueError, "flink_rest_timeout"):
                 flink_submission.wait_for_rest(Client(), timeout=0.5)
         sleep.assert_not_called()
 
@@ -94,7 +93,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             def overview(self):
                 self.overview_calls += 1
                 if self.overview_calls == 1:
-                    raise ValueError("Flink REST request failed")
+                    raise flink_submission.FlinkRestError("flink_rest_transport_failed", "/jobs/overview")
                 return [job()]
 
             def details(self, _jid):
@@ -117,7 +116,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
 
         class Result:
             returncode = 0
-            stdout = '{"status":"success","filename":"/tmp/dev-pipeline-job.jar"}'
+            stdout = '{"status":"success","filename":"/tmp/dev-pipeline-job.jar"}\n__BINHU_HTTP_STATUS__:200'
 
         def runner(command, **kwargs):
             calls.append(command)
@@ -161,14 +160,47 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "RUNNING"):
             flink_submission.validate_job_graph(job(state="CANCELED"), RUN_ID)
 
-    def test_job_graph_requires_an_explicit_development_filter(self):
-        bad = job()
-        bad["plan"]["nodes"][0]["description"] = (
-            "Source: dev_events -> Calc where=[run_id = '" + RUN_ID + "'] "
-            "topic=dev.task.events.v1 Sink: dev_revisions Sink: dev_task_metadata"
-        )
-        with self.assertRaisesRegex(ValueError, "environment"):
-            flink_submission.validate_job_graph(bad, RUN_ID)
+    def test_job_graph_accepts_real_flink_1_20_operator_descriptions(self):
+        self.assertEqual(flink_submission.validate_job_graph(job(), RUN_ID)["sinks"], [
+            "dev_revisions", "dev_task_metadata",
+        ])
+
+    def test_job_graph_uses_exact_job_name_for_run_identity(self):
+        with self.assertRaisesRegex(ValueError, "run_id"):
+            flink_submission.validate_job_graph(job("dev-stale"), RUN_ID)
+
+    def test_rest_request_reports_status_without_response_body(self):
+        class Result:
+            returncode = 0
+            stdout = '{"error":"private body"}\n__BINHU_HTTP_STATUS__:503'
+
+        client = flink_submission.FlinkRest("jobmanager", runner=lambda *_args, **_kwargs: Result())
+        with self.assertRaisesRegex(flink_submission.FlinkRestError, "flink_rest_http_503") as raised:
+            client.request("/jobs/overview")
+        self.assertEqual(raised.exception.diagnostic(), {
+            "endpoint": "/jobs/overview", "error_code": "flink_rest_http_503", "http_status": 503,
+        })
+        self.assertNotIn("private body", str(raised.exception))
+
+    def test_runtime_wait_preserves_validation_error_over_later_transport_error(self):
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def overview(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return [job(sinks=("dev_revisions",))]
+                raise flink_submission.FlinkRestError("flink_rest_transport_failed", "/jobs/overview")
+
+            def details(self, _jid):
+                return job(sinks=("dev_revisions",))
+
+        with patch.object(flink_submission.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "missing INSERT sink"):
+                flink_submission.wait_for_runtime(
+                    Client(), RUN_ID, lambda: [f"{RUN_ID}-flink"], timeout=1,
+                )
 
     def test_job_graph_requires_both_insert_sinks(self):
         with self.assertRaisesRegex(ValueError, "missing INSERT sink"):

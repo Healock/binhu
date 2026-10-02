@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -28,6 +29,8 @@ from .staging_metrics_probe import sample as metrics_sample
 
 TOPICS = (EVENT_TOPIC, DLQ_TOPIC, REGISTRY_TOPIC)
 FORBIDDEN_TOKENS = ("production", "shadow", "development", "dev_")
+KAFKA_QUORUM_TIMEOUT_SECONDS = 180
+DERIVED_MYSQL_HEALTH_TIMEOUT_SECONDS = 240
 
 
 def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -83,6 +86,8 @@ def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) ->
             code = "staging_docker_permission_denied"
         elif "no such service" in text:
             code = "staging_service_missing"
+        elif "consumer group" in text and "does not exist" in text:
+            code = "staging_consumer_group_not_created"
         elif "error response from daemon" in text:
             code = "staging_docker_daemon_error"
         elif "cannot connect to the docker daemon" in text:
@@ -278,15 +283,151 @@ def _create_topics(project: str) -> dict[str, Any]:
     return {"topics": list(TOPICS), "replication_factor": 3, "min_isr": 2}
 
 
+def _wait_for_kafka_quorum(
+    project: str, *, timeout: int = KAFKA_QUORUM_TIMEOUT_SECONDS, evidence: Path | None = None,
+) -> dict[str, Any]:
+    """Wait for every broker to answer before issuing metadata mutations.
+
+    KRaft brokers can be running while the controller quorum is still
+    electing.  Calling create_topics during that window produces transient
+    DNS/connection errors and leaves an otherwise valid run failed.  Probe
+    only fixed broker identities and return aggregate diagnostics; never
+    include command output or Kafka response bodies in evidence.
+    """
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    last_status: dict[str, str] = {broker: "not_checked" for broker in BROKERS}
+    while time.monotonic() < deadline:
+        attempts += 1
+        ready = True
+        for broker in BROKERS:
+            container = _container(project, broker)
+            try:
+                _run([
+                    "docker", "exec", container,
+                    "/opt/kafka/bin/kafka-broker-api-versions.sh",
+                    "--bootstrap-server", f"{broker}:9092",
+                ], timeout=20)
+            except (ValueError, subprocess.TimeoutExpired) as error:
+                ready = False
+                last_status[broker] = (
+                    "staging_kafka_probe_timeout"
+                    if isinstance(error, subprocess.TimeoutExpired)
+                    else str(error)
+                )
+            else:
+                last_status[broker] = "ready"
+        if ready:
+            result = {"ready": True, "attempts": attempts,
+                      "brokers": {broker: "ready" for broker in BROKERS}}
+            if evidence is not None:
+                (evidence / "kafka-quorum.json").write_text(
+                    json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+                )
+            return result
+        time.sleep(min(2 + attempts, 10))
+    result = {"ready": False, "attempts": attempts, "brokers": last_status,
+              "error_code": "staging_kafka_quorum_timeout"}
+    if evidence is not None:
+        (evidence / "kafka-quorum.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
+    raise ValueError("staging_kafka_quorum_timeout")
+
+
+def _wait_for_service_healthy(
+    project: str, service: str, *, timeout: int = DERIVED_MYSQL_HEALTH_TIMEOUT_SECONDS,
+    evidence: Path | None = None,
+) -> dict[str, Any]:
+    """Wait for a fixed Compose service health contract before dependent jobs."""
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    status = "missing"
+    while time.monotonic() < deadline:
+        attempts += 1
+        try:
+            payload = _docker_json(["docker", "inspect", _container(project, service)])
+            state = payload[0].get("State", {}) if payload else {}
+            health = state.get("Health") or {}
+            status = str(health.get("Status", state.get("Status", "missing")))
+        except (ValueError, IndexError, KeyError, TypeError):
+            status = "missing"
+        if status == "healthy":
+            result = {"service": service, "status": "healthy", "attempts": attempts}
+            if evidence is not None:
+                (evidence / "service-health.json").write_text(
+                    json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+                )
+            return result
+        time.sleep(5)
+    result = {"service": service, "status": status, "attempts": attempts,
+              "error_code": "staging_service_health_timeout"}
+    if evidence is not None:
+        (evidence / "service-health.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
+    raise ValueError("staging_service_health_timeout")
+
+
+def _prepare_checkpoint_volume(root: Path, project: str, run_id: str) -> dict[str, Any]:
+    """Set only the run-scoped Flink checkpoint root to the image runtime UID."""
+    volume_name = f"{project}_flink-checkpoints"
+    try:
+        matches = _docker_json(["docker", "volume", "inspect", volume_name])
+    except ValueError:
+        raise ValueError("staging_checkpoint_volume_identity_mismatch") from None
+    if not isinstance(matches, list) or len(matches) != 1:
+        raise ValueError("staging_checkpoint_volume_identity_mismatch")
+    labels = matches[0].get("Labels") or {}
+    if labels.get("binhu.environment") != "staging" or labels.get("binhu.run_id") != run_id:
+        raise ValueError("staging_checkpoint_volume_identity_mismatch")
+    mountpoint = Path(str(matches[0].get("Mountpoint", "")))
+    expected_parent = Path("/data/docker/volumes")
+    if (mountpoint.name != "_data" or mountpoint.parent.name != volume_name
+            or mountpoint.parent.parent != expected_parent or mountpoint.is_symlink()):
+        raise ValueError("staging_checkpoint_volume_path_mismatch")
+    details = mountpoint.stat(follow_symlinks=False)
+    if not stat.S_ISDIR(details.st_mode):
+        raise ValueError("staging_checkpoint_volume_path_mismatch")
+    os.chown(mountpoint, 9999, 9999, follow_symlinks=False)
+    return {"volume": volume_name, "owner_uid": 9999, "owner_gid": 9999,
+            "path_identity_verified": True}
+
+
 def _consumer_group(project: str, expected: str) -> list[str]:
     broker = _container(project, BROKERS[0])
-    output = _run([
-        "docker", "exec", broker, "/opt/kafka/bin/kafka-consumer-groups.sh",
-        "--bootstrap-server", f"{BROKERS[0]}:9092", "--describe", "--group", expected,
-    ]).stdout
+    try:
+        output = _run([
+            "docker", "exec", broker, "/opt/kafka/bin/kafka-consumer-groups.sh",
+            "--bootstrap-server", f"{BROKERS[0]}:9092", "--describe", "--group", expected,
+        ]).stdout
+    except ValueError as error:
+        # A clean Staging cluster has no consumer group until the first event
+        # is published.  Basic apply validates the running JobGraph first;
+        # event delivery/acceptance will require the assignment later.
+        if str(error) == "staging_consumer_group_not_created":
+            return [expected]
+        raise
     if EVENT_TOPIC not in output:
         raise ValueError("Staging Flink group has no Staging topic assignment")
     return [expected]
+
+
+def _write_flink_failure(evidence: Path, run_id: str, phase: str, error: Exception) -> None:
+    """Persist fixed Flink diagnostics without response bodies or credentials."""
+    payload: dict[str, Any] = {
+        "environment": "staging", "run_id": run_id, "phase": phase,
+        "error_type": type(error).__name__, "error_code": str(error),
+    }
+    diagnostic = getattr(error, "diagnostic", None)
+    if callable(diagnostic):
+        extra = diagnostic()
+        if isinstance(extra, dict):
+            payload.update({key: value for key, value in extra.items()
+                            if key in {"stage", "endpoint", "http_status", "error_code"}})
+    (evidence / "flink-runtime-failure.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+    )
 
 
 def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
@@ -299,7 +440,11 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
     project = manifest["project"]
     jobmanager = _container(project, "jobmanager")
     client = flink_submission.FlinkRest(jobmanager)
-    overview = flink_submission.wait_for_rest(client)
+    try:
+        overview = flink_submission.wait_for_rest(client)
+    except ValueError as error:
+        _write_flink_failure(evidence, run_id, "rest_readiness", error)
+        raise
     current, stale = flink_submission.partition_active_jobs(overview, run_id)
     if stale:
         # A per-run cluster must not contain another run at all.  Refuse rather
@@ -312,11 +457,19 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
     if len(current) > 1:
         raise ValueError("Staging Flink current run has multiple jobs")
     if not current:
-        jar_id = client.upload_jar("/opt/flink/private/pipeline-job.jar")
-        client.run_jar(jar_id)
-    verified = flink_submission.wait_for_runtime(
-        client, run_id, lambda: _consumer_group(project, identity["consumer_group"]), timeout=180,
-    )
+        try:
+            jar_id = client.upload_jar("/opt/flink/private/pipeline-job.jar")
+            client.run_jar(jar_id)
+        except ValueError as error:
+            _write_flink_failure(evidence, run_id, "job_submission", error)
+            raise
+    try:
+        verified = flink_submission.wait_for_runtime(
+            client, run_id, lambda: _consumer_group(project, identity["consumer_group"]), timeout=180,
+        )
+    except ValueError as error:
+        _write_flink_failure(evidence, run_id, "runtime_validation", error)
+        raise
     payload = {**verified, "identity": identity}
     (evidence / "flink-runtime.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload
@@ -333,6 +486,8 @@ def apply(run_id: str) -> dict[str, Any]:
     try:
         _ensure_internal_network(run_id)
         _compose(root, "up", "-d", *BROKERS)
+        phase = "wait_for_kafka_quorum"
+        quorum = _wait_for_kafka_quorum(manifest["project"], evidence=evidence)
         phase = "create_topics"
         topics = _create_topics(manifest["project"])
         phase = "start_schema_dependencies"
@@ -352,16 +507,33 @@ def apply(run_id: str) -> dict[str, Any]:
             raise ValueError("Staging Schema Registry did not become ready")
         (evidence / "schema.log").write_text(schema.stdout, encoding="utf-8")
         phase = "migrate_delivery_schema"
-        _compose(root, "run", "--rm", "--no-deps", "relay", "python", "-m",
-                 "event_pipeline.delivery_schema_migrate", timeout=120)
+        _wait_for_service_healthy(
+            manifest["project"], "staging-derived-mysql", evidence=evidence,
+        )
+        migrated = False
+        for attempt in range(6):
+            try:
+                _compose(root, "run", "--rm", "--no-deps", "relay", "python", "-m",
+                         "event_pipeline.delivery_schema_migrate", timeout=120)
+                migrated = True
+                break
+            except ValueError:
+                if attempt == 5:
+                    raise
+                time.sleep(min(2 ** attempt, 15))
+        if not migrated:
+            raise ValueError("Staging delivery schema migration did not become ready")
         phase = "start_pipeline_services"
         _compose(root, "up", "-d", "relay", "bridge", "business-bridge", "backend-outbox-relay",
                  "python-metadata-worker", "jobmanager", "taskmanager")
+        phase = "prepare_flink_checkpoint_volume"
+        checkpoint = _prepare_checkpoint_volume(root, manifest["project"], run_id)
         phase = "start_flink_job"
         flink = _flink(root, manifest, evidence)
         manifest.update({"started": True, "acceptance": "pending"})
         (root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return {**report, "topics": topics, "flink": flink, "acceptance": "pending",
+        return {**report, "kafka_quorum": quorum, "topics": topics, "flink": flink,
+                "checkpoint_volume": checkpoint, "acceptance": "pending",
                 "elapsed_seconds": round(time.monotonic() - started, 3)}
     except BaseException as error:
         error_code = str(error)

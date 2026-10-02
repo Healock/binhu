@@ -1222,8 +1222,14 @@ volumes:
                          "PRIMARY KEY (run_id, task_id, source_id)", "execution.checkpointing.interval",
                          "dev.task.events.v1", "Dev_EventPipeline", "dev_task_metadata",
                          "event_count", "changed_field_count", "CARDINALITY(changed_fields)",
-                         "dev_unique_events", "COUNT(DISTINCT event_id)"):
+                         "dev_unique_events", "COUNT(DISTINCT event_id)",
+                         "MAX(CARDINALITY(changed_fields)) AS changed_field_count",
+                         "GROUP BY schema_version, event_id, event_type, task_id, source_id, revision",
+                         "SUM(changed_field_count)",
+                         "SUM(CASE WHEN event_type='task.created' THEN 1 ELSE 0 END)",
+                         "SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)"):
             self.assertIn(expected, sql)
+        self.assertNotIn("COUNT(DISTINCT CASE WHEN", sql)
         self.assertIn(
             "autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000",
             sql,
