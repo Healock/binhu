@@ -409,11 +409,16 @@ def _consumer_group(project: str, expected: str) -> list[str]:
             return [expected]
         raise
     # Flink can have a RUNNING source job before Kafka creates a group
-    # assignment. Kafka's describe command returns an empty report in that
-    # state; defer assignment validation until the first event is delivered.
-    if not output.strip():
+    # assignment. Kafka may return an empty report or headers/status text in
+    # that state; defer assignment validation until the first event is
+    # delivered. Only rows whose first column is this group are assignments.
+    assignments = [
+        parts[1] for line in output.splitlines()
+        if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected
+    ]
+    if not assignments:
         return [expected]
-    if EVENT_TOPIC not in output:
+    if set(assignments) != {EVENT_TOPIC}:
         raise ValueError("Staging Flink group has no Staging topic assignment")
     return [expected]
 

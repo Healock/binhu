@@ -207,10 +207,29 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
                 ["STG-20260920-01-flink"],
             )
 
+    def test_consumer_group_headers_without_assignment_are_allowed(self):
+        output = (
+            "Consumer group 'STG-20260920-01-flink' has no active members.\n"
+            "GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG\n"
+        )
+        with patch.object(
+                staging_control, "_run",
+                return_value=subprocess.CompletedProcess([], 0, output, ""),
+        ):
+            self.assertEqual(
+                staging_control._consumer_group(
+                    "binhu-staging-event-pipeline-stg-20260920-01",
+                    "STG-20260920-01-flink",
+                ),
+                ["STG-20260920-01-flink"],
+            )
+
     def test_consumer_group_report_for_other_topic_is_rejected(self):
         with patch.object(
                 staging_control, "_run",
-                return_value=subprocess.CompletedProcess([], 0, "GROUP TOPIC\nother.topic 0", ""),
+                return_value=subprocess.CompletedProcess(
+                    [], 0, "GROUP TOPIC\nSTG-20260920-01-flink other.topic 0", "",
+                ),
         ), self.assertRaisesRegex(ValueError, "no Staging topic assignment"):
             staging_control._consumer_group(
                 "binhu-staging-event-pipeline-stg-20260920-01",
