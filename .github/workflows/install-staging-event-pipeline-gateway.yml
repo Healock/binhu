@@ -8,11 +8,8 @@ on:
         required: true
         default: install
         type: choice
-<<<<<<< HEAD
-        options: [install, measure, apply, diagnose, diagnose-runtime, diagnose-apply, diagnose-images, diagnose-preload, preload-schema-registry]
-=======
+        options: [install, cleanup-unused-networks, measure, apply, diagnose, diagnose-runtime, diagnose-apply, diagnose-images, diagnose-preload, preload-schema-registry]
         options: [install, cleanup-unused-networks, measure, apply, diagnose, diagnose-runtime, diagnose-apply, diagnose-images, preload-schema-registry]
->>>>>>> 131382fc (Add protected Staging network cleanup action)
       run_id:
         description: Existing STG run for the read-only measure diagnostic
         required: false
