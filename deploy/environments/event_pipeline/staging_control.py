@@ -456,10 +456,11 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
         raise ValueError("foreign Staging Flink job found")
     if len(current) > 1:
         raise ValueError("Staging Flink current run has multiple jobs")
+    submission = {"mode": "existing"}
     if not current:
         try:
             jar_id = client.upload_jar("/opt/flink/private/pipeline-job.jar")
-            client.run_jar(jar_id)
+            submission = flink_submission.submit_jar_or_reconcile(client, jar_id, run_id)
         except ValueError as error:
             _write_flink_failure(evidence, run_id, "job_submission", error)
             raise
@@ -470,7 +471,7 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
     except ValueError as error:
         _write_flink_failure(evidence, run_id, "runtime_validation", error)
         raise
-    payload = {**verified, "identity": identity}
+    payload = {**verified, "identity": identity, "submission": submission}
     (evidence / "flink-runtime.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload
 
