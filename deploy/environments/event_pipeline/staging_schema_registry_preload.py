@@ -23,6 +23,24 @@ def _result(run_id: str, **fields: object) -> dict:
     return {"environment": "staging", "run_id": run_id, **fields}
 
 
+def _docker_error_code(text: str) -> str:
+    """Classify image-load failures without retaining Docker output."""
+    lowered = text.lower()
+    if "no space left" in lowered:
+        return "staging_insufficient_disk"
+    if "out of memory" in lowered or "cannot allocate memory" in lowered:
+        return "staging_resource_exhausted"
+    if "failed to validate image signature" in lowered or "signature" in lowered:
+        return "staging_image_signature_rejected"
+    if "permission denied" in lowered or "operation not permitted" in lowered:
+        return "staging_docker_permission_denied"
+    if "cannot connect to the docker daemon" in lowered:
+        return "staging_docker_unavailable"
+    if "error response from daemon" in lowered:
+        return "staging_docker_daemon_error"
+    return "schema_registry_preload_failed"
+
+
 def _write_once(path: Path, payload: dict) -> None:
     if path.exists() or path.is_symlink():
         raise ValueError("preload evidence already exists")
@@ -84,11 +102,11 @@ def preload(run_id: str, image_id: str, archive_path: str | Path | None = None) 
             raise ValueError("image archive is empty")
         loaded = subprocess.run(
             ["docker", "load", "--input", str(archive)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            capture_output=True, text=True,
             timeout=900,
         )
         if loaded.returncode:
-            raise RuntimeError("docker image load failed")
+            raise RuntimeError(_docker_error_code(f"{loaded.stdout}\n{loaded.stderr}"))
         inspected = subprocess.run(
             ["docker", "image", "inspect", "--format", "{{.Id}}", image_id],
             capture_output=True, text=True, timeout=30,
@@ -110,9 +128,11 @@ def preload(run_id: str, image_id: str, archive_path: str | Path | None = None) 
         _write_once(report, payload)
         return payload
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        message = str(error)
         payload = _result(run_id, source_environment="development", image_key="schema_registry",
                           expected_image_id=image_id, status="failed",
-                          error_code=("image_archive_too_large" if "exceeds" in str(error)
+                          error_code=("image_archive_too_large" if "exceeds" in message
+                                      else message if re.fullmatch(r"[a-z0-9_]{1,64}", message)
                                       else "schema_registry_preload_failed"))
         try:
             _write_once(report, payload)

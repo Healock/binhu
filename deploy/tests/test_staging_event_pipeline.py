@@ -325,6 +325,20 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             self.assertIn(marker, workflow)
         self.assertNotIn('cat "$archive" | ssh', workflow)
 
+    def test_schema_registry_preload_classifies_fixed_docker_errors(self):
+        self.assertEqual(
+            staging_schema_registry_preload._docker_error_code(
+                "Error response from daemon: no space left on device"
+            ),
+            "staging_insufficient_disk",
+        )
+        self.assertEqual(
+            staging_schema_registry_preload._docker_error_code(
+                "failed to validate image signature"
+            ),
+            "staging_image_signature_rejected",
+        )
+
     def test_schema_registry_export_and_preload_digest_contracts_agree(self):
         workflows = Path(__file__).parents[2] / ".github" / "workflows"
         approved = staging_schema_registry_preload.APPROVED_IMAGE
