@@ -305,6 +305,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertNotIn("stderr", preload_diag)
         installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
         self.assertIn("staging-schema-registry-preload-diagnostic.py", installer)
+        self.assertIn("diagnose-preload", (root.parents[2] / ".github/workflows/install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8"))
         with self.assertRaises(ValueError):
             staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
         self.assertIn('"images"', image_diag)
