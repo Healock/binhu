@@ -29,6 +29,27 @@ def fail(message: str) -> None:
     raise SystemExit("Staging event-pipeline gateway refused: " + message)
 
 
+def _child_error_code(stdout: str, stderr: str) -> str:
+    """Classify child failure text without exposing command output."""
+    text = f"{stdout}\n{stderr}".lower()
+    markers = (
+        ("no such image", "staging_image_missing"),
+        ("manifest unknown", "staging_image_missing"),
+        ("credential", "staging_credentials_missing"),
+        ("password", "staging_credentials_invalid"),
+        ("no space left", "staging_insufficient_disk"),
+        ("address pool", "staging_network_address_pool_exhausted"),
+        ("cannot connect to the docker daemon", "staging_docker_unavailable"),
+        ("error response from daemon", "staging_docker_daemon_error"),
+        ("snapshot", "staging_snapshot_invalid"),
+        ("configuration", "staging_configuration_invalid"),
+    )
+    for marker, code in markers:
+        if marker in text:
+            return code
+    return "staging_child_process_failed"
+
+
 def read_bundle(size: int, expected: str, destination: Path) -> None:
     if size <= 0 or size > MAX_BYTES or not SHA_RE.fullmatch(expected):
         fail("candidate size or digest invalid")
@@ -137,6 +158,7 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
                 *(error.stdout or "").splitlines(),
                 *(error.stderr or "").splitlines(),
             ]
+            emitted = False
             for line in diagnostic_lines:
                 try:
                     payload = json.loads(line)
@@ -158,7 +180,15 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
                         and isinstance(payload.get("error_code"), str)
                         and re.fullmatch(r"[A-Za-z0-9_. -]{1,96}", payload["error_code"] or "")):
                     print(json.dumps(payload, sort_keys=True))
+                    emitted = True
                     break
+            if not emitted:
+                print(json.dumps({
+                    "environment": "staging", "run_id": run_id,
+                    "status": "failed", "phase": module,
+                    "error_type": type(error).__name__,
+                    "error_code": _child_error_code(error.stdout or "", error.stderr or ""),
+                }, sort_keys=True))
         raise
     lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
     if not lines:
