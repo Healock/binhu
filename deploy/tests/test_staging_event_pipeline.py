@@ -303,6 +303,8 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         preload_diag = (root / "staging_schema_registry_preload_diagnostic.py").read_text(encoding="utf-8")
         self.assertIn("preload_evidence_missing", preload_diag)
         self.assertNotIn("stderr", preload_diag)
+        installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
+        self.assertIn("staging-schema-registry-preload-diagnostic.py", installer)
         with self.assertRaises(ValueError):
             staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
         self.assertIn('"images"', image_diag)
