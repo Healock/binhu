@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import re
 import tempfile
 import unittest
@@ -14,12 +15,47 @@ from deploy.environments.event_pipeline import (
 )
 
 
+_GATEWAY_SPEC = importlib.util.spec_from_file_location(
+    "staging_gateway", Path(__file__).parents[1] / "environments" / "event_pipeline" /
+    "binhu-staging-event-pipeline-gateway.py"
+)
+staging_gateway = importlib.util.module_from_spec(_GATEWAY_SPEC)
+assert _GATEWAY_SPEC.loader is not None
+_GATEWAY_SPEC.loader.exec_module(staging_gateway)
+
+
 RUN_ID = "STG-20260920-01"
 
 
 def images():
     return {name: "sha256:" + str(index) * 64
             for index, name in enumerate(sorted(staging_compose.IMAGE_KEYS), start=1)}
+
+
+class StagingGatewayDiagnosticTests(unittest.TestCase):
+    def test_child_payload_accepts_prefixed_json_without_forwarding_text(self):
+        payloads = staging_gateway._child_payloads(
+            'warning {"environment":"staging","run_id":"STG-20260920-01",'
+            '"status":"failed","phase":"prepare","error_type":"ValueError",'
+            '"error_code":"staging_image_identity_mismatch"}', "secret output"
+        )
+        self.assertEqual(payloads[0]["error_code"], "staging_image_identity_mismatch")
+        self.assertNotIn("secret output", json.dumps(payloads))
+
+    def test_child_failure_evidence_contains_only_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            payload = {"error_type": "ValueError", "error_code": "staging_prepare_failed"}
+            with patch.object(staging_gateway, "STATE", state):
+                staging_gateway._record_child_failure(
+                    "STG-20260920-01", "prepare", payload, "sensitive stdout", "sensitive stderr"
+                )
+            evidence = list((state / "evidence" / "STG-20260920-01").glob("*.json"))
+            self.assertEqual(len(evidence), 1)
+            text = evidence[0].read_text(encoding="utf-8")
+            self.assertNotIn("sensitive", text)
+            self.assertIn("stdout_sha256", text)
+            self.assertIn("stderr_sha256", text)
 
 
 class StagingEventPipelineComposeTests(unittest.TestCase):
