@@ -16,7 +16,7 @@ import subprocess
 STATE = Path("/var/lib/binhu-staging-event-pipeline")
 EVIDENCE = STATE / "evidence"
 RUN_NETWORK_RE = re.compile(
-    r"^binhu-staging-event-pipeline-STG-[0-9]{8}-[0-9]{2}_internal$"
+    r"^binhu-staging-event-pipeline-STG-[0-9]{8}-[0-9]{2}_internal$", re.IGNORECASE
 )
 RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
 PROTECTED_RUN = "STG-20261002-27"
@@ -69,23 +69,36 @@ def _eligible(name: str, info: dict) -> str | None:
         return "attached_containers"
     if (reason := _protected(name, info)):
         return reason
-    if not RUN_NETWORK_RE.fullmatch(name):
-        return "not_staging_event_pipeline"
+    if name.lower().startswith("binhu-") and not RUN_NETWORK_RE.fullmatch(name):
+        return "protected_binhu_network"
     return None
 
 
 def _cleanup_stopped_test_containers() -> list[dict]:
     records: list[dict] = []
-    ids = [line.strip() for line in _run("docker", "ps", "-aq", "--filter", "status=exited").splitlines() if line.strip()]
+    ids = [line.strip() for line in _run("docker", "ps", "-aq").splitlines() if line.strip()]
     for container_id in ids:
         inspected = json.loads(_run("docker", "inspect", container_id))[0]
         config = inspected.get("Config") or {}
         labels = config.get("Labels") or {}
         name = str(inspected.get("Name", "")).lstrip("/")
         run_id = str(labels.get("binhu.run_id", ""))
-        record = {"id_prefix": container_id[:12], "name": name, "run_id": run_id, "action": "skipped"}
-        if (labels.get("binhu.environment") != "staging"
-                or labels.get("binhu.production_data") != "false"):
+        state = inspected.get("State") or {}
+        status = str(state.get("Status", "unknown"))
+        record = {"id_prefix": container_id[:12], "name": name, "run_id": run_id,
+                  "status": status, "action": "skipped"}
+        if bool(state.get("Running")):
+            record["reason"] = "running_container"
+            records.append(record)
+            continue
+        named_loadtest = "staging" in name.lower() and (
+            "load" in name.lower() or "event" in name.lower()
+        )
+        labeled_staging = (
+            labels.get("binhu.environment") == "staging"
+            and labels.get("binhu.production_data") in {"false", False}
+        )
+        if not (labeled_staging or named_loadtest):
             record["reason"] = "identity_not_staging_test"
         elif run_id == PROTECTED_RUN:
             record["reason"] = "current_run_protected"
@@ -93,6 +106,8 @@ def _cleanup_stopped_test_containers() -> list[dict]:
             record["reason"] = "run_id_not_fixed"
         elif "frp" in name.lower():
             record["reason"] = "frp_container"
+        elif not named_loadtest and not labeled_staging:
+            record["reason"] = "name_not_staging_loadtest"
         else:
             _run("docker", "rm", container_id)
             record["action"] = "removed"
