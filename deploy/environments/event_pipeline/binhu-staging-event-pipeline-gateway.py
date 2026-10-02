@@ -130,7 +130,14 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
         )
     except subprocess.CalledProcessError as error:
         if module in {"prepare", "apply"}:
-            for line in (error.stdout or "").splitlines():
+            # The child emits bounded JSON on stdout, while import/runtime
+            # failures can only reach stderr. Inspect both streams without
+            # forwarding arbitrary command output or credentials.
+            diagnostic_lines = [
+                *(error.stdout or "").splitlines(),
+                *(error.stderr or "").splitlines(),
+            ]
+            for line in diagnostic_lines:
                 try:
                     payload = json.loads(line)
                 except json.JSONDecodeError:
