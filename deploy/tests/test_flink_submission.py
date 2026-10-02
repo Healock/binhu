@@ -128,6 +128,45 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             client.upload_jar("/tmp/other.jar")
         self.assertIn("path=@/tmp/dev-pipeline-job.jar", calls[0])
 
+    def test_uncertain_submission_reconciles_running_job_without_resubmit(self):
+        class Client:
+            def __init__(self):
+                self.run_calls = 0
+                self.overview_calls = 0
+
+            def run_jar(self, _jar_id):
+                self.run_calls += 1
+                raise flink_submission.FlinkRestError(
+                    "flink_rest_transport_failed", "/jars/job.jar/run",
+                )
+
+            def overview(self):
+                self.overview_calls += 1
+                return [] if self.overview_calls == 1 else [job()]
+
+        client = Client()
+        with patch.object(flink_submission.time, "sleep") as sleep:
+            result = flink_submission.submit_jar_or_reconcile(client, "job.jar", RUN_ID, timeout=5)
+        self.assertEqual(result, {"mode": "reconciled", "job_id": job()["jid"]})
+        self.assertEqual(client.run_calls, 1)
+        self.assertEqual(client.overview_calls, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_uncertain_submission_preserves_transport_error_when_no_job_appears(self):
+        class Client:
+            def run_jar(self, _jar_id):
+                raise flink_submission.FlinkRestError(
+                    "flink_rest_timeout", "/jars/job.jar/run",
+                )
+
+            def overview(self):
+                return []
+
+        with patch.object(flink_submission.time, "monotonic", side_effect=[0, 6]), \
+                patch.object(flink_submission.time, "sleep"):
+            with self.assertRaisesRegex(flink_submission.FlinkRestError, "flink_rest_timeout"):
+                flink_submission.submit_jar_or_reconcile(Client(), "job.jar", RUN_ID, timeout=5)
+
     def test_runtime_identity_is_parsed_as_exact_key_values(self):
         self.assertEqual(
             flink_submission.parse_runtime_identity(

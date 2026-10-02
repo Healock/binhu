@@ -263,6 +263,41 @@ class FlinkRest:
         self.request("/jobs/" + jid, method="PATCH")
 
 
+def submit_jar_or_reconcile(
+    client: FlinkRest, jar_id: str, expected_run_id: str, *, timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Submit once and reconcile an uncertain REST response without resubmitting.
+
+    Flink can accept and start a JAR while the HTTP connection carrying the
+    response is reset. A retry would create a duplicate JobGraph, so a
+    transient submission error is reconciled by polling the fixed run name.
+    """
+    submission_error: FlinkRestError | None = None
+    try:
+        jid = client.run_jar(jar_id)
+        return {"mode": "submitted", "job_id": jid}
+    except FlinkRestError as error:
+        if error.code not in REST_TRANSIENT_CODES:
+            raise
+        submission_error = error
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            overview = client.overview()
+        except FlinkRestError as probe_error:
+            if probe_error.code not in REST_TRANSIENT_CODES:
+                raise
+            time.sleep(1)
+            continue
+        current, _ = partition_active_jobs(overview, expected_run_id)
+        running = [item for item in current if item.get("state") == "RUNNING"]
+        if len(running) == 1:
+            return {"mode": "reconciled", "job_id": str(running[0].get("jid", ""))}
+        time.sleep(1)
+    assert submission_error is not None
+    raise submission_error
+
+
 def wait_for_rest(client: FlinkRest, timeout: float = 60.0) -> list[dict[str, Any]]:
     """Wait only for the JobManager REST listener to become reachable.
 

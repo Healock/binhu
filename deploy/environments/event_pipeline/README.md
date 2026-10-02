@@ -208,6 +208,8 @@ Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到�
 作为唯一 run 身份；Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
 Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时包含两个受控
 sink、job name 和 Kafka 消费组完全匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
+提交 JAR 的响应如果在 JobGraph 已被接受后发生传输中断，只按精确 run name
+只读重查并复用现有 JobGraph，绝不自动重复提交。
 checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
 
 10 万条规模验收要求 TaskManager 使用受控的 2 GiB 容器上限和 1792 MiB Flink
