@@ -9,7 +9,8 @@ import subprocess
 
 from deploy.environments.event_pipeline import (
     staging_backend_network, staging_compose, staging_control, staging_deploy,
-    staging_metrics_probe, staging_prepare, staging_schema_registry_preload,
+    staging_metrics_probe, staging_network_cleanup, staging_prepare,
+    staging_schema_registry_preload,
 )
 
 
@@ -210,6 +211,28 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertNotIn("x" * 32, " ".join(command))
         self.assertEqual(run.call_args.kwargs["input_text"], "x" * 32 + "\n")
+
+    def test_network_cleanup_keeps_frp_and_attached_networks(self):
+        frp = {
+            "Name": "edge-frp",
+            "Driver": "bridge",
+            "Internal": False,
+            "Labels": {},
+            "Containers": {"abc": {"Name": "frpc"}},
+        }
+        self.assertEqual(staging_network_cleanup._eligible("edge-frp", frp), "attached_containers")
+
+    def test_network_cleanup_only_allows_empty_run_scoped_network(self):
+        empty = {
+            "Name": "binhu-staging-event-pipeline-STG-20261002-27_internal",
+            "Driver": "bridge",
+            "Internal": True,
+            "Labels": {"binhu.environment": "staging"},
+            "Containers": {},
+        }
+        self.assertIsNone(staging_network_cleanup._eligible(empty["Name"], empty))
+        protected = {**empty, "Name": "binhu-staging_internal"}
+        self.assertEqual(staging_network_cleanup._eligible(protected["Name"], protected), "protected_name")
 
 
 class StagingEventPipelineCandidateTests(unittest.TestCase):
