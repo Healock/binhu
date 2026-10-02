@@ -194,6 +194,29 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
                 ["STG-20260920-01-flink"],
             )
 
+    def test_empty_consumer_group_report_is_allowed_before_first_event(self):
+        with patch.object(
+                staging_control, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            self.assertEqual(
+                staging_control._consumer_group(
+                    "binhu-staging-event-pipeline-stg-20260920-01",
+                    "STG-20260920-01-flink",
+                ),
+                ["STG-20260920-01-flink"],
+            )
+
+    def test_consumer_group_report_for_other_topic_is_rejected(self):
+        with patch.object(
+                staging_control, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "GROUP TOPIC\nother.topic 0", ""),
+        ), self.assertRaisesRegex(ValueError, "no Staging topic assignment"):
+            staging_control._consumer_group(
+                "binhu-staging-event-pipeline-stg-20260920-01",
+                "STG-20260920-01-flink",
+            )
+
     def test_checkpoint_volume_identity_is_required_before_owner_change(self):
         from types import SimpleNamespace
         import stat

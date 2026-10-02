@@ -408,6 +408,11 @@ def _consumer_group(project: str, expected: str) -> list[str]:
         if str(error) == "staging_consumer_group_not_created":
             return [expected]
         raise
+    # Flink can have a RUNNING source job before Kafka creates a group
+    # assignment. Kafka's describe command returns an empty report in that
+    # state; defer assignment validation until the first event is delivered.
+    if not output.strip():
+        return [expected]
     if EVENT_TOPIC not in output:
         raise ValueError("Staging Flink group has no Staging topic assignment")
     return [expected]
