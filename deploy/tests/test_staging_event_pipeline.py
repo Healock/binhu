@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import zipfile
+import subprocess
 
 from deploy.environments.event_pipeline import (
     staging_backend_network, staging_compose, staging_control, staging_deploy,
@@ -21,6 +22,15 @@ def images():
 
 
 class StagingEventPipelineComposeTests(unittest.TestCase):
+    def test_network_address_pool_exhaustion_signature_is_classified(self):
+        result = subprocess.CompletedProcess(
+            ["docker", "network", "create"], 1, "",
+            "Error response from daemon: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network",
+        )
+        with patch("deploy.environments.event_pipeline.staging_control.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "staging_network_address_pool_exhausted"):
+                staging_control._run(["docker", "network", "create"])
+
     def test_complete_model_is_isolated_and_bounded(self):
         spec = staging_compose.compose(images(), RUN_ID)
         self.assertEqual(spec["name"], "binhu-staging-event-pipeline-stg-20260920-01")

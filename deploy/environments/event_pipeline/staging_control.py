@@ -55,7 +55,8 @@ def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) ->
         elif "network" in text and "already exists" in text:
             code = "staging_network_conflict"
         elif ("pool overlaps" in text or "failed to allocate gateway" in text
-              or "address space" in text):
+              or "address space" in text or "non-overlapping" in text
+              or "available ipv4 address pool" in text):
             code = "staging_network_address_pool_exhausted"
         elif "iptables" in text or "bridge-nf" in text:
             code = "staging_network_firewall_failed"
