@@ -33,6 +33,11 @@ def _child_error_code(stdout: str, stderr: str) -> str:
     """Classify child failure text without exposing command output."""
     text = f"{stdout}\n{stderr}".lower()
     markers = (
+        ("modulenotfounderror", "staging_module_import_failed"),
+        ("importerror", "staging_module_import_failed"),
+        ("syntaxerror", "staging_source_syntax_invalid"),
+        ("filenotfounderror", "staging_required_file_missing"),
+        ("permissionerror", "staging_permission_denied"),
         ("no such image", "staging_image_missing"),
         ("manifest unknown", "staging_image_missing"),
         ("credential", "staging_credentials_missing"),
