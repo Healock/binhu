@@ -1,6 +1,6 @@
 """MySQL delivery ledger isolated from the Redis/SSE Outbox status.
 
-Only an explicitly prepared Dev database may instantiate this store. Schema
+Only an explicitly prepared non-Production pipeline database may instantiate this store. Schema
 creation is an operator step, never part of the Backend request lifecycle.
 """
 from __future__ import annotations
@@ -9,7 +9,6 @@ import asyncio
 import hashlib
 import json
 import random
-import re
 import uuid
 from contextlib import asynccontextmanager
 
@@ -17,6 +16,7 @@ from .kafka_envelope import (
     serialize_event, event_partition_key, validate_event,
 )
 from .kafka_relay import Delivery, LEASE_SECONDS, MAX_ATTEMPTS
+from ..identity import environment_for_run_id
 
 
 LOCK_TRANSACTION_MAX_ATTEMPTS = 4
@@ -104,8 +104,12 @@ async def enqueue_delivery(cur, event: dict, *, run_id: str) -> None:
 
 class MySQLDeliveryStore:
     def __init__(self, pool, *, run_id: str):
-        if not isinstance(run_id, str) or not re.fullmatch(r"dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}", run_id):
-            raise ValueError("Kafka delivery requires a Dev run")
+        try:
+            environment = environment_for_run_id(run_id)
+        except ValueError:
+            raise ValueError("Kafka delivery requires a development or staging run") from None
+        if environment not in {"development", "staging"}:
+            raise ValueError("Kafka delivery requires a non-Production run")
         self.pool, self.run_id = pool, run_id
 
     @asynccontextmanager
