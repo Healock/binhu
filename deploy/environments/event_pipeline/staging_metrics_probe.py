@@ -26,7 +26,7 @@ def _container(project: str, service: str) -> str:
     return f"{project}-{service}-1"
 
 
-def _mysql_status(container: str) -> dict[str, int]:
+def _mysql_status(container: str) -> dict[str, int | None]:
     sql = (
         "SHOW GLOBAL STATUS WHERE Variable_name IN "
         "('Threads_connected','Threads_running','Innodb_row_lock_current_waits',"
@@ -44,10 +44,14 @@ def _mysql_status(container: str) -> dict[str, int]:
             result[name] = int(value)
     required = {
         "Threads_connected", "Threads_running", "Innodb_row_lock_current_waits",
-        "Innodb_row_lock_time_max", "Innodb_deadlocks",
+        "Innodb_row_lock_time_max",
     }
     if set(result) != required:
         raise RuntimeError("Staging MySQL metrics contract incomplete")
+    # MySQL 8 does not expose Innodb_deadlocks as a GLOBAL STATUS value on all
+    # builds. The Staging app account also lacks PROCESS, so do not infer zero
+    # from an unavailable counter; report it as unmeasured instead.
+    result["Innodb_deadlocks"] = None
     return result
 
 

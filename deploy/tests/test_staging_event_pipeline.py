@@ -23,6 +23,14 @@ staging_gateway = importlib.util.module_from_spec(_GATEWAY_SPEC)
 assert _GATEWAY_SPEC.loader is not None
 _GATEWAY_SPEC.loader.exec_module(staging_gateway)
 
+_RESOURCE_METRICS_SPEC = importlib.util.spec_from_file_location(
+    "staging_resource_metrics", Path(__file__).parents[2] / "load-tests" / "staging" /
+    "resource_metrics.py"
+)
+staging_resource_metrics = importlib.util.module_from_spec(_RESOURCE_METRICS_SPEC)
+assert _RESOURCE_METRICS_SPEC.loader is not None
+_RESOURCE_METRICS_SPEC.loader.exec_module(staging_resource_metrics)
+
 
 RUN_ID = "STG-20260920-01"
 
@@ -382,6 +390,34 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
             self.assertIn(metric, source)
         self.assertIn('"production": None', source)
         self.assertNotIn("binhu-mysql", source)
+
+    def test_mysql_deadlock_counter_unavailable_is_unverified_not_zero(self):
+        output = """Threads_connected\t6
+Threads_running\t2
+Innodb_row_lock_current_waits\t0
+Innodb_row_lock_time_max\t2673
+"""
+        with patch.object(staging_metrics_probe, "_run", return_value=output):
+            metrics = staging_metrics_probe._mysql_status("binhu-staging-environment-mysql-1")
+        self.assertIsNone(metrics["Innodb_deadlocks"])
+
+        sample = {
+            "mysql": {**metrics, "Threads_connected": 6, "Threads_running": 2,
+                      "Innodb_row_lock_current_waits": 0, "Innodb_row_lock_time_max": 2673},
+            "backend_pool": {"pool_count": 1, "usage_ratio": 0, "used": 0, "max_size": 10},
+            "redis": {"used_memory": 1, "maxmemory": 10, "oom_error_count": 0,
+                      "evicted_keys": 0, "keyspace_hits": 0, "keyspace_misses": 0},
+            "kafka": {"lag": 0},
+            "flink": {"checkpoint_completed": 1, "checkpoint_failed": 0,
+                      "checkpoint_duration_ms": 1, "backpressure_ratio": 0},
+            "derived_queue": {"pending": 0, "drain_seconds": 0},
+            "production": {"healthy": True, "restart_count": 0,
+                           "oom_killed_count": 0, "error_count": 0},
+        }
+        report = staging_resource_metrics.summarize_resource_samples([sample, sample])
+        self.assertTrue(report["unverified"])
+        self.assertIn("sample[0].mysql.Innodb_deadlocks", report["missing"])
+        self.assertNotIn("deadlock_delta", report.get("mysql", {}))
 
     def test_backend_pool_probe_passes_private_password_only_over_stdin(self):
         payload = {"pool_count": 8, "usage_ratio": .5, "used": 20, "max_size": 40}
