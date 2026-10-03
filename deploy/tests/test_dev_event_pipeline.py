@@ -1195,9 +1195,13 @@ volumes:
                 validate_event({**event(), **update})
 
     def test_store_run_validation_precedes_database_access(self):
-        for bad in ("production", "dev-", "dev-" + "x" * 65, None):
+        for bad in ("production", "shadow-test", "STG-invalid", "dev-", "dev-" + "x" * 65, None):
             with self.assertRaises(ValueError):
                 MySQLDeliveryStore(None, run_id=bad)
+
+    def test_store_accepts_the_staging_pipeline_identity(self):
+        store = MySQLDeliveryStore(None, run_id="STG-20261003-06")
+        self.assertEqual(store.run_id, "STG-20261003-06")
 
     def test_compose_has_no_host_ports_or_old_storage(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
