@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,7 @@ from staging.metrics import StagingMetrics
 from staging.report import evaluate_report
 from staging.resource_metrics import summarize_resource_samples
 from staging.stream_clients import StreamHooks, cookie_header, run_query_websocket, run_sse, websocket_url
+from staging.tls_preflight import _needs_level2, _parse_public_key_profile, _target, _verified_context, configure
 from staging.workload import load_runtime_index, retry_delay
 
 
@@ -58,6 +61,78 @@ def runtime_payload():
 
 
 class StagingLoadTests(unittest.TestCase):
+    def test_tls_target_rejects_non_https_or_paths(self):
+        self.assertEqual(_target("https://staging.example.test"), ("staging.example.test", 443))
+        self.assertEqual(_target("https://staging.example.test:8443/"), ("staging.example.test", 8443))
+        for value in ("http://staging.example.test", "https://staging.example.test/staging", "https://u:p@staging.example.test"):
+            with self.assertRaises(ValueError):
+                _target(value)
+
+    def test_level_two_tls_context_keeps_ca_and_hostname_validation_enabled(self):
+        context = _verified_context(2)
+        self.assertEqual(context.verify_mode, 2)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.security_level, 2)
+        self.assertGreaterEqual(context.minimum_version, 771)
+
+    def test_tls_diagnostic_parses_key_algorithm_and_bit_strength(self):
+        self.assertEqual(_parse_public_key_profile("Public Key Algorithm: rsaEncryption\nPublic-Key: (2048 bit)"), ("RSA", 2048))
+        self.assertEqual(_parse_public_key_profile("Public Key Algorithm: id-ecPublicKey\nPublic-Key: (256 bit)"), ("EC", 256))
+        self.assertEqual(_parse_public_key_profile("Public Key Algorithm: dsaEncryption\nPublic-Key: (2048 bit)"), ("OTHER", 2048))
+        with self.assertRaises(RuntimeError):
+            _parse_public_key_profile("certificate has no recognized public key")
+
+    def test_tls_security_level_is_changed_only_for_strong_fully_validated_peer(self):
+        self.assertTrue(_needs_level2(3, "RSA", 2048, True))
+        self.assertTrue(_needs_level2(3, "EC", 256, True))
+        self.assertFalse(_needs_level2(2, "RSA", 2048, True))
+        self.assertFalse(_needs_level2(3, "RSA", 1024, True))
+        self.assertFalse(_needs_level2(3, "RSA", 2048, False))
+
+    def test_runner_tls_configuration_only_applies_after_verified_level_two_probe(self):
+        verified_report = {
+            "default_security_level": 3,
+            "peer_key_meets_minimum": True,
+            "level_2_chain_and_hostname_validation": "passed",
+            "recommended_action": "configure_level_2",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch("staging.tls_preflight._diagnose", return_value=verified_report):
+            root = Path(directory)
+            config = root / "openssl.cnf"
+            github_env = root / "github_env"
+            result = configure(str(config), str(github_env))
+            self.assertTrue(result["runner_tls_configured"])
+            self.assertIn("SECLEVEL=2", config.read_text(encoding="ascii"))
+            if os.name == "posix":
+                self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(github_env.read_text(encoding="utf-8"), f"OPENSSL_CONF={config}\n")
+            child_env = os.environ.copy()
+            child_env["OPENSSL_CONF"] = str(config)
+            child = subprocess.run(
+                [sys.executable, "-c", "import ssl; print(ssl.create_default_context().security_level)"],
+                capture_output=True,
+                check=True,
+                env=child_env,
+                text=True,
+            )
+            self.assertEqual(child.stdout.strip(), "2")
+
+        no_change_report = {**verified_report, "recommended_action": "no_change"}
+        with tempfile.TemporaryDirectory() as directory, patch("staging.tls_preflight._diagnose", return_value=no_change_report):
+            root = Path(directory)
+            config = root / "openssl.cnf"
+            github_env = root / "github_env"
+            result = configure(str(config), str(github_env))
+            self.assertFalse(result["runner_tls_configured"])
+            self.assertFalse(config.exists())
+            self.assertFalse(github_env.exists())
+
+    def test_tls_diagnostic_steps_are_separate_from_fixture_and_load_steps(self):
+        workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "run-staging-realistic-load.yml").read_text(encoding="utf-8")
+        self.assertLess(workflow.index("Read-only Staging TLS diagnosis"), workflow.index("Seed fictional fixtures"))
+        self.assertIn("if: inputs.operation == 'tls-diagnostic'", workflow)
+        self.assertIn("if: inputs.operation == 'load'", workflow)
+
     def test_staging_fixture_model_is_fictional_credential_free_and_large_enough(self):
         accounts = make_accounts()
         tasks = make_tasks()

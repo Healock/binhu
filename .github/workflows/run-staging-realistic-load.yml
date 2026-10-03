@@ -4,8 +4,17 @@ run-name: Run Staging realistic load ${{ inputs.run_id }}
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: "Read-only TLS diagnosis, runner TLS configuration, or Staging load"
+        required: true
+        type: choice
+        options:
+          - tls-diagnostic
+          - tls-configure
+          - load
+        default: tls-diagnostic
       ref: {description: "Merged main commit deployed to Staging", required: true, type: string}
-      run_id: {description: "Applied STG-YYYYMMDD-NN run", required: true, type: string}
+      run_id: {description: "Applied STG-YYYYMMDD-NN run (load operation only)", required: false, type: string}
 
 permissions:
   contents: read
@@ -22,14 +31,55 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.operation == 'load' && inputs.ref || github.ref }}
           fetch-depth: 1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - name: Install fixed load generator
+        if: inputs.operation == 'load'
         run: python -m pip install -r load-tests/requirements.txt
+      - name: Read-only Staging TLS diagnosis
+        if: inputs.operation == 'tls-diagnostic'
+        env:
+          STAGING_BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
+        run: python -m staging.tls_preflight diagnose
+        working-directory: load-tests
+      - name: Configure runner TLS at level 2 when required and verified
+        if: inputs.operation == 'tls-configure'
+        env:
+          STAGING_BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
+        run: >-
+          python -m staging.tls_preflight configure
+          --openssl-config "$RUNNER_TEMP/staging-tls/openssl.cnf"
+          --github-env "$GITHUB_ENV"
+        working-directory: load-tests
+      - name: Configure isolated runner TLS before Staging load
+        if: inputs.operation == 'load'
+        env:
+          STAGING_BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
+        run: >-
+          python -m staging.tls_preflight configure
+          --openssl-config "$RUNNER_TEMP/staging-tls/openssl.cnf"
+          --github-env "$GITHUB_ENV"
+        working-directory: load-tests
+      - name: Verify runner SSL context keeps certificate and hostname checks
+        if: inputs.operation == 'tls-configure' || inputs.operation == 'load'
+        run: |
+          python - <<'PY'
+          import json, ssl
+          context = ssl.create_default_context()
+          result = {
+              "security_level": context.security_level,
+              "verify_required": context.verify_mode == ssl.CERT_REQUIRED,
+              "hostname_check": context.check_hostname,
+          }
+          print(json.dumps(result, sort_keys=True))
+          if context.security_level > 2 or not result["verify_required"] or not result["hostname_check"]:
+              raise SystemExit("runner_tls_context_contract_failed")
+          PY
       - name: Seed fictional fixtures and verify query smoke path
+        if: inputs.operation == 'load'
         shell: bash
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
@@ -65,6 +115,7 @@ jobs:
           print(json.dumps({'staging_query_smoke':'passed','status_code':query.status_code}))
           PY
       - name: Run 75 users with independent background polling and streams
+        if: inputs.operation == 'load'
         shell: bash
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
@@ -114,6 +165,7 @@ jobs:
           test -s "$STAGING_LOAD_REPORT"
           rm -f "$STAGING_RUNTIME_INDEX" "$RUNNER_TEMP/staging-ssh/key" "$RUNNER_TEMP/staging-ssh/known_hosts"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: inputs.operation == 'load'
         with:
           name: staging-realistic-load-${{ inputs.run_id }}-${{ github.run_id }}
           path: |
