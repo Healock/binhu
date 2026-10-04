@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import os
 import re
 import socket
@@ -124,6 +125,7 @@ def _diagnose() -> dict:
         ["openssl", "version"], capture_output=True, check=True, text=True,
     ).stdout.strip()
     resolved_addresses = sorted({item[4][0] for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
+    resolved_address_hashes = [hashlib.sha256(address.encode("ascii")).hexdigest() for address in resolved_addresses]
 
     # This context is only used to read the peer's public leaf certificate; it
     # never sends an HTTP request and is never used by the load client.
@@ -144,6 +146,7 @@ def _diagnose() -> dict:
         "openssl_cli_version": openssl_cli,
         "openssl_version": ssl.OPENSSL_VERSION,
         "resolved_addresses": resolved_addresses,
+        "resolved_address_sha256": resolved_address_hashes,
         "default_security_level": default_context.security_level,
         "level_2_security_level": level2_context.security_level,
         "peer_public_key_type": key_kind,
