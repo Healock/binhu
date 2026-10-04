@@ -72,6 +72,7 @@ def _certificate_identity(certificate_der: bytes) -> dict[str, str]:
     )
     identity: dict[str, str] = {}
     for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
         if line.startswith("subject="):
             identity["subject"] = line.removeprefix("subject=").strip()
         elif line.startswith("issuer="):
@@ -122,6 +123,7 @@ def _diagnose() -> dict:
     openssl_cli = subprocess.run(
         ["openssl", "version"], capture_output=True, check=True, text=True,
     ).stdout.strip()
+    resolved_addresses = sorted({item[4][0] for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
 
     # This context is only used to read the peer's public leaf certificate; it
     # never sends an HTTP request and is never used by the load client.
@@ -141,6 +143,7 @@ def _diagnose() -> dict:
     return {
         "openssl_cli_version": openssl_cli,
         "openssl_version": ssl.OPENSSL_VERSION,
+        "resolved_addresses": resolved_addresses,
         "default_security_level": default_context.security_level,
         "level_2_security_level": level2_context.security_level,
         "peer_public_key_type": key_kind,
