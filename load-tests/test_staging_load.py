@@ -18,7 +18,7 @@ from staging.metrics import StagingMetrics
 from staging.report import evaluate_report
 from staging.resource_metrics import summarize_resource_samples
 from staging.stream_clients import StreamHooks, cookie_header, run_query_websocket, run_sse, websocket_url
-from staging.tls_preflight import _needs_level2, _parse_public_key_profile, _target, _verified_context, configure
+from staging.tls_preflight import _certificate_identity, _needs_level2, _parse_public_key_profile, _target, _verified_context, configure
 from staging.workload import load_runtime_index, retry_delay
 
 
@@ -81,6 +81,17 @@ class StagingLoadTests(unittest.TestCase):
         self.assertEqual(_parse_public_key_profile("Public Key Algorithm: dsaEncryption\nPublic-Key: (2048 bit)"), ("OTHER", 2048))
         with self.assertRaises(RuntimeError):
             _parse_public_key_profile("certificate has no recognized public key")
+
+    def test_tls_diagnostic_keeps_only_public_certificate_identity(self):
+        identity = _certificate_identity.__globals__["subprocess"]
+        del identity
+        with patch("staging.tls_preflight.subprocess.run") as run:
+            run.return_value.stdout = b"subject=CN = staging.example\nissuer=CN = test-ca\nsha256 Fingerprint=AA:BB\n"
+            run.return_value.check_returncode = lambda: None
+            self.assertEqual(
+                _certificate_identity(b"der"),
+                {"subject": "CN = staging.example", "issuer": "CN = test-ca", "sha256_fingerprint": "AA:BB"},
+            )
 
     def test_tls_security_level_is_changed_only_for_strong_fully_validated_peer(self):
         self.assertTrue(_needs_level2(3, "RSA", 2048, True))

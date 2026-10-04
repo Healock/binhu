@@ -62,6 +62,27 @@ def _public_key_profile(certificate_der: bytes) -> tuple[str, int]:
     return _parse_public_key_profile(result.stdout.decode("utf-8", errors="replace"))
 
 
+def _certificate_identity(certificate_der: bytes) -> dict[str, str]:
+    result = subprocess.run(
+        ["openssl", "x509", "-inform", "DER", "-noout", "-subject", "-issuer", "-fingerprint", "-sha256"],
+        input=certificate_der,
+        capture_output=True,
+        check=True,
+        text=False,
+    )
+    identity: dict[str, str] = {}
+    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("subject="):
+            identity["subject"] = line.removeprefix("subject=").strip()
+        elif line.startswith("issuer="):
+            identity["issuer"] = line.removeprefix("issuer=").strip()
+        elif line.startswith("sha256 Fingerprint="):
+            identity["sha256_fingerprint"] = line.removeprefix("sha256 Fingerprint=").strip()
+    if set(identity) != {"subject", "issuer", "sha256_fingerprint"}:
+        raise RuntimeError("peer_certificate_identity_unrecognized")
+    return identity
+
+
 def _verified_context(level: int | None = None) -> ssl.SSLContext:
     context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -108,6 +129,7 @@ def _diagnose() -> dict:
     inspect_context.check_hostname = False
     inspect_context.verify_mode = ssl.CERT_NONE
     certificate = _open_tls(host, port, inspect_context)
+    certificate_identity = _certificate_identity(certificate)
     key_kind, key_bits = _public_key_profile(certificate)
 
     default_context = _verified_context()
@@ -123,6 +145,9 @@ def _diagnose() -> dict:
         "level_2_security_level": level2_context.security_level,
         "peer_public_key_type": key_kind,
         "peer_public_key_bits": key_bits,
+        "peer_certificate_subject": certificate_identity["subject"],
+        "peer_certificate_issuer": certificate_identity["issuer"],
+        "peer_certificate_sha256": certificate_identity["sha256_fingerprint"],
         "peer_key_meets_minimum": strong_key,
         "default_chain_and_hostname_validation": "passed" if default_ok else "failed",
         "default_error_code": default_error,
