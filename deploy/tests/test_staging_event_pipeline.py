@@ -394,6 +394,18 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         self.assertNotIn("x" * 32, " ".join(command))
         self.assertEqual(run.call_args.kwargs["input_text"], "x" * 32 + "\n")
 
+    def test_mysql_probe_accepts_server_without_optional_deadlock_counter(self):
+        output = "\n".join((
+            "Innodb_row_lock_current_waits\t0",
+            "Innodb_row_lock_time_max\t12",
+            "Threads_connected\t8",
+            "Threads_running\t2",
+        ))
+        with patch.object(staging_metrics_probe, "_run", return_value=output):
+            result = staging_metrics_probe._mysql_status("derived-mysql")
+        self.assertEqual(result["Innodb_deadlocks"], 0)
+        self.assertEqual(result["Threads_connected"], 8)
+
     def test_network_cleanup_keeps_frp_and_attached_networks(self):
         frp = {
             "Name": "edge-frp",
