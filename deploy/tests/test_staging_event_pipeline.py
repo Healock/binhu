@@ -406,6 +406,20 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         self.assertEqual(result["Innodb_deadlocks"], 0)
         self.assertEqual(result["Threads_connected"], 8)
 
+    def test_redis_probe_passes_runtime_password_over_stdin(self):
+        info = "\n".join((
+            "used_memory:10", "maxmemory:100", "evicted_keys:0",
+            "keyspace_hits:5", "keyspace_misses:1",
+        ))
+        password = "r" * 32
+        with patch.dict("os.environ", {"STAGING_PIPELINE_REDIS_PASSWORD": password}, clear=False), \
+                patch.object(staging_metrics_probe, "_run", return_value=info) as run:
+            result = staging_metrics_probe._redis("derived-redis")
+        self.assertEqual(result["oom_error_count"], 0)
+        command = run.call_args.args[0]
+        self.assertNotIn(password, " ".join(command))
+        self.assertEqual(run.call_args.kwargs["input_text"], password + "\n")
+
     def test_network_cleanup_keeps_frp_and_attached_networks(self):
         frp = {
             "Name": "edge-frp",

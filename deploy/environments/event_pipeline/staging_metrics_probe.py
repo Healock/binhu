@@ -112,10 +112,18 @@ def _queue(container: str, run_id: str, database: str) -> dict[str, int]:
 
 
 def _redis(container: str) -> dict[str, int]:
+    password = (
+        os.environ.get("STAGING_PIPELINE_REDIS_PASSWORD")
+        or os.environ.get("REDIS_PASSWORD", "")
+    )
+    if len(password) < 16:
+        raise RuntimeError("private Staging Redis password missing")
     output = _run([
-        "docker", "exec", container, "sh", "-c",
-        'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli --no-auth-warning INFO all',
-    ])
+        "docker", "exec", "-i", container, "sh", "-c",
+        'read -r REDISCLI_AUTH; export REDISCLI_AUTH; '
+        'exec redis-cli --no-auth-warning INFO all',
+    ], input_text=password + "\n")
+    password = ""
     values: dict[str, int] = {}
     aliases = {
         "used_memory": "used_memory", "maxmemory": "maxmemory",
