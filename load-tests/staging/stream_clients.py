@@ -15,6 +15,7 @@ from urllib.parse import quote, urlparse
 try:
     from .workload import retry_delay
 except ImportError:  # Locust loads locustfile.py as a top-level file module.
+    # Keep the fallback bounded to this fixed sibling module; no dynamic paths.
     from workload import retry_delay
 
 
