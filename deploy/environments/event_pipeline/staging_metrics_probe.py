@@ -13,6 +13,9 @@ from .staging_compose import BROKERS, EVENT_TOPIC
 from .staging_prepare import root_for
 
 
+DERIVED_DATABASE = "Staging_EventPipeline"
+
+
 def _run(command: list[str], *, timeout: int = 30, input_text: str | None = None) -> str:
     result = subprocess.run(
         command, capture_output=True, text=True, timeout=timeout, input=input_text,
@@ -95,8 +98,8 @@ print(json.dumps({"pool_count":len(pools),"usage_ratio":max(ratios),
 
 
 def _queue(container: str, run_id: str, database: str) -> dict[str, int]:
-    if not re.fullmatch(r"Staging_[A-Za-z0-9_]*OnlineData", database):
-        raise RuntimeError("Staging OnlineData database identity invalid")
+    if database != DERIVED_DATABASE:
+        raise RuntimeError("Staging derived database identity invalid")
     sql = (
         f"SELECT COUNT(*) FROM `{database}`._kafka_event_delivery "
         f"WHERE run_id='{run_id}' AND status NOT IN ('published','discarded')"
@@ -238,11 +241,7 @@ def sample(run_id: str) -> dict[str, Any]:
     backend_env = Path("/srv/binhu-environments/staging/backend.env")
     if backend_env.is_symlink() or not backend_env.is_file():
         raise RuntimeError("Staging backend environment missing")
-    database = ""
-    for line in backend_env.read_text(encoding="utf-8").splitlines():
-        if line.startswith("MYSQL_ONLINE_DATA_DB="):
-            database = line.split("=", 1)[1]
-            break
+    derived_mysql = _container(project, "staging-derived-mysql")
     pipeline_redis = _container(project, "staging-derived-redis")
     stat = Path(root).stat()
     disk = Path(root).anchor or "/"
@@ -257,7 +256,7 @@ def sample(run_id: str) -> dict[str, Any]:
         "redis": _redis(pipeline_redis),
         "kafka": _kafka(project, run_id),
         "flink": _flink(project, run_id),
-        "derived_queue": _queue(backend, run_id, database),
+        "derived_queue": _queue(derived_mysql, run_id, DERIVED_DATABASE),
         "containers": _containers(project),
         "disk": {"used": usage.used, "total": usage.total},
         # Production is deliberately absent: the isolated Staging gateway may
