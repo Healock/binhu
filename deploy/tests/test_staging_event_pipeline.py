@@ -392,6 +392,8 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
             )
         command = run.call_args.args[0]
         self.assertNotIn("x" * 32, " ".join(command))
+        self.assertIn("staging-load-admin-01@staging", " ".join(command))
+        self.assertNotIn("staging-load-super_admin-01@staging", " ".join(command))
         self.assertEqual(run.call_args.kwargs["input_text"], "x" * 32 + "\n")
 
     def test_mysql_probe_accepts_server_without_optional_deadlock_counter(self):
