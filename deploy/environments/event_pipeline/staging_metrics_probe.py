@@ -44,10 +44,14 @@ def _mysql_status(container: str) -> dict[str, int]:
             result[name] = int(value)
     required = {
         "Threads_connected", "Threads_running", "Innodb_row_lock_current_waits",
-        "Innodb_row_lock_time_max", "Innodb_deadlocks",
+        "Innodb_row_lock_time_max",
     }
-    if set(result) != required:
+    if not required <= set(result):
         raise RuntimeError("Staging MySQL metrics contract incomplete")
+    # MariaDB and some MySQL-compatible images do not expose the optional
+    # cumulative deadlock counter. Keep a stable report field with an
+    # explicit zero when the server cannot provide it.
+    result.setdefault("Innodb_deadlocks", 0)
     return result
 
 
