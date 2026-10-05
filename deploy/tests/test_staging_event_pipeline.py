@@ -422,6 +422,20 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         self.assertNotIn(password, " ".join(command))
         self.assertEqual(run.call_args.kwargs["input_text"], password + "\n")
 
+    def test_queue_probe_uses_derived_database_and_rejects_online_snapshot(self):
+        with patch.object(staging_metrics_probe, "_run", return_value="0\n") as run:
+            result = staging_metrics_probe._queue(
+                "binhu-staging-event-pipeline-STG-20260920-01-staging-derived-mysql-1",
+                RUN_ID,
+                "Staging_EventPipeline",
+            )
+        self.assertEqual(result, {"pending": 0, "drain_seconds": 0})
+        command = run.call_args.args[0]
+        self.assertIn("staging-derived-mysql-1", " ".join(command))
+        self.assertIn("Staging_EventPipeline", " ".join(command))
+        with self.assertRaisesRegex(RuntimeError, "derived database identity"):
+            staging_metrics_probe._queue("derived-mysql", RUN_ID, "Staging_s" + "d" * 16 + "_OnlineData")
+
     def test_kafka_probe_accepts_empty_consumer_groups_before_first_event(self):
         with patch.object(staging_metrics_probe, "_run", return_value=""):
             self.assertEqual(
