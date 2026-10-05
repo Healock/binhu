@@ -63,7 +63,7 @@ def _backend_pool(container: str, run_id: str) -> dict[str, int | float]:
 password=sys.stdin.readline().rstrip("\r\n")
 login=urllib.request.Request(
     "http://127.0.0.1:37125/api/auth/login",
-    data=json.dumps({"username":"staging-load-super_admin-01@staging","password":password,
+    data=json.dumps({"username":"staging-load-admin-01@staging","password":password,
                      "device_type":"staging-metrics","device_id":sys.argv[1].lower()+"-metrics"}).encode(),
     headers={"Content-Type":"application/json"}, method="POST")
 with urllib.request.urlopen(login,timeout=15) as response:
