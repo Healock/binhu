@@ -111,8 +111,12 @@ async def _seed(run_id: str, password: str) -> dict[str, Any]:
     accounts = make_accounts()
     tasks = make_tasks()
     online_pool = db_manager.get_pool("online_data")
+    platform_pool = db_manager.get_pool("platform")
 
-    async with online_pool.acquire() as conn:
+    # Account, organization, and permission tables belong to PlatformData in
+    # the split-domain schema. Keep them on their own pool so a disabled SQL
+    # compatibility rewrite cannot redirect fixture setup into OnlineData.
+    async with platform_pool.acquire() as conn:
         await conn.begin()
         try:
             async with conn.cursor() as cur:

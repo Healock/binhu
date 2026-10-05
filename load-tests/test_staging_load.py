@@ -83,6 +83,12 @@ class StagingLoadTests(unittest.TestCase):
         self.assertIn("--password-stdin", source)
         self.assertNotIn("password_hash\":", source)
 
+    def test_staging_seeder_keeps_platform_fixtures_on_platform_pool(self):
+        source = (Path(__file__).parent / "staging" / "seed.py").read_text(encoding="utf-8")
+        self.assertIn('platform_pool = db_manager.get_pool("platform")', source)
+        self.assertIn("async with platform_pool.acquire() as conn:", source)
+        self.assertIn('online_pool = db_manager.get_pool("online_data")', source)
+
     def test_resource_summary_fails_closed_when_any_layer_is_missing(self):
         result = summarize_resource_samples([
             {"mysql": {}, "redis": {}, "kafka": {}, "flink": {}, "derived_queue": {}, "production": None},
