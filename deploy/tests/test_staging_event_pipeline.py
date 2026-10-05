@@ -422,6 +422,13 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         self.assertNotIn(password, " ".join(command))
         self.assertEqual(run.call_args.kwargs["input_text"], password + "\n")
 
+    def test_kafka_probe_accepts_empty_consumer_groups_before_first_event(self):
+        with patch.object(staging_metrics_probe, "_run", return_value=""):
+            self.assertEqual(
+                staging_metrics_probe._kafka("binhu-staging-event-pipeline-STG-20261006-21", RUN_ID),
+                {"lag": 0, "group_count": 2},
+            )
+
     def test_network_cleanup_keeps_frp_and_attached_networks(self):
         frp = {
             "Name": "edge-frp",
