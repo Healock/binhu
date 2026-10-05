@@ -57,6 +57,17 @@ class StagingGatewayDiagnosticTests(unittest.TestCase):
             self.assertIn("stdout_sha256", text)
             self.assertIn("stderr_sha256", text)
 
+    def test_stream_clients_can_be_loaded_as_locust_top_level_module(self):
+        staging_dir = Path(__file__).parents[2] / "load-tests" / "staging"
+        spec = importlib.util.spec_from_file_location("stream_clients", staging_dir / "stream_clients.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        import sys
+        sys.modules[spec.name] = module
+        with patch("sys.path", [str(staging_dir), *__import__("sys").path]):
+            spec.loader.exec_module(module)
+        self.assertTrue(callable(module.retry_delay))
+
 
 class StagingEventPipelineComposeTests(unittest.TestCase):
     def test_network_address_pool_exhaustion_signature_is_classified(self):

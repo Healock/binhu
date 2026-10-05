@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import quote, urlparse
 
-from .workload import retry_delay
+try:
+    from .workload import retry_delay
+except ImportError:  # Locust loads locustfile.py as a top-level file module.
+    from workload import retry_delay
 
 
 @dataclass(frozen=True)
