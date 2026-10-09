@@ -35,17 +35,20 @@ export function connectResilientEventSource(
     if (stopped || document.visibilityState === 'hidden') return
     options.onState?.('connecting')
     const current = factory(appendEventCursor(url, lastEventId))
+    let openedAt: number | null = null
     source = current
     configure(current)
     current.onopen = () => {
       if (source !== current || stopped) return
-      failures = 0
+      openedAt = Date.now()
       options.onState?.('connected')
     }
     current.onerror = () => {
       if (source !== current || stopped) return
       current.close()
       source = null
+      // A 200 followed by an immediate close must not reset the retry budget.
+      if (openedAt !== null && Date.now() - openedAt >= 30_000) failures = 0
       failures += 1
       options.onState?.('disconnected')
       const delay = failures >= 6

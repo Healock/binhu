@@ -5,7 +5,8 @@ import { useAuth } from '../context/AuthContext'
 import { createResilientPoller } from '../utils/resilientPolling'
 
 export default function SessionTimeoutGuard() {
-  const { user, recordActivity, refreshUser, logout } = useAuth()
+  const { user, environment, recordActivity, refreshUser, logout } = useAuth()
+  const userId = user?.id
   const location = useLocation()
   const navigate = useNavigate()
   const [remaining, setRemaining] = useState<number | null>(null)
@@ -69,9 +70,10 @@ export default function SessionTimeoutGuard() {
   }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!user) return
+    if (!userId) return
     const poller = createResilientPoller(refreshUser, {
       intervalMs: 60_000,
+      immediate: false,
       maxDelayMs: 300_000,
       failureThreshold: 4,
       cooldownMs: 300_000,
@@ -84,7 +86,7 @@ export default function SessionTimeoutGuard() {
       poller.stop()
       window.removeEventListener('online', resume)
     }
-  }, [refreshUser, user])
+  }, [environment, refreshUser, userId])
 
   useEffect(() => {
     if (!deadlineInfo || !user) {
