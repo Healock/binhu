@@ -84,6 +84,7 @@ class PropertySearch(BaseModel):
     status: Literal["", "active", "inactive"] = "active"
     visit_start_date: date | None = None
     visit_end_date: date | None = None
+    visit_status: Literal["", "visited", "never"] = ""
     star_ratings: list[StarRating] = Field(default_factory=list, max_length=5)
     small_community_ids: list[int] = Field(default_factory=list, max_length=50)
     address_match_statuses: list[PropertyAddressMatchStatus] = Field(default_factory=list, max_length=10)
@@ -507,7 +508,8 @@ async def _property_search_result(
         )
         params.extend(["个人出租", "单位出租"])
     elif data.certificate_status == "actual_renter_missing":
-        where.append(f"property.housing_type IN (%s,%s) AND {certificate_count}=1 AND NOT ({renter_present})")
+        where.append(f"property.housing_type IN (%s,%s) AND {certificate_count}=1 AND NOT ({renter_present}) "
+                     f"AND ({signed} OR TRIM(COALESCE(certificate.sign_type,''))<>'')")
         params.extend(["个人出租", "单位出租"])
     elif data.certificate_status == "normal_signed":
         where.append(f"{certificate_count}=1 AND {renter_present} AND {signed}")
@@ -520,7 +522,7 @@ async def _property_search_result(
         where.append(
             "property.housing_type IN (%s,%s) AND ("
             f"({certificate_source_ready}=0 AND {certificate_count}=0) OR "
-            f"({certificate_count}=1 AND {certificate_issue_count}=0 AND {renter_present} "
+            f"({certificate_count}=1 AND {certificate_issue_count}=0 "
             f"AND NOT ({signed}) AND TRIM(COALESCE(certificate.sign_type,''))=''))"
         )
         params.extend(["个人出租", "单位出租"])
@@ -555,21 +557,31 @@ async def _property_search_result(
         " LEFT JOIN registry_property_small_community_links property_match "
         "ON property_match.property_id=property.id "
         "LEFT JOIN (SELECT property_id,COUNT(*) certificate_count,MAX(id) latest_id "
-        "FROM registry_property_certificates GROUP BY property_id) certificate_totals "
+        "FROM registry_property_certificates WHERE source_missing_since IS NULL GROUP BY property_id) certificate_totals "
         "ON certificate_totals.property_id=property.id "
         "LEFT JOIN registry_property_certificates certificate "
         "ON certificate.id=certificate_totals.latest_id "
-        "LEFT JOIN (SELECT entity_key,COUNT(*) issue_count "
+        "LEFT JOIN (SELECT entity_key,"
+        "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.community')),''),"
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sssq'))) issue_community,COUNT(*) issue_count "
         "FROM registry_import_issues WHERE source_type='certificate' AND status='pending' "
-        "GROUP BY entity_key) certificate_issues "
+        "AND batch_id=(SELECT MAX(id) FROM registry_source_batches WHERE source_type='certificate' "
+        "AND status IN ('imported','partially_imported')) "
+        "GROUP BY entity_key,issue_community) certificate_issues "
         "ON certificate_issues.entity_key=property.normalized_address "
+        "AND (certificate_issues.issue_community=property.community_name_snapshot "
+        "OR EXISTS (SELECT 1 FROM OnlineData._community_aliases issue_alias "
+        "WHERE issue_alias.community_id=property.community_id "
+        "AND issue_alias.alias=certificate_issues.issue_community)) "
         "CROSS JOIN (SELECT EXISTS(SELECT 1 FROM registry_source_batches "
         "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) source_ready) "
         "certificate_source_state"
     )
     # Visit fields live in VisitData. Resolve matching property IDs before
     # pagination so a filter never applies only to the visible page.
-    if data.visit_start_date or data.visit_end_date or data.star_ratings:
+    if data.visit_status == "never" and (data.visit_start_date or data.visit_end_date or data.star_ratings):
+        raise HTTPException(422, "从未走访按全部历史判断，不能同时选择走访日期或星级")
+    if data.visit_status or data.visit_start_date or data.visit_end_date or data.star_ratings:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT property.id,property.community_name_snapshot,property.natural_address,property.normalized_address "
@@ -592,6 +604,7 @@ async def _property_search_result(
                 visit_start_date=data.visit_start_date,
                 visit_end_date=data.visit_end_date,
                 star_ratings=data.star_ratings,
+                visit_status=data.visit_status,
             )
         if not matching_ids:
             return {
@@ -682,6 +695,7 @@ async def list_properties(
     status: Literal["", "active", "inactive"] = Query(default="active"),
     visit_start_date: date | None = Query(default=None),
     visit_end_date: date | None = Query(default=None),
+    visit_status: Literal["", "visited", "never"] = Query(default=""),
     star_ratings: list[StarRating] = Query(default=[]),
     small_community_id: list[int] = Query(default=[]),
     address_match_status: list[PropertyAddressMatchStatus] = Query(default=[]),
@@ -699,6 +713,7 @@ async def list_properties(
             status=status,
             visit_start_date=visit_start_date,
             visit_end_date=visit_end_date,
+            visit_status=visit_status,
             star_ratings=star_ratings,
             small_community_ids=small_community_id,
             address_match_statuses=address_match_status,

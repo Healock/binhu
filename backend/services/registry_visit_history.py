@@ -145,6 +145,7 @@ async def filter_property_ids_by_visit(
     visit_start_date: date | None = None,
     visit_end_date: date | None = None,
     star_ratings: list[str] | None = None,
+    visit_status: str = "",
 ) -> set[int]:
     """Return properties having at least one matching visit record.
 
@@ -170,8 +171,14 @@ async def filter_property_ids_by_visit(
     keys_by_community: dict[str, set[str]] = defaultdict(set)
     for community, key in unique_owners:
         keys_by_community[community].add(key)
-    if not keys_by_community:
+    if not keys_by_community and visit_status != "never":
         return set()
+    # For absence, any matching historical visit prevents a "never" label,
+    # even when the address is shared by multiple candidate properties.
+    if visit_status == "never":
+        keys_by_community = defaultdict(set)
+        for community, key in owners:
+            keys_by_community[community].add(key)
     normalized_ratings = [str(value).strip() for value in (star_ratings or []) if str(value).strip()]
     matched: set[int] = set()
     for community, key_set in sorted(keys_by_community.items()):
@@ -181,24 +188,30 @@ async def filter_property_ids_by_visit(
             placeholders = ",".join(["%s"] * len(batch))
             conditions = [f"`社区`=%s", f"`_address_key` IN ({placeholders})"]
             query_params: list[Any] = [community, *batch]
-            if visit_start_date is not None:
+            if visit_start_date is not None and visit_status != "never":
                 conditions.append("`业务日期` >= %s")
                 query_params.append(visit_start_date)
-            if visit_end_date is not None:
+            if visit_end_date is not None and visit_status != "never":
                 conditions.append("`业务日期` <= %s")
                 query_params.append(visit_end_date)
-            if normalized_ratings:
+            if normalized_ratings and visit_status != "never":
                 rating_placeholders = ",".join(["%s"] * len(normalized_ratings))
                 conditions.append(f"`星级` IN ({rating_placeholders})")
                 query_params.extend(normalized_ratings)
             await cur.execute(
-                f"SELECT `社区`,`_address_key` FROM {_visit_table()} WHERE {' AND '.join(conditions)}",
+                f"SELECT DISTINCT `社区`,`_address_key` FROM {_visit_table()} WHERE {' AND '.join(conditions)}",
                 tuple(query_params),
             )
             for visit_community, address_key in await cur.fetchall():
-                owner = unique_owners.get((str(visit_community or "").strip(), str(address_key or "")))
+                pair = (str(visit_community or "").strip(), str(address_key or ""))
+                if visit_status == "never":
+                    matched.update(owners.get(pair, set()))
+                    continue
+                owner = unique_owners.get(pair)
                 if owner is not None:
                     matched.add(owner)
+    if visit_status == "never":
+        return {int(item["id"]) for item in properties} - matched
     return matched
 
 

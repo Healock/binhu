@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 
@@ -162,22 +163,36 @@ def issue_problem_details(
 
 
 def _certificate_signature(row: dict[str, Any]) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (key, normalize_text(value))
-        for key, value in sorted(row.items())
-        if key not in {"source_row", "_source_row"}
-    )
+    # Compare business content, not upstream IDs or acquisition metadata.
+    from services.registry_certificate_source import certificate_content_hash
+
+    comparable = {**row, "address": normalize_address(row.get("address")),
+                  "community": normalize_community(row.get("community"))}
+    return (("content", certificate_content_hash(comparable)),)
+
+
+def _certificate_updated_at(row: dict[str, Any]) -> datetime | None:
+    # Signature dates and numeric IDs do not identify the newest house state.
+    value = next((row.get(key) for key in ("updateTime", "updatedAt", "updated_at", "update_time")
+                  if row.get(key)), None)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+    except (TypeError, ValueError):
+        return None
 
 
 def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Classify source responsibility-notice rows before touching house records.
 
-    A physical source row is retained as an independent record.  Rows sharing
-    the same normalized address are held for review, and content differences
-    are additionally reported as conflicts; no de-duplication is performed.
+    Keep physical rows for audit, but identical notices have one current
+    representative. Different content without a reliable upstream version
+    remains a conflict; page order is not evidence of recency.
     """
     materialized: list[dict[str, Any]] = []
-    groups: dict[str, list[int]] = defaultdict(list)
+    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index, raw in enumerate(rows, start=1):
         row = {str(key): value for key, value in raw.items()}
         address = normalize_text(row.get("address") or row.get("dz") or row.get("详细地址"))
@@ -187,18 +202,29 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         row["source_key"] = normalize_address(address)
         materialized.append(row)
         if row["source_key"]:
-            groups[row["source_key"]].append(len(materialized) - 1)
+            groups[(row["community"], row["source_key"])].append(len(materialized) - 1)
 
     issues: list[dict[str, Any]] = []
     blocked: set[int] = set()
+    superseded: set[int] = set()
     duplicate_groups = 0
     conflict_groups = 0
-    for key, indexes in groups.items():
+    for (_community, key), indexes in groups.items():
         if len(indexes) < 2:
             continue
-        duplicate_groups += 1
         signatures = {_certificate_signature(materialized[index]) for index in indexes}
         has_conflict = len(signatures) > 1
+        if not has_conflict:
+            superseded.update(indexes[1:])
+            continue
+        versions = {index: _certificate_updated_at(materialized[index]) for index in indexes}
+        if all(value is not None for value in versions.values()):
+            latest = max(versions.values())
+            current = [index for index in indexes if versions[index] == latest]
+            if len({_certificate_signature(materialized[index]) for index in current}) == 1:
+                superseded.update(index for index in indexes if index != current[0])
+                continue
+        duplicate_groups += 1
         if has_conflict:
             conflict_groups += 1
         for index in indexes:
@@ -227,10 +253,11 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
                     "reason": "同一标准化地址的告知书内容不一致，需人工判断",
                 })
 
-    normal_rows = [row for index, row in enumerate(materialized) if index not in blocked]
+    normal_rows = [row for index, row in enumerate(materialized) if index not in blocked | superseded]
     return {
         "rows": materialized,
         "normal_rows": normal_rows,
+        "superseded_count": len(superseded),
         "issues": issues,
         "duplicate_groups": duplicate_groups,
         "conflict_groups": conflict_groups,

@@ -4704,6 +4704,7 @@ export const registryApi = {
     status?: '' | 'active' | 'inactive'
     visit_start_date?: string
     visit_end_date?: string
+    visit_status?: '' | 'visited' | 'never'
     star_ratings?: string[]
     small_community_ids?: number[]
     address_match_statuses?: string[]
@@ -4727,6 +4728,7 @@ export const registryApi = {
     status?: '' | 'active' | 'inactive'
     visit_start_date?: string
     visit_end_date?: string
+    visit_status?: '' | 'visited' | 'never'
     star_ratings?: string[]
     small_community_ids?: number[]
     address_match_statuses?: string[]
@@ -4832,7 +4834,7 @@ export const registryApi = {
   },
   async importIssues(params: {
     keyword?: string
-    status?: '' | 'pending' | 'resolved' | 'dismissed'
+    status?: '' | 'pending' | 'resolved' | 'dismissed' | 'superseded'
     issue_type?: string
     source_type?: '' | 'household' | 'certificate'
     community_id?: number

@@ -159,6 +159,47 @@ def test_certificate_import_keeps_physical_rows_and_flags_content_conflicts():
     assert result["normal_count"] == 1
 
 
+def test_certificate_same_content_is_one_current_notice_not_an_issue():
+    result = classify_certificate_rows([
+        {"id": 1, "community": "测试社区", "address": "合成路1号", "isSign": "否"},
+        {"id": 2, "community": "测试社区", "address": "合成路1-号", "isSign": "否"},
+    ])
+    assert len(result["rows"]) == 2
+    assert result["normal_count"] == 1
+    assert result["superseded_count"] == 1
+    assert result["issue_count"] == 0
+
+
+def test_certificate_uses_source_update_time_not_id_or_signature_time():
+    result = classify_certificate_rows([
+        {"id": 99, "community": "测试社区", "address": "合成路1号", "isSign": "是",
+         "updateTime": "2026-10-08 12:00:00", "signTime": "2026-10-08 11:00:00"},
+        {"id": 1, "community": "测试社区", "address": "合成路1号", "isSign": "否",
+         "updateTime": "2026-10-09 12:00:00"},
+    ])
+    assert result["normal_rows"][0]["isSign"] == "否"
+    assert result["issue_count"] == 0
+
+
+def test_certificate_equal_or_missing_update_time_does_not_guess_latest():
+    for timestamp in (None, "2026-10-09 12:00:00", "invalid"):
+        result = classify_certificate_rows([
+            {"community": "测试社区", "address": "合成路1号", "isSign": "是", "updateTime": timestamp},
+            {"community": "测试社区", "address": "合成路1号", "isSign": "否", "updateTime": timestamp},
+        ])
+        assert result["normal_count"] == 0
+        assert result["conflict_groups"] == 1
+
+
+def test_certificate_same_address_in_different_communities_is_not_duplicate():
+    result = classify_certificate_rows([
+        {"community": "测试甲社区", "address": "合成路1号", "isSign": "是"},
+        {"community": "测试乙社区", "address": "合成路1号", "isSign": "否"},
+    ])
+    assert result["normal_count"] == 2
+    assert result["issue_count"] == 0
+
+
 def test_import_issue_evidence_names_field_and_current_bad_value():
     assert issue_problem_details(
         ISSUE_HOUSEHOLD_MISSING_TYPE,
@@ -270,6 +311,42 @@ async def test_property_search_separates_not_required_from_pending_source_issues
     assert "certificate_count,0)=0" in count_sql
     assert "issue_count,0)=0" in count_sql
     assert count_params == ("active", "个人出租", "单位出租")
+
+
+@pytest.mark.asyncio
+async def test_never_visit_filter_resolves_full_scoped_candidates_before_page_and_export(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(registry_router, "_allowed_community_ids", AsyncMock(return_value=[3]))
+    match = AsyncMock(return_value={2, 5})
+    monkeypatch.setattr(registry_router, "filter_property_ids_by_visit", match)
+    for export_all in (False, True):
+        conn = _PropertySearchConnection()
+        await _property_search_result(
+            PropertySearch(visit_status="never", page=2, page_size=20), {"id": 1}, conn,
+            export_all=export_all,
+        )
+        candidate_sql = conn.search_cursor.calls[0][0]
+        count_sql, params = conn.search_cursor.calls[1]
+        row_sql, row_params = conn.search_cursor.calls[3]
+        assert "LIMIT" not in candidate_sql
+        assert "community_id IN" in candidate_sql
+        assert "property.id IN (%s,%s)" in count_sql
+        assert params[-2:] == (2, 5)
+        assert ("LIMIT %s OFFSET %s" in row_sql) == (not export_all)
+        assert "source_missing_since IS NULL" in count_sql
+        assert match.call_args.kwargs["visit_status"] == "never"
+
+
+@pytest.mark.asyncio
+async def test_never_visit_filter_rejects_date_or_star_combination(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(registry_router, "_allowed_community_ids", AsyncMock(return_value=None))
+    for extra in ({"visit_start_date": "2026-10-09"}, {"star_ratings": ["三星出租房"]}):
+        with pytest.raises(HTTPException) as error:
+            await _property_search_result(PropertySearch(visit_status="never", **extra), {"id": 1}, _PropertySearchConnection())
+        assert error.value.status_code == 422
 
 
 def test_new_permissions_are_catalogued_and_defaulted():

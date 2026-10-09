@@ -209,6 +209,25 @@ test('辖区房屋、人员和机构档案按页面当前条件导出', () => {
   assert.match(pageSource, /最近走访/)
 })
 
+test('从未走访筛选对列表和导出一致，并清空互斥日期与星级', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const api = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(page, /placeholder="全部走访情况"/)
+  assert.match(page, /value: 'never', label: '从未走访'/)
+  assert.match(page, /if \(value === 'never'\) \{\s*setVisitDateRange\(undefined\)\s*setStarRatings\(\[\]\)/)
+  assert.equal((page.match(/visit_status: visitStatus/g) || []).length, 2)
+  assert.equal((api.match(/visit_status\?: '' \| 'visited' \| 'never'/g) || []).length, 2)
+  assert.equal((page.match(/disabled=\{visitStatus === 'never'\}/g) || []).length, 2)
+  assert.match(page, /setVisitStatus\(''\)/)
+})
+
+test('告知书旧问题可查询已替代历史，未签订不冒充重复冲突', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  assert.match(page, /value: 'superseded', label: '已被新快照替代'/)
+  assert.match(page, /value: 'not_uploaded', label: '未签订'/)
+  assert.match(page, /旧记录与旧问题只保留历史/)
+})
+
 test('房屋档案显示小区匹配状态、待确认数量和人工确认入口', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),

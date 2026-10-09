@@ -15,6 +15,7 @@ from services.registry_certificate_source import (
 from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_import import (
     ISSUE_CERTIFICATE_NON_RENTAL,
+    classify_certificate_rows,
     normalize_address,
     normalize_community,
     normalize_text,
@@ -23,6 +24,11 @@ from services.registry_import import (
 
 WRITE_CHUNK = 500
 RENTAL_HOUSING_TYPES = {"个人出租", "单位出租"}
+CERTIFICATE_APPLY_LOCK = "binhu_registry_certificate_apply"
+
+
+class CertificateSnapshotConflict(RuntimeError):
+    pass
 
 
 def certificate_write_action(
@@ -94,6 +100,24 @@ async def apply_certificate_batch(
     batch_id: int,
     actor_id: int | None,
 ) -> dict[str, Any]:
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT GET_LOCK(%s, 5)", (CERTIFICATE_APPLY_LOCK,))
+        lock = await cur.fetchone()
+    if not lock or lock[0] != 1:
+        raise CertificateSnapshotConflict("告知书快照正在确认，请稍后重试")
+    try:
+        return await _apply_certificate_batch(conn, batch_id, actor_id)
+    finally:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT RELEASE_LOCK(%s)", (CERTIFICATE_APPLY_LOCK,))
+            await cur.fetchone()
+
+
+async def _apply_certificate_batch(
+    conn,
+    batch_id: int,
+    actor_id: int | None,
+) -> dict[str, Any]:
     """Apply one complete preview, updating changed notices instead of ignoring them."""
     await conn.begin()
     inserted = 0
@@ -104,13 +128,23 @@ async def apply_certificate_batch(
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT status FROM registry_source_batches "
+                "SELECT status,certificate_full_snapshot FROM registry_source_batches "
                 "WHERE id=%s AND source_type='certificate' FOR UPDATE",
                 (batch_id,),
             )
             batch = await cur.fetchone()
             if not batch:
                 raise LookupError("告知书导入批次不存在")
+            full_snapshot = bool(batch[1])
+            if not full_snapshot:
+                raise CertificateSnapshotConflict("旧预览未证明完整来源，请从全民防重新读取后确认")
+            await cur.execute(
+                "SELECT MAX(id) FROM registry_source_batches WHERE source_type='certificate' "
+                "AND certificate_full_snapshot=1 AND status IN ('imported','partially_imported')"
+            )
+            latest = await cur.fetchone()
+            if latest and int(latest[0] or 0) > batch_id:
+                raise CertificateSnapshotConflict("已有更新的告知书快照，请重新读取，不能确认旧预览")
             if str(batch[0]) in {"imported", "partially_imported"}:
                 await cur.execute(
                     "SELECT COUNT(*) FROM registry_source_records "
@@ -119,13 +153,10 @@ async def apply_certificate_batch(
                 )
                 seen_count = int((await cur.fetchone())[0])
                 await cur.execute(
-                    "UPDATE registry_property_certificates certificate "
-                    "JOIN registry_source_records source ON source.entity_id=certificate.id "
-                    "SET certificate.source_last_seen_at=UTC_TIMESTAMP(),"
-                    "certificate.source_missing_since=NULL "
-                    "WHERE source.batch_id=%s AND source.entity_type='property_certificate'",
+                    "SELECT COUNT(*) FROM registry_import_issues WHERE batch_id=%s AND status='pending'",
                     (batch_id,),
                 )
+                pending_issue_count = int((await cur.fetchone())[0])
                 await conn.commit()
                 return {
                     "batch_id": batch_id,
@@ -134,7 +165,7 @@ async def apply_certificate_batch(
                     "updated_count": 0,
                     "unchanged_count": seen_count,
                     "skipped_count": 0,
-                    "pending_issue_count": 0,
+                    "pending_issue_count": pending_issue_count,
                     "idempotent": True,
                 }
 
@@ -144,6 +175,30 @@ async def apply_certificate_batch(
                 (batch_id,),
             )
             records = list(await cur.fetchall())
+            if not records:
+                raise CertificateSnapshotConflict("告知书快照为空，保留当前数据，请重新读取")
+            classified = classify_certificate_rows([
+                {**_json(payload, {}), "_record_id": int(record_id)}
+                for record_id, _ref, payload in records
+            ])
+            if full_snapshot:
+                # History is retained, but only this complete observation can
+                # contribute current notices and pending certificate issues.
+                await cur.execute(
+                    "UPDATE registry_import_issues SET status='superseded',"
+                    "review_note='已由完整告知书快照替代',reviewed_at=UTC_TIMESTAMP() "
+                    "WHERE source_type='certificate' AND status='pending' AND batch_id<=%s",
+                    (batch_id,),
+                )
+                await _executemany(cur,
+                    "INSERT INTO registry_import_issues "
+                    "(batch_id,issue_type,source_type,source_ref,entity_key,payload_json,reason) "
+                    "VALUES (%s,%s,'certificate',%s,%s,%s,%s)",
+                    [(batch_id, issue["issue_type"], issue["source_ref"], issue["entity_key"],
+                      json.dumps({k: v for k, v in issue["payload"].items() if k != "_record_id"},
+                                 ensure_ascii=False, default=str), issue["reason"])
+                     for issue in classified["issues"]],
+                )
             await cur.execute(
                 "SELECT source_ref FROM registry_import_issues "
                 "WHERE batch_id=%s AND status='pending'",
@@ -153,9 +208,13 @@ async def apply_certificate_batch(
 
             community_cache: dict[str, tuple[int | None, str]] = {}
             candidates: list[dict[str, Any]] = []
+            normal_record_ids = {int(row["_record_id"]) for row in classified["normal_rows"]}
             for record_id, stored_ref, payload_json in records:
+                if int(record_id) not in normal_record_ids:
+                    skipped += 1
+                    continue
                 payload = _json(payload_json, {})
-                stable_ref = str(payload.get("source_ref") or certificate_source_ref(payload))
+                stable_ref = certificate_source_ref(payload)
                 if str(stored_ref) in blocked_refs or stable_ref in blocked_refs:
                     skipped += 1
                     continue
@@ -172,9 +231,7 @@ async def apply_certificate_batch(
                     "record_id": int(record_id),
                     "source_ref": stable_ref,
                     "payload": payload,
-                    "content_hash": str(
-                        payload.get("source_content_hash") or certificate_content_hash(payload)
-                    ),
+                    "content_hash": certificate_content_hash(payload),
                     "community_id": community_id,
                     "community_name": canonical_name,
                     "normalized": normalized,
@@ -214,6 +271,12 @@ async def apply_certificate_batch(
             existing_by_derived = {
                 ref: rows[0] for ref, rows in derived.items() if len(rows) == 1
             }
+            if full_snapshot:
+                await cur.execute(
+                    "UPDATE registry_property_certificates "
+                    "SET source_missing_since=COALESCE(source_missing_since,UTC_TIMESTAMP()) "
+                    "WHERE source_type='certificate' AND source_missing_since IS NULL"
+                )
 
             inserts: list[tuple] = []
             updates: list[tuple] = []
@@ -221,6 +284,7 @@ async def apply_certificate_batch(
             source_links: list[tuple] = []
             non_rental_issues: list[tuple] = []
             claimed_existing_ids: set[int] = set()
+            eligible_record_ids: set[int] = set()
 
             for item in candidates:
                 payload = item["payload"]
@@ -239,6 +303,7 @@ async def apply_certificate_batch(
                     continue
 
                 property_id = property_row[0]
+                eligible_record_ids.add(item["record_id"])
                 values = (
                     property_id,
                     item["source_ref"],
@@ -319,7 +384,10 @@ async def apply_certificate_batch(
                 )
                 inserted = len(inserts)
 
-            unresolved_links = [item for item in candidates if item["record_id"] not in {link[1] for link in source_links}]
+            linked_record_ids = {link[1] for link in source_links}
+            unresolved_links = [item for item in candidates
+                                if item["record_id"] in eligible_record_ids
+                                and item["record_id"] not in linked_record_ids]
             if unresolved_links:
                 refs = sorted({str(item["source_ref"]) for item in unresolved_links})
                 for offset in range(0, len(refs), WRITE_CHUNK):
@@ -356,7 +424,7 @@ async def apply_certificate_batch(
                 (status, processed, batch_id),
             )
         await conn.commit()
-    except Exception:
+    except BaseException:
         await conn.rollback()
         raise
 
@@ -364,11 +432,10 @@ async def apply_certificate_batch(
     try:
         # Re-read the committed local state through the same comparison path so
         # the response reflects the transaction result, not stale preview data.
-        applied_rows = [item.get("payload", {}) for item in candidates]
         comparison = await load_certificate_comparison(
             conn,
-            applied_rows,
-            {"normal_rows": applied_rows, "problem_row_count": pending_issue_count},
+            classified["rows"],
+            classified,
         )
     except Exception:
         # The import itself has already committed; comparison is diagnostic and
