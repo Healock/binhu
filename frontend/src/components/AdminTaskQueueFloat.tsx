@@ -272,7 +272,6 @@ export default function AdminTaskQueueFloat() {
         shape="circle"
         icon={<CloudServerOutlined />}
         badge={{ count: data?.active_count || 0, overflowCount: 99 }}
-        tooltip="后台任务队列"
         aria-label={`打开后台任务队列，当前 ${data?.active_count || 0} 项活动任务`}
         onClick={() => setOpen(true)}
       />
