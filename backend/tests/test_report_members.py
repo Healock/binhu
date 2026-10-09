@@ -105,9 +105,17 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             "%s BETWEEN g.leave_start_date AND g.leave_end_date",
             sql,
         )
+        self.assertIn(
+            "FROM OnlineData._personnel_attendance_history AS attendance_history",
+            sql,
+        )
+        self.assertIn("attendance_history.member_id=g.id", sql)
         self.assertIn("g.position IN ('组长', '组员')", sql)
         self.assertIn("department.department_type='community'", sql)
-        self.assertEqual(params, ("2026-07-28",))
+        self.assertEqual(
+            params,
+            ("2026-07-28", "2026-07-28", "2026-07-28"),
+        )
         self.assertEqual(
             members,
             [("社区甲", "赵六")],

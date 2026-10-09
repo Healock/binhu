@@ -125,7 +125,10 @@ async def get_active_members(
     as_of_date: str,
 ) -> list[tuple[str, str]]:
     """读取指定日期实际在岗的网格员，返回（社区，姓名）。"""
-    active_condition = active_member_sql("g")
+    active_condition = active_member_sql(
+        "g",
+        attendance_history_table="OnlineData._personnel_attendance_history",
+    )
     await cur.execute(
         f"""
         SELECT
@@ -145,7 +148,7 @@ async def get_active_members(
           AND {active_condition}
         ORDER BY community.name, g.name
         """,
-        (as_of_date,),
+        (as_of_date, as_of_date, as_of_date),
     )
     return [
         (str(community).strip(), str(name).strip())

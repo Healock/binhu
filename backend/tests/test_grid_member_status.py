@@ -62,6 +62,19 @@ class GridMemberStatusTests(unittest.TestCase):
         self.assertIn("g.status = '在岗'", condition)
         self.assertIn("%s BETWEEN g.leave_start_date AND g.leave_end_date", condition)
 
+    def test_active_member_sql_can_exclude_historical_leave(self):
+        condition = active_member_sql(
+            "g",
+            attendance_history_table="OnlineData._personnel_attendance_history",
+        )
+        self.assertEqual(condition.count("%s"), 3)
+        self.assertIn(
+            "FROM OnlineData._personnel_attendance_history AS attendance_history",
+            condition,
+        )
+        self.assertIn("attendance_history.member_id=g.id", condition)
+        self.assertIn("attendance_history.is_active=1", condition)
+
     def test_weekend_roster_projects_duty_rest_and_missing_status(self):
         base = get_status_snapshot("在岗", None, None, date(2026, 8, 8))
         duty_positions = {"组长", "组员"}
