@@ -212,7 +212,16 @@ test('辖区房屋、人员和机构档案按页面当前条件导出', () => {
 test('从未走访筛选对列表和导出一致，并清空互斥日期与星级', () => {
   const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
   const api = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
-  assert.match(page, /placeholder="全部走访情况"/)
+  const visitFilter = page.split("title: '最近走访日期'")[1].split("title: '星级评定'")[0]
+  const toolbar = page.split('const toolbarFilters =')[1].split('const toolbarNotice')[0]
+  assert.match(visitFilter, /aria-label="走访情况"/)
+  assert.match(visitFilter, /value: '', label: '全部走访情况'/)
+  assert.match(visitFilter, /value: 'never', label: '从未走访'/)
+  assert.doesNotMatch(toolbar, /全部走访情况|从未走访|setVisitStatus/)
+  assert.match(visitFilter, /filteredValue: visitStatus \|\| visitDateRange/)
+  assert.match(visitFilter, /setVisitStatus\(''\)\s*setVisitDateRange\(undefined\)/)
+  assert.match(page, /useResponsiveLayout\(layoutRef\)/)
+  assert.match(page, /key: 'actions', width: responsiveLayout.isCompact \? 112 : 280/)
   assert.match(page, /value: 'never', label: '从未走访'/)
   assert.match(page, /if \(value === 'never'\) \{\s*setVisitDateRange\(undefined\)\s*setStarRatings\(\[\]\)/)
   assert.equal((page.match(/visit_status: visitStatus/g) || []).length, 2)

@@ -12,6 +12,7 @@ import type { ResponsiveColumns } from '../components/responsiveTable'
 import ExternalDataPanel from '../components/ExternalDataPanel'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
+import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import {
   formatUTCTime,
   getGridCommunities,
@@ -98,6 +99,8 @@ function issuePayloadText(row: RegistryImportIssue, ...keys: string[]) {
 }
 
 export default function RegistryManagement() {
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const responsiveLayout = useResponsiveLayout(layoutRef)
   const { user, systemTimezone } = useAuth()
   const [tab, setTab] = useState<TabKey>('properties')
   const [properties, setProperties] = useState<RegistryProperty[]>([])
@@ -736,15 +739,37 @@ export default function RegistryManagement() {
       ) },
     {
       title: '最近走访日期', key: 'latest_visit_date', width: 150, responsivePriority: 'always',
-      filteredValue: visitDateRange ? ['range'] : null,
+      filteredValue: visitStatus || visitDateRange ? [visitStatus || 'range'] : null,
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
-        <DatePicker.RangePicker disabled={visitStatus === 'never'} className="w-full" value={visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null}
-          onChange={(values: [Dayjs | null, Dayjs | null] | null) => {
-            if (!values?.[0] || !values[1]) setVisitDateRange(undefined)
-            else setVisitDateRange([values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')])
-          }} />,
-        () => setVisitDateRange(undefined),
+        <div className="registry-visit-filter grid gap-3">
+          <Select
+            aria-label="走访情况"
+            className="w-full"
+            value={visitStatus}
+            onChange={value => {
+              setVisitStatus(value)
+              if (value === 'never') {
+                setVisitDateRange(undefined)
+                setStarRatings([])
+              }
+            }}
+            options={[
+              { value: '', label: '全部走访情况' },
+              { value: 'visited', label: '有走访记录' },
+              { value: 'never', label: '从未走访' },
+            ]}
+          />
+          <DatePicker.RangePicker disabled={visitStatus === 'never'} className="w-full" value={visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null}
+            onChange={(values: [Dayjs | null, Dayjs | null] | null) => {
+              if (!values?.[0] || !values[1]) setVisitDateRange(undefined)
+              else setVisitDateRange([values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')])
+            }} />
+        </div>,
+        () => {
+          setVisitStatus('')
+          setVisitDateRange(undefined)
+        },
       ),
       render: (_, row) => (
       <div className="registry-visit-cell">
@@ -778,7 +803,7 @@ export default function RegistryManagement() {
       render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag>,
     },
     { title: '版本', dataIndex: 'version', width: 80, responsivePriority: 'wide' },
-    { title: '操作', key: 'actions', width: 280, render: (_, row) => <Space wrap>
+    { title: '操作', key: 'actions', width: responsiveLayout.isCompact ? 112 : 280, render: (_, row) => <Space wrap>
       <Button size="small" onClick={() => openDetail('property', row)}>详情</Button>
       {canManage && <Button size="small" type={row.address_match_status === 'suggested' ? 'primary' : 'default'} onClick={() => {
         setMatchConfirmProperty(row)
@@ -848,20 +873,6 @@ export default function RegistryManagement() {
 
   const toolbarFilters = tab === 'properties' ? <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
-    <Select
-      allowClear
-      value={visitStatus || undefined}
-      onChange={value => {
-        setVisitStatus(value || '')
-        if (value === 'never') {
-          setVisitDateRange(undefined)
-          setStarRatings([])
-        }
-      }}
-      options={[{ value: 'visited', label: '有走访记录' }, { value: 'never', label: '从未走访' }]}
-      placeholder="全部走访情况"
-      className="w-full md:w-44"
-    />
     <Select
       mode="multiple"
       allowClear
@@ -1050,7 +1061,7 @@ export default function RegistryManagement() {
   } : false
 
   return (
-    <div className="registry-management-layout">
+    <div ref={layoutRef} className="registry-management-layout">
       <PageHeader title="辖区档案" description="长期维护辖区房屋、房东、业主、中介和租房平台关系；业务数据只进入待审核变更。" />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
