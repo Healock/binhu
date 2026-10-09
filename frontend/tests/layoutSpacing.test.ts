@@ -120,7 +120,7 @@ test('详情抽屉和高密度工作台不使用容易贴边的 space-y 分隔',
   assert.match(dispatchSource, /<div className="police-dispatch-panel__preview">/)
   assert.match(operationsSource, /<div className="operations-log-layout">/)
   assert.match(operationsSource, /<div className="operations-center-layout">/)
-  assert.match(registrySource, /<div className="registry-management-layout">/)
+  assert.match(registrySource, /<div ref=\{layoutRef\} className="registry-management-layout">/)
   assert.match(styles, /\.registry-detail,[\s\S]*?\.operations-center-layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*20px/s)
   assert.match(styles, /\.registry-management-layout,[\s\S]*?\.operations-log-layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*16px/s)
   assert.match(styles, /\.police-dispatch-panel__content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*20px[^}]*padding:\s*20px/s)
