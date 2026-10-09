@@ -27,6 +27,7 @@ import { useAuth } from '../context/AuthContext'
 import useMobileViewport from '../hooks/useMobileViewport'
 import useSystemTime from '../hooks/useSystemTime'
 import type { User } from '../types'
+import { useFloatingActionMenu } from './FloatingActionMenu'
 
 const CLOSED_REFRESH_MS = 30_000
 const OPEN_REFRESH_MS = 10_000
@@ -202,6 +203,7 @@ function TaskQueueCard({
 }
 
 export default function AdminTaskQueueFloat() {
+  const { open: speedDialOpen } = useFloatingActionMenu()
   const { user } = useAuth()
   const mobile = useMobileViewport()
   const [open, setOpen] = useState(false)
@@ -265,7 +267,7 @@ export default function AdminTaskQueueFloat() {
   return (
     <>
       <FloatButton
-        rootClassName="admin-task-queue-float"
+        rootClassName={`admin-task-queue-float ${speedDialOpen ? 'is-speed-dial-visible' : ''}`}
         type={data?.active_count ? 'primary' : 'default'}
         shape="circle"
         icon={<CloudServerOutlined />}

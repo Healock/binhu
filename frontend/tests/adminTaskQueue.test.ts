@@ -17,7 +17,25 @@ test('管理员任务队列使用真实只读接口和被动轮询', () => {
   assert.match(component, /document\.visibilityState !== 'visible'/)
   assert.match(component, /<FloatButton/)
   assert.match(component, /<Drawer/)
+  assert.match(layout, /<FloatingActionMenu>/)
   assert.match(layout, /<AdminTaskQueueFloat \/>/)
+  assert.match(layout, /<MyTaskHistoryFloat \/>/)
+})
+
+test('后台队列和我的任务记录使用统一速度拨盘，默认不再重叠', () => {
+  const menu = read('../src/components/FloatingActionMenu.tsx')
+  const queue = read('../src/components/AdminTaskQueueFloat.tsx')
+  const history = read('../src/components/MyTaskHistoryFloat.tsx')
+  const styles = read('../src/index.css')
+
+  assert.match(menu, /app-speed-dial__main/)
+  assert.match(menu, /打开快捷功能/)
+  assert.match(menu, /收起快捷功能/)
+  assert.match(queue, /admin-task-queue-float.*is-speed-dial-visible/)
+  assert.match(history, /my-task-history-float.*is-speed-dial-visible/)
+  assert.match(styles, /\.app-speed-dial__main[\s\S]*z-index: 40/)
+  assert.match(styles, /\.admin-task-queue-float,[\s\S]*\.my-task-history-float[\s\S]*pointer-events: none/)
+  assert.match(styles, /\.my-task-history-float \{[\s\S]*right: 96px !important;/)
 })
 
 test('任务队列只向管理员账号展示并且不声明敏感业务字段', () => {
