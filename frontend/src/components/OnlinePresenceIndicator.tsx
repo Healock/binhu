@@ -83,7 +83,8 @@ function PresenceUsersPanel({ users }: { users: PresenceUser[] }) {
 }
 
 export default function OnlinePresenceIndicator() {
-  const { user } = useAuth()
+  const { user, environment } = useAuth()
+  const userId = user?.id
   const mobile = useMobileViewport()
   const [onlineCount, setOnlineCount] = useState<number | null>(null)
   const [connected, setConnected] = useState(false)
@@ -108,23 +109,28 @@ export default function OnlinePresenceIndicator() {
     }
   }, [canViewDetails])
 
+  const latest = useRef({ open, canViewDetails, refreshUsers })
+  latest.current = { open, canViewDetails, refreshUsers }
+
   useEffect(() => {
-    if (!user) {
+    if (!userId) {
       setOnlineCount(null)
       setConnected(false)
       return
     }
     const clientId = getClientId()
     let disposed = false
+    let lastAttemptAt = 0
     const heartbeat = async (): Promise<boolean> => {
       if (disposed || document.visibilityState !== 'visible' || heartbeatInFlight.current) return false
       heartbeatInFlight.current = true
+      lastAttemptAt = Date.now()
       try {
         const result = await sendPresenceHeartbeat(clientId)
         if (disposed) return true
         setOnlineCount(result.online_count)
         setConnected(true)
-        if (open && canViewDetails) void refreshUsers()
+        if (latest.current.open && latest.current.canViewDetails) void latest.current.refreshUsers()
         return true
       } catch {
         if (!disposed) setConnected(false)
@@ -141,7 +147,7 @@ export default function OnlinePresenceIndicator() {
       maxDelayMs: 120_000,
       failureThreshold: 4,
       cooldownMs: 120_000,
-      shouldRun: () => document.visibilityState === 'visible',
+      shouldRun: () => document.visibilityState === 'visible' && Date.now() - lastAttemptAt >= HEARTBEAT_INTERVAL_MS,
     })
     poller.start()
     const onVisibilityChange = () => {
@@ -170,7 +176,7 @@ export default function OnlinePresenceIndicator() {
       window.removeEventListener('online', onOnline)
       window.removeEventListener('pageshow', onPageShow)
     }
-  }, [canViewDetails, open, refreshUsers, user])
+  }, [environment, userId])
 
   useEffect(() => {
     if (!open || !canViewDetails) return

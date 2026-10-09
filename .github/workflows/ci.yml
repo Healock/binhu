@@ -139,6 +139,12 @@ jobs:
       - name: Run floating actions browser regression tests
         run: npm run test:floating:browser
         working-directory: frontend
+      - name: Check background request budgets in browser
+        run: npm run test:background:browser
+        working-directory: frontend
+      - name: Check date navigation across session refreshes
+        run: npm run test:date-range:browser
+        working-directory: frontend
       - name: Build frontend production bundle
         env:
           NODE_OPTIONS: --max-old-space-size=8192

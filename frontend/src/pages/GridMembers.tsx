@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -118,6 +118,10 @@ export default function GridMembers() {
   const [scheduleStatus, setScheduleStatus] = useState<AttendanceScheduleStatus | null>(null)
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleError, setScheduleError] = useState('')
+  const schedulePickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs]>(
+    () => [dayjs(scheduleRange[0]), dayjs(scheduleRange[1])],
+    [scheduleRange[0], scheduleRange[1]],
+  )
   const listRequestId = useRef(0)
   const pageSize = 20
   const canManage = Boolean(user?.permissions.includes('personnel.manage'))
@@ -429,7 +433,7 @@ export default function GridMembers() {
             </div>
             <DatePicker.RangePicker
               className="hidden w-[300px] md:flex"
-              value={[dayjs(scheduleRange[0]), dayjs(scheduleRange[1])]}
+              value={schedulePickerValue}
               allowClear={false}
               onChange={(_, dateStrings) => {
                 if (dateStrings[0] && dateStrings[1]) {
@@ -1278,6 +1282,12 @@ function LeaveModal({
     member.leave_end_date || '',
   ])
   const [reason, setReason] = useState(member.leave_reason || '')
+  const leavePickerValue = useMemo<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(
+    () => leaveRange[0] || leaveRange[1]
+      ? [leaveRange[0] ? dayjs(leaveRange[0]) : null, leaveRange[1] ? dayjs(leaveRange[1]) : null]
+      : null,
+    [leaveRange[0], leaveRange[1]],
+  )
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const hasLeave = (
@@ -1416,12 +1426,7 @@ function LeaveModal({
             </div>
             <div className="hidden md:block">
               <DatePicker.RangePicker
-                value={leaveRange[0] || leaveRange[1]
-                  ? [
-                      leaveRange[0] ? dayjs(leaveRange[0]) : null,
-                      leaveRange[1] ? dayjs(leaveRange[1]) : null,
-                    ]
-                  : null}
+                value={leavePickerValue}
                 onCalendarChange={(_, dateStrings, info) => {
                   const nextStart = dateStrings[0] || ''
                   const nextEnd = dateStrings[1] || ''

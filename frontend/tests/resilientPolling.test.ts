@@ -8,6 +8,27 @@ test('retry delay is bounded and jittered around exponential backoff', () => {
   assert.equal(retryDelay(100, 2, 1000, 0.25, () => 1), 250)
 })
 
+test('session checks wait for their interval instead of duplicating session restoration', async () => {
+  let calls = 0
+  let tick = () => {}
+  const poller = createResilientPoller(() => { calls += 1 }, {
+    intervalMs: 60_000,
+    immediate: false,
+    setTimeout: (callback, delay) => {
+      assert.equal(delay, 60_000)
+      tick = callback
+      return 1 as unknown as ReturnType<typeof setTimeout>
+    },
+    clearTimeout: () => {},
+  })
+  poller.start()
+  assert.equal(calls, 0)
+  tick()
+  await Promise.resolve()
+  assert.equal(calls, 1)
+  poller.stop()
+})
+
 test('poller opens a circuit after bounded failures and recovers after success', async () => {
   const timers: Array<{ callback: () => void; delay: number }> = []
   let attempts = 0

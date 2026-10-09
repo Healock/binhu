@@ -521,7 +521,7 @@ test('在线人数在前台聚焦、网络恢复和心跳周期都会刷新', ()
   assert.match(source, /window\.addEventListener\('pageshow', onPageShow\)/)
   assert.match(source, /createResilientPoller/)
   assert.match(source, /poller\.trigger\(\)/)
-  assert.match(source, /if \(open && canViewDetails\) void refreshUsers\(\)/)
+  assert.match(source, /if \(latest\.current\.open && latest\.current\.canViewDetails\) void latest\.current\.refreshUsers\(\)/)
   assert.match(source, /void refreshUsers\(true\)/)
 })
 
