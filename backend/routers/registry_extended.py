@@ -51,7 +51,7 @@ from services.registry_import import (
     normalize_text,
 )
 from services.registry_certificate_source import fetch_certificate_image, fetch_certificate_rows
-from services.registry_certificate_apply import apply_certificate_batch
+from services.registry_certificate_apply import apply_certificate_batch, CertificateSnapshotConflict
 from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_certificate_status import certificate_status_summary
 from services.registry_visit_history import (
@@ -393,7 +393,7 @@ class RegistryIssueItem(BaseModel):
 
 class RegistryIssueSearch(BaseModel):
     keyword: str = Field(default="", max_length=200)
-    status: Literal["", "pending", "resolved", "dismissed"] = "pending"
+    status: Literal["", "pending", "resolved", "dismissed", "superseded"] = "pending"
     issue_type: str = Field(default="", max_length=60)
     source_type: Literal["", "household", "certificate"] = ""
     community_id: int | None = None
@@ -648,7 +648,7 @@ async def get_property_detail(
             "SELECT id, source_ref, source_row, community_snapshot, address_snapshot, landlord_name, "
             "landlord_identity_number, actual_renter_name, actual_renter_identity_number, signed_status, sign_type, sign_time, document_ref, created_at "
             ", source_last_seen_at, updated_at FROM registry_property_certificates "
-            "WHERE property_id=%s ORDER BY updated_at DESC, id DESC",
+            "WHERE property_id=%s AND source_missing_since IS NULL ORDER BY updated_at DESC, id DESC",
             (property_id,),
         )
         certificates = await cur.fetchall()
@@ -656,8 +656,16 @@ async def get_property_detail(
             "SELECT COUNT(*),EXISTS(SELECT 1 FROM registry_source_batches "
             "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) "
             "FROM registry_import_issues WHERE source_type='certificate' "
-            "AND status='pending' AND entity_key=%s",
-            (row[13],),
+            "AND status='pending' AND entity_key=%s "
+            "AND (COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.community')),''),"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sssq')))=%s "
+            "OR EXISTS (SELECT 1 FROM OnlineData._community_aliases issue_alias "
+            "WHERE issue_alias.community_id=%s AND issue_alias.alias="
+            "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.community')),''),"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sssq'))))) "
+            "AND batch_id=(SELECT MAX(id) FROM registry_source_batches WHERE source_type='certificate' "
+            "AND status IN ('imported','partially_imported'))",
+            (row[13], row[3], row[2]),
         )
         certificate_issue_row = await cur.fetchone()
         certificate_issue_count = int(certificate_issue_row[0] or 0)
@@ -2456,11 +2464,14 @@ async def preview_certificate_source(
         source = await fetch_certificate_rows()
     except VisitSourceError as exc:
         raise HTTPException(502, exc.message) from exc
-    result = await preview_certificate_import(
-        RegistryCertificateImport(source_name="房东责任告知书只读接口", rows=source["rows"]),
-        request,
-        user,
-        conn,
+    from services.registry_certificate_jobs import _create_preview_batch
+
+    result = await _create_preview_batch(conn, source["rows"], int(user["id"]))
+    await record_admin_audit(
+        user, "registry.certificate_import.preview", target_type="registry_source_batch",
+        target_name=str(result["batch_id"]),
+        detail={key: result[key] for key in ("total_count", "normal_count", "problem_row_count")},
+        **request_audit_fields(request),
     )
     result["source_record_count"] = source["record_count"]
     result["source_rejected_count"] = source["issue_count"]
@@ -2478,6 +2489,8 @@ async def confirm_certificate_import(
         result = await apply_certificate_batch(conn, batch_id, int(user["id"]))
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except CertificateSnapshotConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     await record_admin_audit(
         user,
         "registry.certificate_import.confirm",
@@ -2506,6 +2519,12 @@ async def _registry_import_issue_search_result(
     if data.status:
         where.append("status=%s")
         params.append(data.status)
+    if data.status == "pending":
+        where.append(
+            "(source_type<>'certificate' OR batch_id=(SELECT MAX(id) FROM registry_source_batches "
+            "WHERE source_type='certificate' AND (certificate_full_snapshot=1 "
+            "OR status IN ('imported','partially_imported'))))"
+        )
     if data.issue_type:
         where.append("issue_type=%s")
         params.append(data.issue_type)

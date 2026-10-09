@@ -121,10 +121,14 @@ class RegistryCertificateSourceTests(unittest.IsolatedAsyncioTestCase):
         rows, rejected = normalize_certificate_page([
             {"pcsname": "滨湖新城派出所", "sssq": "长板社区", "dz": "测试路1号"},
             {"pcsname": "其他派出所", "sssq": "长板社区", "dz": "测试路2号"},
-            {"pcsname": "滨湖新城派出所", "sssq": "长板社区", "dz": ""},
         ])
         self.assertEqual(1, len(rows))
-        self.assertEqual(2, rejected)
+        self.assertEqual(1, rejected)
+        with self.assertRaises(VisitSourceError) as failure:
+            normalize_certificate_page([
+                {"pcsname": "滨湖新城派出所", "sssq": "长板社区", "dz": ""},
+            ])
+        self.assertEqual("scope_or_schema", failure.exception.code)
 
     async def test_fetches_image_with_bounded_relative_path_and_checks_magic(self):
         class StreamResponse:

@@ -56,7 +56,7 @@ const certificateStatusOptions: Array<{ value: RegistryCertificateStatus; label:
   { value: '', label: '全部责任书状态' },
   { value: 'normal_signed', label: '正常签署' },
   { value: 'not_required', label: '无需上传告知书' },
-  { value: 'not_uploaded', label: '未上传告知书' },
+  { value: 'not_uploaded', label: '未签订' },
   { value: 'renter_needs_correction', label: '出租人待修正' },
   { value: 'actual_renter_missing', label: '实际出租人未确定' },
   { value: 'multiple_or_conflict', label: '告知书来源待核对' },
@@ -115,6 +115,7 @@ export default function RegistryManagement() {
   const [certificateStatus, setCertificateStatus] = useState<RegistryCertificateStatus>('')
   const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
   const [visitDateRange, setVisitDateRange] = useState<[string, string] | undefined>()
+  const [visitStatus, setVisitStatus] = useState<'' | 'visited' | 'never'>('')
   const [starRatings, setStarRatings] = useState<string[]>([])
   const [smallCommunityOptions, setSmallCommunityOptions] = useState<RegistrySmallCommunityOption[]>([])
   const [smallCommunityIds, setSmallCommunityIds] = useState<number[]>([])
@@ -205,6 +206,7 @@ export default function RegistryManagement() {
           status: propertyStatus,
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
+          visit_status: visitStatus,
           star_ratings: starRatings,
           small_community_ids: smallCommunityIds,
           address_match_statuses: addressMatchStatuses,
@@ -252,7 +254,7 @@ export default function RegistryManagement() {
       if (tab === 'issues') {
         const response = await registryApi.importIssues({
           keyword: debouncedKeyword,
-          status: issueStatus as '' | 'pending' | 'resolved' | 'dismissed',
+          status: issueStatus as '' | 'pending' | 'resolved' | 'dismissed' | 'superseded',
           issue_type: issueType,
           source_type: issueSourceType,
           community_id: communityId,
@@ -285,8 +287,8 @@ export default function RegistryManagement() {
   }, [canViewTags])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, smallCommunityIds, addressMatchStatuses, propertySort])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, smallCommunityIds, addressMatchStatuses, propertySort, page, pageSize])
+  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort, page, pageSize])
 
   useEffect(() => {
     if (tab !== 'properties') return
@@ -639,6 +641,7 @@ export default function RegistryManagement() {
           status: propertyStatus,
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
+          visit_status: visitStatus,
           star_ratings: starRatings,
           small_community_ids: smallCommunityIds,
           address_match_statuses: addressMatchStatuses,
@@ -724,7 +727,7 @@ export default function RegistryManagement() {
       render: (_, row) => (
       <div className="registry-certificate-cell">
         <Tag color={certificateStatusColors[row.certificate_status || 'not_uploaded']}>
-          {row.certificate_status_label || '未上传告知书'}
+          {row.certificate_status_label || '未签订'}
         </Tag>
         {row.certificate_status !== 'not_applicable' && (
           <span>{row.landlord_renter_relation_label || '责任关系待确认'}</span>
@@ -736,7 +739,7 @@ export default function RegistryManagement() {
       filteredValue: visitDateRange ? ['range'] : null,
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
-        <DatePicker.RangePicker className="w-full" value={visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null}
+        <DatePicker.RangePicker disabled={visitStatus === 'never'} className="w-full" value={visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null}
           onChange={(values: [Dayjs | null, Dayjs | null] | null) => {
             if (!values?.[0] || !values[1]) setVisitDateRange(undefined)
             else setVisitDateRange([values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')])
@@ -753,7 +756,7 @@ export default function RegistryManagement() {
       filteredValue: starRatings.length ? starRatings : null,
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
-        <Select mode="multiple" allowClear className="w-full" value={starRatings} maxTagCount="responsive"
+        <Select disabled={visitStatus === 'never'} mode="multiple" allowClear className="w-full" value={starRatings} maxTagCount="responsive"
           placeholder="全部星级评定" options={starRatingOptions.map(value => ({ value, label: value }))}
           onChange={values => setStarRatings(values)} />,
         () => setStarRatings([]),
@@ -846,6 +849,20 @@ export default function RegistryManagement() {
   const toolbarFilters = tab === 'properties' ? <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
     <Select
+      allowClear
+      value={visitStatus || undefined}
+      onChange={value => {
+        setVisitStatus(value || '')
+        if (value === 'never') {
+          setVisitDateRange(undefined)
+          setStarRatings([])
+        }
+      }}
+      options={[{ value: 'visited', label: '有走访记录' }, { value: 'never', label: '从未走访' }]}
+      placeholder="全部走访情况"
+      className="w-full md:w-44"
+    />
+    <Select
       mode="multiple"
       allowClear
       showSearch
@@ -925,6 +942,7 @@ export default function RegistryManagement() {
         { value: 'pending', label: '待处理' },
         { value: 'resolved', label: '已处理' },
         { value: 'dismissed', label: '已忽略' },
+        { value: 'superseded', label: '已被新快照替代' },
         { value: '', label: '全部状态' },
       ]}
       className="w-full md:w-36"
@@ -1050,6 +1068,7 @@ export default function RegistryManagement() {
             setCertificateStatus('')
             setPropertyStatus('active')
             setVisitDateRange(undefined)
+            setVisitStatus('')
             setStarRatings([])
             setPropertySort('id_desc')
             setPage(1)
@@ -1127,7 +1146,11 @@ export default function RegistryManagement() {
             {importPreview ? <Alert type="success" showIcon message={importPreview.source_type === 'certificate'
               ? `告知书共 ${importPreview.total_count} 条；${comparison?.safe_to_apply ?? importPreview.normal_count} 条可安全挂载；${comparison?.pending_review ?? importPreview.problem_row_count} 条需核查。`
               : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条需核查。`}
-              description={importPreview.status === 'preview' ? '当前仍是预览状态，确认只处理安全记录；来源未再出现不会自动删除，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
+              description={importPreview.status === 'preview'
+                ? importPreview.source_type === 'certificate'
+                  ? '当前仍是预览状态；确认完整告知书快照后，旧记录与旧问题只保留历史，当前状态以本次来源为准。'
+                  : '当前仍是预览状态，确认只处理安全记录，问题记录进入“问题数据核查”。'
+                : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
             {importPreview?.source_type === 'certificate' && comparison && <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded border border-[var(--app-border)] p-3">
@@ -1325,7 +1348,7 @@ export default function RegistryManagement() {
               </div>
               {!['normal_signed', 'not_required', 'not_applicable'].includes(summary.certificate_status) && (
                 <div className="registry-certificate-summary__action">
-                  {summary.certificate_status === 'not_uploaded' && '需要补充房东责任告知书。'}
+                  {summary.certificate_status === 'not_uploaded' && '当前来源尚未签订责任告知书。'}
                   {summary.certificate_status === 'renter_needs_correction' && '告知书已经签署，但实际出租人信息需要修正。'}
                   {summary.certificate_status === 'actual_renter_missing' && '尚未确定实际承担出租管理责任的人。'}
                   {summary.certificate_status === 'multiple_or_conflict' && '告知书来源存在重复、内容冲突或地址匹配问题，需要先完成核对。'}

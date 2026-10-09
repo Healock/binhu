@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from uuid import uuid4
 from datetime import date, datetime, timezone
 from typing import Any
 
 from config import settings
 from database import db_manager
 from services.business_time import get_business_timezone_name, resolve_timezone
-from services.registry_certificate_apply import apply_certificate_batch
+from services.registry_certificate_apply import apply_certificate_batch, _canonical_community
 from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_certificate_source import (
     CERTIFICATE_PAGE_SIZE,
@@ -263,44 +264,33 @@ async def _create_preview_batch(
     created_by: int | None,
 ) -> dict[str, Any]:
     prepared: list[dict[str, Any]] = []
+    communities: dict[str, str] = {}
+    async with conn.cursor() as cur:
+        for source_row in rows:
+            name = str(source_row.get("community") or source_row.get("sssq") or "")
+            if name not in communities:
+                _community_id, canonical = await _canonical_community(cur, name)
+                communities[name] = canonical
     for source_row in rows:
         row = dict(source_row)
-        row["source_ref"] = str(row.get("source_ref") or certificate_source_ref(row))
-        row["source_content_hash"] = str(
-            row.get("source_content_hash") or certificate_content_hash(row)
-        )
+        name = str(row.get("community") or row.get("sssq") or "")
+        row["community"] = communities[name]
+        row["source_ref"] = certificate_source_ref(row)
+        row["source_content_hash"] = certificate_content_hash(row)
         prepared.append(row)
     classified = classify_certificate_rows(prepared)
     comparison = await load_certificate_comparison(conn, prepared, classified)
     canonical = json.dumps(prepared, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-    file_hash = hashlib.sha256(canonical).hexdigest()
+    # A repeated source state after a different snapshot is a new observation,
+    # not a replay of the old batch (A -> B -> A).
+    file_hash = hashlib.sha256(canonical + uuid4().bytes).hexdigest()
     await conn.begin()
     try:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT id,status FROM registry_source_batches "
-                "WHERE source_type='certificate' AND file_sha256=%s",
-                (file_hash,),
-            )
-            existing = await cur.fetchone()
-            if existing:
-                await conn.rollback()
-                return {
-                    "batch_id": int(existing[0]),
-                    "status": str(existing[1]),
-                    "idempotent": True,
-                    "total_count": len(prepared),
-                    "normal_count": classified["normal_count"],
-                    "issue_count": classified["issue_count"],
-                    "problem_row_count": classified["problem_row_count"],
-                    "duplicate_groups": classified["duplicate_groups"],
-                    "conflict_groups": classified["conflict_groups"],
-                    "comparison": comparison,
-                }
-            await cur.execute(
                 "INSERT INTO registry_source_batches "
-                "(source_type,file_name,file_sha256,status,imported_count,candidate_count,conflict_count,created_by) "
-                "VALUES ('certificate','房东责任告知书只读接口',%s,'preview',0,%s,%s,%s)",
+                "(source_type,file_name,file_sha256,status,imported_count,candidate_count,conflict_count,created_by,certificate_full_snapshot) "
+                "VALUES ('certificate','房东责任告知书只读接口',%s,'preview',0,%s,%s,%s,1)",
                 (
                     file_hash,
                     classified["normal_count"],
@@ -344,7 +334,7 @@ async def _create_preview_batch(
                     issue_values[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK],
                 )
         await conn.commit()
-    except Exception:
+    except BaseException:
         await conn.rollback()
         raise
     return {

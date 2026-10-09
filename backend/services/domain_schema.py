@@ -303,6 +303,10 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_source_status (status, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur, "registry_source_batches", "certificate_full_snapshot",
+        "TINYINT(1) NOT NULL DEFAULT 0",
+    )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_source_records (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,

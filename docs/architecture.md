@@ -1283,7 +1283,9 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 
 `RegistryData` 保存辖区房屋、地址版本、房屋相关人员和机构关系、人员标签及指令任务标签快照；`WorkflowData` 保存流程版本、工单、节点、事件、评论和附件元数据。身份证和手机号按当前策略明文保存并同时保存 HMAC 摘要，HMAC 密钥只存在服务器私密配置中。
 
-户号表与房东责任告知书通过 `registry_source_batches`、`registry_source_records` 先预览后确认。户号表以 Unicode NFKC 和统一标点规则生成地址键，重复来源行及未标注住房类型进入 `registry_import_issues`；“借住/其他/其它”保留为正常住房类型。正式社区归属始终通过 `_communities` 与 `_community_aliases` 解析，因此芦荡等历史名称不在导入代码中硬编码。告知书从只读接口 `/api/address/queryHouseCertificate` 分页获取，只接受配置中的滨湖新城派出所记录；后台运行状态保存在 `registry_certificate_source_runs`，失败断点的临时页保存在 `registry_certificate_source_pages`，成功生成预览后立即清理临时页。重复、内容冲突及未匹配个人出租/单位出租房屋的数据进入问题核查，正常记录挂载到 `registry_property_certificates` 并在房屋详情展示。
+户号表与房东责任告知书通过 `registry_source_batches`、`registry_source_records` 先预览后确认。户号表以 Unicode NFKC 和统一标点规则生成地址键，重复来源行及未标注住房类型进入 `registry_import_issues`；“借住/其他/其它”保留为正常住房类型。正式社区归属始终通过 `_communities` 与 `_community_aliases` 解析，因此芦荡等历史名称不在导入代码中硬编码。告知书从只读接口 `/api/address/queryHouseCertificate` 分页获取，只接受配置中的滨湖新城派出所记录；后台运行状态保存在 `registry_certificate_source_runs`，失败断点的临时页保存在 `registry_certificate_source_pages`，成功生成预览后立即清理临时页。服务端完整读取创建带 `certificate_full_snapshot` 标记的新批次，命名锁保护确认事务：旧告知书通过 `source_missing_since` 保留为历史，旧问题标记 `superseded`，当前状态只统计最新已确认快照。相同内容合并为一个代表项，有可靠更新时间时选最新版本；无法判定的当前内容冲突及未匹配出租房仍核查。读取失败或空响应不替换当前快照，较旧或未经完整读取的预览不能覆盖新快照。详见[每日读取与责任关系口径](告知书每日全量读取与责任关系口径.md)。
+
+辖区房屋的 `visit_status=never` 在分页前检查 `VisitData.t_visit_details` 全部历史，按社区与当前地址、启用别名、历史地址摘要精确关联；任何匹配走访都排除从未走访，包括同地址多房归属不明确的记录。不支持与走访日期或星级同时使用，以免误解释为区间未走访。`visited` 可配合原日期、星级条件。列表和完整结果导出复用同一查询服务，权限与社区范围不变；该结论只代表平台已经获取的走访覆盖范围。
 
 房屋详情中的责任告知书图片由后端代理读取，浏览器不接触旧平台图片主机、真实文件路径或认证信息。只有具备 `registry.import.manage` 的账号可以查看签名图片，且后端仍按房屋所属社区校验数据范围；图片引用只允许日期目录下的 JPG/PNG 相对路径，单张上限 10 MB，并按实际文件头确认格式。来源没有图片或图片服务未配置时只显示不可查看状态，不影响档案查询和责任书统计。
 

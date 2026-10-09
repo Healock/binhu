@@ -67,6 +67,40 @@ class RegistryVisitKeyTests(unittest.TestCase):
 
 
 class RegistryVisitHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_never_visited_checks_all_history_including_old_addresses(self):
+        cursor = _Cursor(
+            versions=[(1, "合成旧路1号", "合成旧路1号")],
+            visits=[("测试社区", visit_address_key("合成旧路1号"))],
+        )
+        result = await filter_property_ids_by_visit(cursor, [
+            {"id": 1, "community_name": "测试社区", "natural_address": "合成新路1号"},
+            {"id": 2, "community_name": "测试社区", "natural_address": "合成路2号"},
+        ], visit_status="never")
+        self.assertEqual({2}, result)
+        self.assertNotIn("业务日期", cursor.calls[-1][0])
+
+    async def test_shared_address_with_visits_is_not_claimed_never_visited(self):
+        cursor = _Cursor(visits=[("测试社区", visit_address_key("合成路1号"))])
+        result = await filter_property_ids_by_visit(cursor, [
+            {"id": 1, "community_name": "测试社区", "natural_address": "合成路1号"},
+            {"id": 2, "community_name": "测试社区", "natural_address": "合成路1号"},
+        ], visit_status="never")
+        self.assertEqual(set(), result)
+
+    async def test_never_visited_does_not_cross_communities(self):
+        cursor = _Cursor(visits=[("测试乙社区", visit_address_key("合成路1号"))])
+        result = await filter_property_ids_by_visit(cursor, [
+            {"id": 1, "community_name": "测试甲社区", "natural_address": "合成路1号"},
+        ], visit_status="never")
+        self.assertEqual({1}, result)
+
+    async def test_never_visited_without_records_returns_all_candidates(self):
+        result = await filter_property_ids_by_visit(_Cursor(), [
+            {"id": 1, "community_name": "测试社区", "natural_address": "合成路1号"},
+            {"id": 2, "community_name": "测试社区", "natural_address": "合成路2号"},
+        ], visit_status="never")
+        self.assertEqual({1, 2}, result)
+
     async def test_filter_property_ids_by_visit_applies_date_and_star_before_pagination(self):
         cursor = _Cursor(
             aliases=[],
