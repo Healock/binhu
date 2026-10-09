@@ -52,7 +52,9 @@ export default function PersonalizationSettings() {
       user.permission_groups?.map(group => group.code),
       user.member?.position,
     ))
-  }, [user])
+  // Session activity refreshes the user object while this page is open. Keep
+  // unsaved personalization choices intact until the account itself changes.
+  }, [user?.id])
 
   const handleSave = async () => {
     setSaving(true)

@@ -36,7 +36,10 @@ import {
   type TxDocsMonitoringOverview,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
-import { updateDateRangePickerSelection } from '../utils/dateRangePicker'
+import {
+  normalizeDateRangePickerSelection,
+  updateDateRangePickerSelection,
+} from '../utils/dateRangePicker'
 import { exportSummaryWorkbook } from '../utils/summaryXlsx'
 import { buildReportTableTotal } from '../utils/tableTotals'
 
@@ -630,7 +633,7 @@ export default function Dashboard() {
               onChange={(_, dateStrings) => {
                 if (dateStrings[0] && dateStrings[1]) {
                   void recordActivity().catch(() => {})
-                  setDateRange([dateStrings[0], dateStrings[1]])
+                  setDateRange(normalizeDateRangePickerSelection(dateStrings))
                 }
                 setPickerRange(null)
               }}
