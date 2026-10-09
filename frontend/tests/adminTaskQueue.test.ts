@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { clampFloatingActionPosition } from '../src/utils/floatingActionPosition.ts'
 
 function read(path: string): string {
   return readFileSync(new URL(path, import.meta.url), 'utf8')
 }
+
+test('悬浮球保留可见边界和手机底部导航空间', () => {
+  assert.deepEqual(clampFloatingActionPosition({ x: -100, y: -100 }, 390, 844, 76), { x: 12, y: 72 })
+  assert.deepEqual(clampFloatingActionPosition({ x: 1800, y: 900 }, 390, 844, 76), { x: 326, y: 716 })
+  assert.deepEqual(clampFloatingActionPosition({ x: 500, y: 200 }, 1280, 720, 12), { x: 500, y: 200 })
+})
 
 test('管理员任务队列使用真实只读接口和被动轮询', () => {
   const api = read('../src/api/client.ts')
@@ -35,7 +42,8 @@ test('后台队列和我的任务记录使用统一速度拨盘，默认不再�
   assert.match(history, /my-task-history-float.*is-speed-dial-visible/)
   assert.match(styles, /\.app-speed-dial__main[\s\S]*z-index: 40/)
   assert.match(styles, /\.admin-task-queue-float,[\s\S]*\.my-task-history-float[\s\S]*pointer-events: none/)
-  assert.match(styles, /\.my-task-history-float \{[\s\S]*right: 96px !important;/)
+  assert.match(styles, /\.my-task-history-float \{[\s\S]*left: var\(--action-x\)/)
+  for (const component of [menu, queue, history]) assert.doesNotMatch(component, /tooltip=/)
 })
 
 test('任务队列只向管理员账号展示并且不声明敏感业务字段', () => {

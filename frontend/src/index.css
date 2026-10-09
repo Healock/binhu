@@ -117,10 +117,37 @@ html.desktop-shell .ant-notification-topRight {
   color: var(--app-text-secondary);
 }
 
-.app-speed-dial__main {
-  right: 22px !important;
-  bottom: 24px !important;
+.app-speed-dial {
+  position: fixed;
+  right: 22px;
+  bottom: 24px;
+  width: 52px;
+  height: 52px;
+  box-sizing: content-box;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  pointer-events: none;
+  z-index: 60;
+}
+
+.app-speed-dial .app-speed-dial__main {
+  position: absolute;
+  inset: 0 auto auto 0 !important;
+  width: 52px;
+  height: 52px;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
   z-index: 40;
+}
+
+.app-speed-dial.is-dragging .app-speed-dial__main {
+  cursor: grabbing;
+}
+
+.app-speed-dial.is-mobile {
+  right: 16px;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
 }
 
 .app-speed-dial__main .ant-float-btn-body,
@@ -135,10 +162,15 @@ html.desktop-shell .ant-notification-topRight {
   height: 52px;
 }
 
-.admin-task-queue-float,
-.my-task-history-float {
-  right: 24px !important;
-  bottom: 96px !important;
+.app-speed-dial .admin-task-queue-float,
+.app-speed-dial .my-task-history-float {
+  position: absolute;
+  left: 6px !important;
+  top: var(--action-y) !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: 40px;
+  height: 40px;
   z-index: 39;
   opacity: 0;
   visibility: hidden;
@@ -147,9 +179,8 @@ html.desktop-shell .ant-notification-topRight {
   transition: opacity 160ms ease, transform 160ms ease, visibility 160ms;
 }
 
-.my-task-history-float {
-  right: 96px !important;
-  bottom: 82px !important;
+.app-speed-dial .my-task-history-float {
+  left: var(--action-x) !important;
 }
 
 .admin-task-queue-float.is-speed-dial-visible,
@@ -470,21 +501,6 @@ html.desktop-shell .ant-notification-topRight {
     min-width: 40px;
     min-height: 40px;
     justify-content: center;
-  }
-
-  .app-speed-dial__main {
-    right: 16px !important;
-    bottom: calc(76px + env(safe-area-inset-bottom, 0px)) !important;
-  }
-
-  .admin-task-queue-float {
-    right: 18px !important;
-    bottom: calc(148px + env(safe-area-inset-bottom, 0px)) !important;
-  }
-
-  .my-task-history-float {
-    right: 88px !important;
-    bottom: calc(134px + env(safe-area-inset-bottom, 0px)) !important;
   }
 
   .admin-task-queue-panel {

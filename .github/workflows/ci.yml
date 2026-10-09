@@ -135,6 +135,10 @@ jobs:
         # Browser binaries are kept outside the dependency lockfile.
         run: npx playwright install --with-deps chromium && npm run test:autosave:browser
         working-directory: frontend
+      # Keep pointer capture and touch-drag behavior under real browser coverage.
+      - name: Run floating actions browser regression tests
+        run: npm run test:floating:browser
+        working-directory: frontend
       - name: Build frontend production bundle
         env:
           NODE_OPTIONS: --max-old-space-size=8192
