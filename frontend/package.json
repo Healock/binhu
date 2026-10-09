@@ -11,7 +11,8 @@
     "test:totals": "node --experimental-strip-types --test tests/tableTotals.test.ts",
     "test:autosave:browser": "node tests/taskAutosave.browser.mjs",
     "test:floating:browser": "node tests/floatingActions.browser.mjs",
-    "test:background:browser": "node tests/backgroundRequests.browser.mjs"
+    "test:background:browser": "node tests/backgroundRequests.browser.mjs",
+    "test:date-range:browser": "node tests/sourceRangePicker.browser.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.2",

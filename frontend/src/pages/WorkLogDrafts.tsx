@@ -57,6 +57,11 @@ export default function WorkLogDrafts() {
   const formatTime = useSystemTime()
   const [modal, contextHolder] = Modal.useModal()
   const [formFilters, setFormFilters] = useState<DraftFilters>(EMPTY_FILTERS)
+  const datePickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs] | null>(
+    () => formFilters.startDate && formFilters.endDate
+      ? [dayjs(formFilters.startDate), dayjs(formFilters.endDate)] : null,
+    [formFilters.startDate, formFilters.endDate],
+  )
   const [queryFilters, setQueryFilters] = useState<DraftFilters>(EMPTY_FILTERS)
   const [keywordFlush, setKeywordFlush] = useState(0)
   const debouncedKeyword = useDebouncedValue(formFilters.keyword.trim(), 350, keywordFlush)
@@ -280,11 +285,7 @@ export default function WorkLogDrafts() {
           <DatePicker.RangePicker
             className="hidden w-[300px] md:flex"
             allowClear
-            value={
-              formFilters.startDate && formFilters.endDate
-                ? [dayjs(formFilters.startDate), dayjs(formFilters.endDate)]
-                : null
-            }
+            value={datePickerValue}
             onChange={(_, dateStrings) => {
               setFormFilters(current => ({
                 ...current,

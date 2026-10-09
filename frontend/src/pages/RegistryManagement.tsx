@@ -118,6 +118,10 @@ export default function RegistryManagement() {
   const [certificateStatus, setCertificateStatus] = useState<RegistryCertificateStatus>('')
   const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
   const [visitDateRange, setVisitDateRange] = useState<[string, string] | undefined>()
+  const visitPickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs] | null>(
+    () => visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null,
+    [visitDateRange?.[0], visitDateRange?.[1]],
+  )
   const [visitStatus, setVisitStatus] = useState<'' | 'visited' | 'never'>('')
   const [starRatings, setStarRatings] = useState<string[]>([])
   const [smallCommunityOptions, setSmallCommunityOptions] = useState<RegistrySmallCommunityOption[]>([])
@@ -760,7 +764,7 @@ export default function RegistryManagement() {
               { value: 'never', label: '从未走访' },
             ]}
           />
-          <DatePicker.RangePicker disabled={visitStatus === 'never'} className="w-full" value={visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null}
+          <DatePicker.RangePicker disabled={visitStatus === 'never'} className="w-full" value={visitPickerValue}
             onChange={(values: [Dayjs | null, Dayjs | null] | null) => {
               if (!values?.[0] || !values[1]) setVisitDateRange(undefined)
               else setVisitDateRange([values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')])

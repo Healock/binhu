@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Alert,
   Button,
@@ -174,9 +174,12 @@ export default function Dashboard() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
   const [startDate, endDate] = dateRange
-  const pickerValue: [Dayjs | null, Dayjs | null] = pickerRange
-    ? [pickerRange[0] ? dayjs(pickerRange[0]) : null, pickerRange[1] ? dayjs(pickerRange[1]) : null]
-    : [dayjs(startDate), dayjs(endDate)]
+  const pickerStart = pickerRange ? pickerRange[0] : startDate
+  const pickerEnd = pickerRange ? pickerRange[1] : endDate
+  const pickerValue = useMemo<[Dayjs | null, Dayjs | null]>(
+    () => [pickerStart ? dayjs(pickerStart) : null, pickerEnd ? dayjs(pickerEnd) : null],
+    [pickerStart, pickerEnd],
+  )
 
   // 日期或业务类型变化时读取本地报表。
   const fetchReport = useCallback(async () => {
