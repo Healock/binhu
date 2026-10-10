@@ -4695,7 +4695,67 @@ export interface WatchImportResult {
   created_phones?: number
 }
 
+export interface PropertyAnnotationApplyItem {
+  property_id: number
+  small_community_id: number
+  expected_snapshot: string
+  expected_entry_snapshot: string
+  preview_token: string
+}
+
+export interface PropertyAnnotationFilters {
+  keyword?: string
+  community_id?: number
+  housing_category?: RegistryHousingCategory
+  certificate_status?: RegistryCertificateStatus
+  status?: '' | 'active' | 'inactive'
+  visit_start_date?: string
+  visit_end_date?: string
+  visit_status?: '' | 'visited' | 'never'
+  star_ratings?: string[]
+  small_community_ids?: number[]
+  address_match_statuses?: string[]
+  sort?: 'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'
+}
+
+export interface PropertyAnnotationPreview {
+  total: number
+  ready: number
+  blocked: number
+  review: number
+  skipped: number
+  items: Array<{
+    xlsx_row: number
+    property_id: number | null
+    status: 'ready' | 'blocked' | 'review' | 'skipped' | 'applied'
+    address?: string
+    community?: string
+    reason: string
+    target_name?: string
+    annotation_reason?: string
+    replaces_manual?: boolean
+    apply_item?: PropertyAnnotationApplyItem
+  }>
+}
+
 export const registryApi = {
+  async exportPropertyAnnotations(params: PropertyAnnotationFilters) {
+    return (await api.post('/registry/properties/small-community-annotations/export', params, {
+      ...activeRequest, responseType: 'blob', timeout: 300_000,
+    })).data as Blob
+  },
+  async previewPropertyAnnotations(file: File): Promise<PropertyAnnotationPreview> {
+    const form = new FormData()
+    form.append('file', file)
+    return (await api.post('/registry/properties/small-community-annotations/preview', form, {
+      ...activeRequest, timeout: 300_000,
+    })).data
+  },
+  async applyPropertyAnnotations(items: PropertyAnnotationApplyItem[]) {
+    return (await api.post('/registry/properties/small-community-annotations/apply', {
+      confirm: true, items,
+    }, { ...activeRequest, timeout: 300_000 })).data as { message: string; confirmed: number }
+  },
   async properties(params: {
     keyword?: string
     community_id?: number

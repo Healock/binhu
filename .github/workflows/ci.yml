@@ -47,6 +47,9 @@ jobs:
       - name: Run backend tests
         run: python -m unittest discover -s tests
         working-directory: backend
+      - name: Check property annotation workbook and permission contracts
+        run: python -m pytest tests/test_property_annotation_xlsx.py tests/test_filtered_xlsx_exports.py tests/test_registry_foundation.py tests/test_registry_visit_history.py tests/test_help_docs.py -q
+        working-directory: backend
 
   hotfix-candidate:
     name: Prebuild backend hotfix candidate
@@ -144,6 +147,9 @@ jobs:
         working-directory: frontend
       - name: Check date navigation across session refreshes
         run: npm run test:date-range:browser
+        working-directory: frontend
+      - name: Check property annotation preview and confirmation in browser
+        run: node tests/propertyAnnotation.browser.mjs
         working-directory: frontend
       - name: Build frontend production bundle
         env:
