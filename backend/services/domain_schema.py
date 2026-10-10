@@ -55,6 +55,8 @@ async def ensure_registry_schema(cur) -> None:
     await _ensure_column(cur, "registry_properties", "source_updated_at", "DATETIME DEFAULT NULL AFTER source_house_no")
     await _ensure_column(cur, "registry_properties", "source_type", "VARCHAR(30) NOT NULL DEFAULT 'manual' AFTER source_updated_at")
     await _ensure_column(cur, "registry_properties", "source_ref", "VARCHAR(190) NOT NULL DEFAULT '' AFTER source_type")
+    await _ensure_column(cur, "registry_properties", "household_status", "VARCHAR(50) NOT NULL DEFAULT '' AFTER source_ref")
+    await _ensure_index(cur, "registry_properties", "idx_registry_property_household_status", "INDEX idx_registry_property_household_status (household_status, id)")
     await _ensure_index(cur, "registry_properties", "idx_registry_property_housing_type", "INDEX idx_registry_property_housing_type (housing_type, status)")
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_property_small_community_links (

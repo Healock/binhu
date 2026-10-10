@@ -17,14 +17,14 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from config import settings
 
-FORMAT = "binhu-property-annotation-v1"
+FORMAT = "binhu-property-annotation-v2"
 MAX_ROWS = 10000
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 SNAPSHOT_FIELDS = (
     "id", "version", "community_id", "community_name", "natural_address",
     "normalized_address", "street", "building", "room", "status",
     "updated_at", "small_community_id", "address_match_status",
-    "address_match_confirmed_by", "address_match_confirmed_at",
+    "address_match_confirmed_by", "address_match_confirmed_at", "household_status",
 )
 LABEL_FIELDS = ("decision", "annotated_small_community_id", "annotation_reason")
 HEADERS = (*SNAPSHOT_FIELDS, "address_match_score", "address_match_reason",
@@ -122,7 +122,8 @@ def build_annotation_workbook(properties: list[dict], entries: list[dict], user_
         ["ids", "id 为稳定标识；严禁按物理行号或名称推断关联。选择的小区必须与房屋所属社区一致"],
         ["read_only", "只填写三个标注列。保留其余原始列、工作表、签名和版本；不得修改原始地址或社区"],
         ["scope", "小区地址库包含当前账号可查看社区的启用小区，aliases 为 JSON 数组；不是全平台无权限数据"],
-        ["conflicts", "已变化、已停用、跨社区、重复行或签名失效均拒绝应用；重新导出后标注"],
+        ["household_status", "注销状态使用 household_status；status 仅为历史兼容原始列，不代表户号表注销状态，不要改动"],
+        ["conflicts", "房屋已变化、小区已停用、跨社区、重复行或签名失效均拒绝应用；重新导出后标注"],
         ["review_boundary", "Agent 结果仅为建议；已有人工确认的变更在预览中明确显示，只有管理员确认才应用"],
         ["privacy", "仅含地址匹配所需资料；不含人员、房东姓名、身份证、电话、核查或走访正文。按授权范围交给外部 Agent"],
         ["return_account", "由原导出账号回导与确认；其他账号需重新导出"],

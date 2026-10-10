@@ -20,6 +20,7 @@ PROPERTY = {"id": 42, "version": 3, "community_id": 8, "community_name": "合成
             "natural_address": "合成路1号", "normalized_address": "合成路1号",
             "street": "合成街道", "building": "1", "room": "101", "status": "active",
             "updated_at": "2026-10-10T01:00:00", "small_community_id": None,
+            "household_status": "",
             "address_match_status": "unmatched", "address_match_confirmed_by": None,
             "address_match_confirmed_at": None,
             "address_match_candidates": [{"entry_id": 12, "score": .7, "method": "rule", "reason": "地址相符"}],
@@ -161,13 +162,27 @@ async def test_preview_is_read_only_and_apply_reuses_confirm_in_transaction(data
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("changed", [
-    {"version": 4}, {"natural_address": "已变化"}, {"status": "inactive"},
+    {"version": 4}, {"natural_address": "已变化"}, {"status": "inactive"}, {"household_status": "已注销"},
     {"address_match_status": "confirmed", "small_community_id": 15}, {"community_id": 9},
 ])
 async def test_changed_snapshot_or_permission_blocks_preview(data, changed):
     data[0][42].update(changed)
     result = await preview(annotated())
     assert result["blocked"] == 1 and not result["items"][0].get("apply_item")
+
+
+@pytest.mark.asyncio
+async def test_legacy_inactive_cancelled_property_can_confirm_community(data):
+    property_row = {**PROPERTY, "status": "inactive", "household_status": "已注销"}
+    data[0][42] = property_row
+    result = await preview(annotated([property_row]))
+    assert result["ready"] == 1
+    conn = Connection()
+    conn.fetchall = AsyncMock(return_value=[(42, 8, "合成社区", 3, "inactive")])
+    applied = await registry.apply_property_annotations(
+        registry.PropertyAnnotationApply(confirm=True, items=[result["items"][0]["apply_item"]]), None, USER, conn,
+    )
+    assert applied["confirmed"] == 1 and conn.committed
 
 
 @pytest.mark.asyncio

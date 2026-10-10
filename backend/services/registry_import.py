@@ -107,6 +107,16 @@ def normalize_housing_type(value: Any) -> str:
     return normalize_text(value)
 
 
+def normalize_household_status(value: Any) -> str:
+    text = normalize_text(value)
+    if text in {"已注销", "注销"}:
+        return "已注销"
+    if text in {"未注销", "正常", "有效", "在用"}:
+        return "未注销"
+    # Numeric codes and absent/unrecognized text cannot prove a source status.
+    return ""
+
+
 def issue_problem_details(
     issue_type: str,
     payload: dict[str, Any],

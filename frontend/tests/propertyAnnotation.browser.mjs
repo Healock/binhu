@@ -14,6 +14,7 @@ try {
     const errors = []
     const applied = []
     let exported = null
+    let lastSearch = null
     page.on('pageerror', error => errors.push(error.message))
     await page.addInitScript(dark => {
       localStorage.setItem('binhu-theme-mode', dark ? 'dark' : 'light')
@@ -44,11 +45,33 @@ try {
         applied.push(payload)
         return send({ message: '已确认', confirmed: payload.items.length })
       }
-      if (url.pathname === '/api/registry/properties/search') return send({ total: 1, page: 1, page_size: 50, match_status_counts: {}, data: [{ id: 42, community_id: 8, community_name: '合成社区', natural_address: '合成路1号', status: 'active', version: 3, address_match_status: 'unmatched' }] })
+      if (url.pathname === '/api/registry/properties/search') {
+        lastSearch = route.request().postDataJSON()
+        return send({ total: 1, page: 1, page_size: 50, match_status_counts: {}, data: [{ id: 42, community_id: 8, community_name: '合成社区', natural_address: '合成路1号', household_status: '已注销', status: 'inactive', version: 3, address_match_status: 'unmatched' }] })
+      }
       return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
     })
     await page.goto(`${origin}/registry`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
     await page.getByRole('button', { name: '导出当前结果' }).waitFor()
+    assert.equal(lastSearch.household_status, '')
+    assert.equal(lastSearch.status, undefined)
+    const statusFilter = page.locator('.ant-select').filter({ hasText: '全部注销状态' }).first()
+    await statusFilter.click()
+    await page.locator('.ant-select-item-option').filter({ hasText: /^已注销$/ }).click()
+    await page.keyboard.press('Escape')
+    await page.getByRole('tab', { name: '人员档案', exact: true }).click()
+    await page.getByRole('tab', { name: '房屋档案', exact: true }).click()
+    await statusFilter.waitFor()
+    for (let attempt = 0; attempt < 20 && lastSearch.household_status !== ''; attempt++) await page.waitForTimeout(100)
+    assert.equal(lastSearch.household_status, '', 'switching tabs resets cancellation filter')
+    await statusFilter.click()
+    await page.locator('.ant-select-item-option').filter({ hasText: /^已注销$/ }).click()
+    for (let attempt = 0; attempt < 20 && lastSearch.household_status !== 'cancelled'; attempt++) await page.waitForTimeout(100)
+    assert.equal(lastSearch.household_status, 'cancelled')
+    assert.equal(await page.getByRole('button', { name: '停用', exact: true }).count(), 0)
+    assert.equal(await page.getByRole('button', { name: '启用', exact: true }).count(), 0)
+    mkdirSync('artifacts/household-status', { recursive: true })
+    await page.screenshot({ path: `artifacts/household-status/${width}-${dark ? 'dark' : 'light'}.png`, fullPage: true })
     if (denied) {
       assert.equal(await page.getByRole('button', { name: '导出小区标注' }).count(), 0)
       assert.equal(await page.getByRole('button', { name: '回导小区标注' }).count(), 0)
@@ -60,6 +83,8 @@ try {
       await download
       assert.equal(exported.keyword, '合成')
       assert.equal(exported.sort, 'id_desc')
+      assert.equal(exported.household_status, 'cancelled')
+      assert.equal(exported.status, undefined)
       await page.getByRole('button', { name: '回导小区标注' }).click()
       const modal = page.getByRole('dialog').filter({ hasText: '小区标注回导预览' })
       await modal.locator('input[type=file]').setInputFiles({ name: 'synthetic-labels.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') })

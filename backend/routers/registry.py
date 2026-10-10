@@ -86,7 +86,8 @@ class PropertySearch(BaseModel):
         "", "normal_signed", "not_required", "not_uploaded", "renter_needs_correction",
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = ""
-    status: Literal["", "active", "inactive"] = "active"
+    status: Literal["", "active", "inactive"] = ""
+    household_status: Literal["", "cancelled", "not_cancelled", "unknown"] = ""
     visit_start_date: date | None = None
     visit_end_date: date | None = None
     visit_status: Literal["", "visited", "never"] = ""
@@ -429,6 +430,7 @@ def _property_payload(row) -> dict:
         "address_match_version": str(row[35] or ""),
         "address_match_confirmed_by": int(row[36]) if row[36] is not None else None,
         "address_match_confirmed_at": row[37].isoformat() if row[37] else None,
+        "household_status": str(row[38] or ""),
     })
     return payload
 
@@ -488,6 +490,11 @@ async def _property_search_result(
     if data.status:
         where.append("property.status=%s")
         params.append(data.status)
+    if data.household_status == "unknown":
+        where.append("COALESCE(property.household_status,'')='' ")
+    elif data.household_status:
+        where.append("property.household_status=%s")
+        params.append("已注销" if data.household_status == "cancelled" else "未注销")
     if data.housing_category == "rental":
         where.append("property.housing_type IN (%s,%s)")
         params.extend(["个人出租", "单位出租"])
@@ -672,7 +679,7 @@ async def _property_search_result(
             "COALESCE(property_match.match_status,'unmatched'),"
             "COALESCE(property_match.match_score,0),property_match.match_method,"
             "property_match.match_reason,property_match.match_evidence,"
-            "property_match.matcher_version,property_match.confirmed_by,property_match.confirmed_at "
+            "property_match.matcher_version,property_match.confirmed_by,property_match.confirmed_at,property.household_status "
             f"FROM registry_properties property{joins}{clause} ORDER BY {order_sql} "
             + ("" if export_all or visit_sort else "LIMIT %s OFFSET %s"),
             tuple(params) if export_all or visit_sort else tuple(params) + (data.page_size, offset),
@@ -710,7 +717,8 @@ async def list_properties(
         "", "normal_signed", "not_required", "not_uploaded", "renter_needs_correction",
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = Query(default=""),
-    status: Literal["", "active", "inactive"] = Query(default="active"),
+    status: Literal["", "active", "inactive"] = Query(default=""),
+    household_status: Literal["", "cancelled", "not_cancelled", "unknown"] = Query(default=""),
     visit_start_date: date | None = Query(default=None),
     visit_end_date: date | None = Query(default=None),
     visit_status: Literal["", "visited", "never"] = Query(default=""),
@@ -729,6 +737,7 @@ async def list_properties(
             housing_category=housing_category,
             certificate_status=certificate_status,
             status=status,
+            household_status=household_status,
             visit_start_date=visit_start_date,
             visit_end_date=visit_end_date,
             visit_status=visit_status,
@@ -859,8 +868,6 @@ async def confirm_property_small_communities(
                     raise HTTPException(409, f"房屋 {property_id} 的地址、版本或人工确认已变化，请重新导出标注")
                 if model.expected_entry_snapshot and not valid_token(model.expected_entry_snapshot, entry_token(entry, int(user["id"]))):
                     raise HTTPException(409, f"小区 {entry_id} 的配置已变化，请重新导出标注")
-                if property_row["status"] != "active":
-                    raise HTTPException(409, f"房屋 {property_id} 已停用，不能确认小区")
                 if allowed is not None and property_row["community_id"] not in allowed:
                     raise HTTPException(403, "只能维护有权限社区内的房屋档案")
                 if property_row["community_id"] is None or property_row["community_id"] != entry["community_id"]:
@@ -950,7 +957,7 @@ async def _annotation_properties(cur, ids, *, lock=False):
         await cur.execute(
             "SELECT p.id,p.current_version,p.community_id,p.community_name_snapshot,"
             "p.natural_address,p.normalized_address,p.street,p.building,p.room,p.status,p.updated_at,"
-            "m.small_community_id,COALESCE(m.match_status,'unmatched'),m.confirmed_by,m.confirmed_at "
+            "m.small_community_id,COALESCE(m.match_status,'unmatched'),m.confirmed_by,m.confirmed_at,p.household_status "
             "FROM registry_properties p LEFT JOIN registry_property_small_community_links m ON m.property_id=p.id "
             "WHERE p.id IN (" + ",".join(["%s"] * len(batch)) + ") ORDER BY p.id" + (" FOR UPDATE" if lock else ""),
             tuple(batch),
@@ -1037,8 +1044,6 @@ async def preview_property_annotations(
                 expected = str(row.get("snapshot_token") or "")
                 if not valid_token(expected, property_token(row, int(user["id"]))) or not valid_token(expected, property_token(current, int(user["id"]))):
                     raise ValueError("原始列、房屋版本或已有人工确认已变化，或非原导出账号；请重新导出")
-                if current.get("status") != "active":
-                    raise ValueError("房屋已停用，请先核对房屋状态")
                 target_id = positive_id(row.get("annotated_small_community_id"))
                 entry = entries.get(target_id)
                 if entry is None or current.get("community_id") != entry["community_id"]:
@@ -1090,7 +1095,7 @@ async def export_properties(
         [
             "房屋ID", "社区", "小区", "小区匹配状态", "标准详细地址", "街道", "幢", "室", "户号",
             "住房类型", "居住处所", "最近走访日期", "星级评定", "责任书状态",
-            "房屋状态", "档案版本", "更新时间",
+            "注销状态", "档案版本", "更新时间",
         ],
         [
             [
@@ -1101,7 +1106,7 @@ async def export_properties(
                 row.get("source_house_no"), row.get("housing_type"),
                 row.get("residence_type"), row.get("latest_visit_date") or "",
                 row.get("latest_star_rating") or "", row.get("certificate_status_label") or "",
-                row.get("status"), row.get("version"), row.get("updated_at") or "",
+                row.get("household_status") or "未知", row.get("version"), row.get("updated_at") or "",
             ]
             for row in rows
         ],
