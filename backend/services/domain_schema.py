@@ -52,6 +52,7 @@ async def ensure_registry_schema(cur) -> None:
     await _ensure_column(cur, "registry_properties", "housing_type", "VARCHAR(50) NOT NULL DEFAULT '' AFTER room")
     await _ensure_column(cur, "registry_properties", "residence_type", "VARCHAR(100) NOT NULL DEFAULT '' AFTER housing_type")
     await _ensure_column(cur, "registry_properties", "source_house_no", "VARCHAR(100) NOT NULL DEFAULT '' AFTER residence_type")
+    await _ensure_index(cur, "registry_properties", "idx_registry_property_household", "INDEX idx_registry_property_household (source_house_no, community_id)")
     await _ensure_column(cur, "registry_properties", "source_updated_at", "DATETIME DEFAULT NULL AFTER source_house_no")
     await _ensure_column(cur, "registry_properties", "source_type", "VARCHAR(30) NOT NULL DEFAULT 'manual' AFTER source_updated_at")
     await _ensure_column(cur, "registry_properties", "source_ref", "VARCHAR(190) NOT NULL DEFAULT '' AFTER source_type")

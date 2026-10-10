@@ -104,14 +104,15 @@ def normalize_address(value: Any) -> str:
 
 
 def normalize_housing_type(value: Any) -> str:
-    return normalize_text(value)
+    text = normalize_text(value)
+    return {"个人租赁": "个人出租", "单位租赁": "单位出租"}.get(text, text)
 
 
 def normalize_household_status(value: Any) -> str:
     text = normalize_text(value)
-    if text in {"已注销", "注销"}:
+    if text in {"已注销", "注销", "是"}:
         return "已注销"
-    if text in {"未注销", "正常", "有效", "在用"}:
+    if text in {"未注销", "正常", "有效", "在用", "否"}:
         return "未注销"
     # Numeric codes and absent/unrecognized text cannot prove a source status.
     return ""
@@ -291,7 +292,10 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         key = normalize_address(address)
         row["address"] = address
         row["community"] = normalize_community(row.get("community") or row.get("社区名称"))
-        row["housing_type"] = normalize_housing_type(row.get("housing_type") or row.get("住房类型"))
+        raw_type = normalize_text(row.get("housing_type") or row.get("住房类型"))
+        row["housing_type"] = normalize_housing_type(raw_type)
+        if row["housing_type"] != raw_type:
+            row["source_housing_type"] = raw_type
         row["source_row"] = row.get("source_row") or index
         row["source_key"] = key
         materialized.append(row)
@@ -336,6 +340,51 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "issue_count": len(issues),
         "other_type_count": sum(1 for row in normal_rows if row.get("housing_type") not in {"个人出租", "单位出租", "自购房屋"}),
     }
+
+
+def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep file provenance while suppressing identical repeated household IDs."""
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        house_no = normalize_text(row.get("house_no"))
+        if house_no:
+            groups[(normalize_community(row.get("community")), house_no)].append(row)
+    conflicts = []
+    skipped = set()
+    for grouped in groups.values():
+        if len(grouped) < 2:
+            continue
+        fields = ("community", "police_station", "community_code", "house_no", "landlord",
+                  "address", "housing_type", "residence_type", "resident_count", "updated_at", "household_status")
+        signatures = {tuple((key in row, normalize_household_status(row.get(key)) or normalize_text(row.get(key))) if key == "household_status"
+                            else normalize_housing_type(row.get(key)) if key == "housing_type"
+                            else normalize_text(row.get(key)) for key in fields) for row in grouped}
+        if len(signatures) == 1:
+            for row in grouped[1:]:
+                row["import_skip"] = "identical_household"
+                skipped.add(id(row))
+        else:
+            conflicts.append(grouped)
+    result = classify_household_rows(row for row in rows if id(row) not in skipped)
+    blocked = set()
+    for grouped in conflicts:
+        result["duplicate_groups"] += 1
+        for row in grouped:
+            ref = row["import_source_ref"]
+            blocked.add(ref)
+            result["issues"].append({
+                "issue_type": ISSUE_HOUSEHOLD_DUPLICATE,
+                "entity_key": normalize_address(row.get("address")),
+                "source_ref": ref, "payload": row,
+                "reason": "同社区同户号的来源内容或注销状态不一致，需核对原导出文件；不能按上传顺序覆盖",
+            })
+    result["rows"].extend(row for row in rows if id(row) in skipped)
+    result["normal_rows"] = [row for row in result["normal_rows"] if row.get("import_source_ref") not in blocked]
+    result["normal_count"] = len(result["normal_rows"])
+    result["issue_count"] = len(result["issues"])
+    result["other_type_count"] = sum(row.get("housing_type") not in {"个人出租", "单位出租", "自购房屋"} for row in result["normal_rows"])
+    result["duplicate_row_count"] = len(skipped)
+    return result
 
 
 def issue_type_label(issue_type: str) -> str:

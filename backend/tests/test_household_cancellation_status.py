@@ -77,7 +77,9 @@ class Connection:
 
     async def fetchone(self):
         if self.sql.startswith("SELECT status FROM"):
-            return ("preview",)
+            return ("preview", 0)
+        if self.sql.startswith("SELECT status, imported_count FROM"):
+            return ("preview", 0)
         if self.sql.startswith("SELECT id, status FROM"):
             return (1, self.batch_status)
         if "JSON_CONTAINS_PATH" in self.sql:
@@ -90,7 +92,7 @@ class Connection:
         if self.sql.startswith("SELECT id, source_ref, payload_json"):
             return [(1, "Sheet:2", json.dumps(self.payload))]
         if self.sql.startswith("SELECT id, community_id, street"):
-            return [(42, 8, "", "合成路1号", "", "", "合成路1号")] if self.existing else []
+            return [(42, 8, "", "合成路1号", "", "", "合成路1号", "")] if self.existing else []
         if self.sql.startswith("SELECT id, community_id, normalized_address"):
             return [(42, 8, "合成路1号")]
         return []
