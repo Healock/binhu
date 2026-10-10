@@ -35,7 +35,7 @@ class Cursor:
     async def fetchall(self):
         if "FROM registry_source_records" in self.sql:
             return [(i, str(i), json.dumps(item)) for i, item in enumerate(self.rows)]
-        return [(ref, kind) for ref, kind, state, _ in self.issues if state == "pending"]
+        return [(ref, kind) for ref, kind, state, _ in self.issues if state in {"pending", "resolved", "dismissed"}]
 
 
 @pytest.mark.asyncio
@@ -75,3 +75,12 @@ async def test_partial_batch_reclassification_never_changes_imported_properties_
     assert result["issue_count"] == 10
     assert not any("UPDATE registry_properties" in sql or "UPDATE registry_source_records" in sql
                    or "imported_count=" in sql for sql, _ in cur.calls)
+
+
+@pytest.mark.asyncio
+async def test_manually_resolved_real_conflict_is_not_reopened():
+    cur = Cursor()
+    cur.issues += [("0", "household_duplicate", "resolved", "manually checked")]
+    result = await repair_household_preview(cur, 19)
+    assert result["issue_count"] == 9
+    assert not any(ref == "0" and state == "pending" for ref, _, state, _ in cur.issues)

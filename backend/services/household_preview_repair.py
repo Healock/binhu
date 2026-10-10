@@ -43,7 +43,8 @@ async def repair_household_preview(cur, batch_id):
         "WHERE batch_id=%s AND status='pending' AND issue_type='household_duplicate' AND reason=%s",
         (REPAIR_NOTE, batch_id, LEGACY_REASONS[0]),
     )
-    await cur.execute("SELECT source_ref, issue_type FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
+    await cur.execute("SELECT source_ref, issue_type FROM registry_import_issues WHERE batch_id=%s "
+                      "AND status IN ('pending','resolved','dismissed')", (batch_id,))
     remaining = {(str(ref), str(kind)) for ref, kind in await cur.fetchall()}
     values = [(batch_id, issue["issue_type"], "household", str(issue["payload"]["import_source_ref"]),
                issue["entity_key"], json.dumps(issue["payload"], ensure_ascii=False), issue["reason"])
