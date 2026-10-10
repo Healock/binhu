@@ -2114,7 +2114,7 @@ async def _preview_household_rows(request, rows, classified, file_hash, file_nam
                     "issue_count": classified["issue_count"], "duplicate_groups": classified["duplicate_groups"],
                     "other_type_count": classified["other_type_count"],
                     **(summary or {}),
-                    **(repaired or {}),
+                    **({"pending_issue_count": repaired["issue_count"]} if repaired else {}),
                 }
             await cur.execute(
                 "INSERT INTO registry_source_batches (source_type, file_name, file_sha256, status, imported_count, candidate_count, conflict_count, created_by) "

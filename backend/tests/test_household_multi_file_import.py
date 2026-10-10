@@ -319,6 +319,25 @@ def test_five_household_conflicts_count_ten_rows_once():
     assert result["normal_count"] == 195 and result["duplicate_groups"] == 5
 
 
+def test_missing_household_number_at_shared_address_is_not_auto_associated():
+    result = classify_household_file_rows([row("a"), row("b", house_no="")])
+    assert result["normal_count"] == 1 and result["issue_count"] == 1
+    assert result["issues"][0]["payload"]["import_source_ref"] == "b"
+
+
+@pytest.mark.asyncio
+async def test_repaired_partial_preview_separates_file_issues_from_confirmation_issues(monkeypatch):
+    from services import household_preview_repair
+    conn = Connection()
+    conn.batch_status = "partially_imported"
+    source_rows = [row("a"), row("b", household_status="未注销")]
+    classified = classify_household_file_rows(source_rows)
+    conn.fetchone = AsyncMock(side_effect=[(19, "partially_imported"), (1,)])
+    monkeypatch.setattr(household_preview_repair, "repair_household_preview", AsyncMock(return_value={"batch_id": 19, "normal_count": 0, "issue_count": 3}))
+    result = await extended._preview_household_rows(None, source_rows, classified, "a" * 64, "synthetic", {"id": 7}, conn)
+    assert result["issue_count"] == 2 and result["pending_issue_count"] == 3
+
+
 @pytest.mark.asyncio
 async def test_same_address_distinct_households_get_distinct_source_links(confirmation_dependencies):
     conn = IdentityConnection(sources=[(1, row("a"), None), (2, row("b", house_no="H2", household_status="未注销"), None)])

@@ -21,7 +21,7 @@ Production 0.31.0 的户号导入按全局标准化地址分组，忽略社区�
 
 ## 验证与发布边界
 
-- `cd backend; python -m pytest tests/test_household_multi_file_import.py tests/test_household_preview_repair.py tests/test_household_cancellation_status.py tests/test_registry_foundation.py tests/test_registry_import_batching.py tests/test_registry_certificate_apply.py tests/test_registry_certificate_comparison.py tests/test_registry_visit_history.py tests/test_property_annotation_xlsx.py tests/test_help_docs.py -q`：152 passed。
+- `cd backend; python -m pytest tests/test_household_multi_file_import.py tests/test_household_preview_repair.py tests/test_household_cancellation_status.py tests/test_registry_foundation.py tests/test_registry_import_batching.py tests/test_registry_certificate_apply.py tests/test_registry_certificate_comparison.py tests/test_registry_visit_history.py tests/test_property_annotation_xlsx.py tests/test_help_docs.py -q`：154 passed。
 - `cd backend; python -m unittest discover -s tests`：1027 passed。
 - `cd backend; python -m compileall -q .`：通过。
 - 帮助 Markdown 加载检查 5 passed；`git diff --check` 通过。
