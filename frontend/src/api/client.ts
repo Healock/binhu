@@ -4472,6 +4472,7 @@ export interface RegistryProperty {
   source_ref: string
   normalized_address: string
   status: string
+  household_status: string
   version: number
   updated_at: string | null
   certificate_status: RegistryCertificateStatus
@@ -4709,6 +4710,7 @@ export interface PropertyAnnotationFilters {
   housing_category?: RegistryHousingCategory
   certificate_status?: RegistryCertificateStatus
   status?: '' | 'active' | 'inactive'
+  household_status?: '' | 'cancelled' | 'not_cancelled' | 'unknown'
   visit_start_date?: string
   visit_end_date?: string
   visit_status?: '' | 'visited' | 'never'
@@ -4762,6 +4764,7 @@ export const registryApi = {
     housing_category?: RegistryHousingCategory
     certificate_status?: RegistryCertificateStatus
     status?: '' | 'active' | 'inactive'
+    household_status?: '' | 'cancelled' | 'not_cancelled' | 'unknown'
     visit_start_date?: string
     visit_end_date?: string
     visit_status?: '' | 'visited' | 'never'
@@ -4786,6 +4789,7 @@ export const registryApi = {
     housing_category?: RegistryHousingCategory
     certificate_status?: RegistryCertificateStatus
     status?: '' | 'active' | 'inactive'
+    household_status?: '' | 'cancelled' | 'not_cancelled' | 'unknown'
     visit_start_date?: string
     visit_end_date?: string
     visit_status?: '' | 'visited' | 'never'

@@ -2,6 +2,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+test('房屋注销状态独立筛选并与导出保持一致，不再提供启用停用操作', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  assert.match(page, /title: '注销状态', dataIndex: 'household_status'/)
+  assert.match(page, /value: 'cancelled', label: '已注销'/)
+  assert.match(page, /value: 'unknown', label: '未知'/)
+  assert.equal((page.match(/household_status: householdStatus/g) || []).length, 2)
+  assert.doesNotMatch(page, /toggleProperty|setPropertyStatus|房屋已停用|确认启用这套房屋/)
+})
+
 test('房屋小区标注先预览后确认，已有人工确认不会默认勾选', () => {
   const source = readFileSync(new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url), 'utf8')
   assert.match(source, /registryApi\.previewPropertyAnnotations/)

@@ -49,6 +49,7 @@ from services.registry_import import (
     normalize_address,
     normalize_community,
     normalize_text,
+    normalize_household_status,
 )
 from services.registry_certificate_source import fetch_certificate_image, fetch_certificate_rows
 from services.registry_certificate_apply import apply_certificate_batch, CertificateSnapshotConflict
@@ -600,7 +601,7 @@ async def get_property_detail(
         await cur.execute(
             "SELECT id, street, community_id, community_name_snapshot, natural_address, building, room, "
             "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, "
-            "normalized_address, status, current_version, created_at, updated_at "
+            "normalized_address, status, current_version, created_at, updated_at, household_status "
             "FROM registry_properties WHERE id=%s",
             (property_id,),
         )
@@ -733,6 +734,7 @@ async def get_property_detail(
         "source_house_no": row[9], "source_updated_at": _iso(row[10]),
         "source_type": row[11], "source_ref": row[12], "normalized_address": row[13], "status": row[14],
         "version": int(row[15]), "created_at": _iso(row[16]), "updated_at": _iso(row[17]),
+        "household_status": str(row[18] or ""),
         "aliases": [
             {"id": int(item[0]), "alias": item[1], "community_id": item[2], "enabled": bool(item[3]),
              "source_type": item[4], "created_at": _iso(item[5])} for item in aliases
@@ -1870,6 +1872,8 @@ def _parse_household_workbook(content: bytes) -> list[dict]:
                     "residence_type": optional_index("居住处所", "居住场所"),
                     "resident_count": optional_index("居住人数", "人数"),
                     "updated_at": optional_index("更新时间", "更新日期"),
+                    "household_status": next((index for name in ("注销状态", "房屋状态", "房屋登记状态", "状态")
+                                              if (index := _find_header(headers, name)) is not None), -1),
                 }
                 break
             if row_number >= 20:
@@ -1905,6 +1909,8 @@ def _parse_household_workbook(content: bytes) -> list[dict]:
                 "resident_count": cell("resident_count"),
                 "updated_at": parsed_updated_at.isoformat() if parsed_updated_at else normalize_text(updated_at),
             })
+            if indexes["household_status"] >= 0:
+                rows[-1]["household_status"] = normalize_text(cell("household_status"))
     if not rows:
         raise HTTPException(422, "未找到包含出租屋地址和住房类型的户号表表头")
     workbook.close()
@@ -2010,6 +2016,13 @@ async def preview_household_import(
             existing = await cur.fetchone()
             if existing:
                 batch_id = int(existing[0])
+                if any("household_status" in row for row in rows):
+                    await cur.execute(
+                        "SELECT 1 FROM registry_source_records WHERE batch_id=%s AND entity_type='household_property' "
+                        "AND JSON_CONTAINS_PATH(payload_json,'one','$.household_status') LIMIT 1", (batch_id,),
+                    )
+                    if not await cur.fetchone():
+                        raise HTTPException(409, "该文件的旧导入未保存注销状态。请将原户号表另存为新的 XLSX，再重新预览并确认导入；历史记录不能据此推断为未注销。")
                 await conn.rollback()
                 return {
                     "batch_id": batch_id, "status": existing[1], "idempotent": True,
@@ -2168,9 +2181,12 @@ async def confirm_household_import(
                     await cur.execute(
                         "UPDATE registry_properties SET community_id=%s, community_name_snapshot=%s, natural_address=%s, "
                         "housing_type=%s, residence_type=%s, source_house_no=%s, source_updated_at=%s, source_type=%s, source_ref=%s, "
-                        "updated_by=%s WHERE id=%s",
+                        "current_version=current_version+IF(%s IS NOT NULL AND NOT(household_status <=> %s),1,0), "
+                        "household_status=COALESCE(%s,household_status), updated_by=%s WHERE id=%s",
                         (community_id, canonical_name, address, payload.get("housing_type") or "", payload.get("residence_type") or "",
-                         payload.get("house_no") or "", _source_datetime(payload.get("updated_at")), "household", str(source_ref), user["id"], existing[0]),
+                         payload.get("house_no") or "", _source_datetime(payload.get("updated_at")), "household", str(source_ref),
+                         *([normalize_household_status(payload.get("household_status")) if "household_status" in payload else None] * 3),
+                         user["id"], existing[0]),
                     )
                     property_id = int(existing[0])
                     previous_address = (str(existing[2] or ""), str(existing[3] or ""), str(existing[4] or ""), str(existing[5] or ""))
@@ -2213,8 +2229,8 @@ async def confirm_household_import(
             await _executemany_chunked(
                 cur,
                 "INSERT INTO registry_properties (street, community_id, community_name_snapshot, natural_address, building, room, "
-                "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, created_by, updated_by) "
-                "VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, household_status, created_by, updated_by) "
+                "VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [
                     (
                         community_id,
@@ -2227,6 +2243,7 @@ async def confirm_household_import(
                         "household",
                         str(source_ref),
                         normalized,
+                        normalize_household_status(payload.get("household_status")),
                         user["id"],
                         user["id"],
                     )

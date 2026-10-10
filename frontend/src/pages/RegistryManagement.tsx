@@ -117,7 +117,7 @@ export default function RegistryManagement() {
   const [communityId, setCommunityId] = useState<number | undefined>()
   const [housingCategory, setHousingCategory] = useState<RegistryHousingCategory>('')
   const [certificateStatus, setCertificateStatus] = useState<RegistryCertificateStatus>('')
-  const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
+  const [householdStatus, setHouseholdStatus] = useState<'' | 'cancelled' | 'not_cancelled' | 'unknown'>('')
   const [visitDateRange, setVisitDateRange] = useState<[string, string] | undefined>()
   const visitPickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs] | null>(
     () => visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null,
@@ -211,7 +211,7 @@ export default function RegistryManagement() {
           community_id: communityId,
           housing_category: housingCategory,
           certificate_status: certificateStatus,
-          status: propertyStatus,
+          household_status: householdStatus,
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
           visit_status: visitStatus,
@@ -295,8 +295,8 @@ export default function RegistryManagement() {
   }, [canViewTags])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort, page, pageSize])
+  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, householdStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, householdStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort, page, pageSize])
 
   useEffect(() => {
     if (tab !== 'properties') return
@@ -369,7 +369,6 @@ export default function RegistryManagement() {
   const openCreate = (kind: ModalKind) => {
     if (kind !== 'personTag') setSelected(null)
     form.resetFields()
-    if (kind === 'property') form.setFieldsValue({ status: 'active' })
     if (kind === 'person') form.setFieldsValue({ verification_status: 'unverified', is_temporary: false })
     if (kind === 'organization') form.setFieldsValue({ organization_type: 'other' })
     if (kind === 'personTag') form.setFieldsValue({ category_id: undefined, basis: '' })
@@ -584,12 +583,6 @@ export default function RegistryManagement() {
     if (detailKind === 'organization' && selected) setDetail(await registryApi.organization(selected.id))
   }
 
-  const toggleProperty = async (row: RegistryProperty) => {
-    await registryApi.changePropertyStatus(row.id, { status: row.status === 'active' ? 'inactive' : 'active', reason: '人工维护' })
-    message.success(row.status === 'active' ? '房屋已停用' : '房屋已启用')
-    await load()
-  }
-
   const confirmSuggestedPropertyMatches = async () => {
     const rows = properties.filter(row => selectedPropertyIds.includes(row.id))
     const items = rows
@@ -646,7 +639,7 @@ export default function RegistryManagement() {
           community_id: communityId,
           housing_category: housingCategory,
           certificate_status: certificateStatus,
-          status: propertyStatus,
+          household_status: householdStatus,
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
           visit_status: visitStatus,
@@ -796,16 +789,16 @@ export default function RegistryManagement() {
         : '-',
     },
     {
-      title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always',
-      filteredValue: propertyStatus ? [propertyStatus] : null,
+      title: '注销状态', dataIndex: 'household_status', width: 120, responsivePriority: 'always',
+      filteredValue: householdStatus ? [householdStatus] : null,
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
-        <Select className="w-full" value={propertyStatus || undefined} allowClear placeholder="全部状态"
-          options={[{ value: 'active', label: '启用房屋' }, { value: 'inactive', label: '停用房屋' }]}
-          onChange={value => setPropertyStatus((value || '') as '' | 'active' | 'inactive')} />,
-        () => setPropertyStatus(''),
+        <Select className="w-full" value={householdStatus || undefined} allowClear placeholder="全部注销状态"
+          options={[{ value: 'cancelled', label: '已注销' }, { value: 'not_cancelled', label: '未注销' }, { value: 'unknown', label: '未知' }]}
+          onChange={value => setHouseholdStatus((value || '') as '' | 'cancelled' | 'not_cancelled' | 'unknown')} />,
+        () => setHouseholdStatus(''),
       ),
-      render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag>,
+      render: value => <Tag color={value === '已注销' ? 'default' : value === '未注销' ? 'green' : 'gold'}>{value || '未知'}</Tag>,
     },
     { title: '版本', dataIndex: 'version', width: 80, responsivePriority: 'wide' },
     { title: '操作', key: 'actions', width: responsiveLayout.isCompact ? 112 : 280, render: (_, row) => <Space wrap>
@@ -815,7 +808,6 @@ export default function RegistryManagement() {
         setMatchConfirmEntryId(row.small_community_id || undefined)
       }}>{row.address_match_status === 'confirmed' ? '修正小区' : '确认小区'}</Button>}
       {canManage && <Button size="small" onClick={() => openEdit('property', row)}>编辑</Button>}
-      {canManage && <Popconfirm title={row.status === 'active' ? '确认停用这套房屋？' : '确认启用这套房屋？'} onConfirm={() => void toggleProperty(row)}><Button size="small">{row.status === 'active' ? '停用' : '启用'}</Button></Popconfirm>}
     </Space> },
   ]
   const personColumns: TableColumnsType<RegistryPerson> = [
@@ -878,6 +870,9 @@ export default function RegistryManagement() {
 
   const toolbarFilters = tab === 'properties' ? <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
+    <Select value={householdStatus || undefined} allowClear placeholder="全部注销状态" className="w-full md:w-44"
+      options={[{ value: 'cancelled', label: '已注销' }, { value: 'not_cancelled', label: '未注销' }, { value: 'unknown', label: '未知' }]}
+      onChange={value => setHouseholdStatus((value || '') as '' | 'cancelled' | 'not_cancelled' | 'unknown')} />
     <Select
       mode="multiple"
       allowClear
@@ -1086,7 +1081,7 @@ export default function RegistryManagement() {
             setCategoryIds([])
             setHousingCategory('')
             setCertificateStatus('')
-            setPropertyStatus('active')
+            setHouseholdStatus('')
             setVisitDateRange(undefined)
             setVisitStatus('')
             setStarRatings([])
@@ -1432,7 +1427,8 @@ export default function RegistryManagement() {
               }}>{match.status === 'confirmed' ? '修正小区' : '人工确认小区'}</Button>}
             </section>
           })()}
-          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'small_community_match'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          {detailKind === 'property' && <Descriptions bordered size="small" column={1} items={[{ key: 'household_status', label: '注销状态（户号表）', children: detail.household_status || '未知' }]} />}
+          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'small_community_match', ...(detailKind === 'property' ? ['status', 'household_status'] : [])].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
           {detailKind === 'person' && canViewTags && <Panel
             title="人员标签"
             extra={canManageTags ? <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openCreate('personTag')}>添加标签</Button> : undefined}

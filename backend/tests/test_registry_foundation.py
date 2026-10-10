@@ -300,7 +300,7 @@ async def test_property_search_separates_not_required_from_pending_source_issues
     monkeypatch.setattr(registry_router, "_allowed_community_ids", allowed_ids)
     conn = _PropertySearchConnection()
     await _property_search_result(
-        PropertySearch(certificate_status="not_required"),
+        PropertySearch(certificate_status="not_required", status="active"),
         {"id": 1},
         conn,
     )
