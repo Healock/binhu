@@ -112,6 +112,10 @@ async def lifespan(app: FastAPI):
             yield
         return
     await init_db()
+    from services.household_preview_repair import recover_household_previews
+    repaired_household_previews = await recover_household_previews()
+    if repaired_household_previews:
+        print(f"[REGISTRY_HOUSEHOLD] reclassified previews: {repaired_household_previews}")
     from database import db_manager
     async with db_manager.get_pool("online_data").acquire() as mac_conn:
         await load_server_mac(mac_conn)

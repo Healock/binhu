@@ -93,8 +93,8 @@ class Connection:
             return [(1, "Sheet:2", json.dumps(self.payload))]
         if self.sql.startswith("SELECT id, community_id, street"):
             return [(42, 8, "", "合成路1号", "", "", "合成路1号", "")] if self.existing else []
-        if self.sql.startswith("SELECT id, community_id, normalized_address"):
-            return [(42, 8, "合成路1号")]
+        if self.sql.startswith("SELECT id, source_ref FROM registry_properties"):
+            return [(42, "Sheet:2")]
         return []
 
     async def begin(self):
