@@ -135,6 +135,9 @@ jobs:
         # Browser binaries are kept outside the dependency lockfile.
         run: npx playwright install --with-deps chromium && npm run test:autosave:browser
         working-directory: frontend
+      - name: Check pending registration free-address editing
+        run: npm run test:pending-registration:browser
+        working-directory: frontend
       # Keep pointer capture and touch-drag behavior under real browser coverage.
       - name: Run floating actions browser regression tests
         run: npm run test:floating:browser

@@ -843,6 +843,60 @@ class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
     def _data(self, changes):
         return TaskBatchUpdate(changes=changes, expected_revision=7)
 
+    async def test_free_pending_address_saves_without_property_validation(self):
+        for existing in ({}, {"row-key": {
+            "status": "matched_once", "property_id": 23, "source_id": 11,
+        }}):
+            with self.subTest(linked=bool(existing)):
+                changes = {"核查结果": "待登记", "现住址": "任意格式的合成地址"}
+                prepare, callback, _ = _registration_update_hooks(
+                    "全链条", TaskBatchUpdate(
+                        changes=changes, expected_revision=7,
+                        registration_pending_address="  任意格式的合成地址  ",
+                    ), {"id": 7},
+                )
+                cursor = MagicMock()
+                cursor.execute = AsyncMock()
+                cursor.fetchone = AsyncMock(return_value=("synthetic-identity", "合成社区"))
+                with (
+                    patch("routers.mobile_tasks.registration_links_by_rows", AsyncMock(return_value=existing)),
+                    patch("routers.mobile_tasks.validate_registration_property", AsyncMock()) as validate,
+                    patch("routers.mobile_tasks.select_registration_property", AsyncMock()) as select,
+                    patch("routers.mobile_tasks.save_pending_registration_address", AsyncMock()) as save_address,
+                ):
+                    extra = await prepare(
+                        cur=cursor, source={"id": 11, "row_key": "row-key"},
+                        current_values={"核查结果": "待登记" if existing else "无法核实"},
+                        changes=changes,
+                    )
+                    self.assertEqual(extra, {"现住址": "任意格式的合成地址"})
+                    await callback(
+                        cur=cursor, source={"id": 11}, before={}, after=changes,
+                        row_key_before="row-key", row_key_after="row-key", revision=8,
+                    )
+                    save_address.assert_awaited_once()
+                    self.assertEqual(save_address.call_args.kwargs["source_revision"], 8)
+                    validate.assert_not_awaited()
+                    select.assert_not_awaited()
+
+    async def test_free_pending_address_rejects_empty_and_control_characters(self):
+        for address in ("   ", "合成\x00地址"):
+            with self.subTest(address=repr(address)):
+                changes = {"核查结果": "待登记"}
+                prepare, _, _ = _registration_update_hooks(
+                    "全链条", TaskBatchUpdate(
+                        changes=changes, expected_revision=7,
+                        registration_pending_address=address,
+                    ), {"id": 7},
+                )
+                with patch("routers.mobile_tasks.registration_links_by_rows", AsyncMock(return_value={})):
+                    with self.assertRaises(HTTPException) as raised:
+                        await prepare(
+                            cur=MagicMock(), source={"id": 11, "row_key": "row-key"},
+                            current_values={"核查结果": "无法核实"}, changes=changes,
+                        )
+                self.assertEqual(raised.exception.status_code, 422)
+
     async def test_existing_registered_task_can_edit_another_field(self):
         prepare, callback, registration_mode = _registration_update_hooks(
             "全链条",
