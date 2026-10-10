@@ -48,7 +48,7 @@ jobs:
         run: python -m unittest discover -s tests
         working-directory: backend
       - name: Check property annotation workbook and permission contracts
-        run: python -m pytest tests/test_property_annotation_xlsx.py tests/test_household_cancellation_status.py tests/test_household_multi_file_import.py tests/test_filtered_xlsx_exports.py tests/test_registry_foundation.py tests/test_registry_visit_history.py tests/test_help_docs.py -q
+        run: python -m pytest tests/test_property_annotation_xlsx.py tests/test_household_cancellation_status.py tests/test_household_multi_file_import.py tests/test_household_preview_repair.py tests/test_filtered_xlsx_exports.py tests/test_registry_foundation.py tests/test_registry_visit_history.py tests/test_help_docs.py -q
         working-directory: backend
 
   hotfix-candidate:

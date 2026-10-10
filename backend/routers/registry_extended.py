@@ -2105,13 +2105,16 @@ async def _preview_household_rows(request, rows, classified, file_hash, file_nam
                     )
                     if not await cur.fetchone():
                         raise HTTPException(409, "该文件的旧导入未保存注销状态。请将原户号表另存为新的 XLSX，再重新预览并确认导入；历史记录不能据此推断为未注销。")
-                await conn.rollback()
+                from services.household_preview_repair import repair_household_preview
+                repaired = await repair_household_preview(cur, batch_id)
+                await conn.commit()
                 return {
                     "batch_id": batch_id, "status": existing[1], "idempotent": True,
                     "total_count": len(rows), "normal_count": classified["normal_count"],
                     "issue_count": classified["issue_count"], "duplicate_groups": classified["duplicate_groups"],
                     "other_type_count": classified["other_type_count"],
                     **(summary or {}),
+                    **({"pending_issue_count": repaired["issue_count"]} if repaired else {}),
                 }
             await cur.execute(
                 "INSERT INTO registry_source_batches (source_type, file_name, file_sha256, status, imported_count, candidate_count, conflict_count, created_by) "
@@ -2191,6 +2194,9 @@ async def confirm_household_import(
                 await conn.rollback()
                 return {"batch_id": batch_id, "status": "imported", "imported_count": 0, "idempotent": True}
             previous_imported = int(batch[1])
+            if batch[0] in {"preview", "partially_imported"}:
+                from services.household_preview_repair import repair_household_preview
+                await repair_household_preview(cur, batch_id)
             await cur.execute(
                 "SELECT id, source_ref, payload_json FROM registry_source_records WHERE batch_id=%s AND entity_type='household_property' AND entity_id IS NULL ORDER BY id",
                 (batch_id,),
@@ -2247,19 +2253,22 @@ async def confirm_household_import(
             # Resolve community aliases before checking identity across files.
             identity_groups = {}
             address_groups = {}
+            numbered_addresses = {}
             for item in resolved_rows:
                 number = normalize_text(item[2].get("house_no"))
                 if number:
                     identity_groups.setdefault((item[3], number), []).append(item)
+                    numbered_addresses.setdefault((item[3], item[5]), set()).add(number)
                 address_groups.setdefault((item[3], item[5]), []).append(item)
-            conflicting_refs = {item[1] for group in [*identity_groups.values(), *address_groups.values()]
-                                if len(group) > 1 for item in group}
+            conflicting_refs = {item[1] for group in identity_groups.values() if len(group) > 1 for item in group}
+            conflicting_refs.update(item[1] for group in address_groups.values() if len(group) > 1
+                                    for item in group if not normalize_text(item[2].get("house_no")))
             identity_issues = []
             for item in resolved_rows:
                 if item[1] in conflicting_refs:
                     identity_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", item[1], item[5],
                                             json.dumps(_issue_payload(item[2]), ensure_ascii=False),
-                                            "正式社区解析后存在重复户号或地址，请核对社区别名和原文件后重新导入"))
+                                            "正式社区解析后存在重复户号或缺少户号的重复地址，请核对社区别名和原文件后重新导入"))
             resolved_rows = [item for item in resolved_rows if item[1] not in conflicting_refs]
             await _bulk_insert_import_issues(cur, identity_issues)
 
@@ -2305,16 +2314,18 @@ async def confirm_household_import(
                 number = normalize_text(payload.get("house_no"))
                 address_matches = address_cache.get((normalized, community_id), [])
                 household_matches = household_cache.get((number, community_id), []) if number else []
-                existing = household_matches[0] if len(household_matches) == 1 else address_matches[0] if len(address_matches) == 1 else None
+                # A numbered source owns its identity; another numbered property
+                # at the same address is a separate household, not an update target.
+                legacy_matches = [item for item in address_matches if not normalize_text(item[7])]
+                if number and len(numbered_addresses.get((community_id, normalized), ())) > 1:
+                    legacy_matches = []
+                fallback_matches = legacy_matches if number else address_matches
+                existing = household_matches[0] if len(household_matches) == 1 else fallback_matches[0] if len(fallback_matches) == 1 else None
                 reason = ""
-                if len(household_matches) > 1 or len(address_matches) > 1:
+                if len(household_matches) > 1 or (not household_matches and len(fallback_matches) > 1):
                     reason = "户号或地址对应多份现有档案，请管理员核对档案后重新导入"
                 elif household_matches and str(existing[6]) != normalized:
                     reason = "同社区同户号的地址已变化，请管理员核对并维护原房屋地址后重新导入，不能自动新建重复档案"
-                elif household_matches and address_matches and int(household_matches[0][0]) != int(address_matches[0][0]):
-                    reason = "户号和地址对应不同的现有档案，请管理员核对档案身份后重新导入"
-                elif existing and number and normalize_text(existing[7]) not in {"", number}:
-                    reason = "同社区同地址的现有户号与来源户号不一致，请管理员核对档案身份后重新导入"
                 elif existing and int(existing[0]) in newer_property_ids:
                     reason = "该档案已有更新批次的户号表来源，请取得最新文件重新预览，不能用旧批次覆盖"
                 if reason:
@@ -2372,6 +2383,8 @@ async def confirm_household_import(
                     new_rows.append((record_id, source_ref, payload, community_id, canonical_name, normalized))
             await _bulk_insert_import_issues(cur, existing_issues)
 
+            await cur.execute("SELECT COALESCE(MAX(id),0) FROM registry_properties")
+            before_insert_id = int((await cur.fetchone())[0])
             await _executemany_chunked(
                 cur,
                 "INSERT INTO registry_properties (street, community_id, community_name_snapshot, natural_address, building, room, "
@@ -2397,27 +2410,28 @@ async def confirm_household_import(
                 ],
             )
 
-            inserted_cache: dict[tuple[str, int | None], int] = {}
+            inserted_cache: dict[str, list[int]] = {}
             for offset in range(0, len(new_rows), REGISTRY_IMPORT_WRITE_CHUNK):
                 chunk = new_rows[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK]
-                keys = sorted({item[5] for item in chunk if item[5]})
+                keys = sorted({str(item[1]) for item in chunk})
                 if not keys:
                     continue
                 placeholders = ",".join(["%s"] * len(keys))
                 await cur.execute(
-                    "SELECT id, community_id, normalized_address FROM registry_properties "
-                    f"WHERE normalized_address IN ({placeholders}) ORDER BY id",
-                    tuple(keys),
+                    "SELECT id, source_ref FROM registry_properties "
+                    f"WHERE id>%s AND source_type='household' AND source_ref IN ({placeholders}) ORDER BY id",
+                    (before_insert_id, *keys),
                 )
-                for property_id, community_id, normalized in await cur.fetchall():
-                    inserted_cache[(str(normalized), community_id)] = int(property_id)
+                for property_id, source_ref in await cur.fetchall():
+                    inserted_cache.setdefault(str(source_ref), []).append(int(property_id))
 
             address_versions: list[tuple] = []
             source_links: list[tuple] = []
             for record_id, source_ref, payload, community_id, _, normalized in new_rows:
-                property_id = inserted_cache.get((normalized, community_id))
-                if property_id is None:
+                matches = inserted_cache.get(str(source_ref), [])
+                if len(matches) != 1:
                     raise RuntimeError("户号表导入后无法重新定位新建房屋")
+                property_id = matches[0]
                 address_versions.append((
                     property_id,
                     normalize_text(payload.get("address")),

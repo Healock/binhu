@@ -281,11 +281,13 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
 def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """分类户号表记录。
 
-    重复地址和空住房类型属于问题数据；包括“借住/其他/其它”在内的非空类型
+    同社区同户号重复和空住房类型属于问题数据；无户号时才按社区及地址核查重复。
+    不同户号允许共享地址；包括“借住/其他/其它”在内的非空类型
     都是可导入的正常记录，并原样保留住房类型。
     """
     materialized = []
-    groups: dict[str, list[int]] = defaultdict(list)
+    groups: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+    addresses: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index, raw in enumerate(rows, start=1):
         row = {str(key): value for key, value in raw.items()}
         address = normalize_text(row.get("address") or row.get("出租屋地址") or row.get("详细地址"))
@@ -300,12 +302,14 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         row["source_key"] = key
         materialized.append(row)
         if key:
-            groups[key].append(len(materialized) - 1)
+            addresses[(row["community"], key)].append(len(materialized) - 1)
+            number = normalize_text(row.get("house_no"))
+            groups[(row["community"], "household" if number else "address", number or key)].append(len(materialized) - 1)
 
     issues: list[dict[str, Any]] = []
     issue_indexes: set[int] = set()
     duplicate_groups = 0
-    for key, indexes in groups.items():
+    for (_, identity_kind, _), indexes in groups.items():
         if len(indexes) < 2:
             continue
         duplicate_groups += 1
@@ -313,13 +317,22 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
             issue_indexes.add(item_index)
             issues.append({
                 "issue_type": ISSUE_HOUSEHOLD_DUPLICATE,
-                "entity_key": key,
+                "entity_key": materialized[item_index]["source_key"],
                 "source_ref": str(materialized[item_index].get("source_row") or ""),
                 "payload": {**materialized[item_index], "duplicate_group_size": len(indexes), "is_representative": position == 0},
-                "reason": "同一标准化地址存在多条户号表来源行，需人工确认代表记录",
+                "reason": ("同社区同户号存在多条来源行，需核对来源内容"
+                           if identity_kind == "household" else "缺少户号且同社区同地址存在多条来源行，需核对户号"),
             })
 
     for item_index, row in enumerate(materialized):
+        if (not normalize_text(row.get("house_no")) and item_index not in issue_indexes
+                and len(addresses.get((row["community"], row["source_key"]), ())) > 1):
+            issue_indexes.add(item_index)
+            issues.append({
+                "issue_type": ISSUE_HOUSEHOLD_DUPLICATE, "entity_key": row["source_key"],
+                "source_ref": str(row.get("source_row") or ""), "payload": row,
+                "reason": "缺少户号且同社区同地址存在其他来源行，需核对户号",
+            })
         if not row.get("housing_type"):
             issue_indexes.add(item_index)
             issues.append({
@@ -337,7 +350,7 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "issues": issues,
         "duplicate_groups": duplicate_groups,
         "normal_count": len(normal_rows),
-        "issue_count": len(issues),
+        "issue_count": len(issue_indexes),
         "other_type_count": sum(1 for row in normal_rows if row.get("housing_type") not in {"个人出租", "单位出租", "自购房屋"}),
     }
 
@@ -346,6 +359,8 @@ def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Keep file provenance while suppressing identical repeated household IDs."""
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in rows:
+        # A previous preview may have persisted a suppression flag. Recompute it.
+        row.pop("import_skip", None)
         house_no = normalize_text(row.get("house_no"))
         if house_no:
             groups[(normalize_community(row.get("community")), house_no)].append(row)
@@ -365,12 +380,13 @@ def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 skipped.add(id(row))
         else:
             conflicts.append(grouped)
-    result = classify_household_rows(row for row in rows if id(row) not in skipped)
+    conflict_ids = {id(row) for grouped in conflicts for row in grouped}
+    result = classify_household_rows(row for row in rows if id(row) not in skipped | conflict_ids)
     blocked = set()
     for grouped in conflicts:
         result["duplicate_groups"] += 1
         for row in grouped:
-            ref = row["import_source_ref"]
+            ref = str(row.get("import_source_ref") or row.get("source_row") or "")
             blocked.add(ref)
             result["issues"].append({
                 "issue_type": ISSUE_HOUSEHOLD_DUPLICATE,
@@ -378,10 +394,11 @@ def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "source_ref": ref, "payload": row,
                 "reason": "同社区同户号的来源内容或注销状态不一致，需核对原导出文件；不能按上传顺序覆盖",
             })
-    result["rows"].extend(row for row in rows if id(row) in skipped)
+    result["rows"].extend(row for row in rows if id(row) in skipped | conflict_ids)
     result["normal_rows"] = [row for row in result["normal_rows"] if row.get("import_source_ref") not in blocked]
     result["normal_count"] = len(result["normal_rows"])
-    result["issue_count"] = len(result["issues"])
+    result["issue_count"] = len({str(item["payload"].get("import_source_ref") or item["source_ref"])
+                                 for item in result["issues"]})
     result["other_type_count"] = sum(row.get("housing_type") not in {"个人出租", "单位出租", "自购房屋"} for row in result["normal_rows"])
     result["duplicate_row_count"] = len(skipped)
     return result

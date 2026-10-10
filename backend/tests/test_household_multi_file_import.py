@@ -109,8 +109,8 @@ def test_conflicting_household_cannot_overwrite_in_upload_order(changes):
 
 def test_distinct_household_ids_at_same_address_are_not_deduplicated():
     result = classify_household_file_rows([row("a"), row("b", house_no="H2")])
-    assert result["normal_count"] == 0 and result["duplicate_row_count"] == 0
-    assert result["issue_count"] == 2
+    assert result["normal_count"] == 2 and result["duplicate_row_count"] == 0
+    assert result["issue_count"] == 0
 
 
 def test_different_unknown_codes_and_missing_status_are_not_identical_sources():
@@ -156,7 +156,7 @@ async def test_source_status_counts_do_not_claim_conflicts_are_importable(captur
                                            "[{},{}]", {"id": 7}, None)
     summary = capture.call_args.args[-1]
     assert summary["household_status_counts"] == {"cancelled": 1, "not_cancelled": 1, "unknown": 0}
-    assert summary["importable_status_counts"] == {"cancelled": 0, "not_cancelled": 0, "unknown": 0}
+    assert summary["importable_status_counts"] == {"cancelled": 1, "not_cancelled": 1, "unknown": 0}
 
 
 @pytest.mark.asyncio
@@ -166,7 +166,7 @@ async def test_preview_sources_and_issues_commit_together_and_roll_back_on_failu
     conn.fetchone = AsyncMock(return_value=None)
     monkeypatch.setattr(extended, "record_admin_audit", AsyncMock())
     monkeypatch.setattr(extended, "request_audit_fields", lambda *_: {})
-    source_rows = [row("file-a:2"), row("file-b:2", house_no="H2")]
+    source_rows = [row("file-a:2"), row("file-b:2", household_status="未注销")]
     classified = classify_household_file_rows(source_rows)
     result = await extended._preview_household_rows(None, source_rows, classified, "a" * 64, "synthetic-files", {"id": 7}, conn, {"file_count": 2})
     assert conn.committed and result["batch_id"] == 123 and result["file_count"] == 2
@@ -213,8 +213,8 @@ class IdentityConnection(Connection):
             return self.properties
         if self.sql.startswith("SELECT DISTINCT entity_id"):
             return [(item,) for item in self.newer_ids]
-        if self.sql.startswith("SELECT id, community_id, normalized_address"):
-            return [(100 + index, 8, extended.normalize_address(payload["address"]))
+        if self.sql.startswith("SELECT id, source_ref FROM registry_properties"):
+            return [(100 + index, f"source-{index}")
                     for index, payload, entity_id in self.sources if entity_id is None]
         return []
 
@@ -233,9 +233,7 @@ def confirmation_dependencies(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("properties,payload", [
     ([existing_property(address="合成路2号")], row("a")),
-    ([existing_property(number="H2")], row("a")),
     ([existing_property(), existing_property(43)], row("a")),
-    ([existing_property(), existing_property(43, number="H2")], row("a")),
 ])
 async def test_existing_household_identity_conflict_never_changes_status(confirmation_dependencies, properties, payload):
     conn = IdentityConnection(sources=[(1, payload, None)], properties=properties)
@@ -302,3 +300,83 @@ async def test_new_household_insert_retains_declared_status(confirmation_depende
     assert result["inserted_count"] == 1 and result["updated_count"] == 0
     _, values = next((sql, values) for sql, values in conn.calls if sql.startswith("INSERT INTO registry_properties"))
     assert values[0][-3] == "已注销"
+
+
+def test_same_address_cancellation_history_and_cross_community_are_normal():
+    result = classify_household_file_rows([
+        row("a"), row("b", house_no="H2", household_status="未注销"),
+        row("c", community="另一合成社区"),
+    ])
+    assert result["normal_count"] == 3 and result["issue_count"] == 0
+    assert [item["household_status"] for item in result["normal_rows"]] == ["已注销", "未注销", "已注销"]
+
+
+def test_five_household_conflicts_count_ten_rows_once():
+    sources = [row(str(i), house_no=f"H{i}", address="共享合成地址") for i in range(200)]
+    sources += [row(f"conflict-{i}", house_no=f"H{i}", address="共享合成地址", household_status="未注销") for i in range(5)]
+    result = classify_household_file_rows(sources)
+    assert result["issue_count"] == len(result["issues"]) == 10
+    assert result["normal_count"] == 195 and result["duplicate_groups"] == 5
+
+
+def test_missing_household_number_at_shared_address_is_not_auto_associated():
+    result = classify_household_file_rows([row("a"), row("b", house_no="")])
+    assert result["normal_count"] == 1 and result["issue_count"] == 1
+    assert result["issues"][0]["payload"]["import_source_ref"] == "b"
+
+
+@pytest.mark.asyncio
+async def test_repaired_partial_preview_separates_file_issues_from_confirmation_issues(monkeypatch):
+    from services import household_preview_repair
+    conn = Connection()
+    conn.batch_status = "partially_imported"
+    source_rows = [row("a"), row("b", household_status="未注销")]
+    classified = classify_household_file_rows(source_rows)
+    conn.fetchone = AsyncMock(side_effect=[(19, "partially_imported"), (1,)])
+    monkeypatch.setattr(household_preview_repair, "repair_household_preview", AsyncMock(return_value={"batch_id": 19, "normal_count": 0, "issue_count": 3}))
+    result = await extended._preview_household_rows(None, source_rows, classified, "a" * 64, "synthetic", {"id": 7}, conn)
+    assert result["issue_count"] == 2 and result["pending_issue_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_same_address_distinct_households_get_distinct_source_links(confirmation_dependencies):
+    conn = IdentityConnection(sources=[(1, row("a"), None), (2, row("b", house_no="H2", household_status="未注销"), None)])
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["inserted_count"] == 2
+    links = [values for sql, values in conn.calls if sql.startswith("UPDATE registry_source_records SET entity_id")]
+    assert links == [[(101, 1), (102, 2)]]
+    inserts = next(values for sql, values in conn.calls if sql.startswith("INSERT INTO registry_properties"))
+    assert [item[-3] for item in inserts] == ["已注销", "未注销"]
+
+
+@pytest.mark.asyncio
+async def test_same_address_other_household_does_not_block_exact_update(confirmation_dependencies):
+    conn = IdentityConnection(sources=[(1, row("a"), None)], properties=[existing_property(), existing_property(43, number="H2")])
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["updated_count"] == 1
+    values = next(values for sql, values in conn.calls if sql.startswith("UPDATE registry_properties SET"))
+    assert values[-1] == 42
+
+
+@pytest.mark.asyncio
+async def test_same_address_other_household_is_never_overwritten(confirmation_dependencies):
+    conn = IdentityConnection(sources=[(1, row("a"), None)], properties=[existing_property(number="H2")])
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["inserted_count"] == 1 and result["updated_count"] == 0
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_multiple_households_do_not_claim_single_unnumbered_legacy_property(confirmation_dependencies):
+    conn = IdentityConnection(sources=[(1, row("a"), None), (2, row("b", house_no="H2"), None)],
+                              properties=[existing_property(number="")])
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["inserted_count"] == 2 and result["updated_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_numberless_source_at_multiple_households_remains_blocked(confirmation_dependencies):
+    conn = IdentityConnection(sources=[(1, row("a", house_no=""), None)],
+                              properties=[existing_property(), existing_property(43, number="H2")])
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0
