@@ -2,6 +2,16 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+test('房屋小区标注先预览后确认，已有人工确认不会默认勾选', () => {
+  const source = readFileSync(new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url), 'utf8')
+  assert.match(source, /registryApi\.previewPropertyAnnotations/)
+  assert.match(source, /row\.status === 'ready' && !row\.replaces_manual/)
+  assert.match(source, /Modal\.confirm/)
+  assert.match(source, /registryApi\.applyPropertyAnnotations/)
+  assert.match(source, /offset \+= 200/)
+  assert.match(source, /setApplyFailed\(true\)/)
+})
+
 test('户号表与确认接口保留长请求超时，告知书改为后台任务', () => {
   const apiSource = readFileSync(
     new URL('../src/api/client.ts', import.meta.url),
@@ -225,7 +235,7 @@ test('从未走访筛选对列表和导出一致，并清空互斥日期与星�
   assert.match(page, /value: 'never', label: '从未走访'/)
   assert.match(page, /if \(value === 'never'\) \{\s*setVisitDateRange\(undefined\)\s*setStarRatings\(\[\]\)/)
   assert.equal((page.match(/visit_status: visitStatus/g) || []).length, 2)
-  assert.equal((api.match(/visit_status\?: '' \| 'visited' \| 'never'/g) || []).length, 2)
+  assert.equal((api.match(/visit_status\?: '' \| 'visited' \| 'never'/g) || []).length, 3)
   assert.equal((page.match(/disabled=\{visitStatus === 'never'\}/g) || []).length, 2)
   assert.match(page, /setVisitStatus\(''\)/)
 })

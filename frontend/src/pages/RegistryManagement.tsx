@@ -8,6 +8,7 @@ import type { ReactNode } from 'react'
 import { DownloadOutlined, FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import AppTable from '../components/AppTable'
+import PropertyAnnotationImport from '../components/PropertyAnnotationImport'
 import type { ResponsiveColumns } from '../components/responsiveTable'
 import ExternalDataPanel from '../components/ExternalDataPanel'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
@@ -634,13 +635,13 @@ export default function RegistryManagement() {
     }
   }
 
-  const exportRegistryRecords = async () => {
+  const exportRegistryRecords = async (annotations = false) => {
     if (!['properties', 'people', 'organizations'].includes(tab)) return
     setExporting(true)
     try {
-      const exportName = tab === 'properties' ? '房屋档案' : tab === 'people' ? '人员档案' : '机构档案'
+      const exportName = annotations ? '房屋小区标注' : tab === 'properties' ? '房屋档案' : tab === 'people' ? '人员档案' : '机构档案'
       const blob = tab === 'properties'
-        ? await registryApi.exportProperties({
+        ? await (annotations ? registryApi.exportPropertyAnnotations : registryApi.exportProperties)({
           keyword: debouncedKeyword,
           community_id: communityId,
           housing_category: housingCategory,
@@ -1016,6 +1017,10 @@ export default function RegistryManagement() {
         导出当前结果
       </Button>
     )}
+    {canManage && tab === 'properties' && <>
+      <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportRegistryRecords(true)}>导出小区标注</Button>
+      <PropertyAnnotationImport onChanged={load} />
+    </>}
     {canManage && tab === 'properties' && selectedPropertyIds.length > 0 && (
       <Popconfirm
         title={`确认当前选择的 ${selectedPropertyIds.length} 套房屋？`}
