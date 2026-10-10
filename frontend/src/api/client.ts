@@ -4740,6 +4740,14 @@ export interface PropertyAnnotationPreview {
   }>
 }
 
+export interface HouseholdImportFile {
+  key: string
+  file: File
+  housing_type: '' | '个人租赁' | '单位租赁' | '自购房屋' | '借住' | '其他'
+  household_status: '' | 'cancelled' | 'not_cancelled'
+  expected_count?: number
+}
+
 export const registryApi = {
   async exportPropertyAnnotations(params: PropertyAnnotationFilters) {
     return (await api.post('/registry/properties/small-community-annotations/export', params, {
@@ -4851,6 +4859,16 @@ export const registryApi = {
       issue_count: number; duplicate_groups: number; other_type_count: number
       issue_breakdown?: Record<string, number>
     }
+  },
+  async previewHouseholdFiles(files: HouseholdImportFile[]) {
+    const form = new FormData()
+    for (const item of files) form.append('files', item.file)
+    form.append('file_options', JSON.stringify(files.map(({ housing_type, household_status, expected_count }) => ({ housing_type, household_status, expected_count }))))
+    return (await api.post('/registry/imports/households/files/preview', form, {
+      ...activeRequest,
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300_000,
+    })).data
   },
   async confirmHouseholdImport(batchId: number) {
     return (await api.post(`/registry/imports/households/${batchId}/confirm`, {}, {

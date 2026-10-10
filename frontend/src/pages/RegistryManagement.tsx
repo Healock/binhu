@@ -9,6 +9,7 @@ import { DownloadOutlined, FileImageOutlined, FilterFilled, PlusOutlined, Reload
 import dayjs, { type Dayjs } from 'dayjs'
 import AppTable from '../components/AppTable'
 import PropertyAnnotationImport from '../components/PropertyAnnotationImport'
+import HouseholdImportFiles from '../components/HouseholdImportFiles'
 import type { ResponsiveColumns } from '../components/responsiveTable'
 import ExternalDataPanel from '../components/ExternalDataPanel'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
@@ -18,6 +19,7 @@ import {
   formatUTCTime,
   getGridCommunities,
   registryApi,
+  type HouseholdImportFile,
   type RegistryCertificateSourceRun,
   type RegistryCertificateStatus,
   type RegistryHousingCategory,
@@ -136,7 +138,7 @@ export default function RegistryManagement() {
   const [pageSize, setPageSize] = useState(50)
   const [total, setTotal] = useState(0)
   const [matchStatusCounts, setMatchStatusCounts] = useState<Record<string, number>>({})
-  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importFiles, setImportFiles] = useState<HouseholdImportFile[]>([])
   const [importPreview, setImportPreview] = useState<any>(null)
   const [importing, setImporting] = useState(false)
   const [certificateStarting, setCertificateStarting] = useState(false)
@@ -505,10 +507,10 @@ export default function RegistryManagement() {
   }
 
   const previewImport = async () => {
-    if (!importFile) return
+    if (!importFiles.length) return
     setImporting(true)
     try {
-      const result = await registryApi.previewHouseholdImport(importFile)
+      const result = await registryApi.previewHouseholdFiles(importFiles)
       setImportPreview({ ...result, source_type: 'household' })
       setTotal(result.total_count)
       message.success(`已完成预览：${result.normal_count} 条可导入，${result.issue_count} 条需核查`)
@@ -563,8 +565,8 @@ export default function RegistryManagement() {
         : await registryApi.confirmHouseholdImport(importPreview.batch_id)
       message.success(certificate
         ? `告知书处理完成：新增 ${result.inserted_count || 0} 条，更新 ${result.updated_count || 0} 条，未变化 ${result.unchanged_count || 0} 条；${result.pending_issue_count || 0} 条进入问题核查`
-        : `已导入 ${result.imported_count} 条房屋档案；问题数据仍保留在核查清单`)
-      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count, comparison: result.comparison || importPreview.comparison })
+        : `本次新增 ${result.inserted_count || 0} 条、更新 ${result.updated_count || 0} 条；${result.pending_issue_count || 0} 条问题记录仍保留在核查清单`)
+      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count, inserted_count: result.inserted_count, updated_count: result.updated_count, pending_issue_count: result.pending_issue_count, comparison: result.comparison || importPreview.comparison })
       await load()
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '户号表导入失败')
@@ -1029,10 +1031,7 @@ export default function RegistryManagement() {
     {canManage && tab === 'people' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('person')}>新增人员</Button>}
     {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
     {canReview && tab === 'imports' && <>
-      <Upload accept=".xlsx" maxCount={1} showUploadList={Boolean(importFile)} beforeUpload={file => { setImportFile(file); setImportPreview(null); return false }} onRemove={() => { setImportFile(null); setImportPreview(null) }}>
-        <Button icon={<UploadOutlined />}>选择户号表</Button>
-      </Upload>
-      <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览户号表</Button>
+      <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFiles.length}>预览户号表</Button>
       {!certificateRunActive && certificateRun?.status !== 'failed' && <Button onClick={() => void startCertificateSource()} loading={certificateStarting}>读取告知书</Button>}
       {certificateRunActive && <Button loading disabled>{certificatePhaseLabel}</Button>}
       {certificateRun?.status === 'failed' && <>
@@ -1150,6 +1149,7 @@ export default function RegistryManagement() {
               </>,
             } : undefined}
           >
+            <HouseholdImportFiles files={importFiles} busy={importing} onChange={update => { setImportFiles(update); setImportPreview(null) }} />
             {certificateRun?.status === 'failed' && <Alert
               type="warning"
               showIcon
@@ -1167,6 +1167,32 @@ export default function RegistryManagement() {
                   : '当前仍是预览状态，确认只处理安全记录，问题记录进入“问题数据核查”。'
                 : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
+            {importPreview?.source_type === 'household' && importPreview.file_count && <>
+              <Space wrap>
+                <span>文件：{importPreview.file_count} 份</span>
+                <span>唯一户号：{importPreview.unique_household_count}</span>
+                <span>缺少户号：{importPreview.missing_household_number_count}</span>
+                <span>相同重复行：{importPreview.duplicate_row_count}</span>
+                <span>来源已注销：{importPreview.household_status_counts?.cancelled || 0}</span>
+                <span>来源未注销：{importPreview.household_status_counts?.not_cancelled || 0}</span>
+                <span>来源未知：{importPreview.household_status_counts?.unknown || 0}</span>
+                <span>可导入已注销：{importPreview.importable_status_counts?.cancelled || 0}</span>
+                <span>可导入未注销：{importPreview.importable_status_counts?.not_cancelled || 0}</span>
+                <span>可导入未知：{importPreview.importable_status_counts?.unknown || 0}</span>
+              </Space>
+              {importPreview.status !== 'preview' && <Space wrap>
+                <span>本次新增：{importPreview.inserted_count || 0}</span>
+                <span>本次更新：{importPreview.updated_count || 0}</span>
+                <span>待核查：{importPreview.pending_issue_count || 0}</span>
+              </Space>}
+              <AppTable rowKey={(_, index) => String(index)} pagination={false} scroll={{ x: 700 }} dataSource={importPreview.files} columns={[
+                { title: '文件', dataIndex: 'file_name', width: 260 },
+                { title: '住房类型', dataIndex: 'housing_type', width: 140, render: value => value || '按表内类型' },
+                { title: '注销状态', dataIndex: 'household_status', width: 140, render: value => value === 'cancelled' ? '已注销' : value === 'not_cancelled' ? '未注销' : '按表内状态' },
+                { title: '实际行数', dataIndex: 'total_count', width: 100 },
+                { title: '查询总数', dataIndex: 'expected_count', width: 100, render: value => value ?? '未核对' },
+              ]} />
+            </>}
             {importPreview?.source_type === 'certificate' && comparison && <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded border border-[var(--app-border)] p-3">
                 <div className="mb-2 font-medium">本次变化</div>

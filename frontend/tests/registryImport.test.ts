@@ -2,6 +2,23 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+test('户号表多文件合并预览保留逐文件筛选声明与行数核对，变更后作废旧预览', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const files = readFileSync(new URL('../src/components/HouseholdImportFiles.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(files, /multiple showUploadList/)
+  assert.match(files, /current.length >= 10/)
+  assert.match(files, /expected_count/)
+  assert.match(files, /个人租赁.*单位租赁.*自购房屋.*借住.*其他/)
+  assert.match(client, /form.append\('files', item.file\)/)
+  assert.match(client, /form.append\('file_options'/)
+  assert.match(client, /\/registry\/imports\/households\/files\/preview/)
+  assert.match(page, /setImportFiles\(update\); setImportPreview\(null\)/)
+  assert.match(page, /registryApi.previewHouseholdFiles\(importFiles\)/)
+  assert.match(page, /unique_household_count/)
+  assert.match(page, /household_status_counts/)
+})
+
 test('房屋注销状态独立筛选并与导出保持一致，不再提供启用停用操作', () => {
   const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
   assert.match(page, /title: '注销状态', dataIndex: 'household_status'/)
