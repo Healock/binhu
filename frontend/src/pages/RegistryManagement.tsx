@@ -1044,8 +1044,8 @@ export default function RegistryManagement() {
           <Button loading={certificateStarting}>重新读取</Button>
         </Popconfirm>
       </>}
-      {importPreview?.status === 'preview' && <Button onClick={() => void confirmImport()} loading={importing}>
-        {importPreview.source_type === 'certificate' ? '确认挂载告知书' : '确认导入正常数据'}
+      {(importPreview?.status === 'preview' || (importPreview?.source_type === 'household' && importPreview.status === 'partially_imported')) && <Button onClick={() => void confirmImport()} loading={importing}>
+        {importPreview.source_type === 'certificate' ? '确认挂载告知书' : importPreview.status === 'partially_imported' ? '继续导入正常数据' : '确认导入正常数据'}
       </Button>}
     </>}
   </>
@@ -1165,7 +1165,11 @@ export default function RegistryManagement() {
                 ? importPreview.source_type === 'certificate'
                   ? '当前仍是预览状态；确认完整告知书快照后，旧记录与旧问题只保留历史，当前状态以本次来源为准。'
                   : '当前仍是预览状态，确认只处理安全记录，问题记录进入“问题数据核查”。'
-                : `处理状态：${importPreview.status}`} />
+                : importPreview.source_type === 'household' && importPreview.status === 'partially_imported'
+                  ? '本批已完成部分导入，可点击“继续导入正常数据”处理剩余安全记录；已成功导入的记录不会重复写入，问题记录仍保留在“问题数据核查”。'
+                  : importPreview.source_type === 'household' && importPreview.status === 'imported'
+                    ? '本批数据已导入，相同文件不会重复写入。如需更新房屋资料或注销状态，请重新导出最新户号表，预览并确认导入。'
+                    : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
             {importPreview?.source_type === 'household' && importPreview.file_count && <>
               <Space wrap>
