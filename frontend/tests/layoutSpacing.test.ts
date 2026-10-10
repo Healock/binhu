@@ -17,6 +17,13 @@ function jsxTagName(node: ts.JsxTagNameExpression) {
   return node.getText()
 }
 
+test('待登记自由地址与可选房屋控件由父容器统一提供间距', () => {
+  const source = readFileSync(new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  assert.match(source, /className="mobile-task-registration-controls"/)
+  assert.match(styles, /\.mobile-task-registration-controls\s*\{\s*display: grid;\s*gap: 8px;\s*min-width: 0;/)
+})
+
 test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   const workflowSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),

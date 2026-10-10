@@ -164,7 +164,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }>>([])
   const [registrationPropertyId, setRegistrationPropertyId] = useState<number | undefined>()
   const [registrationPropertyVersion, setRegistrationPropertyVersion] = useState<number | undefined>()
-  const [registrationPendingAddress, setRegistrationPendingAddress] = useState('')
   const [registrationPropertyLoading, setRegistrationPropertyLoading] = useState(false)
   const [registrationMatchStatus, setRegistrationMatchStatus] = useState<'idle' | 'matching' | 'unique' | 'multiple' | 'none' | 'error'>('idle')
   const [manualConfirmOpen, setManualConfirmOpen] = useState(false)
@@ -227,12 +226,17 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       visibleEditorFields,
     )
   }, [formValues, selectedSource, visibleEditorFields])
-  const dirty = Object.keys(changes).length > 0
+  const pendingRegistration = mode === 'tasks' && registrationClosureEnabled
+    && (formValues[data?.workflow.result_field || ''] || '').trim() === '待登记'
+  const savedRegistrationLink = data?.registration_link || data?.task.registration_link
+  const registrationContextDirty = pendingRegistration && (
+    registrationPropertyId !== (savedRegistrationLink?.property_id || undefined)
+      || registrationPropertyVersion !== (savedRegistrationLink?.property_version || undefined)
+  )
+  const dirty = Object.keys(changes).length > 0 || registrationContextDirty
   const registrationDraftIncomplete = Boolean(
-    registrationClosureEnabled
-      && data
-      && (formValues[data.workflow.result_field] || '').trim() === '待登记'
-      && (!registrationPendingAddress.trim() && (!registrationPropertyId || !registrationPropertyVersion)),
+    pendingRegistration
+      && (!(formValues['现住址'] || '').trim() && (!registrationPropertyId || !registrationPropertyVersion)),
   )
 
   const shouldClaimUnassigned = mode === 'tasks'
@@ -303,7 +307,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       setRegistrationPropertyId(pendingRegistration ? link?.property_id || undefined : undefined)
       setRegistrationPropertyVersion(pendingRegistration ? link?.property_version || undefined : undefined)
       setRegistrationProperties(pendingRegistration && link?.property ? [link.property] : [])
-      setRegistrationPendingAddress(pendingRegistration && !link?.property ? String(source?.values['现住址'] || '') : '')
       setRegistrationMatchStatus(pendingRegistration && !link?.property ? 'none' : 'idle')
       if (source) selectSource(source)
     } catch (reason: any) {
@@ -447,7 +450,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   }, [dirty])
 
   const save = async (forceClaimPrompt = false) => {
-    if (interactionLocked || !data || !selectedSource || !dirty) return
+    if (interactionLocked || !data || !selectedSource || !dirty || registrationDraftIncomplete) return
     if (savingRef.current) return
 
     let claim = false
@@ -486,6 +489,11 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     }
 
     const requestGeneration = formGenerationRef.current
+    const requestChanges = pendingRegistration ? {
+      ...changes,
+      [data.workflow.result_field]: formValues[data.workflow.result_field],
+      现住址: (formValues['现住址'] || '').trim(),
+    } : changes
     savingRef.current = true
     setSaving(true)
     setError('')
@@ -497,24 +505,24 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           ? updateMobileTaskAnalysis
           : updateMobileTask
       const result = await updater(parserType, selectedSource.id, {
-        changes,
+        changes: requestChanges,
         base_values: Object.fromEntries(
-          Object.keys(changes).map(field => [field, selectedSource.values[field] || '']),
+          Object.keys(requestChanges).map(field => [field, selectedSource.values[field] || '']),
         ),
         expected_revision: selectedSource.revision,
-        ...(registrationPropertyId && registrationPropertyVersion
+        ...(pendingRegistration && registrationPropertyId && registrationPropertyVersion
           ? {
               registration_property_id: registrationPropertyId,
               registration_property_version: registrationPropertyVersion,
             }
           : {}),
-        ...(registrationPendingAddress.trim() && !registrationPropertyId
-          ? { registration_pending_address: registrationPendingAddress.trim() }
+        ...(pendingRegistration && !registrationPropertyId
+          ? { registration_pending_address: requestChanges['现住址'] }
           : {}),
       })
       const savedValues = mergeMobileTaskSaveValues(
         selectedSource.values,
-        changes,
+        requestChanges,
         result.values,
         selectedSource.cell_meta,
       )
@@ -595,24 +603,24 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         formValuesRef.current = savedValues
       }
       const registrationLink = result.registration_link
-      if (registrationLink?.property) {
+      if (!draftChangedDuringSave && registrationLink?.property) {
         setRegistrationPropertyId(registrationLink.property_id || undefined)
         setRegistrationPropertyVersion(registrationLink.property_version || undefined)
         setRegistrationProperties(current => {
           const retained = current.filter(item => item.id !== registrationLink.property?.id)
           return [registrationLink.property!, ...retained]
         })
-      } else if ((savedValues[data.workflow.result_field] || '').trim() !== '待登记') {
+      } else if (!draftChangedDuringSave && registrationLink !== undefined) {
         setRegistrationPropertyId(undefined)
         setRegistrationPropertyVersion(undefined)
       }
-      setSavedMessage('已保存')
+      setSavedMessage(draftChangedDuringSave ? '' : '已保存')
     } catch (reason: any) {
       const status = reason?.response?.status
       const conflictDetail = reason?.response?.data?.detail
       const code = conflictDetail?.code
       const latestDraft = { ...formValuesRef.current }
-      setError(status === 409
+      setError(status === 409 && !['task_save_busy', 'task_save_timeout', 'database_pool_busy'].includes(code)
         ? '数据冲突，请核对冲突字段后重试；其他草稿已保留'
         : code === 'task_save_timeout'
           ? '保存等待数据库锁超时，草稿已保留，请稍后点击“重试保存”'
@@ -637,7 +645,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         } : current)
         formValuesRef.current = reconciledDraft
         setFormValues(reconciledDraft)
-      } else if (status === 409) {
+      } else if (status === 409 && !['task_save_busy', 'task_save_timeout', 'database_pool_busy'].includes(code)) {
         await load(selectedSource.id)
         formValuesRef.current = latestDraft
         setFormValues(latestDraft)
@@ -730,7 +738,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
       }
       return result.data || []
     } catch {
-      setRegistrationMatchStatus('error')
+      if (requestId === registrationSearchRequestRef.current) setRegistrationMatchStatus('error')
       return []
     } finally {
       if (requestId === registrationSearchRequestRef.current) {
@@ -1156,7 +1164,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               ]}
             />
           ) : (
-            <Alert className="mt-4" type="warning" showIcon message="尚未关联辖区档案房屋" description="选择“待登记”时必须从当前任务社区的房屋档案中明确选择一套房屋。" />
+            <Alert className="mt-4" type="info" showIcon message="尚未关联辖区档案房屋" description="待登记可直接填写并保存地址。需要居住证自动确认时，再从当前任务社区的房屋档案中选择对应房屋。" />
           )}
           {data.registration_manual_confirm_allowed
             && registrationLink.status === 'review_required'
@@ -1244,7 +1252,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
         {error ? <Alert type="error" showIcon message={error} />
           : savedMessage ? <Alert type="success" showIcon message={savedMessage} />
             : saving ? <Alert type="info" showIcon message="保存中" />
-              : dirty ? <Alert type="info" showIcon message={registrationDraftIncomplete ? '请选择唯一拟登记房屋后自动保存' : '等待自动保存'} />
+              : dirty ? <Alert type="info" showIcon message={registrationDraftIncomplete ? '请填写现住址后自动保存' : '等待自动保存'} />
                 : <span className="mobile-task-save-feedback__idle">所有修改均已保存</span>}
       </div>
       {readonlyView && <Alert type="info" showIcon message="当前是任务图只读协作视图" description="你可以查看任务信息和协作结果，但不能在此修改字段或发起新的业务操作。" />}
@@ -1353,20 +1361,26 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                     {registrationClosureEnabled && field === '现住址'
                       && data.workflow.result_field
                       && (formValues[data.workflow.result_field] || '').trim() === '待登记' ? (
-                      <>
-                      {registrationMatchStatus === 'error' || registrationMatchStatus === 'none' ? <Input.TextArea
+                      <div className="mobile-task-registration-controls">
+                      <Input.TextArea
                         autoSize={{ minRows: 2, maxRows: 4 }}
-                        value={registrationPendingAddress}
-                        placeholder="房屋档案不可用，可填写待建档现住址"
+                        value={formValues[field] || ''}
+                        placeholder="填写现住址"
+                        onFocus={() => { focusedFieldRef.current = field }}
                         onChange={event => {
-                          setRegistrationPendingAddress(event.target.value)
                           setRegistrationPropertyId(undefined)
                           setRegistrationPropertyVersion(undefined)
                           updateDraftValues(current => ({ ...current, 现住址: event.target.value }))
                         }}
-                        onBlur={() => { if (registrationPendingAddress.trim()) scheduleAutoSave(0) }}
+                        onBlur={() => {
+                          if (focusedFieldRef.current === field) focusedFieldRef.current = null
+                          if (!composingRef.current && (formValuesRef.current[field] || '').trim()) scheduleAutoSave(0)
+                        }}
+                        onCompositionStart={() => { composingRef.current = true; if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current) }}
+                        onCompositionEnd={() => { composingRef.current = false }}
                         aria-describedby="registration-match-status"
-                      /> : <Select
+                      />
+                      <Select
                         showSearch
                         allowClear
                         filterOption={false}
@@ -1374,7 +1388,8 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                         size="large"
                         loading={registrationPropertyLoading}
                         value={registrationPropertyId}
-                        placeholder="搜索并选择辖区档案中的唯一房屋"
+                        placeholder="可选：关联辖区档案房屋"
+                        aria-label="关联辖区档案房屋（可选）"
                         options={registrationProperties.map(property => ({
                           value: property.id,
                           label: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim(),
@@ -1389,19 +1404,22 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                               ...current,
                               现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`,
                             }))
-                            requestImmediateSave()
+                          } else {
+                            updateDraftValues(current => ({ ...current }))
                           }
+                          requestImmediateSave()
                         }}
                         aria-describedby="registration-match-status"
-                      />}
+                      />
                       <span id="registration-match-status" className="text-xs text-[var(--app-text-secondary)]" aria-live="polite">
                         {registrationMatchStatus === 'matching' && '正在识别地址…'}
-                        {registrationMatchStatus === 'unique' && '根据核查补充信息找到唯一候选，请确认'}
-                        {registrationMatchStatus === 'multiple' && '找到多个候选，请选择'}
-                        {registrationMatchStatus === 'none' && '未找到正式房屋，可填写待建档地址'}
-                        {registrationMatchStatus === 'error' && '地址匹配暂时失败，请重试或填写待建档地址'}
+                        {registrationMatchStatus === 'idle' && '地址可直接保存；关联房屋后才能进行居住证自动确认。'}
+                        {registrationMatchStatus === 'unique' && '找到唯一候选，可按需选择，不影响地址保存。'}
+                        {registrationMatchStatus === 'multiple' && '找到多个候选，可按需选择，不影响地址保存。'}
+                        {registrationMatchStatus === 'none' && '未找到房屋，仍可直接保存地址。'}
+                        {registrationMatchStatus === 'error' && '房屋搜索暂时失败，仍可直接保存地址。'}
                       </span>
-                      </>
+                      </div>
                     ) : metadata.type === 'select' || field === '核查人' ? (
                       <Select
                         allowClear
@@ -1416,20 +1434,12 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                             setRegistrationPropertyId(undefined)
                             setRegistrationPropertyVersion(undefined)
                           }
-                          if (!(field === data.workflow.result_field && value === '待登记')) {
-                            requestImmediateSave()
-                          } else {
+                          requestImmediateSave()
+                          if (field === data.workflow.result_field && value === '待登记') {
                             const hint = String(formValues['核查补充信息'] || formValues['核查反馈'] || '').trim()
                             if (hint) {
                               setRegistrationMatchStatus('matching')
-                              void loadRegistrationProperties(hint).then(properties => {
-                                if (properties.length === 1) {
-                                  const property = properties[0]
-                                  setRegistrationPropertyId(property.id)
-                                  setRegistrationPropertyVersion(property.version)
-                                  updateDraftValues(current => ({ ...current, 现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim() }))
-                                }
-                              })
+                              void loadRegistrationProperties(hint)
                             }
                           }
                         }}
@@ -1448,14 +1458,7 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
                             const hint = (formValuesRef.current[field] || '').trim()
                             if (hint) {
                               setRegistrationMatchStatus('matching')
-                              void loadRegistrationProperties(hint).then(properties => {
-                                if (properties.length === 1) {
-                                  const property = properties[0]
-                                  setRegistrationPropertyId(property.id)
-                                  setRegistrationPropertyVersion(property.version)
-                                  updateDraftValues(current => ({ ...current, 现住址: `${property.natural_address || ''}${property.building || ''}${property.room || ''}`.trim() }))
-                                }
-                              })
+                              void loadRegistrationProperties(hint)
                             }
                           }
                           // 失焦才提交文字草稿；不使用输入防抖，避免打断连续输入。

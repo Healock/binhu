@@ -824,6 +824,12 @@ html.desktop-shell .ant-notification-topRight {
   min-height: 126px;
 }
 
+.mobile-task-registration-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .mobile-task-card-address-match {
   display: flex;
   align-items: center;

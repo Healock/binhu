@@ -25,6 +25,7 @@ mobile/apps/android-tauri/src-tauri/target/
 /.build/
 /.tooling/
 /artifacts/
+/frontend/artifacts/pending-registration/
 /.temp/
 /.secrets/
 
