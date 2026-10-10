@@ -45,6 +45,8 @@ ACTION_LABELS: dict[str, str] = {
     "police_address.export": "导出小区地址",
     "police_address.import": "导入小区地址映射（历史功能）",
     "registry.property_small_community.confirm": "确认房屋小区归属",
+    "registry.property_annotations.export": "导出房屋小区标注工作簿",
+    "registry.property_annotations.preview": "预览房屋小区标注回导",
     "police_dispatch.import": "导入下发数据",
     "police_dispatch.preview": "预览已处理下发数据",
     "police_dispatch.import_preview": "预览业务数据导入",
