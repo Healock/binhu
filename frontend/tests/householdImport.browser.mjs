@@ -73,7 +73,7 @@ try {
     assert.equal(previews.length, 2)
     assert.ok(previews[1].includes('"household_status":"not_cancelled"'))
     await page.getByRole('button', { name: '确认导入正常数据', exact: true }).click()
-    await page.getByText('处理状态：imported', { exact: true }).waitFor()
+    await page.getByText('本批数据已导入，相同文件不会重复写入。', { exact: false }).waitFor()
     await page.getByText('本次新增：10', { exact: true }).waitFor()
     assert.equal(confirms.length, 1, 'all files confirm in a single batch')
     assert.deepEqual(errors, [])
