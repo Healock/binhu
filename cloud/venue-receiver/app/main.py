@@ -156,7 +156,6 @@ def _normalize_photo(filename: str, content_type: str, data: bytes, config: Sett
     }
     try:
         with Image.open(io.BytesIO(data)) as image:
-            image.load()
             image_format = str(image.format or "").upper()
             if image_format not in allowed:
                 raise HTTPException(422, "仅支持 JPEG、PNG 或 WebP 照片")
@@ -165,6 +164,7 @@ def _normalize_photo(filename: str, content_type: str, data: bytes, config: Sett
                 raise HTTPException(422, "照片扩展名、类型和内容不一致")
             if image.width * image.height > config.PHOTO_MAX_PIXELS:
                 raise HTTPException(422, "照片像素尺寸过大")
+            image.load()
             normalized = ImageOps.exif_transpose(image)
             if image_format == "JPEG" and normalized.mode not in {"RGB", "L"}:
                 normalized = normalized.convert("RGB")

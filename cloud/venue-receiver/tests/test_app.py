@@ -7,8 +7,10 @@ import time
 import uuid
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -16,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings
 from app.drinking_page import render_drinking_report_page
-from app.main import create_app
+from app.main import _normalize_photo, create_app
 from app.security import b64encode, canonical_request, keyed_digest
 
 
@@ -187,6 +189,36 @@ def jpeg_bytes():
     output = io.BytesIO()
     Image.new("RGB", (8, 8), "white").save(output, format="JPEG")
     return output.getvalue()
+
+
+def test_photo_pixel_limit_is_checked_before_full_decode(tmp_path, monkeypatch):
+    _client, _repo, config = make_client(tmp_path)
+    load_called = False
+
+    class LazyOversizedImage:
+        format = "JPEG"
+        width = 6_001
+        height = 4_000
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def load(self):
+            nonlocal load_called
+            load_called = True
+            raise AssertionError("oversized images must be rejected before decoding")
+
+    monkeypatch.setattr("app.main.Image.open", lambda _stream: LazyOversizedImage())
+
+    with pytest.raises(HTTPException) as raised:
+        _normalize_photo("photo.jpg", "image/jpeg", b"header", config)
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail == "照片像素尺寸过大"
+    assert not load_called
 
 
 def test_readiness_probe_checks_repository(tmp_path):
