@@ -53,5 +53,9 @@ async def test_issue_search_matches_issue_id_and_source_ref_with_parameterized_v
     count_sql, count_params = connection.cursor_instance.calls[0]
     assert "CAST(id AS CHAR) LIKE %s" in count_sql
     assert "source_ref LIKE %s" in count_sql
+    assert '$."社区名称"' in count_sql
+    assert '$."住房类型"' in count_sql
+    assert '$."详细地址"' in count_sql
+    assert '$."户号"' in count_sql
     assert count_params == ("%52498%",) * 8
     assert result["total"] == 0
