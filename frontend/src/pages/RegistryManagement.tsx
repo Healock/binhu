@@ -841,6 +841,7 @@ export default function RegistryManagement() {
   ]
 
   const issueColumns: TableColumnsType<RegistryImportIssue> = [
+    { title: '问题编号', dataIndex: 'id', width: 100, fixed: 'left' },
     { title: '社区', width: 130, render: (_, row) => issuePayloadText(row, 'community', 'community_name', '社区名称', 'sssq') || '-' },
     { title: '房屋地址', width: 320, ellipsis: true, render: (_, row) => issuePayloadText(row, 'address', 'normalized_address', '详细地址') || row.entity_key || '-' },
     { title: '户号', width: 140, ellipsis: true, render: (_, row) => issuePayloadText(row, 'house_no', '户号') || '-' },
@@ -857,7 +858,7 @@ export default function RegistryManagement() {
       </div>
     ) },
     { title: '为什么有问题', dataIndex: 'reason', width: 300, render: value => <span className="registry-issue-reason">{value || '来源数据不符合自动导入规则'}</span> },
-    { title: '来源', width: 120, render: (_, row) => <div className="registry-issue-source"><Tag>{row.source_type === 'household' ? '户号表' : '告知书'}</Tag><span>{row.source_ref || '-'}</span></div> },
+    { title: '来源', width: 280, render: (_, row) => <div className="registry-issue-source"><Tag>{row.source_type === 'household' ? '户号表' : '告知书'}</Tag><span title={row.source_ref || undefined}>{row.source_ref || '-'}</span></div> },
   ]
 
   const renderSearchInput = (placeholder: string) => <Input
@@ -913,7 +914,7 @@ export default function RegistryManagement() {
       className="w-full md:w-44"
     />
   </> : tab === 'issues' ? <>
-    {renderSearchInput('搜索地址、户号、社区或错误值')}
+    {renderSearchInput('搜索问题编号、地址、户号、来源行或错误值')}
     <Select
       allowClear
       showSearch

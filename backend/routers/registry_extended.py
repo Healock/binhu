@@ -2762,10 +2762,10 @@ async def _registry_import_issue_search_result(
         )
         like_value = f"%{keyword}%"
         where.append(
-            f"(source_ref LIKE %s OR entity_key LIKE %s OR reason LIKE %s OR {community_expr} LIKE %s "
+            f"(CAST(id AS CHAR) LIKE %s OR source_ref LIKE %s OR entity_key LIKE %s OR reason LIKE %s OR {community_expr} LIKE %s "
             f"OR {address_expr} LIKE %s OR {house_no_expr} LIKE %s OR {housing_expr} LIKE %s)"
         )
-        params.extend([like_value] * 7)
+        params.extend([like_value] * 8)
 
     clause = " AND ".join(where) if where else "1=1"
     async with conn.cursor() as cur:
