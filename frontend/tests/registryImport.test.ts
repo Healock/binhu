@@ -84,11 +84,29 @@ test('房屋档案和问题核查使用正文搜索并提供完整筛选', () =>
   assert.match(apiSource, /api\.post\('\/registry\/properties\/search', params/)
   assert.match(apiSource, /api\.post\('\/registry\/import\/issues\/search', params/)
   assert.match(pageSource, /搜索地址、户号、幢室或住房类型/)
+  assert.match(pageSource, /搜索问题编号、地址、户号、来源行或错误值/)
   assert.match(pageSource, /全部社区/)
   assert.match(pageSource, /出租房/)
   assert.match(pageSource, /自购房/)
   assert.match(pageSource, /全部住房类型/)
   assert.match(pageSource, /pagination=\{listPagination\}/)
+})
+
+test('问题数据可按问题编号和来源行直接定位，房屋搜索提示保持原有范围', () => {
+  const pageSource = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const issueColumns = pageSource.slice(
+    pageSource.indexOf('const issueColumns'),
+    pageSource.indexOf('const renderSearchInput'),
+  )
+  const propertyToolbar = pageSource.slice(
+    pageSource.indexOf("const toolbarFilters = tab === 'properties'"),
+    pageSource.indexOf(": tab === 'issues'"),
+  )
+
+  assert.match(issueColumns, /title: '问题编号', dataIndex: 'id'/)
+  assert.match(issueColumns, /title: '来源', width: 280/)
+  assert.match(propertyToolbar, /搜索地址、户号、幢室或住房类型/)
+  assert.doesNotMatch(propertyToolbar, /搜索问题编号/)
 })
 
 test('小区管理支持工地宿舍类型，辖区档案按社区提交筛选', () => {
