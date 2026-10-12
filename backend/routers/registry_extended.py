@@ -2720,7 +2720,7 @@ async def _registry_import_issue_search_result(
     community_expr = (
         "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.community')), ''), "
         "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.community_name')), ''), "
-        "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.社区名称')), ''), "
+        "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"社区名称\"')), ''), "
         "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.sssq')))"
     )
     if scoped_communities is not None:
@@ -2735,7 +2735,7 @@ async def _registry_import_issue_search_result(
 
     housing_expr = (
         "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.housing_type')), ''), "
-        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.住房类型')), '')"
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"住房类型\"')), '')"
     )
     if data.housing_category == "rental":
         where.append(f"{housing_expr} IN (%s,%s)")
@@ -2754,11 +2754,11 @@ async def _registry_import_issue_search_result(
         address_expr = (
             "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.address')), ''), "
             "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.normalized_address')), ''), "
-            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.详细地址')), '')"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"详细地址\"')), '')"
         )
         house_no_expr = (
             "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.house_no')), ''), "
-            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.户号')), '')"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"户号\"')), '')"
         )
         like_value = f"%{keyword}%"
         where.append(
