@@ -1,5 +1,5 @@
 import { UploadOutlined } from '@ant-design/icons'
-import { Alert, Button, Modal, Tag, Upload, message } from 'antd'
+import { Alert, Button, Modal, Select, Tag, Upload, message } from 'antd'
 import { useState } from 'react'
 import { registryApi, type PropertyAnnotationPreview } from '../api/client'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
@@ -7,6 +7,8 @@ import AppTable from './AppTable'
 import type { ResponsiveColumns } from './responsiveTable'
 
 type PreviewRow = PropertyAnnotationPreview['items'][number]
+type PreviewStatus = keyof typeof states
+type PreviewStatusFilter = 'all' | PreviewStatus
 const states = {
   ready: { label: '可确认', color: 'blue' },
   blocked: { label: '拒绝应用', color: 'error' },
@@ -23,6 +25,7 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
   const [selected, setSelected] = useState<number[]>([])
   const [error, setError] = useState('')
   const [applyFailed, setApplyFailed] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<PreviewStatusFilter>('all')
 
   const read = async (file: File) => {
     setBusy(true)
@@ -30,6 +33,7 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
     setSelected([])
     setError('')
     setApplyFailed(false)
+    setStatusFilter('all')
     try {
       const result = await registryApi.previewPropertyAnnotations(file)
       setPreview(result)
@@ -69,7 +73,12 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
 
   const selectedRows = preview?.items.filter(row => selected.includes(row.xlsx_row) && row.status === 'ready') || []
   const replacementCount = selectedRows.filter(row => row.replaces_manual).length
-  const counts = Object.fromEntries(Object.keys(states).map(state => [state, preview?.items.filter(row => row.status === state).length || 0]))
+  const counts = Object.fromEntries(Object.keys(states).map(state => [state, preview?.items.filter(row => row.status === state).length || 0])) as Record<PreviewStatus, number>
+  const visibleItems = preview?.items.filter(row => statusFilter === 'all' || row.status === statusFilter) || []
+  const statusOptions: Array<{ value: PreviewStatusFilter; label: string }> = [
+    { value: 'all', label: `全部状态（${preview?.items.length || 0}）` },
+    ...Object.entries(states).map(([value, state]) => ({ value: value as PreviewStatus, label: `${state.label}（${counts[value as PreviewStatus]}）` })),
+  ]
   const columns: ResponsiveColumns<PreviewRow> = [
     { title: '文件行', dataIndex: 'xlsx_row', width: 80, responsivePriority: 'always' },
     { title: '房屋地址', dataIndex: 'address', width: 240, responsivePriority: 'always', render: value => <span style={{ overflowWrap: 'anywhere' }}>{value || '无可查看地址'}</span> },
@@ -80,9 +89,9 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
   ]
   const close = () => { if (!busy) setOpen(false) }
   return <>
-    <Button icon={<UploadOutlined />} onClick={() => { setOpen(true); setPreview(null); setSelected([]); setError(''); setApplyFailed(false) }}>回导小区标注</Button>
-    <Modal title="小区标注回导预览" open={open} onCancel={close} width={1100}
-      style={{ top: 24, maxWidth: 'calc(100vw - 32px)' }} maskClosable={!busy} closable={!busy}
+    <Button icon={<UploadOutlined />} onClick={() => { setOpen(true); setPreview(null); setSelected([]); setError(''); setApplyFailed(false); setStatusFilter('all') }}>回导小区标注</Button>
+    <Modal title="小区标注回导预览" open={open} onCancel={close} width={1100} centered
+      style={{ maxWidth: 'calc(100vw - 32px)' }} maskClosable={!busy} closable={!busy}
       styles={{ body: { maxHeight: layout.height - 170, overflowY: 'auto' } }}
       footer={<div className="flex flex-wrap justify-end gap-3">
         <Button disabled={busy} onClick={close}>关闭</Button>
@@ -99,9 +108,12 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
         }}><Button icon={<UploadOutlined />} disabled={busy}>选择已标注工作簿并预览</Button></Upload>
         {error && <Alert type="error" showIcon message={error} />}
         {preview && <>
-          <div className="flex flex-wrap gap-3"><span>共 {preview.total} 条</span><span>可确认 {counts.ready}</span><span>拒绝应用 {counts.blocked}</span><span>待复核 {counts.review}</span><span>跳过 {counts.skipped}</span>{counts.applied > 0 && <span>已应用 {counts.applied}</span>}</div>
+          <div className="flex flex-wrap items-center gap-3">
+            <span>共 {preview.total} 条</span><span>可确认 {counts.ready}</span><span>拒绝应用 {counts.blocked}</span><span>待复核 {counts.review}</span><span>跳过 {counts.skipped}</span>{counts.applied > 0 && <span>已应用 {counts.applied}</span>}
+            <Select aria-label="标注状态筛选" value={statusFilter} onChange={value => setStatusFilter(value as PreviewStatusFilter)} options={statusOptions} style={{ minWidth: 170 }} />
+          </div>
           {preview.items.some(row => row.replaces_manual) && <Alert type="warning" showIcon message="替换已有人工确认的记录未默认勾选，请逐条核对后选择" />}
-          <AppTable rowKey="xlsx_row" columns={columns} dataSource={preview.items} loading={busy} scroll={{ x: 1000, y: Math.max(120, Math.min(360, layout.height - 430)) }}
+          <AppTable rowKey="xlsx_row" columns={columns} dataSource={visibleItems} loading={busy} scroll={{ x: 1000, y: Math.max(120, Math.min(360, layout.height - 430)) }}
             pagination={{ pageSize: 20, showSizeChanger: false }} rowSelection={{
               selectedRowKeys: selected, preserveSelectedRowKeys: true,
               onChange: keys => setSelected(keys.map(Number)),

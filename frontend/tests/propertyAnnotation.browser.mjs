@@ -43,10 +43,12 @@ try {
       if (url.pathname.endsWith('/small-community-annotations/exports/00000000-0000-4000-8000-000000000007/download')) {
         return route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: 'synthetic-workbook' })
       }
-      if (url.pathname.endsWith('/small-community-annotations/preview')) return send({ total: 3, ready: 2, blocked: 1, review: 0, skipped: 0, items: [
+      if (url.pathname.endsWith('/small-community-annotations/preview')) return send({ total: 5, ready: 2, blocked: 1, review: 1, skipped: 1, items: [
         { xlsx_row: 2, property_id: 42, status: 'ready', address: '合成路1号', community: '合成社区', target_name: '合成小区', annotation_reason: '正式名称与地址相符', reason: '可确认', apply_item: applyItem(42) },
         { xlsx_row: 3, property_id: 43, status: 'ready', address: '合成路2号'.repeat(10), community: '合成社区', target_name: '合成小区', annotation_reason: '人工复核建议', reason: '可确认', replaces_manual: true, apply_item: applyItem(43) },
         { xlsx_row: 4, property_id: 44, status: 'blocked', address: '合成路3号', community: '合成社区', reason: '房屋版本已变化，请重新导出' },
+        { xlsx_row: 5, property_id: 45, status: 'review', address: '合成路4号', community: '合成社区', reason: '需人工复核', annotation_reason: '地址与小区存在冲突' },
+        { xlsx_row: 6, property_id: 46, status: 'skipped', address: '合成路5号', community: '合成社区', reason: '未申请修改' },
       ] })
       if (url.pathname.endsWith('/small-community-annotations/apply')) {
         const payload = route.request().postDataJSON()
@@ -98,6 +100,18 @@ try {
       const modal = page.getByRole('dialog').filter({ hasText: '小区标注回导预览' })
       await modal.locator('input[type=file]').setInputFiles({ name: 'synthetic-labels.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') })
       await modal.getByText('房屋版本已变化，请重新导出').waitFor()
+      const statusFilter = modal.getByRole('combobox', { name: '标注状态筛选' })
+      await statusFilter.click()
+      await page.getByText('待人工复核（1）', { exact: true }).click()
+      assert.equal(await modal.locator('tr.ant-table-row').count(), 1)
+      await statusFilter.click()
+      await page.getByText('跳过（1）', { exact: true }).click()
+      assert.equal(await modal.locator('tr.ant-table-row').count(), 1)
+      await statusFilter.click()
+      await page.getByText('拒绝应用（1）', { exact: true }).click()
+      assert.equal(await modal.locator('tr.ant-table-row').count(), 1)
+      await statusFilter.click()
+      await page.getByText('全部状态（5）', { exact: true }).click()
       assert.equal(applied.length, 0, 'preview must not apply changes')
       assert.equal(await modal.getByRole('button', { name: '确认所选 1 条' }).count(), 1)
       assert.equal(await modal.getByText('替换已有人工确认', { exact: true }).count(), 1)
