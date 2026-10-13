@@ -49,6 +49,7 @@ from services.registry_import import (
     issue_problem_details,
     normalize_address,
     normalize_community,
+    _source_datetime as _normalize_source_datetime,
     normalize_text,
     normalize_household_status,
 )
@@ -1962,15 +1963,7 @@ def _household_source_ref(row: dict) -> str:
 
 def _source_datetime(value):
     """Only pass valid datetimes to DATETIME columns; preserve invalid source text in preview payload."""
-    if isinstance(value, datetime):
-        return value
-    text = normalize_text(value)
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("/", "-"))
-    except ValueError:
-        return None
+    return _normalize_source_datetime(value)
 
 
 def _issue_public(
@@ -2009,7 +2002,9 @@ async def preview_household_import(
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(413, "户号表不能超过 50MB")
     rows = _parse_household_workbook(content)
-    classified = classify_household_rows(rows)
+    for row in rows:
+        row["import_source_ref"] = _household_source_ref(row)
+    classified = classify_household_file_rows(rows)
     file_hash = hashlib.sha256(content).hexdigest()
     return await _preview_household_rows(request, rows, classified, file_hash, file.filename, user, conn)
 
@@ -2205,11 +2200,15 @@ async def confirm_household_import(
             await cur.execute("SELECT source_ref FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
             blocked_refs = {str(row[0]) for row in await cur.fetchall()}
             import_rows: list[tuple[int, str, dict]] = []
+            superseded_source_refs: dict[str, list[int]] = {}
             for record_id, source_ref, payload_json in records:
                 if str(source_ref) in blocked_refs:
                     continue
                 payload = _json(payload_json, {})
-                if payload.get("import_skip") == "identical_household":
+                if payload.get("import_skip"):
+                    target_ref = normalize_text(payload.get("import_duplicate_of"))
+                    if target_ref:
+                        superseded_source_refs.setdefault(target_ref, []).append(int(record_id))
                     continue
                 address = normalize_text(payload.get("address"))
                 normalized = normalize_address(address)
@@ -2250,26 +2249,42 @@ async def confirm_household_import(
                 resolved_rows.append((record_id, source_ref, payload, community_id, canonical_name, normalize_address(address)))
             await _bulk_insert_import_issues(cur, unresolved_community_issues)
 
-            # Resolve community aliases before checking identity across files.
-            identity_groups = {}
+            # A reused household number may describe a different property over
+            # time. Preserve older addresses as cancelled historical records.
             address_groups = {}
+            reuse_groups = {}
             numbered_addresses = {}
+            identity_issues = []
             for item in resolved_rows:
                 number = normalize_text(item[2].get("house_no"))
                 if number:
-                    identity_groups.setdefault((item[3], number), []).append(item)
+                    reuse_groups.setdefault((item[3], number), []).append(item)
                     numbered_addresses.setdefault((item[3], item[5]), set()).add(number)
                 address_groups.setdefault((item[3], item[5]), []).append(item)
-            conflicting_refs = {item[1] for group in identity_groups.values() if len(group) > 1 for item in group}
+            conflicting_refs = set()
             conflicting_refs.update(item[1] for group in address_groups.values() if len(group) > 1
                                     for item in group if not normalize_text(item[2].get("house_no")))
-            identity_issues = []
-            for item in resolved_rows:
-                if item[1] in conflicting_refs:
-                    identity_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", item[1], item[5],
-                                            json.dumps(_issue_payload(item[2]), ensure_ascii=False),
-                                            "正式社区解析后存在重复户号或缺少户号的重复地址，请核对社区别名和原文件后重新导入"))
+            for group in reuse_groups.values():
+                if len({item[5] for item in group}) < 2:
+                    continue
+                timestamps = [_source_datetime(item[2].get("updated_at")) for item in group]
+                if not all(timestamps) or len(set(timestamps)) != len(timestamps):
+                    conflicting_refs.update(item[1] for item in group)
+                    continue
+                ordered = sorted(zip(timestamps, group), key=lambda value: value[0])
+                for _, historical in ordered[:-1]:
+                    if "household_status" in historical[2]:
+                        historical[2]["source_household_status"] = historical[2]["household_status"]
+                    historical[2]["household_status"] = "已注销"
             resolved_rows = [item for item in resolved_rows if item[1] not in conflicting_refs]
+            for group in reuse_groups.values():
+                if not any(item[1] in conflicting_refs for item in group):
+                    continue
+                for item in group:
+                    if item[1] in conflicting_refs:
+                        identity_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", item[1], item[5],
+                                                json.dumps(_issue_payload(item[2]), ensure_ascii=False),
+                                                "同社区同户号对应多个地址，但更新时间缺失或相同，无法判断房屋沿革"))
             await _bulk_insert_import_issues(cur, identity_issues)
 
             # Fetch and lock existing properties in chunks to avoid an N+1 query
@@ -2284,7 +2299,8 @@ async def confirm_household_import(
                 numbers = sorted({normalize_text(item[2].get("house_no")) for item in chunk if normalize_text(item[2].get("house_no"))})
                 number_clause = f" OR source_house_no IN ({','.join(['%s'] * len(numbers))})" if numbers else ""
                 await cur.execute(
-                    "SELECT id, community_id, street, natural_address, building, room, normalized_address, source_house_no "
+                    "SELECT id, community_id, street, natural_address, building, room, normalized_address, source_house_no, "
+                    "source_updated_at, housing_type, residence_type, household_status "
                     f"FROM registry_properties WHERE normalized_address IN ({placeholders}){number_clause} FOR UPDATE",
                     tuple(keys + numbers),
                 )
@@ -2314,28 +2330,86 @@ async def confirm_household_import(
                 number = normalize_text(payload.get("house_no"))
                 address_matches = address_cache.get((normalized, community_id), [])
                 household_matches = household_cache.get((number, community_id), []) if number else []
+                exact_household_matches = [item for item in household_matches if str(item[6] or "") == normalized]
                 # A numbered source owns its identity; another numbered property
                 # at the same address is a separate household, not an update target.
                 legacy_matches = [item for item in address_matches if not normalize_text(item[7])]
                 if number and len(numbered_addresses.get((community_id, normalized), ())) > 1:
                     legacy_matches = []
                 fallback_matches = legacy_matches if number else address_matches
-                existing = household_matches[0] if len(household_matches) == 1 else fallback_matches[0] if len(fallback_matches) == 1 else None
+                existing = (
+                    exact_household_matches[0] if len(exact_household_matches) == 1 else
+                    household_matches[0] if len(household_matches) == 1 else
+                    fallback_matches[0] if len(fallback_matches) == 1 else None
+                )
                 reason = ""
-                if len(household_matches) > 1 or (not household_matches and len(fallback_matches) > 1):
+                obsolete_matches = []
+                reused_matches = []
+                if len(exact_household_matches) > 1:
+                    property_times = [item[8] for item in exact_household_matches]
+                    if all(property_times) and len(set(property_times)) == len(property_times):
+                        existing = max(exact_household_matches, key=lambda item: item[8])
+                        obsolete_matches = [item for item in exact_household_matches if int(item[0]) != int(existing[0])]
+                    else:
+                        reason = "户号或地址对应多份现有档案，但档案更新时间缺失或并列，无法安全合并"
+                elif (
+                    not exact_household_matches and not household_matches and len(fallback_matches) > 1
+                ):
                     reason = "户号或地址对应多份现有档案，请管理员核对档案后重新导入"
-                elif household_matches and str(existing[6]) != normalized:
-                    reason = "同社区同户号的地址已变化，请管理员核对并维护原房屋地址后重新导入，不能自动新建重复档案"
-                elif existing and int(existing[0]) in newer_property_ids:
+                elif household_matches and not exact_household_matches:
+                    incoming_updated_at = _source_datetime(payload.get("updated_at"))
+                    old_times = [item[8] if len(item) > 8 else None for item in household_matches]
+                    comparable_old_times = [_source_datetime(value) for value in old_times]
+                    if (
+                        incoming_updated_at
+                        and comparable_old_times
+                        and all(value is not None for value in comparable_old_times)
+                        and all(incoming_updated_at > value for value in comparable_old_times)
+                    ):
+                        reused_matches = household_matches
+                        existing = None
+                    else:
+                        reason = "同社区同户号的地址已变化，但更新时间不能证明新地址较新，需核对来源时间"
+                if not reason and any(int(item[0]) in newer_property_ids for item in household_matches):
                     reason = "该档案已有更新批次的户号表来源，请取得最新文件重新预览，不能用旧批次覆盖"
+                if not reason and existing:
+                    current_source_time = _source_datetime(existing[8]) if len(existing) > 8 else None
+                    incoming_source_time = _source_datetime(payload.get("updated_at"))
+                    if current_source_time and (
+                        incoming_source_time is None or incoming_source_time < current_source_time
+                    ):
+                        reason = "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖"
+                    elif current_source_time and incoming_source_time == current_source_time:
+                        same_snapshot = (
+                            normalize_text(existing[3]) == address
+                            and normalize_text(existing[9]) == normalize_text(payload.get("housing_type"))
+                            and normalize_text(existing[10]) == normalize_text(payload.get("residence_type"))
+                            and normalize_text(existing[11]) == normalize_household_status(payload.get("household_status"))
+                        )
+                        if not same_snapshot:
+                            reason = "现有档案与来源更新时间相同但内容冲突，不能按导入顺序覆盖"
                 if reason:
                     existing_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", source_ref, normalized,
                                             json.dumps(_issue_payload(payload), ensure_ascii=False), reason))
                     continue
+                if obsolete_matches:
+                    await cur.executemany(
+                        "UPDATE registry_properties SET household_status='已注销', "
+                        "current_version=current_version+IF(NOT(household_status <=> '已注销'),1,0), "
+                        "updated_by=%s WHERE id=%s",
+                        [(user["id"], int(item[0])) for item in obsolete_matches],
+                    )
+                if reused_matches:
+                    await cur.executemany(
+                        "UPDATE registry_properties SET household_status='已注销', "
+                        "current_version=current_version+IF(NOT(household_status <=> '已注销'),1,0), "
+                        "updated_by=%s WHERE id=%s",
+                        [(user["id"], int(item[0])) for item in reused_matches],
+                    )
                 if existing:
                     await cur.execute(
                         "UPDATE registry_properties SET community_id=%s, community_name_snapshot=%s, natural_address=%s, "
-                        "housing_type=%s, residence_type=%s, source_house_no=%s, source_updated_at=%s, source_type=%s, source_ref=%s, "
+                        "housing_type=%s, residence_type=%s, source_house_no=%s, source_updated_at=COALESCE(%s,source_updated_at), source_type=%s, source_ref=%s, "
                         "current_version=current_version+IF(%s IS NOT NULL AND NOT(household_status <=> %s),1,0), "
                         "household_status=COALESCE(%s,household_status), updated_by=%s WHERE id=%s",
                         (community_id, canonical_name, address, payload.get("housing_type") or "", payload.get("residence_type") or "",
@@ -2377,6 +2451,13 @@ async def confirm_household_import(
                                 (property_id, address, normalized, str(source_ref), user["id"]),
                             )
                     await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s", (property_id, record_id))
+                    duplicate_ids = superseded_source_refs.get(source_ref, [])
+                    if duplicate_ids:
+                        await _executemany_chunked(
+                            cur,
+                            "UPDATE registry_source_records SET entity_id=%s WHERE id=%s AND entity_id IS NULL",
+                            [(property_id, duplicate_id) for duplicate_id in duplicate_ids],
+                        )
                     imported += 1
                     updated += 1
                 else:
@@ -2440,6 +2521,10 @@ async def confirm_household_import(
                     user["id"],
                 ))
                 source_links.append((property_id, record_id))
+                source_links.extend(
+                    (property_id, duplicate_id)
+                    for duplicate_id in superseded_source_refs.get(source_ref, [])
+                )
             await _executemany_chunked(
                 cur,
                 "INSERT INTO registry_property_address_versions "

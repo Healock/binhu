@@ -65,6 +65,23 @@ def normalize_community(value: Any) -> str:
     return normalize_text(value)
 
 
+def _source_datetime(value: Any) -> datetime | None:
+    """Parse the source update time without rejecting otherwise valid rows."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = normalize_text(value)
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("/", "-").replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
 def household_community_candidates(value: Any) -> list[str]:
     """Return increasingly relaxed community labels for household imports.
 
@@ -281,12 +298,12 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
 def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """分类户号表记录。
 
-    同社区同户号重复和空住房类型属于问题数据；无户号时才按社区及地址核查重复。
+    同社区同户号同地址重复和空住房类型属于问题数据；无户号时才按社区及地址核查重复。
     不同户号允许共享地址；包括“借住/其他/其它”在内的非空类型
     都是可导入的正常记录，并原样保留住房类型。
     """
     materialized = []
-    groups: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
     addresses: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index, raw in enumerate(rows, start=1):
         row = {str(key): value for key, value in raw.items()}
@@ -304,12 +321,15 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         if key:
             addresses[(row["community"], key)].append(len(materialized) - 1)
             number = normalize_text(row.get("house_no"))
-            groups[(row["community"], "household" if number else "address", number or key)].append(len(materialized) - 1)
+            # Household numbers may be reused for another address. Only the
+            # same community, number and address identify a duplicate snapshot.
+            groups[(row["community"], "household" if number else "address", number or key,
+                    key if number else "")].append(len(materialized) - 1)
 
     issues: list[dict[str, Any]] = []
     issue_indexes: set[int] = set()
     duplicate_groups = 0
-    for (_, identity_kind, _), indexes in groups.items():
+    for (_, identity_kind, _, _), indexes in groups.items():
         if len(indexes) < 2:
             continue
         duplicate_groups += 1
@@ -320,7 +340,7 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 "entity_key": materialized[item_index]["source_key"],
                 "source_ref": str(materialized[item_index].get("source_row") or ""),
                 "payload": {**materialized[item_index], "duplicate_group_size": len(indexes), "is_representative": position == 0},
-                "reason": ("同社区同户号存在多条来源行，需核对来源内容"
+                "reason": ("同社区同户号同地址存在多条来源行，需核对来源内容"
                            if identity_kind == "household" else "缺少户号且同社区同地址存在多条来源行，需核对户号"),
             })
 
@@ -356,27 +376,48 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 
 def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Keep file provenance while suppressing identical repeated household IDs."""
-    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    """Keep every source while choosing a timestamp-supported current snapshot."""
+    groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for row in rows:
         # A previous preview may have persisted a suppression flag. Recompute it.
         row.pop("import_skip", None)
         house_no = normalize_text(row.get("house_no"))
-        if house_no:
-            groups[(normalize_community(row.get("community")), house_no)].append(row)
+        address_key = normalize_address(row.get("address"))
+        if house_no and address_key:
+            groups[(normalize_community(row.get("community")), house_no, address_key)].append(row)
     conflicts = []
     skipped = set()
     for grouped in groups.values():
         if len(grouped) < 2:
             continue
-        fields = ("community", "police_station", "community_code", "house_no", "landlord",
-                  "address", "housing_type", "residence_type", "resident_count", "updated_at", "household_status")
-        signatures = {tuple((key in row, normalize_household_status(row.get(key)) or normalize_text(row.get(key))) if key == "household_status"
-                            else normalize_housing_type(row.get(key)) if key == "housing_type"
-                            else normalize_text(row.get(key)) for key in fields) for row in grouped}
-        if len(signatures) == 1:
-            for row in grouped[1:]:
+        def signature(row):
+            fields = ("community", "police_station", "community_code", "house_no", "landlord",
+                      "address", "housing_type", "residence_type", "resident_count", "household_status")
+            return tuple(
+                (key in row, normalize_household_status(row.get(key)) or normalize_text(row.get(key)))
+                if key == "household_status" else
+                normalize_housing_type(row.get(key)) if key == "housing_type" else
+                normalize_text(row.get(key))
+                for key in fields
+            )
+
+        timestamps = [_source_datetime(row.get("updated_at")) for row in grouped]
+        if all(timestamps) and len(set(timestamps)) == len(timestamps):
+            winner_index = max(range(len(grouped)), key=lambda index: timestamps[index])
+            winner = grouped[winner_index]
+            for index, row in enumerate(grouped):
+                if index == winner_index:
+                    continue
+                row["import_skip"] = "superseded_household_snapshot"
+                row["import_duplicate_of"] = str(winner.get("import_source_ref") or "")
+                skipped.add(id(row))
+        elif len({signature(row) for row in grouped}) == 1:
+            winner = grouped[-1]
+            for row in grouped:
+                if row is winner:
+                    continue
                 row["import_skip"] = "identical_household"
+                row["import_duplicate_of"] = str(winner.get("import_source_ref") or "")
                 skipped.add(id(row))
         else:
             conflicts.append(grouped)
@@ -392,7 +433,7 @@ def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "issue_type": ISSUE_HOUSEHOLD_DUPLICATE,
                 "entity_key": normalize_address(row.get("address")),
                 "source_ref": ref, "payload": row,
-                "reason": "同社区同户号的来源内容或注销状态不一致，需核对原导出文件；不能按上传顺序覆盖",
+                "reason": "同社区同户号同地址的重复来源缺少可区分的新旧更新时间，或更新时间相同但内容冲突，需核对来源",
             })
     result["rows"].extend(row for row in rows if id(row) in skipped | conflict_ids)
     result["normal_rows"] = [row for row in result["normal_rows"] if row.get("import_source_ref") not in blocked]
