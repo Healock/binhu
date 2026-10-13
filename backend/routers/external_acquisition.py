@@ -5,19 +5,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from deps import get_current_user
 from services.external_acquisition_jobs import get_job, latest_job
 from services.maintenance import is_super_admin_user
-from services.permissions import SYNC_TRIGGER, VISIT_SOURCE_MANAGE, WORKFLOW_CONFIG_MANAGE
+from services.permissions import SYNC_TRIGGER, VISIT_SOURCE_MANAGE
 
 router = APIRouter(prefix="/api/external-acquisition", tags=["外部数据后台任务"])
 
 
 def _ensure_kind_access(kind: str, user: dict) -> None:
+    if kind.startswith("photo_sheet_"):
+        raise HTTPException(410, "照片调取业务已下线，停止服务")
     if kind == "residence_full_scan":
         if not is_super_admin_user(user):
             raise HTTPException(403, "无权查看该外部获取任务")
         return
     needed = (
-        WORKFLOW_CONFIG_MANAGE if kind.startswith("photo_sheet_")
-        else SYNC_TRIGGER if kind == "qmf_source"
+        SYNC_TRIGGER if kind == "qmf_source"
         else VISIT_SOURCE_MANAGE
     )
     if needed not in set(user.get("permissions") or []):

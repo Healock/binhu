@@ -24,7 +24,15 @@ from services.local_source import local_data_source_enabled
 from services.external_acquisition_jobs import create_job
 
 
-router = APIRouter(prefix="/api/workflow/photo-sheet", tags=["调照片名单"])
+async def reject_retired_photo_business() -> None:
+    raise HTTPException(410, "照片调取业务已下线，停止服务")
+
+
+router = APIRouter(
+    prefix="/api/workflow/photo-sheet",
+    tags=["调照片名单"],
+    dependencies=[Depends(reject_retired_photo_business)],
+)
 
 
 class PhotoSheetConfigPayload(BaseModel):

@@ -22,8 +22,6 @@ ACTIVE_STATES = {"queued", "running", "retrying"}
 EXTERNAL_KIND_LABELS = {
     "code_summary_fetch": "平安码与管家码数据获取",
     "visit_source_preview": "走访来源数据获取",
-    "photo_sheet_preview": "调照片名单预览",
-    "photo_sheet_sync": "调照片名单同步",
     "qmf_source": "全民防未核查任务同步",
     "residence_full_scan": "居住证登记状态全量查询",
 }
@@ -155,34 +153,6 @@ ONLINE_WRITEBACK_DIAGNOSIS = {
 }
 
 
-PHOTO_WRITEBACK_DIAGNOSIS = {
-    "source_disabled": (
-        "调照片腾讯名单写回当前未启用。",
-        "请先在工单流程设置中确认写回开关和目标表配置。",
-    ),
-    "source_missing": (
-        "原腾讯名单行已经不存在或无法安全定位。",
-        "请先同步调照片名单，确认原工单仍有唯一来源后再重试。",
-    ),
-    "source_relocated": (
-        "原腾讯名单行位置已经变化，系统已停止自动写回。",
-        "请先同步名单重新定位，再执行安全重试。",
-    ),
-    "source_revised": (
-        "腾讯来源字段已修订，平台已将重复工单合并到原任务。",
-        "无需重试；请在原任务详情核对合并后的来源状态。",
-    ),
-    "quota_exhausted": (
-        "腾讯接口当前额度不足，自动重试已经暂停。",
-        "额度恢复后可手动重新加入写回队列。",
-    ),
-    "request_failed": (
-        "腾讯接口连续请求失败，达到自动重试上限。",
-        "确认网络和腾讯接口恢复后再手动重试。",
-    ),
-}
-
-
 def _diagnosis(
     mapping: dict[str, tuple[str, str]],
     error_code: object,
@@ -251,57 +221,6 @@ async def get_admin_task_queue_details(
                 "can_retry": False,
                 "retry_kind": None,
                 "updated_at": _iso(row[7]),
-            })
-    elif source == "photo_writeback_queue":
-        if local_data_source_enabled():
-            return {
-                "source": source,
-                "page": page,
-                "page_size": page_size,
-                "total": 0,
-                "data": [],
-                "message": "本地数据源已启用，无腾讯照片名单回写队列",
-            }
-        count_rows, rows = await asyncio.gather(
-            _query_rows(
-                "workflow",
-                "SELECT COUNT(*) FROM photo_sheet_outbox "
-                "WHERE status IN ('retry','paused')",
-            ),
-            _query_rows(
-                "workflow",
-                "SELECT id,work_order_id,action,status,attempt_count,error_code,updated_at "
-                "FROM photo_sheet_outbox WHERE status IN ('retry','paused') "
-                "ORDER BY FIELD(status,'paused','retry'),updated_at DESC,id DESC "
-                "LIMIT %s OFFSET %s",
-                (page_size, offset),
-            ),
-        )
-        action_labels = {
-            "complete": "写回完成标记",
-            "claim": "写回领取状态",
-            "update": "更新腾讯名单",
-        }
-        data = []
-        for row in rows:
-            diagnosis, action = _diagnosis(
-                PHOTO_WRITEBACK_DIAGNOSIS,
-                row[5],
-                fallback_diagnosis="调照片名单写回连续失败，系统已停止自动重试。",
-                fallback_action="确认外部系统和名单配置恢复后，可执行一次安全重试。",
-            )
-            data.append({
-                "id": int(row[0]),
-                "state": str(row[3]),
-                "reference": f"工单 #{int(row[1])}",
-                "action": action_labels.get(str(row[2]), "调照片名单写回"),
-                "attempt_count": int(row[4] or 0),
-                "error_code": str(row[5] or "unknown"),
-                "diagnosis": diagnosis,
-                "recommended_action": action,
-                "can_retry": True,
-                "retry_kind": "photo_outbox",
-                "updated_at": _iso(row[6]),
             })
     else:
         raise ValueError("unsupported task queue source")

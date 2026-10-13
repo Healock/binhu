@@ -216,7 +216,7 @@ test('文件生成保留原工作日志导航 ID', () => {
   assert.match(source, /shortLabel: '文件生成'/)
 })
 
-test('工单中心移入工作台，研判和调照片归入任务处理', () => {
+test('工单中心移入工作台，已退役调照片入口', () => {
   const groups = accessibleNavigationGroups(
     'member',
     [
@@ -233,7 +233,7 @@ test('工单中心移入工作台，研判和调照片归入任务处理', () =>
   assert.equal(workspace?.items.some(item => item.id === 'workflow_tickets'), true)
   assert.equal(tasks?.items.some(item => item.id === 'workflow_tickets'), false)
   assert.equal(tasks?.items.some(item => item.id === 'police_analysis'), true)
-  assert.equal(tasks?.items.some(item => item.id === 'photo_tasks'), true)
+  assert.equal(tasks?.items.some(item => item.id === 'photo_tasks'), false)
 })
 
 test('侧边栏使用 Tabler 业务图标并通过 currentColor 适配主题', () => {
@@ -251,13 +251,13 @@ test('侧边栏使用 Tabler 业务图标并通过 currentColor 适配主题', (
   assert.match(icon, /data_query: IconDatabaseSearch/)
   assert.match(icon, /ticket_center: IconTicket/)
   assert.match(icon, /analysis: IconBrain/)
-  assert.match(icon, /photo: IconPhotoSearch/)
+  assert.doesNotMatch(icon, /photo: IconPhotoSearch/)
   assert.match(icon, /registry: IconHomeSearch/)
   assert.match(icon, /permissions: IconShieldLock/)
   assert.match(icon, /size="1em"/)
   assert.match(icon, /stroke=\{1\.8\}/)
   assert.match(navigation, /id: 'police_analysis'[\s\S]*?icon: 'analysis'/)
-  assert.match(navigation, /id: 'photo_tasks'[\s\S]*?icon: 'photo'/)
+  assert.doesNotMatch(navigation, /id: 'photo_tasks'/)
   assert.match(navigation, /id: 'online_summary'[\s\S]*?icon: 'summary'/)
   assert.match(navigation, /id: 'code_summary'[\s\S]*?icon: 'code_summary'/)
   assert.match(navigation, /id: 'communities'[\s\S]*?icon: 'communities'/)
@@ -267,22 +267,14 @@ test('侧边栏使用 Tabler 业务图标并通过 currentColor 适配主题', (
   assert.match(navigation, /id: 'permission_groups'[\s\S]*?icon: 'permissions'/)
 })
 
-test('调照片独立入口受处理权限和岗位共同限制', () => {
+test('调照片独立入口已对所有岗位移除', () => {
   const regular = accessibleNavigationGroups(
     'member',
     ['workflow.ticket.view', 'workflow.ticket.handle'],
     [],
     '组员',
   )
-  const photoHandler = accessibleNavigationGroups(
-    'member',
-    ['workflow.ticket.view', 'workflow.ticket.handle'],
-    [],
-    '基础管控',
-  )
-
   assert.equal(regular.some(group => group.items.some(item => item.id === 'photo_tasks')), false)
-  assert.equal(photoHandler.some(group => group.items.some(item => item.id === 'photo_tasks')), true)
 })
 
 test('旧 Dock 中的工单和下发入口迁移到新的独立页面', () => {
@@ -304,7 +296,7 @@ test('旧 Dock 中的工单和下发入口迁移到新的独立页面', () => {
   )
   assert.deepEqual(
     config.groups.find(group => group.id === 'tasks')?.items,
-    ['police_tasks', 'police_analysis', 'photo_tasks'],
+    ['police_tasks', 'police_analysis'],
   )
 })
 
@@ -496,7 +488,7 @@ test('数据上传中心移除手动走访和星级上传入口', () => {
   assert.doesNotMatch(source, /上传走访明细/)
   assert.doesNotMatch(source, /上传星级评定/)
   assert.match(source, /PoliceDispatchPanel/)
-  assert.match(source, /照片调取批次/)
+  assert.doesNotMatch(source, /照片调取批次/)
 })
 
 test('在线人数按钮再次点击会关闭当前弹层', () => {

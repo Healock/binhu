@@ -246,7 +246,7 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
         for _, params in cursor.executed:
             self.assertIn(5, params)
 
-    async def test_completed_quick_photo_notice_links_back_to_task_detail(self):
+    async def test_retired_photo_notice_has_no_task_action_path(self):
         cursor = NotificationCursor()
         original_fetchall = cursor.fetchall
 
@@ -259,24 +259,22 @@ class NotificationTests(unittest.IsolatedAsyncioTestCase):
             return await original_fetchall()
 
         cursor.fetchall = fetchall
-        with patch("routers.notifications.settings.WORKFLOW_FEATURE_ENABLED", True):
-            result = await list_notifications(
-                limit=20,
-                user={"id": 5, "role": "member"},
-                conn=make_connection(cursor),
-            )
+        result = await list_notifications(
+            limit=20,
+            user={"id": 5, "role": "member"},
+            conn=make_connection(cursor),
+        )
 
         personal = next(item for item in result["data"] if item["source"] == "personal")
-        self.assertEqual(personal["action_path"], "/tasks/%E5%85%A8%E9%93%BE%E6%9D%A1/row%2Fkey")
+        self.assertIsNone(personal["action_path"])
 
     async def test_unrelated_notice_has_no_task_action_path(self):
         cursor = NotificationCursor()
-        with patch("routers.notifications.settings.WORKFLOW_FEATURE_ENABLED", True):
-            result = await list_notifications(
-                limit=20,
-                user={"id": 5, "role": "member"},
-                conn=make_connection(cursor),
-            )
+        result = await list_notifications(
+            limit=20,
+            user={"id": 5, "role": "member"},
+            conn=make_connection(cursor),
+        )
         personal = next(item for item in result["data"] if item["source"] == "personal")
         self.assertIsNone(personal["action_path"])
 

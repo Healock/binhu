@@ -1190,11 +1190,6 @@ async def ensure_workflow_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     await cur.execute("""
-        INSERT IGNORE INTO photo_sheet_sources (
-            source_code, read_enabled, write_enabled, last_sync_status
-        ) VALUES ('photo_request_roster', 0, 0, 'disabled')
-    """)
-    await cur.execute("""
         CREATE TABLE IF NOT EXISTS photo_sheet_batches (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             source_id BIGINT NOT NULL,
@@ -1338,17 +1333,6 @@ async def ensure_workflow_schema(cur) -> None:
             INDEX idx_photo_import_item_identity (identity_hmac, match_status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    photo_form_schema = (
-        '{"fields":['
-        '{"name":"subject_type","label":"对象类型","type":"select","required":true,"options":["task","person","other"]},'
-        '{"name":"subject_id","label":"对象编号","type":"text","required":false},'
-        '{"name":"subject_name","label":"对象姓名","type":"text","required":true},'
-        '{"name":"identity_number","label":"身份证号","type":"text","required":true},'
-        '{"name":"request_reason","label":"申请理由","type":"textarea","required":true},'
-        '{"name":"requested_from","label":"开始时间","type":"datetime","required":false},'
-        '{"name":"requested_to","label":"结束时间","type":"datetime","required":false}'
-        ']}'
-    )
     leave_form_schema = (
         '{"fields":['
         '{"name":"leave_type","label":"请假类型","type":"select","required":true,"options":["temporary_leave","sick_leave","annual_leave"]},'
@@ -1357,20 +1341,6 @@ async def ensure_workflow_schema(cur) -> None:
         '{"name":"reason","label":"原因","type":"textarea","required":false},'
         '{"name":"affects_weekend_duty","label":"影响双休日备勤","type":"boolean","required":false}'
         ']}'
-    )
-    # Photo requests are usable out of the box. Leave requests intentionally
-    # remain disabled until a super administrator publishes the local process.
-    await cur.execute(
-        "INSERT IGNORE INTO workflow_types "
-        "(code, name, description, form_schema, default_due_hours, enabled) "
-        "VALUES (%s,%s,%s,%s,%s,1)",
-        (
-            "photo_request",
-            "照片调取申请",
-            "业务人员向基础管控申请调取照片",
-            photo_form_schema,
-            24,
-        ),
     )
     await cur.execute(
         "INSERT IGNORE INTO workflow_types "
@@ -1383,20 +1353,4 @@ async def ensure_workflow_schema(cur) -> None:
             leave_form_schema,
             24,
         ),
-    )
-    await cur.execute(
-        "INSERT IGNORE INTO workflow_type_versions "
-        "(workflow_type_id, version_no, form_schema, status, published_at) "
-        "SELECT id, 1, form_schema, 'published', UTC_TIMESTAMP() "
-        "FROM workflow_types WHERE code=%s",
-        ("photo_request",),
-    )
-    await cur.execute(
-        "INSERT IGNORE INTO workflow_steps "
-        "(workflow_version_id, step_order, step_group, name, step_type, config_json) "
-        "SELECT version.id, 1, 1, '基础管控处理', 'handling', %s "
-        "FROM workflow_type_versions version "
-        "JOIN workflow_types type ON type.id=version.workflow_type_id "
-        "WHERE type.code=%s AND version.version_no=1",
-        ('{"queue":"基础管控","claim_required":true}', "photo_request"),
     )

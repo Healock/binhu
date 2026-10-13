@@ -1,7 +1,6 @@
 import AddressStatusTag from '../components/AddressStatusTag'
 import {
   ArrowLeftOutlined,
-  FileSearchOutlined,
   PhoneOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
@@ -33,7 +32,6 @@ import {
   decideMobileTaskUnverifiableReview,
   getMobileTaskInternalTransferOptions,
   transferMobileTaskInternally,
-  workflowApi,
   type MobileTaskDetailData,
   type MobileTaskQmfStatus,
   type MobileTaskSource,
@@ -146,8 +144,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
   const [transferring, setTransferring] = useState(false)
   const [decisionOutcome, setDecisionOutcome] = useState<'new_clue' | 'no_new_clue'>('new_clue')
   const [decisionOpinion, setDecisionOpinion] = useState('')
-  const [photoRequestOpen, setPhotoRequestOpen] = useState(false)
-  const [photoSubmitting, setPhotoSubmitting] = useState(false)
   const [qmfLegacyStatus, setQmfLegacyStatus] = useState<QmfLegacyStatus | null>(null)
   const [qmfLegacyStatusLoading, setQmfLegacyStatusLoading] = useState(false)
   const [qmfLegacyStatusError, setQmfLegacyStatusError] = useState('')
@@ -809,37 +805,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
     window.location.href = `tel:${phone}`
   }
 
-  const submitPhotoRequest = async () => {
-    if (!identityNumber || !title.trim()) return
-    setPhotoSubmitting(true)
-    try {
-      await workflowApi.createTicket({
-        type_code: 'photo_request',
-        title: `${title.trim()}照片调取`,
-        description: '',
-        priority: 'normal',
-        form_data: {
-          subject_type: 'task',
-          subject_id: rowKey,
-          subject_name: title.trim(),
-          identity_number: identityNumber,
-          request_reason: '',
-          source_parser_type: parserType,
-          source_row_key: rowKey,
-          community_name: selectedSource?.values.社区 || data?.task.community || '',
-          source_label: data?.workflow.label || parserType,
-        },
-        links: [{ object_type: 'mobile_task', object_id: `${parserType}:${rowKey}` }],
-      })
-      message.success('照片调取工单已提交')
-      setPhotoRequestOpen(false)
-    } catch (reason: any) {
-      message.error(detailError(reason, '照片调取工单提交失败'))
-    } finally {
-      setPhotoSubmitting(false)
-    }
-  }
-
   if (loading && !data) {
     return <div className="app-card p-5"><Skeleton active paragraph={{ rows: 10 }} /></div>
   }
@@ -1026,10 +991,10 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
           {!interactionLocked && mode === 'tasks' && identityNumber && (
             <Button
               className="mobile-task-detail-pill"
-              icon={<FileSearchOutlined />}
-              onClick={() => setPhotoRequestOpen(true)}
+              disabled
+              title="照片调取业务已下线，已停止服务"
             >
-              申请调照片
+              照片调取业务已下线，已停止服务
             </Button>
           )}
         </div>
@@ -1547,23 +1512,6 @@ export default function MobileTaskDetail({ mode = 'tasks' }: { mode?: 'tasks' | 
               placeholder="填写必要的复核说明，不要粘贴身份证号、手机号或居住证返回原文"
             />
           </label>
-        </div>
-      </Modal>
-
-      <Modal
-        open={photoRequestOpen}
-        title="提交照片调取申请"
-        okText="提交工单"
-        cancelText="取消"
-        confirmLoading={photoSubmitting}
-        onOk={() => void submitPhotoRequest()}
-        onCancel={() => { if (!photoSubmitting) setPhotoRequestOpen(false) }}
-      >
-        <div className="space-y-2 text-sm text-[var(--app-text-secondary)]">
-          <div><span className="font-medium text-[var(--app-text)]">对象：</span>{title || '未填写姓名'}</div>
-          <div><span className="font-medium text-[var(--app-text)]">身份证号：</span>{identityNumber}</div>
-          <div><span className="font-medium text-[var(--app-text)]">社区：</span>{selectedSource?.values.社区 || data.task.community || '未填写'}</div>
-          <div><span className="font-medium text-[var(--app-text)]">来源：</span>{data.workflow.label || parserType}</div>
         </div>
       </Modal>
 

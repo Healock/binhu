@@ -23,7 +23,6 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
         "flow_tasks",
         "police_tasks",
         "police_analysis",
-        "photo_tasks",
     ),
     "summaries": (
         "online_summary",
@@ -53,7 +52,6 @@ ITEM_PERMISSIONS: dict[str, str] = {
     "flow_tasks": "online.raw.view",
     "police_tasks": "police.dispatch.manage",
     "police_analysis": "online.task.manage",
-    "photo_tasks": "workflow.ticket.handle",
     "workflow_tickets": "workflow.ticket.view",
     "visit_summary": "visit.summary.view",
     "data_upload": "visit.import",
@@ -71,7 +69,6 @@ ITEM_PERMISSIONS: dict[str, str] = {
 ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
     "data_upload": ("visit.import", "police.dispatch.manage"),
     "police_analysis": ("online.task.manage", "police.dispatch.manage"),
-    "photo_tasks": ("workflow.ticket.handle", "workflow.ticket.manage"),
 }
 
 
@@ -116,10 +113,6 @@ def _item_is_accessible(
             for permission in ITEM_PERMISSION_ALTERNATIVES["police_analysis"]
         )
         if not has_analysis_permission and not admin_access:
-            return False
-    if item_id == "photo_tasks":
-        has_manage_permission = permissions is not None and "workflow.ticket.manage" in permissions
-        if position != "基础管控" and not has_manage_permission and not admin_access:
             return False
     if permissions is not None:
         alternatives = ITEM_PERMISSION_ALTERNATIVES.get(item_id)
@@ -265,10 +258,7 @@ def normalize_mobile_dock_config(
         workspace["items"].append("workflow_tickets")
     tasks = next((group for group in groups if group["id"] == "tasks"), None)
     if tasks is not None:
-        for previous_id, next_id in (
-            ("police_tasks", "police_analysis"),
-            ("workflow_tickets", "photo_tasks"),
-        ):
+        for previous_id, next_id in (("police_tasks", "police_analysis"),):
             if (
                 previous_id in raw_task_items
                 and next_id in accessible_by_group.get("tasks", set())

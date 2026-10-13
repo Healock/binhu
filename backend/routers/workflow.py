@@ -429,7 +429,11 @@ async def create_ticket(
     user: dict = Depends(require_permission(WORKFLOW_TICKET_CREATE)),
     conn=Depends(get_workflow_db),
 ):
-    photo_outbox_ticket_id: int | None = None
+    if data.type_code.strip() == "photo_request":
+        # This legacy business was permanently retired. Reject before any
+        # workflow lookup or transaction so old clients cannot recreate a
+        # ticket or an external write-back intent.
+        raise HTTPException(410, "照片调取业务已下线，停止创建新申请")
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -548,9 +552,6 @@ async def create_ticket(
                      form_data.get("requested_from") or None,
                      form_data.get("requested_to") or None),
                 )
-                if photo_values["source_parser_type"] and photo_values["source_row_key"]:
-                    if await enqueue_outbox(cur, ticket_id, "append_request"):
-                        photo_outbox_ticket_id = ticket_id
             elif data.type_code == "leave_request":
                 member_id = (user.get("member") or {}).get("id")
                 if not member_id:
@@ -577,8 +578,6 @@ async def create_ticket(
     except Exception:
         await conn.rollback()
         raise
-    if photo_outbox_ticket_id is not None:
-        launch_outbox_processing(photo_outbox_ticket_id)
     return {"id": ticket_id, "ticket_no": ticket_no, "message": "工单已提交"}
 
 
@@ -910,13 +909,6 @@ async def decide_ticket(
                 await _apply_leave_attendance(cur, ticket_id, user["id"])
             elif row[4] == "leave_request" and next_status == "cancelled":
                 await _deactivate_leave_attendance(cur, ticket_id)
-            elif row[4] == "photo_request" and next_status in {"approved", "completed"} and data.result_status == "found":
-                await cur.execute(
-                    "SELECT external_origin FROM photo_request_details WHERE work_order_id=%s", (ticket_id,),
-                )
-                origin = await cur.fetchone()
-                if origin and origin[0] in {"platform_task", "tencent"}:
-                    await enqueue_outbox(cur, ticket_id, "mark_completed")
             if next_status in {"approved", "completed", "rejected", "cancelled"}:
                 await cur.execute(
                     "UPDATE work_order_attachments SET retention_until=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 90 DAY) "

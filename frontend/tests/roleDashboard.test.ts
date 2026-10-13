@@ -125,7 +125,7 @@ test('社区完成图表为零值数据保留可见坐标轴', () => {
   assert.match(source, /domain=\{\[0, maxTotal\]\}/)
 })
 
-test('运维中心保留本地运行状态且照片批次图表继续使用真实序列', () => {
+test('运维中心保留本地运行状态且不再展示照片批次图表', () => {
   const operations = read('../src/pages/OperationsCenter.tsx')
   const uploads = read('../src/pages/DataUploadCenter.tsx')
   const calendar = read('../src/components/ContributionCalendar.tsx')
@@ -135,10 +135,8 @@ test('运维中心保留本地运行状态且照片批次图表继续使用真�
   assert.match(operations, /title="最近备份"/)
   assert.match(operations, /本地任务池和外部只读扫描/)
   assert.doesNotMatch(operations, /腾讯接口额度|sync_daily_counts|txdocs_request_usage/)
-  assert.match(uploads, /<MonoWaterfallChart/)
-  for (const field of ['matched_files', 'unmatched_files', 'conflict_files', 'duplicate_files', 'failed_files']) {
-    assert.match(uploads, new RegExp(`photoBatch\\.${field}`))
-  }
+  assert.doesNotMatch(uploads, /<MonoWaterfallChart/)
+  assert.doesNotMatch(uploads, /photoBatch\\./)
   assert.match(calendar, /rectProps=\{\{ rx: 3, ry: 3 \}\}/)
 })
 

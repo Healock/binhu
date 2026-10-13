@@ -1663,3 +1663,18 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 ## 生产当前任务按日期归档
 
 “流口指令核查”当前任务清理必须使用固定网关的 `current-flow-cleanup` 五阶段命令，不能通过只读 SSH、临时 SQL 或浏览器接口批量删除。2026-09-14 本次运行只允许 `全链条` 和该业务日期；先执行 `measure`、`backup-check`、`prepare`，确认证据目录与八库备份后才能执行 `apply`，最后必须执行 `verify`。完整范围、证据和回退要求见 `docs/plans/current-flow-cleanup-20260914.md`。
+# 照片调取业务退役维护
+
+照片调取业务已经停止服务。维护窗口中只允许执行以下顺序，且必须先完成 `WorkflowData`、私人照片附件和 ZIP 目录备份：
+
+```text
+python -m migrations.photo_sheet_retirement measure
+python -m migrations.photo_sheet_retirement migrate --apply --expect-photo-tickets 134 --confirm-empty-photo-tables
+python -m migrations.photo_sheet_retirement verify
+```
+
+`measure` 必须记录 `work_orders.type_code='photo_request'` 的实测数量；执行 `migrate --apply` 时必须显式传入经维护人员核对的 `--expect-photo-tickets <数量>`，并显式提供 `--confirm-empty-photo-tables` 确认九张照片专属表允许整表清空，同时记录九张照片专属表、照片附件、ZIP 文件和共享引用数量。数量与显式 guard 不一致或发现共享附件时，清理自动停止。维护人员应在执行前后保存以下脱敏校验结果：照片工单数量、九张专属表数量、照片附件和 ZIP 数量、非照片工单数量，以及其他腾讯只读迁移材料未变化的证明。附件删除属于个人信息删除流程，必须保留备份授权和执行留痕。
+
+清理采用两阶段文件处置：先将附件和 ZIP 复制到退役临时目录并从原路径移除，再删除数据库记录；文件删除、数据库删除和事务提交全部成功后才清理临时目录。任一步骤失败都会恢复临时文件并回滚数据库事务，维护人员不得用强制参数跳过恢复。
+
+本脚本不删除普通工单，不删除其他腾讯快照、迁移审计或回滚材料，也不改变 `TXDOCS_MIGRATION_MODE=readonly` 的历史兼容范围。真实 MySQL、生产备份和清理未在开发机验证，不能以本机测试替代生产维护验收。

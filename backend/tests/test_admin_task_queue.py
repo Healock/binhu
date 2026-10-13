@@ -81,14 +81,8 @@ class AdminTaskQueueDetailTests(unittest.IsolatedAsyncioTestCase):
         query.assert_not_awaited()
 
     async def test_retired_photo_writeback_queue_is_not_exposed(self):
-        query = AsyncMock()
-        with patch("services.admin_task_queue._query_rows", new=query):
-            result = await get_admin_task_queue_details("photo_writeback_queue")
-
-        self.assertEqual(result["total"], 0)
-        self.assertEqual(result["data"], [])
-        self.assertEqual(result["message"], "本地数据源已启用，无腾讯照片名单回写队列")
-        query.assert_not_awaited()
+        with self.assertRaisesRegex(ValueError, "unsupported task queue source"):
+            await get_admin_task_queue_details("photo_writeback_queue")
 
 
 if __name__ == "__main__":

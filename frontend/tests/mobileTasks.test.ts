@@ -678,7 +678,7 @@ test('任务详情不再展示调取照片信息', () => {
   assert.doesNotMatch(detailSource, /已调取照片/)
   assert.doesNotMatch(detailSource, /workflowApi\.attachmentUrl\(request\.ticket_id, attachment\.file_id, true\)/)
   assert.doesNotMatch(detailSource, /<DownloadOutlined/)
-  assert.match(clientSource, /photo_requests: Array/)
+  assert.doesNotMatch(clientSource, /photo_requests: Array/)
 })
 
 test('照片完成通知允许已读后继续跳回原任务且拒绝外部路径', () => {
@@ -1125,20 +1125,14 @@ test('模型三备注会进入手机任务编辑字段', () => {
   )
 })
 
-test('任务快捷调照片不再要求填写原因并带入腾讯名单字段', () => {
+test('任务快捷调照片入口明确显示业务已下线', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
   assert.equal(detailSource.includes('photoReason'), false)
   assert.equal(detailSource.includes('请说明需要调取照片的原因'), false)
-  assert.match(detailSource, /request_reason:\s*''/)
-  assert.match(detailSource, /community_name:/)
-  assert.match(detailSource, /source_label:\s*data\?\.workflow\.label/)
-  assert.match(detailSource, /对象：/)
-  assert.match(detailSource, /身份证号：/)
-  assert.match(detailSource, /社区：/)
-  assert.match(detailSource, /来源：/)
+  assert.match(detailSource, /照片调取业务已下线，已停止服务/)
 })
 
 test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更多筛选可用', () => {

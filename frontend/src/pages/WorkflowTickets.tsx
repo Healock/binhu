@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -27,27 +27,22 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   EyeOutlined,
-  FileExcelOutlined,
-  InboxOutlined,
   PlusOutlined,
+  InboxOutlined,
   ReloadOutlined,
   SearchOutlined,
-  SelectOutlined,
-  UploadOutlined,
 } from '@ant-design/icons'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import AppTable from '../components/AppTable'
 import {
   workflowApi,
   formatUTCTime,
-  type PendingPhotoRequest,
   type WorkOrderDetail,
   type WorkOrderSummary,
   type WorkflowType,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import useDebouncedValue from '../hooks/useDebouncedValue'
-import { downloadBlob } from '../utils/fileDownload'
 
 const STATUS_LABELS: Record<string, string> = {
   draft: '草稿', queued: '待领取', in_progress: '处理中', pending_requester: '待补充',
@@ -62,18 +57,6 @@ const EVENT_LABELS: Record<string, string> = {
   comment: '添加评论', attachment_upload: '上传附件', attachment_delete: '删除附件',
 }
 
-const PHOTO_DETAIL_LABELS: Record<string, string> = {
-  subject_type: '对象类型', subject_id: '对象编号', subject_name: '对象姓名',
-  identity_number: '身份证号', source_parser_type: '任务类型', source_row_key: '任务行号',
-  requested_from: '开始时间', requested_to: '结束时间', request_reason: '申请理由',
-  result_status: '调取结果', result_note: '处理说明',
-  community_name: '任务社区', source_label: '数据来源', requester_name_snapshot: '原申请人',
-  requested_at: '历史申请日期', external_origin: '历史来源渠道', external_sync_status: '历史来源状态',
-  legacy_result_note: '历史备注', data_issue: '数据异常',
-  batch_completed_at: '历史批次完成时间', tencent_physical_row: '历史来源位置',
-  photo_sheet_batch_id: '历史批次编号', row_sync_status: '历史来源行状态',
-}
-
 const TERMINAL = new Set(['approved', 'completed', 'rejected', 'cancelled', 'withdrawn'])
 
 function apiError(reason: any, fallback: string) {
@@ -86,9 +69,8 @@ function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`
 }
 
-export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets' | 'photo' }) {
+export default function WorkflowTickets() {
   const { user, systemTimezone } = useAuth()
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedTicketId = Number(searchParams.get('ticket') || 0)
   const permissions = new Set(user?.permissions || [])
@@ -100,12 +82,8 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const canManageAttachments = canHandle
   const position = user?.member?.position || ''
   const canViewAll = canManage || ['基础管控', '中队长', '所队领导'].includes(position)
-  const photoOnly = mode === 'photo'
-
-  const [view, setView] = useState(photoOnly ? 'photo_pending' : 'created')
+  const [view, setView] = useState('created')
   const [rows, setRows] = useState<WorkOrderSummary[]>([])
-  const [photoRows, setPhotoRows] = useState<PendingPhotoRequest[]>([])
-  const [selectedPhotoIds, setSelectedPhotoIds] = useState<Array<string | number>>([])
   const [types, setTypes] = useState<WorkflowType[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -116,8 +94,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const [keywordFlush, setKeywordFlush] = useState(0)
   const debouncedKeyword = useDebouncedValue(keyword.trim(), 350, keywordFlush)
   const [typeCode, setTypeCode] = useState('')
-  const [photoSource, setPhotoSource] = useState('')
-  const [photoCommunity, setPhotoCommunity] = useState('')
   const [attachmentStatus, setAttachmentStatus] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [detail, setDetail] = useState<WorkOrderDetail | null>(null)
@@ -125,8 +101,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const [action, setAction] = useState('')
   const [actionOpen, setActionOpen] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
-  const [photoClaiming, setPhotoClaiming] = useState(false)
-  const [photoExporting, setPhotoExporting] = useState(false)
   const [createForm] = Form.useForm()
   const [actionForm] = Form.useForm()
   const listRequestId = useRef(0)
@@ -144,25 +118,9 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
     setLoading(true)
     setError('')
     try {
-      if (view === 'photo_pending') {
-        const result = await workflowApi.pendingPhotoRequests({
-          keyword: debouncedKeyword,
-          community: photoCommunity,
-          source_label: photoSource,
-          page: nextPage,
-          page_size: nextPageSize,
-        })
-        if (requestId !== listRequestId.current) return
-        setPhotoRows(result.data)
-        setSelectedPhotoIds([])
-        setTotal(result.total)
-        setPage(nextPage)
-        setPageSize(nextPageSize)
-        return
-      }
       const [result, typeResult] = await Promise.all([
         workflowApi.search({
-          view, keyword: debouncedKeyword, type_code: typeCode, source_label: photoSource,
+          view, keyword: debouncedKeyword, type_code: typeCode,
           attachment_status: attachmentStatus,
           page: nextPage, page_size: nextPageSize,
         }),
@@ -179,13 +137,9 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
     } finally {
       if (requestId === listRequestId.current) setLoading(false)
     }
-  }, [attachmentStatus, debouncedKeyword, page, pageSize, photoCommunity, photoSource, typeCode, types, view])
+  }, [attachmentStatus, debouncedKeyword, page, pageSize, typeCode, types, view])
 
-  useEffect(() => {
-    setView(photoOnly ? 'photo_pending' : 'created')
-  }, [photoOnly])
-
-  useEffect(() => { void load(1) }, [view, debouncedKeyword, typeCode, photoSource, photoCommunity, attachmentStatus])
+  useEffect(() => { void load(1) }, [view, debouncedKeyword, typeCode, attachmentStatus])
 
   const refreshDetail = async (ticketId = detail?.id) => {
     if (!ticketId) return
@@ -195,7 +149,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
   const openCreate = () => {
     createForm.resetFields()
     createForm.setFieldsValue({
-      type_code: types.find(item => item.enabled)?.code || 'photo_request',
+      type_code: types.find(item => item.enabled)?.code || 'leave_request',
       priority: 'normal',
     })
     setCreateOpen(true)
@@ -212,16 +166,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
             end_date: values.end_date,
             reason: values.reason || '',
             affects_weekend_duty: Boolean(values.affects_weekend_duty),
-          }
-        : values.type_code === 'photo_request'
-              ? {
-                  subject_type: values.subject_type || 'task',
-                  subject_id: values.subject_id || '',
-                  subject_name: values.subject_name || '',
-                  identity_number: values.identity_number || '',
-                  request_reason: values.reason || '',
-            requested_from: values.requested_from || null,
-            requested_to: values.requested_to || null,
           }
         : values.custom_fields || {}
       await workflowApi.createTicket({
@@ -276,51 +220,9 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
     }
   }
 
-  const claimPhotoRequests = async (claimAll: boolean) => {
-    const ticketIds = selectedPhotoIds.map(Number).filter(Number.isInteger)
-    if (!claimAll && ticketIds.length === 0) return
-    setPhotoClaiming(true)
-    try {
-      const result = await workflowApi.batchClaimPhotoRequests({
-        claim_all: claimAll,
-        ticket_ids: claimAll ? [] : ticketIds,
-      })
-      const skipped = result.skipped_ids.length
-      message.success(
-        skipped
-          ? `已领取 ${result.claimed_count} 张工单，${skipped} 张已被他人处理或状态已变化`
-          : `已领取 ${result.claimed_count} 张照片工单`,
-      )
-      await load(1)
-    } catch (reason) {
-      message.error(apiError(reason, '批量领取失败'))
-    } finally {
-      setPhotoClaiming(false)
-    }
-  }
-
-  const exportPhotoRequests = async () => {
-    setPhotoExporting(true)
-    try {
-      const blob = await workflowApi.exportPendingPhotoRequests({
-        keyword,
-        community: photoCommunity,
-        source_label: photoSource,
-      })
-      const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '')
-      const saved = await downloadBlob(blob, `未调照片-${stamp}.xlsx`)
-      if (saved) message.success('未调照片清单已导出')
-    } catch (reason) {
-      message.error(apiError(reason, '导出失败'))
-    } finally {
-      setPhotoExporting(false)
-    }
-  }
-
   const openAction = (nextAction: string) => {
     actionForm.resetFields()
     actionForm.setFieldsValue({
-      result_status: detail?.type_code === 'photo_request' ? 'found' : undefined,
       target_queue: detail?.current_queue || '基础管控',
     })
     setAction(nextAction)
@@ -423,46 +325,19 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
     },
   ]
 
-  const photoColumns: TableColumnsType<PendingPhotoRequest> = [
-    { title: '姓名', dataIndex: 'subject_name', width: 120, fixed: 'left' },
-    {
-      title: '身份证号', dataIndex: 'identity_number', width: 200,
-      render: value => <span className="font-mono">{value || '—'}</span>,
-    },
-    { title: '社区', dataIndex: 'community_name', width: 140, render: value => value || '—' },
-    { title: '申请人员', dataIndex: 'requester_name', width: 120, render: value => value || '—' },
-    {
-      title: '申请时间', dataIndex: 'requested_at', width: 170,
-      render: value => value ? formatUTCTime(value, systemTimezone) : '—',
-    },
-    { title: '数据来源', dataIndex: 'source_label', width: 180, ellipsis: true, render: value => value || '—' },
-    { title: '工单编号', dataIndex: 'ticket_no', width: 210 },
-    {
-      title: '状态', dataIndex: 'status', width: 110,
-      render: value => <Tag color={value === 'in_progress' ? 'processing' : 'default'}>{STATUS_LABELS[value] || value}</Tag>,
-    },
-    {
-      title: '截止时间', dataIndex: 'due_at', width: 170,
-      render: (value, row) => <span className={row.overdue ? 'text-red-600' : ''}>{value ? formatUTCTime(value, systemTimezone) : '未设置'}</span>,
-    },
-  ]
-
   const requesterOwnsDetail = Boolean(detail && user?.id === detail.requester_user_id)
   const canProcessDetail = Boolean(detail && canHandle && ['queued', 'in_progress'].includes(detail.status))
 
   return (
     <div className="workflow-tickets-page app-page">
       <PageHeader
-        title={photoOnly ? '调照片' : '工单中心'}
-        description={photoOnly
-          ? '基础管控在这里集中领取、导出和处理照片调取任务，照片 ZIP 仍从数据上传中心导入。'
-          : '请假、照片调取等通用流程统一在这里发起和查看。版本冲突会要求刷新，不会静默覆盖他人的操作。'}
+        title="工单中心"
+        description="请假等通用流程统一在这里发起和查看。版本冲突会要求刷新，不会静默覆盖他人的操作。"
       />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel className="workflow-tickets-panel">
         <div className="workflow-tickets-panel__content">
-          {!photoOnly && (
-            <Tabs
+          <Tabs
               activeKey={view}
               onChange={value => { setView(value); setPage(1) }}
               items={[
@@ -474,99 +349,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                 ...(canViewAll ? [{ key: 'all', label: '全部工单' }] : []),
               ]}
             />
-          )}
-          {view === 'photo_pending' ? (
-            <div className="workflow-photo-workbench">
-              <ListToolbar
-                notice={<Alert type="info" showIcon message="三步完成：领取全部待领取工单，导出清单集中调照片，再到数据上传中心上传照片 ZIP。" />}
-                filters={<>
-                  <Input
-                    allowClear
-                    className="workflow-photo-search"
-                    size="large"
-                    prefix={<SearchOutlined className="workflow-photo-search__icon" />}
-                    placeholder="搜索姓名、身份证号或工单编号"
-                    value={keyword}
-                    onChange={event => setKeyword(event.target.value)}
-                    onPressEnter={() => setKeywordFlush(current => current + 1)}
-                  />
-                  <Input
-                    allowClear
-                    className="workflow-photo-toolbar__field"
-                    size="large"
-                    placeholder="社区"
-                    value={photoCommunity}
-                    onChange={event => setPhotoCommunity(event.target.value)}
-                  />
-                  <Input
-                    allowClear
-                    className="workflow-photo-toolbar__field"
-                    size="large"
-                    placeholder="数据来源"
-                    value={photoSource}
-                    onChange={event => setPhotoSource(event.target.value)}
-                  />
-                </>}
-                meta={<><span>当前筛选 {total} 张</span><span>已选择 {selectedPhotoIds.length} 张</span></>}
-                actions={<>
-                  <Popconfirm
-                    title="领取全部待领取的照片工单？"
-                    description="已被其他人领取的工单会自动跳过。领取后仍会保留在当前表格中。"
-                    okText="全部领取"
-                    cancelText="取消"
-                    onConfirm={() => claimPhotoRequests(true)}
-                  >
-                    <Button type="primary" icon={<SelectOutlined />} loading={photoClaiming}>
-                      领取全部待领取
-                    </Button>
-                  </Popconfirm>
-                  <Button
-                    icon={<SelectOutlined />}
-                    disabled={selectedPhotoIds.length === 0}
-                    loading={photoClaiming}
-                    onClick={() => void claimPhotoRequests(false)}
-                  >
-                    领取所选
-                  </Button>
-                  <Button
-                    icon={<FileExcelOutlined />}
-                    loading={photoExporting}
-                    onClick={() => void exportPhotoRequests()}
-                  >
-                    导出 XLSX
-                  </Button>
-                  <Button
-                    icon={<UploadOutlined />}
-                    onClick={() => navigate('/data-upload')}
-                  >
-                    前往数据上传中心
-                  </Button>
-                  <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
-                </>}
-              />
-              <AppTable
-                rowKey="id"
-                loading={loading}
-                columns={photoColumns}
-                dataSource={photoRows}
-                rowSelection={{
-                  selectedRowKeys: selectedPhotoIds,
-                  onChange: keys => setSelectedPhotoIds(keys),
-                  getCheckboxProps: row => ({ disabled: row.status !== 'queued' }),
-                }}
-                pagination={{
-                  current: page,
-                  pageSize,
-                  total,
-                  showSizeChanger: true,
-                  pageSizeOptions: [20, 50, 100, 200],
-                  onChange: (next, size) => void load(next, size),
-                }}
-                scroll={{ x: 1420 }}
-              />
-            </div>
-          ) : (
-            <div className="workflow-ticket-list">
+          <div className="workflow-ticket-list">
               <ListToolbar
                 filters={<>
                 <Input
@@ -585,13 +368,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   value={typeCode || undefined}
                   onChange={value => setTypeCode(value || '')}
                   options={types.map(item => ({ value: item.code, label: item.name }))}
-                />
-                <Input
-                  allowClear
-                  className="max-w-48"
-                  placeholder="照片数据来源"
-                  value={photoSource}
-                  onChange={event => setPhotoSource(event.target.value)}
                 />
                 <Select
                   allowClear
@@ -623,7 +399,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                 scroll={{ x: 1100 }}
               />
             </div>
-          )}
         </div>
       </Panel>
 
@@ -653,7 +428,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
             {detail.type_detail && (
               <section className="workflow-ticket-detail__section">
                 <h3 className="workflow-ticket-detail__heading">
-                  {detail.type_code === 'leave_request' ? '请假信息' : '照片调取信息'}
+                  {detail.type_code === 'leave_request' ? '请假信息' : '工单字段'}
                 </h3>
                 <Descriptions
                   bordered
@@ -661,7 +436,7 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                   column={1}
                   items={Object.entries(detail.type_detail).map(([key, value]) => ({
                     key,
-                    label: detail.type_code === 'photo_request' ? (PHOTO_DETAIL_LABELS[key] || key) : key,
+                    label: key,
                     children: value === null || value === ''
                       ? '—'
                       : ['requested_at', 'batch_completed_at'].includes(key)
@@ -816,14 +591,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
                 <Form.Item name="end_date" label="结束日期" rules={[{ required: true }]}><Input placeholder="YYYY-MM-DD" /></Form.Item>
                 <Form.Item name="reason" label="原因"><Input.TextArea maxLength={1000} /></Form.Item>
               </>
-            ) : getFieldValue('type_code') === 'photo_request' ? (
-              <>
-                <Form.Item name="subject_type" label="对象类型"><Select options={[{ value: 'task', label: '指令任务' }, { value: 'person', label: '人员' }, { value: 'other', label: '其他' }]} /></Form.Item>
-                <Form.Item name="subject_id" label="对象编号"><Input maxLength={190} /></Form.Item>
-                <Form.Item name="subject_name" label="对象姓名" rules={[{ required: true, message: '请填写对象姓名' }]}><Input maxLength={100} /></Form.Item>
-                <Form.Item name="identity_number" label="身份证号" rules={[{ required: true, message: '请填写身份证号' }]}><Input maxLength={50} /></Form.Item>
-                <Form.Item name="reason" label="申请理由" rules={[{ required: true }]}><Input.TextArea rows={3} maxLength={1000} /></Form.Item>
-              </>
             ) : (
               <>
                 {(selectedCreateType?.form_schema?.fields || []).map((field: any) => (
@@ -866,11 +633,6 @@ export default function WorkflowTickets({ mode = 'tickets' }: { mode?: 'tickets'
           {action === 'transfer' && (
             <Form.Item name="target_queue" label="目标岗位队列" rules={[{ required: true }]}>
               <Select options={['基础管控', '中队长', '组长', '组员', '社区民警', '所队领导'].map(value => ({ value, label: value }))} />
-            </Form.Item>
-          )}
-          {detail?.type_code === 'photo_request' && ['approve', 'complete'].includes(action) && (
-            <Form.Item name="result_status" label="调取结果" rules={[{ required: true }]}>
-              <Select options={[{ value: 'found', label: '已找到照片' }, { value: 'not_found', label: '未找到照片' }]} />
             </Form.Item>
           )}
           <Form.Item
