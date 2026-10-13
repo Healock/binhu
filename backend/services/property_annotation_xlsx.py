@@ -135,7 +135,7 @@ def build_annotation_workbook(properties: list[dict], entries: list[dict], user_
     return output
 
 
-def parse_annotation_workbook(content: bytes, user_id: int) -> tuple[list[dict], dict[int, str]]:
+def parse_annotation_workbook(content: bytes) -> list[dict]:
     if len(content) > MAX_UPLOAD_BYTES:
         raise ValueError("标注文件超过 100MB")
     try:
@@ -146,15 +146,11 @@ def parse_annotation_workbook(content: bytes, user_id: int) -> tuple[list[dict],
     except (BadZipFile, KeyError, OSError, ParseError, InvalidFileException, ValueError) as exc:
         raise ValueError("无法读取 XLSX 标注工作簿") from exc
     try:
-        if not {"房屋标注", "小区地址库", "标注说明"}.issubset(workbook.sheetnames):
-            raise ValueError("请使用平台导出的小区标注工作簿，保留工作表")
-        instructions_sheet = workbook["标注说明"]
-        if instructions_sheet.max_row > 100:
-            raise ValueError("标注说明已变化，请重新导出")
-        instructions = dict(instructions_sheet.iter_rows(min_row=2, max_row=100, max_col=2, values_only=True))
-        if instructions.get("format") != FORMAT:
-            raise ValueError("工作簿格式版本不支持，请重新导出")
-        sheet = workbook["房屋标注"]
+        if not workbook.worksheets:
+            raise ValueError("工作簿缺少房屋标注工作表")
+        # Only the first sheet is an input contract. Auxiliary catalog,
+        # candidate, and instruction sheets may be rewritten by annotation tools.
+        sheet = workbook.worksheets[0]
         if sheet.max_row > MAX_ROWS + 1:
             raise ValueError("房屋标注表超过 100000 行")
         headers = next(sheet.iter_rows(max_row=1, values_only=True), ())
@@ -174,39 +170,7 @@ def parse_annotation_workbook(content: bytes, user_id: int) -> tuple[list[dict],
         counts = Counter(str(row.get("id") or "") for row in rows)
         for row in rows:
             row["duplicate"] = counts[str(row.get("id") or "")] > 1
-        catalog = workbook["小区地址库"]
-        if catalog.max_row > MAX_ROWS + 1:
-            raise ValueError("小区地址库超过 100000 行")
-        if tuple(next(catalog.iter_rows(max_row=1, values_only=True), ())) != (*ENTRY_FIELDS, "snapshot_token"):
-            raise ValueError("小区地址库表头已变化，请重新导出")
-        entry_tokens = {}
-        for index, cells in enumerate(catalog.iter_rows(min_row=2, max_col=len(ENTRY_FIELDS) + 1), 2):
-            if index > MAX_ROWS + 1:
-                raise ValueError("小区地址库超过 100000 行")
-            if any(cell.data_type == "f" for cell in cells):
-                raise ValueError("小区地址库不能包含公式")
-            values = [cell.value for cell in cells]
-            if not any(value is not None for value in values):
-                continue
-            try:
-                entry_id = positive_id(values[0])
-            except ValueError as exc:
-                raise ValueError("小区地址库 id 无效") from exc
-            if entry_id in entry_tokens:
-                raise ValueError("小区地址库存在重复 id")
-            entry = dict(zip(ENTRY_FIELDS, values))
-            entry["id"] = entry_id
-            for key in ("name", "community_name", "detail_address", "address_type"):
-                entry[key] = str(entry[key] or "")
-            try:
-                entry["aliases"] = json.loads(entry["aliases"] or "[]")
-                entry["community_id"] = positive_id(entry["community_id"])
-            except (ValueError, TypeError) as exc:
-                raise ValueError("小区地址库原始资料已变化，请重新导出") from exc
-            if not valid_token(str(values[-1] or ""), entry_token(entry, user_id)):
-                raise ValueError("小区地址库原始资料已变化或非原导出账号，请重新导出")
-            entry_tokens[entry_id] = str(values[-1] or "")
-        return rows, entry_tokens
+        return rows
     except (BadZipFile, KeyError, OSError, ParseError, InvalidFileException) as exc:
         raise ValueError("无法读取 XLSX 标注工作簿") from exc
     finally:

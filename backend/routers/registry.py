@@ -1041,7 +1041,7 @@ async def preview_property_annotations(
 ):
     try:
         content = await file.read(MAX_UPLOAD_BYTES + 1)
-        rows, entry_tokens = await asyncio.to_thread(parse_annotation_workbook, content, int(user["id"]))
+        rows = await asyncio.to_thread(parse_annotation_workbook, content)
     except (ValueError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
@@ -1089,9 +1089,7 @@ async def preview_property_annotations(
                 entry = entries.get(target_id)
                 if entry is None or current.get("community_id") != entry["community_id"]:
                     raise ValueError("小区不存在、已停用、越权或所属社区与房屋不一致")
-                expected_entry = entry_tokens.get(target_id, "")
-                if not valid_token(expected_entry, entry_token(entry, int(user["id"]))):
-                    raise ValueError("小区名称、地址、别名或社区配置已变化，请重新导出")
+                expected_entry = entry_token(entry, int(user["id"]))
                 payload = {"property_id": property_id, "small_community_id": target_id,
                            "expected_snapshot": expected, "expected_entry_snapshot": expected_entry}
                 already_confirmed = current.get("address_match_status") == "confirmed" and current.get("small_community_id") == target_id

@@ -61,34 +61,37 @@ def test_roundtrip_handles_literal_formula_prefixes_and_blank_catalog_fields():
     row = {**PROPERTY, "natural_address": "=合成地址"}
     entry = {**ENTRY, "detail_address": ""}
     content = annotated([row], [entry])
-    rows, tokens = xlsx.parse_annotation_workbook(content, 7)
+    rows = xlsx.parse_annotation_workbook(content)
     assert not rows[0]["formula"]
     assert rows[0]["natural_address"] == "=合成地址"
     assert xlsx.valid_token(rows[0]["snapshot_token"], xlsx.property_token(row, 7))
-    assert tokens[12] == xlsx.entry_token(entry, 7)
+    assert rows[0]["decision"] == "match"
 
 
-def test_catalog_tamper_and_wrong_export_account_are_rejected():
-    with pytest.raises(ValueError, match="原始资料"):
-        xlsx.parse_annotation_workbook(annotated(mutate=lambda workbook, *_: setattr(workbook["小区地址库"]["B2"], "value", "替换名称")), 7)
-    with pytest.raises(ValueError, match="原导出账号"):
-        xlsx.parse_annotation_workbook(annotated(), 99)
+def test_auxiliary_sheets_are_ignored_and_property_snapshot_stays_account_bound():
+    content = annotated(mutate=lambda workbook, *_: (
+        setattr(workbook["小区地址库"]["B2"], "value", "外部工具改写名称"),
+        setattr(workbook["标注说明"]["B2"], "value", "外部工具改写说明"),
+    ))
+    rows = xlsx.parse_annotation_workbook(content)
+    assert rows[0]["decision"] == "match"
+    assert not xlsx.valid_token(rows[0]["snapshot_token"], xlsx.property_token(rows[0], 99))
 
 
 def test_invalid_workbook_and_non_ascii_signature_are_rejected():
     with pytest.raises(ValueError, match="无法读取"):
-        xlsx.parse_annotation_workbook(b"not-an-xlsx", 7)
+        xlsx.parse_annotation_workbook(b"not-an-xlsx")
     assert not xlsx.valid_token("无效签名", "a" * 64)
 
 
 def test_upload_limit_and_duplicate_records_and_formula_detection(monkeypatch):
     monkeypatch.setattr(xlsx, "MAX_UPLOAD_BYTES", 4)
     with pytest.raises(ValueError, match="100MB"):
-        xlsx.parse_annotation_workbook(b"12345", 7)
+        xlsx.parse_annotation_workbook(b"12345")
     monkeypatch.setattr(xlsx, "MAX_UPLOAD_BYTES", 10 * 1024 * 1024)
-    rows, _ = xlsx.parse_annotation_workbook(annotated([PROPERTY, PROPERTY]), 7)
+    rows = xlsx.parse_annotation_workbook(annotated([PROPERTY, PROPERTY]))
     assert all(row["duplicate"] for row in rows)
-    rows, _ = xlsx.parse_annotation_workbook(annotated(mutate=lambda _, sheet, columns: sheet.cell(2, columns["annotation_reason"], "=1+1")), 7)
+    rows = xlsx.parse_annotation_workbook(annotated(mutate=lambda _, sheet, columns: sheet.cell(2, columns["annotation_reason"], "=1+1")))
     assert rows[0]["formula"]
 
 
@@ -139,8 +142,8 @@ def data(monkeypatch):
     return properties, entries
 
 
-async def preview(content):
-    return await registry.preview_property_annotations(None, UploadFile(file=BytesIO(content), filename="labels.xlsx"), USER, Connection())
+async def preview(content, user=USER):
+    return await registry.preview_property_annotations(None, UploadFile(file=BytesIO(content), filename="labels.xlsx"), user, Connection())
 
 
 @pytest.mark.asyncio
@@ -172,6 +175,12 @@ async def test_changed_snapshot_or_permission_blocks_preview(data, changed):
 
 
 @pytest.mark.asyncio
+async def test_preview_blocks_different_export_account(data):
+    result = await preview(annotated(), {"id": 99})
+    assert result["blocked"] == 1
+
+
+@pytest.mark.asyncio
 async def test_legacy_inactive_cancelled_property_can_confirm_community(data):
     property_row = {**PROPERTY, "status": "inactive", "household_status": "已注销"}
     data[0][42] = property_row
@@ -186,10 +195,18 @@ async def test_legacy_inactive_cancelled_property_can_confirm_community(data):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("changed", [{"community_id": 9}, {"name": "新名称"}, {"aliases": ["新别名"]}])
+@pytest.mark.parametrize("changed", [{"community_id": 9}])
 async def test_cross_community_and_changed_catalog_block_preview(data, changed):
     data[1][0].update(changed)
     assert (await preview(annotated()))["blocked"] == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_ignores_modified_workbook_catalog_and_uses_current_server_entry(data):
+    content = annotated(mutate=lambda workbook, *_: setattr(workbook["小区地址库"]["B2"], "value", "被外部工具改写"))
+    result = await preview(content)
+    assert result["ready"] == 1
+    assert result["items"][0]["target_name"] == ENTRY["name"]
 
 
 @pytest.mark.asyncio
