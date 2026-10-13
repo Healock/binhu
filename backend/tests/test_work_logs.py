@@ -1033,6 +1033,14 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             population_coefficient=12,
         )
         self.assertEqual(request.population_coefficient, 12)
+        self.assertEqual(
+            DailyDetailExportRequest(
+                business_date=date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            ).population_coefficient,
+            10,
+        )
         with self.assertRaises(Exception):
             DailyDetailExportRequest(
                 business_date=date(2026, 8, 9),
