@@ -36,6 +36,7 @@ import {
   deleteGridMember,
   exportGridMembersUrl,
   getAttendanceScheduleStatus,
+  getCommunityAreas,
   getGridCommunities,
   getDepartments,
   getAttendanceHistory,
@@ -50,6 +51,7 @@ import {
   type AttendanceScheduleStatus,
   type DepartmentOption,
   type AccountOption,
+  type CommunityArea,
 } from '../api/client'
 import {
   PERSONNEL_POSITIONS,
@@ -96,6 +98,7 @@ export default function GridMembers() {
   })
   const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [departments, setDepartments] = useState<DepartmentOption[]>([])
+  const [areas, setAreas] = useState<CommunityArea[]>([])
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([])
   const [keyword, setKeyword] = useState('')
   const [searchInput, setSearchInput] = useState('')
@@ -180,13 +183,15 @@ export default function GridMembers() {
 
   const fetchCommunities = useCallback(async () => {
     try {
-      const [communityRows, departmentRows, accountRows] = await Promise.all([
+      const [communityRows, departmentRows, areaRows, accountRows] = await Promise.all([
         getGridCommunities(),
         getDepartments(),
+        getCommunityAreas(),
         canManage ? getUnlinkedAccountOptions() : Promise.resolve([]),
       ])
       setCommunities(communityRows)
       setDepartments(departmentRows)
+      setAreas(areaRows)
       setAccountOptions(accountRows)
     } catch {
       // 人员列表仍然可以独立显示。
@@ -287,7 +292,9 @@ export default function GridMembers() {
       key: 'department',
       width: 150,
       responsivePriority: 'standard',
-      render: (_, member) => `${member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门'} · ${member.position}`,
+      render: (_, member) => `${member.position === '自购房'
+        ? (member.area_name || '未分配片区')
+        : (member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门')} · ${member.position}`,
     },
     {
       title: '岗位',
@@ -636,6 +643,7 @@ export default function GridMembers() {
         <MemberForm
           member={editing}
           departments={departments}
+          areas={areas}
           accountOptions={accountOptions}
           canManageIdentity={canManageIdentity}
           onClose={() => {
@@ -914,6 +922,7 @@ function MobileMemberCard({
 function MemberForm({
   member,
   departments,
+  areas,
   accountOptions,
   canManageIdentity,
   onClose,
@@ -921,6 +930,7 @@ function MemberForm({
 }: {
   member: GridMember | null
   departments: DepartmentOption[]
+  areas: CommunityArea[]
   accountOptions: AccountOption[]
   canManageIdentity: boolean
   onClose: () => void
@@ -930,6 +940,7 @@ function MemberForm({
   const [departmentIds, setDepartmentIds] = useState<number[]>(
     member?.department_ids || (member?.department_id ? [member.department_id] : []),
   )
+  const [areaId, setAreaId] = useState<number | null>(member?.area_id || null)
   const [position, setPosition] = useState<PersonnelPosition>(
     (member?.position as PersonnelPosition) || '组员',
   )
@@ -950,6 +961,7 @@ function MemberForm({
   const [formError, setFormError] = useState('')
   const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
   const departmentlessPosition = position === '管家码'
+  const selfOwnedPosition = position === '自购房'
   const multipleCommunities = position === '社区民警'
   const communityPosition = ['组长', '组员', '社区民警'].includes(position)
   const currentAccountId = member?.account?.id || null
@@ -985,6 +997,10 @@ function MemberForm({
       setFormError('该岗位必须选择社区部门')
       return
     }
+    if (selfOwnedPosition && !areaId) {
+      setFormError('自购房岗位必须指定片区')
+      return
+    }
     if (!multipleCommunities && departmentIds.length > 1) {
       setFormError('该岗位只能选择一个社区部门')
       return
@@ -1011,6 +1027,7 @@ function MemberForm({
     try {
       const payload: {
         department_ids: number[]
+        area_id?: number | null
         position: PersonnelPosition
         phone: string
         notes: string
@@ -1018,6 +1035,7 @@ function MemberForm({
         account_id?: number
       } = {
         department_ids: departmentIds,
+        area_id: selfOwnedPosition ? areaId : null,
         position,
         phone,
         notes,
@@ -1081,7 +1099,15 @@ function MemberForm({
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
             所属部门
           </label>
-          {departmentlessPosition ? (
+          {selfOwnedPosition ? (
+            <Select
+              value={areaId || undefined}
+              onChange={value => setAreaId(value || null)}
+              placeholder="请选择所属片区"
+              className="w-full"
+              options={areas.map(area => ({ value: area.id, label: area.name }))}
+            />
+          ) : departmentlessPosition ? (
             <Input value="不属于社区或片区" disabled />
           ) : multipleCommunities ? (
             <Select
@@ -1121,15 +1147,21 @@ function MemberForm({
               setPosition(value)
               const nextIsInternal = ['片长', '中队长', '基础管控', '所队领导'].includes(value)
               const currentDepartment = departments.find(item => item.id === departmentIds[0])
-              if (value === '管家码') {
+              if (value === '管家码' || value === '自购房') {
                 setDepartmentIds([])
+                if (value === '管家码') setAreaId(null)
               } else if (nextIsInternal) {
                 const internalId = departments.find(item => item.type === 'internal')?.id
                 setDepartmentIds(internalId ? [internalId] : [])
+                setAreaId(null)
               } else if (currentDepartment?.type === 'internal') {
                 setDepartmentIds([])
+                setAreaId(null)
               } else if (value !== '社区民警' && departmentIds.length > 1) {
                 setDepartmentIds(departmentIds.slice(0, 1))
+                setAreaId(null)
+              } else if (value !== '自购房') {
+                setAreaId(null)
               }
             }}
             className="w-full"
@@ -1142,7 +1174,7 @@ function MemberForm({
             <span className="flex items-start gap-1.5 leading-5">
               <InfoCircleOutlined className="mt-0.5 shrink-0" />
               <span>
-                在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他社区岗位只能选择一个，内勤岗位自动归入内勤。
+                在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他社区岗位只能选择一个。自购房人员按片区归属，内勤岗位自动归入内勤。
               </span>
             </span>
           </p>

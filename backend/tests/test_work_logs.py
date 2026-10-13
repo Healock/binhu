@@ -1094,6 +1094,55 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sheet["O51"].value, 4)
         self.assertEqual(sheet["Q51"].value, 0.5)
 
+    async def test_daily_detail_excludes_leadership_and_keeps_self_owned_under_area(self):
+        rows = [
+            {
+                "group_key": "area:东片",
+                "group_label": "东片\n熊朝良",
+                "community": "自购房",
+                "name": "朱光明",
+                "position": "自购房",
+                "attendance": "是",
+                "visit_target": 15,
+            },
+            {
+                "group_key": "internal:社区民警",
+                "group_label": "社区民警",
+                "community": "长板",
+                "name": "不应导出",
+                "position": "社区民警",
+                "attendance": "是",
+            },
+        ]
+        with patch(
+            "services.work_log_daily_detail._load_roster",
+            new=AsyncMock(return_value=rows),
+        ), patch(
+            "services.work_log_daily_detail.load_population_inputs",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "services.work_log_daily_detail.get_known_personnel_positions",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "services.work_log_daily_detail.get_configured_positions",
+            new=AsyncMock(return_value=["组员"]),
+        ), patch(
+            "services.work_log_daily_detail.get_visit_summary",
+            new=AsyncMock(return_value={"inspector": {"data": []}}),
+        ), patch(
+            "services.work_log_daily_detail.get_summary",
+            new=AsyncMock(return_value={"exists": False}),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(),
+                date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            )
+        self.assertEqual([item["name"] for item in result], ["朱光明"])
+        self.assertEqual(result[0]["group_label"], "东片\n熊朝良")
+        self.assertEqual(result[0]["community"], "自购房")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,13 @@ from services.visit_summary import (
 
 DEFAULT_RENTAL_TARGET = 10
 DEFAULT_SELF_OWNED_TARGET = 15
+DAILY_DETAIL_EXCLUDED_POSITIONS = {
+    "社区民警",
+    "所队领导",
+    "中队长",
+    "基础管控",
+    "片长",
+}
 DEFAULT_POPULATION_COEFFICIENT = 10
 MAX_POPULATION_COEFFICIENT = 999
 MAX_VISIT_TARGET = 999
@@ -278,7 +285,8 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
                    GROUP_CONCAT(DISTINCT COALESCE(area.name, leader_area.name)
                        ORDER BY COALESCE(area.id, leader_area.id) SEPARATOR '、'),
                    GROUP_CONCAT(DISTINCT department.name
-                       ORDER BY link.sort_order, department.name SEPARATOR '、')
+                       ORDER BY link.sort_order, department.name SEPARATOR '、'),
+                   member_area.id, member_area.name
             FROM _grid_members AS member
             LEFT JOIN _grid_member_department_links AS link
               ON link.member_id=member.id
@@ -290,8 +298,10 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
             LEFT JOIN _area_leader_links AS leader_link
               ON leader_link.member_id=member.id
             LEFT JOIN _areas AS leader_area ON leader_area.id=leader_link.area_id
+            LEFT JOIN _areas AS member_area ON member_area.id=member.area_id
             WHERE TRIM(member.name) <> '' AND member.status <> '离岗'
-            GROUP BY member.id, member.name, member.position, member.status
+            GROUP BY member.id, member.name, member.position, member.status,
+                     member_area.id, member_area.name
             """
         )
         rows = await cur.fetchall()
@@ -315,16 +325,27 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
 
     roster: list[dict[str, Any]] = []
     for raw_row in rows:
-        if len(raw_row) >= 8:
+        if len(raw_row) >= 10:
+            member_id, name, position, status, community_id, communities, areas, departments, member_area_id, member_area_name = raw_row[:10]
+        elif len(raw_row) >= 8:
             member_id, name, position, status, community_id, communities, areas, departments = raw_row[:8]
+            member_area_id, member_area_name = None, ""
         else:
             member_id, name, position, status, communities, areas, departments = raw_row[:7]
             community_id = None
+            member_area_id, member_area_name = None, ""
         member_name = str(name).strip()
         member_position = str(position or "").strip() or "未设置岗位"
+        if member_position in DAILY_DETAIL_EXCLUDED_POSITIONS:
+            continue
         community = str(communities or "").split("、", 1)[0].strip()
         area = str(areas or "").split("、", 1)[0].strip()
         department = str(departments or "").split("、", 1)[0].strip()
+        if member_position == "自购房":
+            area = str(member_area_name or "").strip()
+            community_id = None
+            community = "自购房" if area else ""
+            department = ""
         if member_position == "管家码":
             # 历史关联即使未被清理，也不能让管家码进入辖区或社区统计。
             community_id = None
@@ -415,7 +436,11 @@ async def build_daily_detail_data(
     self_owned_target: int,
     population_coefficient: int = DEFAULT_POPULATION_COEFFICIENT,
 ) -> list[dict[str, Any]]:
-    roster = await _load_roster(conn, business_date)
+    roster = [
+        member
+        for member in await _load_roster(conn, business_date)
+        if str(member.get("position") or "") not in DAILY_DETAIL_EXCLUDED_POSITIONS
+    ]
     coefficient = normalize_population_coefficient(population_coefficient)
     population_rows = await load_population_inputs(conn, business_date)
     population_by_community = {

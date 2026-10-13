@@ -2891,6 +2891,8 @@ export interface GridMember {
   department: DepartmentOption | null
   departments: DepartmentOption[]
   community_names: string[]
+  area_id: number | null
+  area_name: string
   account: {
     id: number
     username_masked: string
@@ -2903,6 +2905,7 @@ export interface GridMemberPayload {
   community?: string
   department_id?: number | null
   department_ids?: number[]
+  area_id?: number | null
   position?: string
   phone?: string
   id_card_number?: string | null

@@ -71,6 +71,7 @@ class GridMemberCreate(BaseModel):
     community: str = ""
     department_id: Optional[int] = None
     department_ids: Optional[list[int]] = Field(default=None, max_length=30)
+    area_id: Optional[int] = Field(default=None, gt=0)
     position: str = "组员"
     phone: str = ""
     id_card_number: Optional[str] = Field(default=None, max_length=50)
@@ -134,6 +135,7 @@ class GridMemberUpdate(BaseModel):
     community: Optional[str] = None
     department_id: Optional[int] = None
     department_ids: Optional[list[int]] = Field(default=None, max_length=30)
+    area_id: Optional[int] = Field(default=None, gt=0)
     position: Optional[str] = None
     phone: Optional[str] = None
     id_card_number: Optional[str] = Field(default=None, max_length=50)
@@ -359,6 +361,20 @@ async def _resolved_departments_for_payload(
     return await resolve_departments(cur, position, selected)
 
 
+async def _resolve_member_area(cur, position: str, area_id: int | None) -> int | None:
+    """自购房人员按片区归属，其他岗位不保存人员片区。"""
+    if position != "自购房":
+        if area_id is not None:
+            raise HTTPException(400, "只有自购房岗位需要指定片区")
+        return None
+    if area_id is None:
+        raise HTTPException(400, "自购房岗位必须指定片区")
+    await cur.execute("SELECT id FROM _areas WHERE id=%s", (area_id,))
+    if not await cur.fetchone():
+        raise HTTPException(400, "所选片区不存在")
+    return int(area_id)
+
+
 async def _position_primary_group(cur, position: str) -> tuple[int, str, str]:
     await cur.execute(
         """
@@ -465,6 +481,8 @@ def _member_to_dict(
             item["community_name"] for item in departments
             if item.get("community_name")
         ],
+        "area_id": int(row[16]) if len(row) > 16 and row[16] is not None else None,
+        "area_name": str(row[17] or "") if len(row) > 17 else "",
         "account": account,
         **snapshot,
     }
@@ -599,7 +617,9 @@ async def list_members(
             f"member.leave_start_date, member.leave_end_date, "
             f"member.leave_reason, member.leave_source, member.id_card_number, "
             f"department.id, department.name, department.department_type, "
-            f"community.name {joins}{where} "
+            f"community.name, member_area.id, member_area.name {joins} "
+            f"LEFT JOIN _areas AS member_area ON member_area.id=member.area_id "
+            f"{where} "
             f"ORDER BY department.name, member.name LIMIT %s OFFSET %s",
             params + [page_size, offset],
         )
@@ -1838,6 +1858,7 @@ async def create_member(
                 data.department_ids,
                 data.department_id,
             )
+            member_area_id = await _resolve_member_area(cur, data.position, data.area_id)
             primary = departments[0] if departments else None
             if data.id_card_number:
                 await cur.execute(
@@ -1849,9 +1870,9 @@ async def create_member(
             await cur.execute(
                 "INSERT INTO _grid_members "
                 "(name, community, department_id, position, phone, id_card_number, "
-                "notes, status, "
+                "area_id, notes, status, "
                 "leave_start_date, leave_end_date, leave_reason, leave_source) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     data.name.strip(),
                     primary.get("community_name") or "" if primary else "",
@@ -1859,6 +1880,7 @@ async def create_member(
                     data.position,
                     data.phone,
                     data.id_card_number,
+                    member_area_id,
                     data.notes,
                     data.status,
                     data.leave_start_date,
@@ -1919,7 +1941,9 @@ async def update_member(
 ):
     """修改"""
     fields_set = data.model_fields_set
-    relationship_fields = {"department_id", "department_ids", "community", "position"}
+    relationship_fields = {
+        "department_id", "department_ids", "community", "position", "area_id",
+    }
     identity_changed = "id_card_number" in fields_set
     account_requested = "account_id" in fields_set
     if identity_changed and str(user.get("role") or "") != "super_admin":
@@ -1936,7 +1960,7 @@ async def update_member(
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT status, leave_start_date, leave_end_date, "
-                "position, department_id FROM _grid_members "
+                "position, department_id, area_id FROM _grid_members "
                 "WHERE id=%s FOR UPDATE",
                 (member_id,),
             )
@@ -1997,9 +2021,20 @@ async def update_member(
 
             old_position = str(existing[3])
             next_position = str(updates.get("position") or old_position)
+            requested_area_id = (
+                data.area_id if "area_id" in fields_set
+                else (existing[5] if next_position == "自购房" else None)
+            )
+            member_area_id = await _resolve_member_area(
+                cur,
+                next_position,
+                requested_area_id,
+            )
             departments = existing_departments.get(member_id, [])
             if relationship_fields & fields_set:
-                if "department_ids" in fields_set:
+                if next_position == "自购房":
+                    requested_ids = []
+                elif "department_ids" in fields_set:
                     requested_ids = data.department_ids or []
                 elif "department_id" in fields_set:
                     requested_ids = (
@@ -2012,6 +2047,7 @@ async def update_member(
                     next_position,
                     requested_ids,
                 )
+                updates["area_id"] = member_area_id
 
             if updates:
                 set_clause = ", ".join(f"{key}=%s" for key in updates)
