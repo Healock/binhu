@@ -105,9 +105,6 @@ INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('maintenance_start_at', ''),
     ('maintenance_end_at', ''),
     ('maintenance_message', '平台正在维护中，请稍后再试');
-INSERT IGNORE INTO _system_config (config_key, config_value)
-VALUES ('work_log_daily_detail_population_coefficient', '10');
-
 CREATE TABLE IF NOT EXISTS _work_log_daily_detail_population (
     business_date DATE NOT NULL,
     community_id INT NOT NULL,
