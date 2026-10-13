@@ -4740,6 +4740,18 @@ export interface PropertyAnnotationPreview {
   }>
 }
 
+export interface PropertyAnnotationExportJob {
+  id: string
+  status: 'queued' | 'running' | 'ready' | 'failed' | 'interrupted' | 'expired'
+  phase: string
+  row_count: number
+  file_size: number
+  error_code: string
+  created_at: string | null
+  finished_at: string | null
+  expires_at: string | null
+}
+
 export interface HouseholdImportFile {
   key: string
   file: File
@@ -4750,7 +4762,17 @@ export interface HouseholdImportFile {
 
 export const registryApi = {
   async exportPropertyAnnotations(params: PropertyAnnotationFilters) {
-    return (await api.post('/registry/properties/small-community-annotations/export', params, {
+    return (await api.post('/registry/properties/small-community-annotations/export', params, activeRequest)).data as {
+      job_id: string
+      status: 'queued' | 'running'
+      phase: string
+    }
+  },
+  async propertyAnnotationExportStatus(jobId: string): Promise<PropertyAnnotationExportJob> {
+    return (await api.get(`/registry/properties/small-community-annotations/exports/${encodeURIComponent(jobId)}`, activeRequest)).data
+  },
+  async downloadPropertyAnnotationExport(jobId: string): Promise<Blob> {
+    return (await api.get(`/registry/properties/small-community-annotations/exports/${encodeURIComponent(jobId)}/download`, {
       ...activeRequest, responseType: 'blob', timeout: 300_000,
     })).data as Blob
   },

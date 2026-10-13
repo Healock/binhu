@@ -14,6 +14,7 @@ try {
     const errors = []
     const applied = []
     let exported = null
+    let exportJobPolls = 0
     let lastSearch = null
     page.on('pageerror', error => errors.push(error.message))
     await page.addInitScript(dark => {
@@ -33,6 +34,13 @@ try {
       } })
       if (url.pathname.endsWith('/small-community-annotations/export')) {
         exported = route.request().postDataJSON()
+        return send({ job_id: '00000000-0000-4000-8000-000000000007', status: 'queued', phase: 'queued' })
+      }
+      if (url.pathname.endsWith('/small-community-annotations/exports/00000000-0000-4000-8000-000000000007')) {
+        exportJobPolls += 1
+        return send({ id: '00000000-0000-4000-8000-000000000007', status: 'ready', phase: 'finished', row_count: 1, file_size: 10, error_code: '', created_at: null, finished_at: null, expires_at: null })
+      }
+      if (url.pathname.endsWith('/small-community-annotations/exports/00000000-0000-4000-8000-000000000007/download')) {
         return route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: 'synthetic-workbook' })
       }
       if (url.pathname.endsWith('/small-community-annotations/preview')) return send({ total: 3, ready: 2, blocked: 1, review: 0, skipped: 0, items: [
@@ -81,6 +89,7 @@ try {
       const download = page.waitForEvent('download')
       await page.getByRole('button', { name: '导出小区标注' }).click()
       await download
+      assert.equal(exportJobPolls, 1)
       assert.equal(exported.keyword, '合成')
       assert.equal(exported.sort, 'id_desc')
       assert.equal(exported.household_status, 'cancelled')

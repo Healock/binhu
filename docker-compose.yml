@@ -126,6 +126,7 @@ services:
       USER_AVATAR_DIR: /app/user-avatars
       FULLCHAIN_ARCHIVE_DIR: /app/fullchain-archives
       POLICE_DISPATCH_IMPORT_DIR: /app/police-dispatch-imports
+      REGISTRY_ANNOTATION_EXPORT_DIR: /app/registry-annotation-exports
       VISIT_SOURCE_BASE_URL: ${BINHU_VISIT_SOURCE_BASE_URL:-}
       VISIT_SOURCE_AUTHORIZATION: ${BINHU_VISIT_SOURCE_AUTHORIZATION:-}
       VISIT_SOURCE_USERNAME: ${BINHU_VISIT_SOURCE_USERNAME:-}
@@ -179,6 +180,7 @@ services:
       - ${BINHU_USER_AVATAR_DIR:-/data/binhu/user-avatars}:/app/user-avatars
       - ${BINHU_FULLCHAIN_ARCHIVE_DIR:-/data/binhu/fullchain-archives}:/app/fullchain-archives
       - ${BINHU_POLICE_DISPATCH_IMPORT_DIR:-/data/binhu/police-dispatch-imports}:/app/police-dispatch-imports
+      - ${BINHU_REGISTRY_ANNOTATION_EXPORT_DIR:-/data/binhu/registry-annotation-exports}:/app/registry-annotation-exports
       - ${BINHU_VENUE_CLOUD_SECRET_DIR:-/etc/binhu/venue-cloud}:/run/secrets/venue-cloud:ro
     logging:
       driver: json-file

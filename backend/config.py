@@ -225,6 +225,7 @@ class Settings(BaseSettings):
     USER_AVATAR_DIR: str = "../user-avatars"
     FULLCHAIN_ARCHIVE_DIR: str = "../fullchain-archives"
     POLICE_DISPATCH_IMPORT_DIR: str = "../police-dispatch-imports"
+    REGISTRY_ANNOTATION_EXPORT_DIR: str = "../registry-annotation-exports"
     VENUE_PHOTO_DIR: str = "../venue-photos"
     VENUE_PHOTO_MAX_BYTES: int = 5 * 1024 * 1024
     VENUE_CLOUD_SYNC_ENABLED: bool = False

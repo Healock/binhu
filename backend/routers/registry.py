@@ -9,7 +9,7 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, File, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from services.xlsx_export import XLSX_MEDIA_TYPE, build_xlsx
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,9 @@ from services.address_matching import MATCHER_VERSION
 from services.property_annotation_xlsx import (
     MAX_ROWS, MAX_UPLOAD_BYTES, SNAPSHOT_FIELDS, build_annotation_workbook, parse_annotation_workbook,
     property_token, entry_token, signature, valid_token, positive_id,
+)
+from services.property_annotation_exports import (
+    create_export_job, get_export_file, get_export_job, set_export_phase,
 )
 
 
@@ -971,26 +974,64 @@ async def _annotation_properties(cur, ids, *, lock=False):
 @router.post("/properties/small-community-annotations/export")
 async def export_property_annotations(
     data: PropertySearch, request: Request,
-    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)), conn=Depends(get_registry_db),
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)),
 ):
-    result = await _property_search_result(data, user, conn, export_all=True)
-    allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
-    rows = [row for row in result["data"] if allowed is None or row.get("community_id") in allowed]
-    if len(rows) > MAX_ROWS:
-        raise HTTPException(422, "当前筛选超过 10000 套房屋，请按社区拆分导出")
-    view_allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
-    catalog_scope = allowed if view_allowed is None else view_allowed if allowed is None else sorted(set(allowed) & set(view_allowed))
-    async with conn.cursor() as cur:
-        entries = await _annotation_entries(cur, community_ids=catalog_scope)
-    if len(entries) > MAX_ROWS:
-        raise HTTPException(422, "可查看的小区超过 10000 个，请联系管理员缩小权限范围")
-    output = await asyncio.to_thread(build_annotation_workbook, rows, entries, int(user["id"]))
+    filters = data.model_copy(deep=True)
+    requested_by = int(user["id"])
+
+    async def runner(_job_id: str) -> tuple[int, bytes]:
+        pool = db_manager.get_pool("registry")
+        async with pool.acquire() as export_conn:
+            result = await _property_search_result(filters, user, export_conn, export_all=True)
+            allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
+            rows = [row for row in result["data"] if allowed is None or row.get("community_id") in allowed]
+            if len(rows) > MAX_ROWS:
+                raise ValueError("当前筛选超过 100000 套房屋")
+            view_allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
+            catalog_scope = (allowed if view_allowed is None else view_allowed if allowed is None
+                             else sorted(set(allowed) & set(view_allowed)))
+            async with export_conn.cursor() as cur:
+                entries = await _annotation_entries(cur, community_ids=catalog_scope)
+        if len(entries) > MAX_ROWS:
+            raise ValueError("可查看的小区超过 100000 个")
+        await set_export_phase(_job_id, "building")
+        output = await asyncio.to_thread(build_annotation_workbook, rows, entries, requested_by)
+        return len(rows), output.getvalue()
+
+    try:
+        job = await create_export_job(requested_by, runner)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
     await record_admin_audit(user, "registry.property_annotations.export", target_type="registry_property",
-                             detail={"rows": len(rows), "entries": len(entries), "sort": data.sort},
+                             detail={"job_id": job["id"], "sort": data.sort},
                              **request_audit_fields(request))
-    filename = f"房屋小区标注-{datetime.now():%Y%m%d%H%M%S}.xlsx"
-    return StreamingResponse(output, media_type=XLSX_MEDIA_TYPE,
-                             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
+    return {"job_id": job["id"], "status": job["status"], "phase": job["phase"]}
+
+
+@router.get("/properties/small-community-annotations/exports/{job_id}")
+async def property_annotation_export_status(
+    job_id: str,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)),
+):
+    job = await get_export_job(job_id, int(user["id"]))
+    if not job:
+        raise HTTPException(404, "导出任务不存在、已过期或无权访问")
+    return job
+
+
+@router.get("/properties/small-community-annotations/exports/{job_id}/download")
+async def download_property_annotation_export(
+    job_id: str,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)),
+):
+    path = await get_export_file(job_id, int(user["id"]))
+    if not path:
+        raise HTTPException(404, "导出文件不存在、尚未完成或已过期")
+    return FileResponse(
+        path,
+        media_type=XLSX_MEDIA_TYPE,
+        filename=f"房屋小区标注-{datetime.now():%Y%m%d%H%M%S}.xlsx",
+    )
 
 
 @router.post("/properties/small-community-annotations/preview")
@@ -1000,7 +1041,7 @@ async def preview_property_annotations(
 ):
     try:
         content = await file.read(MAX_UPLOAD_BYTES + 1)
-        rows, entry_tokens = await asyncio.to_thread(parse_annotation_workbook, content, int(user["id"]))
+        rows = await asyncio.to_thread(parse_annotation_workbook, content)
     except (ValueError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
@@ -1048,9 +1089,7 @@ async def preview_property_annotations(
                 entry = entries.get(target_id)
                 if entry is None or current.get("community_id") != entry["community_id"]:
                     raise ValueError("小区不存在、已停用、越权或所属社区与房屋不一致")
-                expected_entry = entry_tokens.get(target_id, "")
-                if not valid_token(expected_entry, entry_token(entry, int(user["id"]))):
-                    raise ValueError("小区名称、地址、别名或社区配置已变化，请重新导出")
+                expected_entry = entry_token(entry, int(user["id"]))
                 payload = {"property_id": property_id, "small_community_id": target_id,
                            "expected_snapshot": expected, "expected_entry_snapshot": expected_entry}
                 already_confirmed = current.get("address_match_status") == "confirmed" and current.get("small_community_id") == target_id
