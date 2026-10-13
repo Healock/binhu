@@ -10,7 +10,7 @@ from openpyxl import Workbook
 
 from tests.test_household_cancellation_status import Connection
 from routers import registry_extended as extended
-from services.registry_import import classify_household_file_rows
+from services.registry_import import _source_datetime, classify_household_file_rows
 
 
 def upload(name, *, number="H1", address="合成路1号", kind="个人租赁", status=None, empty=False):
@@ -100,11 +100,53 @@ def test_identical_household_is_suppressed_but_sources_are_preserved():
     assert result["rows"][1]["import_skip"] == "identical_household"
 
 
-@pytest.mark.parametrize("changes", [{"address": "合成路2号"}, {"household_status": "未注销"}, {"housing_type": "借住"}])
+@pytest.mark.parametrize("changes", [{"household_status": "未注销"}, {"housing_type": "借住"}])
 def test_conflicting_household_cannot_overwrite_in_upload_order(changes):
     result = classify_household_file_rows([row("a"), row("b", **changes)])
     assert result["normal_count"] == 0
     assert {item["payload"]["import_source_ref"] for item in result["issues"]} == {"a", "b"}
+
+
+def test_newer_timestamp_wins_for_same_household_and_address():
+    older = row("a", updated_at="2026-01-01T09:00:00")
+    newer = row("b", updated_at="2026-01-02T09:00:00", household_status="未注销")
+    result = classify_household_file_rows([older, newer])
+    assert result["normal_count"] == 1 and result["issue_count"] == 0
+    assert result["normal_rows"][0]["import_source_ref"] == "b"
+    assert older["import_skip"] == "superseded_household_snapshot"
+    assert older["import_duplicate_of"] == "b"
+
+
+def test_same_timestamp_conflicting_household_snapshots_remain_reviewable():
+    result = classify_household_file_rows([
+        row("a", updated_at="2026-01-01T09:00:00"),
+        row("b", updated_at="2026-01-01T09:00:00", household_status="未注销"),
+    ])
+    assert result["normal_count"] == 0 and result["issue_count"] == 2
+
+
+def test_household_number_reuse_at_a_different_address_is_not_a_duplicate():
+    result = classify_household_file_rows([
+        row("a", updated_at="2026-01-01T09:00:00"),
+        row("b", address="合成路2号", updated_at="2026-02-01T09:00:00", household_status="未注销"),
+    ])
+    assert result["normal_count"] == 2 and result["issue_count"] == 0
+
+
+def test_source_update_time_normalizes_timezone_before_comparison():
+    assert _source_datetime("2026/01/01 09:00:00+08:00") == _source_datetime("2026-01-01T01:00:00Z")
+
+
+@pytest.mark.asyncio
+async def test_new_address_requires_existing_timestamp_evidence(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", address="合成路2号", updated_at="2026-03-01T09:00:00"), None)],
+        properties=[existing_property(updated_at=None)],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    issue_batches = [params for sql, params in conn.calls if sql.startswith("INSERT INTO registry_import_issues")]
+    assert any("更新时间不能证明" in row_values[-1] for batch in issue_batches for row_values in batch)
 
 
 def test_distinct_household_ids_at_same_address_are_not_deduplicated():
@@ -219,8 +261,9 @@ class IdentityConnection(Connection):
         return []
 
 
-def existing_property(identifier=42, *, number="H1", address="合成路1号"):
-    return (identifier, 8, "", address, "", "", extended.normalize_address(address), number)
+def existing_property(identifier=42, *, number="H1", address="合成路1号", updated_at=None, status="已注销"):
+    return (identifier, 8, "", address, "", "", extended.normalize_address(address), number,
+            updated_at, "个人出租", "", status)
 
 
 @pytest.fixture
@@ -252,6 +295,18 @@ async def test_matching_household_updates_correct_property_and_counts(confirmati
     assert result["updated_count"] == 1 and result["inserted_count"] == 0
     _, values = next((sql, values) for sql, values in conn.calls if sql.startswith("UPDATE registry_properties SET"))
     assert values[5] == "H1" and values[-1] == 42 and values[-5:-2] == ("未注销",) * 3
+
+
+@pytest.mark.asyncio
+async def test_newer_cancelled_source_overwrites_existing_not_cancelled_status(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-02-01T09:00:00", household_status="已注销"), None)],
+        properties=[existing_property(updated_at="2026-01-01 09:00:00", status="未注销")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["updated_count"] == 1 and result["imported_count"] == 1
+    _, values = next((sql, values) for sql, values in conn.calls if sql.startswith("UPDATE registry_properties SET"))
+    assert values[-5:-2] == ("已注销",) * 3
 
 
 @pytest.mark.asyncio
@@ -380,3 +435,75 @@ async def test_numberless_source_at_multiple_households_remains_blocked(confirma
                               properties=[existing_property(), existing_property(43, number="H2")])
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
     assert result["imported_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_multiple_exact_archives_merge_to_unique_latest_source(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-03-01T09:00:00"), None)],
+        properties=[
+            existing_property(42, updated_at="2026-01-01 09:00:00"),
+            existing_property(43, updated_at="2026-02-01 09:00:00"),
+        ],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["updated_count"] == 1 and result["imported_count"] == 1
+    assert any("household_status='已注销'" in sql for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_multiple_exact_archives_without_unique_timestamps_stay_blocked(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-03-01T09:00:00"), None)],
+        properties=[existing_property(42), existing_property(43)],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_batch_does_not_cancel_archives_before_rejection(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-03-01T09:00:00"), None)],
+        properties=[
+            existing_property(42, updated_at="2026-01-01 09:00:00"),
+            existing_property(43, updated_at="2026-02-01 09:00:00"),
+        ],
+        newer_ids=(43,),
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert not any("household_status='已注销'" in sql for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("incoming_time", ["2026-01-01T09:00:00", None])
+async def test_older_or_undated_source_cannot_overwrite_newer_property(confirmation_dependencies, incoming_time):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at=incoming_time), None)],
+        properties=[existing_property(updated_at="2026-02-01 09:00:00")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_same_timestamp_conflicting_existing_snapshot_is_not_overwritten(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-02-01T09:00:00", household_status="未注销"), None)],
+        properties=[existing_property(updated_at="2026-02-01 09:00:00")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_same_timestamp_identical_existing_snapshot_can_merge_source(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-02-01T09:00:00"), None)],
+        properties=[existing_property(updated_at="2026-02-01 09:00:00")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["updated_count"] == 1 and result["imported_count"] == 1
