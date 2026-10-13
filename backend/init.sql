@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS _grid_members (
     name             VARCHAR(100) NOT NULL,
     community        VARCHAR(200) DEFAULT '',
     department_id    INT DEFAULT NULL,
+    area_id          INT DEFAULT NULL,
     position         VARCHAR(20) NOT NULL DEFAULT '组员',
     phone            VARCHAR(50) DEFAULT '',
     notes            VARCHAR(500) DEFAULT '',
@@ -137,7 +138,8 @@ CREATE TABLE IF NOT EXISTS _grid_members (
     UNIQUE KEY uk_name (name),
     UNIQUE KEY uk_grid_id_card (id_card_number),
     INDEX idx_grid_position (position),
-    INDEX idx_grid_department (department_id)
+    INDEX idx_grid_department (department_id),
+    INDEX idx_grid_area (area_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _personnel_attendance_history (

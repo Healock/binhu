@@ -719,6 +719,24 @@ async def ensure_online_editor_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
     """)
     await _ensure_column(cur, "_communities", "area_id", "INT DEFAULT NULL")
+    await _ensure_column(cur, "_grid_members", "area_id", "INT DEFAULT NULL")
+    await _ensure_index(
+        cur,
+        "_grid_members",
+        "idx_grid_area",
+        "INDEX idx_grid_area (area_id)",
+    )
+    await cur.execute(
+        """
+        UPDATE _grid_members AS member
+        JOIN _grid_member_department_links AS link
+          ON link.member_id=member.id AND link.sort_order=0
+        JOIN _departments AS department ON department.id=link.department_id
+        JOIN _communities AS community ON community.id=department.community_id
+        SET member.area_id=community.area_id
+        WHERE member.position='自购房' AND member.area_id IS NULL
+        """
+    )
     await _ensure_column(
         cur,
         "_communities",

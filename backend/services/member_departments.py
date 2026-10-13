@@ -39,6 +39,10 @@ async def resolve_departments(
         if requested:
             raise HTTPException(400, "管家码岗位不属于社区或片区")
         return []
+    if position == "自购房":
+        if requested:
+            raise HTTPException(400, "自购房岗位按片区配置，不属于社区部门")
+        return []
     if position in INTERNAL_POSITIONS:
         await cur.execute(
             "SELECT id, name, department_type, NULL "
