@@ -34,11 +34,14 @@ from services.visit_summary import (
 
 DEFAULT_RENTAL_TARGET = 10
 DEFAULT_SELF_OWNED_TARGET = 15
+DEFAULT_POPULATION_COEFFICIENT = 10
+MAX_POPULATION_COEFFICIENT = 999
 MAX_VISIT_TARGET = 999
-MIN_DATA_ROWS = 64
+MIN_DATA_ROWS = 47
 DATA_START_ROW = 4
-LAST_COLUMN = 22
+LAST_COLUMN = 18
 PREFERENCE_KEY_PREFIX = "work_log_daily_detail_targets:"
+POPULATION_COEFFICIENT_KEY = "work_log_daily_detail_population_coefficient"
 TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
     / "assets"
@@ -75,6 +78,125 @@ def normalize_targets(value: Any) -> dict[str, int]:
             DEFAULT_SELF_OWNED_TARGET,
         ),
     }
+
+
+def normalize_population_coefficient(value: Any) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        value = DEFAULT_POPULATION_COEFFICIENT
+    return min(MAX_POPULATION_COEFFICIENT, max(0, value))
+
+
+async def load_population_coefficient(conn) -> int:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT config_value FROM _system_config WHERE config_key=%s",
+            (POPULATION_COEFFICIENT_KEY,),
+        )
+        row = await cur.fetchone()
+    return normalize_population_coefficient(row[0] if row else None)
+
+
+async def load_population_inputs(conn, business_date: date) -> list[dict[str, Any]]:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT community.id, community.name,
+                   COALESCE(input.added_count, NULL),
+                   COALESCE(input.cancelled_count, NULL),
+                   COALESCE(input.revision, 0)
+            FROM _communities AS community
+            LEFT JOIN _work_log_daily_detail_population AS input
+              ON input.community_id=community.id
+             AND input.business_date=%s
+            WHERE community.is_active=1
+            ORDER BY community.id
+            """,
+            (business_date,),
+        )
+        fetchall = getattr(cur, "fetchall", None)
+        rows = await fetchall() if fetchall else []
+    return [
+        {
+            "community_id": int(row[0]),
+            "community": str(row[1]).strip(),
+            "added": None if row[2] is None else int(row[2]),
+            "cancelled": None if row[3] is None else int(row[3]),
+            "revision": int(row[4] or 0),
+        }
+        for row in rows
+    ]
+
+
+async def save_population_inputs(conn, business_date: date, values: list[dict[str, Any]], user_id: int) -> dict[str, int]:
+    """原子保存一日社区人工数值，revision 必须与客户端一致。"""
+    normalized = []
+    for item in values:
+        community_id = int(item["community_id"])
+        revision = int(item.get("revision") or 0)
+        def count(key: str):
+            value = item.get(key)
+            if value in (None, ""):
+                return None
+            value = int(value)
+            if value < 0:
+                raise ValueError("流动人口新增和注销必须是非负整数")
+            return value
+        normalized.append((community_id, count("added"), count("cancelled"), revision))
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            community_ids = sorted({item[0] for item in normalized})
+            if community_ids:
+                placeholders = ",".join(["%s"] * len(community_ids))
+                await cur.execute(
+                    f"SELECT id FROM _communities WHERE is_active=1 AND id IN ({placeholders})",
+                    community_ids,
+                )
+                valid_ids = {int(row[0]) for row in await cur.fetchall()}
+                if valid_ids != set(community_ids):
+                    raise ValueError("包含无效或已停用的社区，请重新加载")
+            for community_id, added, cancelled, revision in normalized:
+                await cur.execute(
+                    """
+                    SELECT revision
+                    FROM _work_log_daily_detail_population
+                    WHERE business_date=%s AND community_id=%s
+                    FOR UPDATE
+                    """,
+                    (business_date, community_id),
+                )
+                current = await cur.fetchone()
+                expected_revision = max(0, revision)
+                if current is None:
+                    if expected_revision != 0:
+                        raise RuntimeError("流动人口数据已被其他管理员修改，请重新加载")
+                    await cur.execute(
+                        """
+                        INSERT INTO _work_log_daily_detail_population
+                            (business_date, community_id, added_count, cancelled_count, revision, updated_by)
+                        VALUES (%s, %s, %s, %s, 1, %s)
+                        """,
+                        (business_date, community_id, added, cancelled, user_id),
+                    )
+                    continue
+                if int(current[0]) != expected_revision:
+                    raise RuntimeError("流动人口数据已被其他管理员修改，请重新加载")
+                await cur.execute(
+                    """
+                    UPDATE _work_log_daily_detail_population
+                    SET added_count=%s, cancelled_count=%s,
+                        revision=revision + 1, updated_by=%s
+                    WHERE business_date=%s AND community_id=%s
+                    """,
+                    (added, cancelled, user_id, business_date, community_id),
+                )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {"count": len(normalized)}
 
 
 async def load_target_preferences(conn, user_id: int) -> dict[str, int]:
@@ -143,6 +265,8 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
         await cur.execute(
             """
             SELECT member.id, member.name, member.position, member.status,
+                   SUBSTRING_INDEX(GROUP_CONCAT(DISTINCT community.id
+                       ORDER BY link.sort_order, community.name SEPARATOR ','), ',', 1),
                    GROUP_CONCAT(DISTINCT community.name
                        ORDER BY link.sort_order, community.name SEPARATOR '、'),
                    GROUP_CONCAT(DISTINCT COALESCE(area.name, leader_area.name)
@@ -184,12 +308,23 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
     )
 
     roster: list[dict[str, Any]] = []
-    for member_id, name, position, status, communities, areas, departments in rows:
+    for raw_row in rows:
+        if len(raw_row) >= 8:
+            member_id, name, position, status, community_id, communities, areas, departments = raw_row[:8]
+        else:
+            member_id, name, position, status, communities, areas, departments = raw_row[:7]
+            community_id = None
         member_name = str(name).strip()
         member_position = str(position or "").strip() or "未设置岗位"
         community = str(communities or "").split("、", 1)[0].strip()
         area = str(areas or "").split("、", 1)[0].strip()
         department = str(departments or "").split("、", 1)[0].strip()
+        if member_position == "管家码":
+            # 历史关联即使未被清理，也不能让管家码进入辖区或社区统计。
+            community_id = None
+            community = ""
+            area = ""
+            department = ""
         attendance_member = attendance.get("members", {}).get(member_name, {
             "id": int(member_id),
             "name": member_name,
@@ -227,6 +362,7 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
             "name": member_name,
             "position": member_position,
             "community": community,
+            "community_id": int(community_id) if community_id else None,
             "area": area,
             "department": department,
             "group_key": group_key,
@@ -244,6 +380,7 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
         "基础管控": 10,
         "中队长": 11,
         "所队领导": 12,
+        "管家码": 13,
     }
     roster.sort(key=lambda item: (
         int(item["group_order"]),
@@ -272,13 +409,23 @@ async def build_daily_detail_data(
     self_owned_target: int,
 ) -> list[dict[str, Any]]:
     roster = await _load_roster(conn, business_date)
+    coefficient = await load_population_coefficient(conn)
+    population_rows = await load_population_inputs(conn, business_date)
+    population_by_community = {
+        row["community_id"]: row for row in population_rows
+    }
+    duty_counts: dict[int, int] = {}
+    for member in roster:
+        if member["position"] in {"组长", "组员"} and member["attendance"] == "是" and member.get("community_id"):
+            community_id = int(member["community_id"])
+            duty_counts[community_id] = duty_counts.get(community_id, 0) + 1
 
     async with conn.cursor() as cur:
         known_positions = await get_known_personnel_positions(cur)
         rental_positions = set(await get_configured_positions(
             cur,
             VISIT_POSITION_CONFIG_KEY,
-        )) - {"自购房"}
+        )) - {"自购房", "管家码"}
 
     rental = await get_visit_summary(
         conn,
@@ -317,19 +464,27 @@ async def build_daily_detail_data(
             target = None
 
         task_row = online_rows.get(normalized_name)
+        absent = member["attendance"] == "否"
+        population = population_by_community.get(member.get("community_id"), {})
+        population_target = duty_counts.get(member.get("community_id"), 0) * coefficient
+        if position == "管家码":
+            population_target = None
         result.append({
             **member,
-            "visit_target": target,
+            "population_target": population_target,
+            "population_added": population.get("added"),
+            "population_cancelled": population.get("cancelled"),
+            "population_revision": population.get("revision", 1),
+            "visit_target": None if position == "管家码" else target,
             "visits": (
                 int(visit_row.get("走访户数") or 0)
                 if visit_row is not None
                 else None
             ),
-            "ratings": (
-                int(visit_row.get("星级评定数") or 0)
-                if visit_row is not None
-                else None
-            ),
+            "changed": int(visit_row.get("变更") or 0) if visit_row is not None else None,
+            "cancelled": int(visit_row.get("注销") or 0) if visit_row is not None else None,
+            "ratings": int(visit_row.get("星级评定数") or 0) if visit_row is not None else None,
+            "average_changes": float(visit_row.get("户均变动数") or 0) if visit_row is not None else None,
             "checked_instructions": (
                 int(task_row.get("已核查") or 0)
                 + int(task_row.get("已完成") or 0)
@@ -341,7 +496,24 @@ async def build_daily_detail_data(
                 if task_row is not None
                 else None
             ),
+            "instruction_total": int(task_row.get("数据总数") or 0) if task_row is not None else None,
+            "bottom_rate": task_row.get("核查见底率") if task_row is not None else None,
         })
+        if absent:
+            result[-1].update({
+                "population_target": None,
+                "population_added": None,
+                "population_cancelled": None,
+                "visit_target": None,
+                "visits": None,
+                "changed": None,
+                "cancelled": None,
+                "average_changes": None,
+                "checked_instructions": None,
+                "completed_instructions": None,
+                "instruction_total": None,
+                "bottom_rate": None,
+            })
     return result
 
 
@@ -396,6 +568,15 @@ def _merge_groups(ws, rows: list[dict[str, Any]]) -> None:
             else None
         ),
     )
+    for column in (6, 7, 8):
+        merge_column(
+            column,
+            lambda item: (
+                (item.get("community_id"), item.get("attendance"))
+                if item.get("community_id")
+                else None
+            ),
+        )
 
 
 def build_daily_detail_workbook(
@@ -406,20 +587,23 @@ def build_daily_detail_workbook(
     worksheet = workbook["Sheet1"]
     final_data_rows = max(MIN_DATA_ROWS, len(rows))
     final_row = DATA_START_ROW + final_data_rows - 1
-    if final_row > 67:
-        worksheet.insert_rows(68, final_row - 67)
-        for row_number in range(68, final_row + 1):
-            _copy_row_style(worksheet, 67, row_number)
+    total_row = final_row + 1
+    if final_row > worksheet.max_row:
+        base_max_row = worksheet.max_row
+        extra = final_row - base_max_row
+        worksheet.insert_rows(base_max_row + 1, extra)
+        for row_number in range(base_max_row + 1, final_row + 1):
+            _copy_row_style(worksheet, 4, row_number)
 
     for merged in list(worksheet.merged_cells.ranges):
         if merged.min_row >= DATA_START_ROW:
             worksheet.unmerge_cells(str(merged))
 
-    worksheet["B2"] = f"{business_date.month}月{business_date.day}号"
+    worksheet["A1"] = f"滨湖网格工作每日明细（{business_date.month}月{business_date.day}号）"
     no_fill = PatternFill(fill_type=None)
     for row in worksheet.iter_rows(
         min_row=DATA_START_ROW,
-        max_row=final_row,
+        max_row=total_row,
         min_col=1,
         max_col=LAST_COLUMN,
     ):
@@ -438,14 +622,50 @@ def build_daily_detail_workbook(
         worksheet.cell(row_number, 3, item["community"] or None)
         worksheet.cell(row_number, 4, item["name"])
         worksheet.cell(row_number, 5, item["attendance"])
-        worksheet.cell(row_number, 9, item["visit_target"])
-        worksheet.cell(row_number, 10, item["visits"])
-        worksheet.cell(row_number, 11, item["ratings"])
-        worksheet.cell(row_number, 12, item["checked_instructions"])
-        worksheet.cell(row_number, 13, item["completed_instructions"])
+        population_target = item.get("population_target")
+        worksheet.cell(row_number, 6, "/" if population_target == 0 else population_target)
+        worksheet.cell(row_number, 7, "/" if population_target == 0 else item.get("population_added"))
+        worksheet.cell(row_number, 8, "/" if population_target == 0 else item.get("population_cancelled"))
+        worksheet.cell(row_number, 9, item.get("visit_target"))
+        worksheet.cell(row_number, 10, item.get("visits"))
+        worksheet.cell(row_number, 11, item.get("changed", item.get("ratings")))
+        worksheet.cell(row_number, 12, item.get("cancelled", item.get("checked_instructions")))
+        worksheet.cell(row_number, 13, item.get("average_changes", item.get("completed_instructions")))
+        worksheet.cell(row_number, 14, item.get("instruction_total"))
+        checked = item.get("checked_instructions")
+        completed = item.get("completed_instructions")
+        worksheet.cell(row_number, 15, checked)
+        worksheet.cell(row_number, 16, completed)
+        worksheet.cell(row_number, 17, item.get("bottom_rate"))
+        if item.get("position") == "管家码":
+            for column in range(6, 19):
+                worksheet.cell(row_number, column).value = None
+        if item.get("attendance") == "否" and item.get("position") != "管家码":
+            for column in range(6, 18):
+                worksheet.cell(row_number, column).value = "/"
+        if population_target and item.get("population_added") is not None and item.get("population_cancelled") is not None:
+            ratio = (item["population_added"] + item["population_cancelled"]) / population_target
+            fill = PatternFill("solid", fgColor=("F4CCCC" if ratio < 0.5 else "FFF2CC" if ratio < 1 else "D9EAD3"))
+            worksheet.cell(row_number, 7).fill = fill
+            worksheet.cell(row_number, 8).fill = fill
 
     _merge_groups(worksheet, rows)
-    worksheet.print_area = f"A1:V{final_row}"
+    worksheet.cell(total_row, 1, "合计")
+    worksheet.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=5)
+    for column in range(6, 18):
+        values = [worksheet.cell(row, column).value for row in range(DATA_START_ROW, final_row + 1)]
+        numbers = [value for value in values if isinstance(value, (int, float))]
+        worksheet.cell(total_row, column, sum(numbers) if numbers else None)
+    total_instruction = worksheet.cell(total_row, 14).value
+    total_checked = worksheet.cell(total_row, 15).value
+    worksheet.cell(total_row, 17, (total_checked / total_instruction) if total_instruction else None)
+    for row_number in range(DATA_START_ROW, total_row + 1):
+        worksheet.cell(row_number, 17).number_format = "0.0%"
+
+    for cell in worksheet[total_row]:
+        cell.font = Font(name="宋体", size=12, bold=True)
+    worksheet.column_dimensions["Q"].number_format = "0.0%"
+    worksheet.print_area = f"A1:R{total_row}"
     worksheet.sheet_view.showGridLines = False
 
     output = BytesIO()

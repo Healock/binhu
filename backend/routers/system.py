@@ -9,8 +9,13 @@ from services.personnel_positions import (
     VISIT_POSITION_CONFIG_KEY,
     serialize_position_config,
     serialize_rental_position_config,
+    serialize_weekend_position_config,
 )
 from services.maintenance import invalidate_maintenance_cache, validate_maintenance_config
+from services.work_log_daily_detail import (
+    MAX_POPULATION_COEFFICIENT,
+    POPULATION_COEFFICIENT_KEY,
+)
 
 router = APIRouter(
     prefix="/api/system",
@@ -78,6 +83,14 @@ async def update_config(
                     raise HTTPException(400, "空闲超时时间必须在 5 分钟至 24 小时之间")
             if k == "permission_enforcement_enabled":
                 raise HTTPException(400, "权限启用状态只能通过迁移工具修改")
+            if k == POPULATION_COEFFICIENT_KEY:
+                try:
+                    coefficient = int(v)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(400, "流动人口目标系数必须是非负整数") from exc
+                if coefficient < 0 or coefficient > MAX_POPULATION_COEFFICIENT:
+                    raise HTTPException(400, "流动人口目标系数必须在 0 至 999 之间")
+                v = str(coefficient)
             if k == "online_writeback_enabled":
                 normalized = str(v).strip().lower()
                 if normalized not in {"0", "1", "true", "false"}:
@@ -88,6 +101,8 @@ async def update_config(
                     v = (
                         serialize_rental_position_config(v)
                         if k == VISIT_POSITION_CONFIG_KEY
+                        else serialize_weekend_position_config(v)
+                        if k == "weekend_duty_positions"
                         else serialize_position_config(v)
                     )
                 except ValueError as exc:

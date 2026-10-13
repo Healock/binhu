@@ -105,6 +105,21 @@ INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('maintenance_start_at', ''),
     ('maintenance_end_at', ''),
     ('maintenance_message', '平台正在维护中，请稍后再试');
+INSERT IGNORE INTO _system_config (config_key, config_value)
+VALUES ('work_log_daily_detail_population_coefficient', '10');
+
+CREATE TABLE IF NOT EXISTS _work_log_daily_detail_population (
+    business_date DATE NOT NULL,
+    community_id INT NOT NULL,
+    added_count INT UNSIGNED DEFAULT NULL,
+    cancelled_count INT UNSIGNED DEFAULT NULL,
+    revision INT UNSIGNED NOT NULL DEFAULT 1,
+    updated_by INT DEFAULT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                         ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (business_date, community_id),
+    INDEX idx_work_log_population_date (business_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TABLE IF NOT EXISTS _grid_members (
     id               INT AUTO_INCREMENT PRIMARY KEY,
     name             VARCHAR(100) NOT NULL,

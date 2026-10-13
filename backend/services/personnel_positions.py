@@ -16,11 +16,12 @@ POSITION_OPTIONS = (
     "组员",
     "社区民警",
     "所队领导",
+    "管家码",
 )
 DEFAULT_SUMMARY_POSITIONS = ("组长", "组员")
 ONLINE_SUMMARY_POSITIONS = ("组长", "组员")
 POSITION_CATEGORIES = {
-    "flow_work": ("组员", "组长", "自购房", "片长"),
+    "flow_work": ("组员", "组长", "自购房", "片长", "管家码"),
     "internal_business": ("基础管控", "中队长"),
     "police_leadership": ("社区民警", "所队领导"),
 }
@@ -88,6 +89,15 @@ def serialize_rental_position_config(value: Any) -> str:
     positions = json.loads(serialize_position_config(value))
     if "自购房" in positions:
         raise ValueError("自购房岗位使用单独的“自购房”汇总类型")
+    if "管家码" in positions:
+        raise ValueError("管家码岗位不参与走访汇总")
+    return json.dumps(positions, ensure_ascii=False)
+
+
+def serialize_weekend_position_config(value: Any) -> str:
+    positions = json.loads(serialize_position_config(value))
+    if "管家码" in positions:
+        raise ValueError("管家码岗位不参加双休日备勤")
     return json.dumps(positions, ensure_ascii=False)
 
 

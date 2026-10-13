@@ -1882,6 +1882,25 @@ async def ensure_work_activity_schema(cur) -> None:
     """)
 
 
+async def ensure_work_log_daily_detail_schema(cur) -> None:
+    """人工流动人口日报数据，按日期和正式社区保存。"""
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _work_log_daily_detail_population (
+            business_date DATE NOT NULL,
+            community_id INT NOT NULL,
+            added_count INT UNSIGNED DEFAULT NULL,
+            cancelled_count INT UNSIGNED DEFAULT NULL,
+            revision INT UNSIGNED NOT NULL DEFAULT 1,
+            updated_by INT DEFAULT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                 ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (business_date, community_id),
+            INDEX idx_work_log_population_date (business_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+
+
 async def ensure_bootstrap_admin(cur) -> bool:
     """Create the first super administrator only from explicit environment values."""
     await cur.execute("SELECT COUNT(*) FROM _users")
@@ -2962,6 +2981,7 @@ class DatabaseManager:
                 await ensure_local_source_schema(cur)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
+                await ensure_work_log_daily_detail_schema(cur)
                 await ensure_qmf_registration_schema(cur)
                 await ensure_qmf_status_scan_schema(cur)
                 await ensure_self_owned_schema(cur)

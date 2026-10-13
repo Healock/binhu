@@ -7,13 +7,14 @@ export const PERSONNEL_POSITIONS = [
   '组员',
   '社区民警',
   '所队领导',
+  '管家码',
 ] as const
 
 export type PersonnelPosition = typeof PERSONNEL_POSITIONS[number]
 
 export const DEFAULT_SUMMARY_POSITIONS: PersonnelPosition[] = ['组长', '组员']
 export const RENTAL_PERSONNEL_POSITIONS = PERSONNEL_POSITIONS.filter(
-  position => position !== '自购房',
+  position => position !== '自购房' && position !== '管家码',
 )
 
 export function parseSummaryPositions(value: unknown): PersonnelPosition[] {

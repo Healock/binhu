@@ -179,6 +179,9 @@ export default function SystemSettings() {
   >([...DEFAULT_SUMMARY_POSITIONS])
   const [savingPositions, setSavingPositions] = useState(false)
   const [positionsMsg, setPositionsMsg] = useState('')
+  const [populationCoefficient, setPopulationCoefficient] = useState(10)
+  const [savingPopulationCoefficient, setSavingPopulationCoefficient] = useState(false)
+  const [populationCoefficientMsg, setPopulationCoefficientMsg] = useState('')
   const [idleMinutes, setIdleMinutes] = useState(30)
   const [savingIdle, setSavingIdle] = useState(false)
   const [idleMsg, setIdleMsg] = useState('')
@@ -216,6 +219,7 @@ export default function SystemSettings() {
         setMaintenanceEndAt(configuredEndAt)
         setMaintenanceMessage(config.maintenance_message || '平台正在维护中，请稍后再试')
         setIdleMinutes(Number(config.session_idle_minutes || 30))
+        setPopulationCoefficient(Number(config.work_log_daily_detail_population_coefficient || 10))
         const configuredVisitPositions = parseSummaryPositions(
           config.visit_summary_positions,
         ).filter(position => position !== '自购房')
@@ -316,6 +320,21 @@ export default function SystemSettings() {
       setIdleMsg(error?.response?.data?.detail || '保存失败')
     } finally {
       setSavingIdle(false)
+    }
+  }
+
+  const handleSavePopulationCoefficient = async () => {
+    setSavingPopulationCoefficient(true)
+    setPopulationCoefficientMsg('')
+    try {
+      await updateSystemConfig({
+        work_log_daily_detail_population_coefficient: String(populationCoefficient),
+      })
+      setPopulationCoefficientMsg('流动人口目标系数已保存')
+    } catch (error: any) {
+      setPopulationCoefficientMsg(error?.response?.data?.detail || '保存失败')
+    } finally {
+      setSavingPopulationCoefficient(false)
     }
   }
 
@@ -959,7 +978,7 @@ export default function SystemSettings() {
                 mode="multiple"
                 value={weekendDutyPositions}
                 onChange={setWeekendDutyPositions}
-                options={PERSONNEL_POSITIONS.map(position => ({
+                options={PERSONNEL_POSITIONS.filter(position => position !== '管家码').map(position => ({
                   value: position,
                   label: position,
                 }))}
@@ -994,6 +1013,37 @@ export default function SystemSettings() {
               type={positionsMsg.includes('已保存') ? 'success' : 'error'}
               showIcon
               message={positionsMsg}
+            />
+          )}
+        </div>
+      </Panel>
+
+      <Panel title="工作每日明细" description="流动人口目标数按社区当天在岗组长、组员人数乘此系数计算">
+        <div className="grid gap-3 sm:max-w-md">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">流动人口目标系数</label>
+            <InputNumber
+              min={0}
+              max={999}
+              precision={0}
+              value={populationCoefficient}
+              onChange={value => setPopulationCoefficient(value ?? 10)}
+              className="w-full"
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button
+              type="primary"
+              loading={savingPopulationCoefficient}
+              disabled={loading}
+              onClick={handleSavePopulationCoefficient}
+            >保存目标系数</Button>
+          </div>
+          {populationCoefficientMsg && (
+            <Alert
+              type={populationCoefficientMsg.includes('已保存') ? 'success' : 'error'}
+              showIcon
+              message={populationCoefficientMsg}
             />
           )}
         </div>

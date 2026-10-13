@@ -920,18 +920,20 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workbook.sheetnames, ["Sheet1"])
         sheet = workbook["Sheet1"]
         self.assertEqual(filename, "0809滨湖网格工作每日明细.xlsx")
-        self.assertEqual(sheet["B2"].value, "8月9号")
+        self.assertIn("8月9号", sheet["A1"].value)
         self.assertEqual(sheet["A4"].value, 1)
         self.assertEqual(sheet["J4"].value, 8)
         self.assertEqual(sheet["L4"].value, 5)
         self.assertEqual(sheet["M4"].value, 3)
         self.assertIsNone(sheet["F4"].value)
+        self.assertEqual(sheet["F5"].value, "/")
         self.assertIsNone(sheet["N4"].value)
-        self.assertIsNone(sheet["V4"].value)
+        self.assertIsNone(sheet["R4"].value)
         self.assertIn("B4:B5", {str(item) for item in sheet.merged_cells.ranges})
         self.assertIn("C4:C5", {str(item) for item in sheet.merged_cells.ranges})
-        self.assertEqual(sheet.max_row, 67)
-        for row in sheet.iter_rows(min_row=1, max_row=67, min_col=1, max_col=22):
+        self.assertEqual(sheet.max_column, 18)
+        self.assertEqual(sheet.max_row, 52)
+        for row in sheet.iter_rows(min_row=1, max_row=52, min_col=1, max_col=18):
             for cell in row:
                 self.assertIsNone(cell.fill.fill_type)
 
@@ -1021,6 +1023,42 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             }),
             {"rental_target": 0, "self_owned_target": 999},
         )
+
+    def test_daily_detail_population_color_and_total_recalculation(self):
+        row = {
+            "group_key": "area:east",
+            "group_label": "东片\n片长甲",
+            "community_id": 8,
+            "community": "正式社区",
+            "name": "组员甲",
+            "position": "组员",
+            "attendance": "是",
+            "population_target": 10,
+            "population_added": 5,
+            "population_cancelled": 0,
+            "visit_target": 10,
+            "visits": 4,
+            "changed": 2,
+            "cancelled": 1,
+            "average_changes": 0.75,
+            "instruction_total": 8,
+            "checked_instructions": 4,
+            "completed_instructions": 2,
+            "bottom_rate": 0.5,
+        }
+        content, _ = build_daily_detail_workbook(date(2026, 8, 9), [row])
+        sheet = load_workbook(BytesIO(content), data_only=False).active
+        self.assertEqual(sheet["B4"].value, "东片\n片长甲")
+        self.assertEqual(sheet["C4"].value, "正式社区")
+        self.assertEqual(sheet["F4"].value, 10)
+        self.assertEqual(sheet["G4"].value, 5)
+        self.assertTrue(sheet["G4"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertEqual(sheet["N4"].value, 8)
+        self.assertEqual(sheet["O4"].value, 4)
+        self.assertEqual(sheet["Q4"].value, 0.5)
+        self.assertEqual(sheet["N51"].value, 8)
+        self.assertEqual(sheet["O51"].value, 4)
+        self.assertEqual(sheet["Q51"].value, 0.5)
 
 
 if __name__ == "__main__":

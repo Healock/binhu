@@ -35,6 +35,10 @@ async def resolve_departments(
 ) -> list[dict[str, Any]]:
     """按岗位校验部门，返回按请求顺序排列的部门。"""
     requested = normalize_department_ids(department_ids)
+    if position == "管家码":
+        if requested:
+            raise HTTPException(400, "管家码岗位不属于社区或片区")
+        return []
     if position in INTERNAL_POSITIONS:
         await cur.execute(
             "SELECT id, name, department_type, NULL "

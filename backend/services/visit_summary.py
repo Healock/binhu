@@ -305,7 +305,7 @@ async def get_visit_summary(
                     VISIT_POSITION_CONFIG_KEY,
                 ))
         if category == VISIT_CATEGORY_RENTAL:
-            selected_positions = selected_positions - {"自购房"}
+            selected_positions = selected_positions - {"自购房", "管家码"}
             include_unknown = True
         else:
             selected_positions = {"自购房"}
