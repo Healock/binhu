@@ -38,6 +38,16 @@ test('房屋小区标注先预览后确认，已有人工确认不会默认勾�
   assert.match(source, /setApplyFailed\(true\)/)
 })
 
+test('小区标注预览弹窗居中并支持按状态筛选', () => {
+  const source = readFileSync(new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url), 'utf8')
+  assert.match(source, /width=\{1100\} centered/)
+  assert.match(source, /aria-label="标注状态筛选"/)
+  assert.match(source, /待人工复核/)
+  assert.match(source, /拒绝应用/)
+  assert.match(source, /跳过/)
+  assert.match(source, /dataSource=\{visibleItems\}/)
+})
+
 test('小区标注导出使用后台任务并在完成后下载，不发送同步导出请求', () => {
   const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
