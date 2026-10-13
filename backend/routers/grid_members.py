@@ -30,6 +30,9 @@ from services.qmf_community import (
     valid_qmf_community_code,
 )
 from services.qmf_config import encrypt_secret
+from services.registry_issue_reconciliation import (
+    reconcile_household_community_issues_safely,
+)
 from services.member_departments import (
     get_member_departments,
     replace_member_departments,
@@ -1540,6 +1543,12 @@ async def update_community_aliases(
             **request_audit_fields(request),
         )
 
+    reconciled_registry_issues = await reconcile_household_community_issues_safely(
+        formal_name=target_name,
+        aliases=aliases,
+        reviewed_by=user.get("id"),
+    )
+
     return {
         "message": "社区资料已保存",
         "name": target_name,
@@ -1549,6 +1558,11 @@ async def update_community_aliases(
         "area_id": data.area_id,
         "qmf_community_code": data.qmf_community_code,
         "residence_username_configured": residence_username_configured,
+        "reconciled_registry_issues": max(reconciled_registry_issues, 0),
+        "registry_issue_reconciliation_warning": (
+            "社区已保存，但问题数据重算暂未完成，请稍后重新保存社区资料"
+            if reconciled_registry_issues < 0 else ""
+        ),
     }
 
 
