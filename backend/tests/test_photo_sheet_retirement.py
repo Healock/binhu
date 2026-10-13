@@ -35,14 +35,24 @@ class PhotoSheetRetirementTests(unittest.IsolatedAsyncioTestCase):
             await create_ticket(ticket, user={"id": 1}, conn=object())
         self.assertEqual(raised.exception.status_code, 410)
 
-    async def test_apply_stops_when_photo_ticket_count_is_not_134(self):
+    async def test_apply_stops_when_photo_ticket_count_does_not_match_explicit_guard(self):
         conn = _Connection()
         measured = {"photo_work_orders": 133}
         with patch.object(photo_sheet_retirement, "open_connection", new=AsyncMock(return_value=conn)), \
              patch.object(photo_sheet_retirement, "measure_with_cursor", new=AsyncMock(return_value=measured)):
             with self.assertRaisesRegex(RuntimeError, "expected=134, actual=133"):
-                await photo_sheet_retirement.run_apply()
+                await photo_sheet_retirement.run_apply(
+                    expected_photo_tickets=134,
+                    confirm_empty_photo_tables=True,
+                )
         conn.rollback.assert_awaited_once()
+
+    async def test_apply_requires_explicit_photo_table_confirmation(self):
+        with self.assertRaisesRegex(RuntimeError, "confirm-empty-photo-tables"):
+            await photo_sheet_retirement.run_apply(
+                expected_photo_tickets=134,
+                confirm_empty_photo_tables=False,
+            )
 
     async def test_sync_entrypoints_are_retired_without_external_access(self):
         self.assertEqual(

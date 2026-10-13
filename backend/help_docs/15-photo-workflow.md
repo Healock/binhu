@@ -15,12 +15,12 @@ order: 150
 
 ```text
 python -m migrations.photo_sheet_retirement measure
-python -m migrations.photo_sheet_retirement migrate --apply
+python -m migrations.photo_sheet_retirement migrate --apply --expect-photo-tickets 134 --confirm-empty-photo-tables
 python -m migrations.photo_sheet_retirement verify
 ```
 
-脚本在执行前要求照片工单数量为预期的 134 条，并检查共享附件引用；数量不符或发现共享引用会自动停止。执行前必须备份 `WorkflowData` 以及私人照片附件和 ZIP 目录，执行后保留 `measure`、`migrate` 和 `verify` 输出作为审计证据。
+`measure` 先输出实际照片工单数量；执行 `migrate --apply` 时必须显式传入维护人员核对过的 `--expect-photo-tickets` 数量，并显式确认九张照片专属表允许整表清空。数量不符或发现共享附件引用会自动停止。执行前必须备份 `WorkflowData` 以及私人照片附件和 ZIP 目录，执行后保留 `measure`、`migrate` 和 `verify` 输出作为审计证据。
 
-清理只针对照片调取专属记录和附件，不删除普通工单，也不触碰其他腾讯只读迁移快照、审计或回滚材料。`TXDOCS_MIGRATION_MODE=readonly` 的其他历史材料不受影响。
+清理只针对照片调取专属记录和附件，不删除普通工单，也不触碰其他腾讯只读迁移快照、审计或回滚材料。这里删除的是照片调取业务记录，不是腾讯迁移材料；`TXDOCS_MIGRATION_MODE=readonly` 的其他历史材料不受影响。
 
 普通工单仍在“工单中心”中按原权限处理；照片调取不再是可用工单类型。

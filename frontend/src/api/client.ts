@@ -1586,7 +1586,6 @@ export interface MobileTaskItem {
   needs_review: boolean
   review_stage: Exclude<MobileTaskReviewStage, 'all'> | ''
   review_flow?: MobileTaskReviewFlow | null
-  photo_fetched: boolean
   source_count: number
   conflict: boolean
   pending_sync: boolean

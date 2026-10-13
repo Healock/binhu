@@ -7,7 +7,7 @@ other workflow types or the historical Tencent migration material.
 Run from ``backend`` during an approved maintenance window::
 
     python -m migrations.photo_sheet_retirement measure
-    python -m migrations.photo_sheet_retirement migrate --apply
+    python -m migrations.photo_sheet_retirement migrate --apply --expect-photo-tickets 134 --confirm-empty-photo-tables
     python -m migrations.photo_sheet_retirement verify
 
 The local development machine has no project MySQL; this module is therefore
@@ -20,13 +20,16 @@ import argparse
 import asyncio
 import inspect
 import json
+import os
+import shutil
+import uuid
 from pathlib import Path
 
 import aiomysql
 
 from config import settings
-from services.workflow_support import remove_attachment, resolve_attachment
-from services.photo_import import remove_photo_import_zip, resolve_photo_import_zip
+from services.workflow_support import resolve_attachment
+from services.photo_import import resolve_photo_import_zip
 
 
 PHOTO_TABLES = (
@@ -40,9 +43,6 @@ PHOTO_TABLES = (
     "photo_sheet_sync_runs",
     "photo_sheet_conflicts",
 )
-EXPECTED_PHOTO_TICKETS = 134
-
-
 async def close_connection(conn) -> None:
     conn.close()
     wait_closed = getattr(conn, "wait_closed", None)
@@ -122,7 +122,7 @@ async def zip_inventory(cur) -> list[str]:
     return [str(row[0]) for row in await cur.fetchall() if row[0]]
 
 
-async def measure_with_cursor(cur) -> dict:
+async def measure_with_cursor(cur, *, expected_photo_tickets: int | None = None) -> dict:
     ticket_ids = await photo_ticket_ids(cur)
     table_counts = {table: await count_table(cur, table) for table in PHOTO_TABLES}
     attachments = await attachment_inventory(cur, ticket_ids)
@@ -130,7 +130,7 @@ async def measure_with_cursor(cur) -> dict:
     await cur.execute("SELECT COUNT(*) FROM work_orders WHERE type_code<>'photo_request'")
     non_photo = int((await cur.fetchone())[0] or 0)
     return {
-        "expected_photo_tickets": EXPECTED_PHOTO_TICKETS,
+        "expected_photo_tickets": expected_photo_tickets,
         "photo_work_orders": len(ticket_ids),
         "non_photo_work_orders": non_photo,
         "table_counts": table_counts,
@@ -188,18 +188,58 @@ async def delete_photo_rows(cur, ticket_ids: list[int]) -> dict[str, int]:
     return counts
 
 
-async def run_apply() -> dict:
+def _retirement_stage_root() -> Path:
+    return Path(settings.WORKFLOW_ATTACHMENT_DIR).resolve() / ".photo-sheet-retirement"
+
+
+def _stage_and_remove(path: Path, root: Path, stage_root: Path) -> tuple[Path, Path]:
+    relative = path.relative_to(root)
+    staged = stage_root / relative
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, staged)
+    path.unlink()
+    return path, staged
+
+
+def _restore_staged(entries: list[tuple[Path, Path]]) -> None:
+    for original, staged in reversed(entries):
+        if not staged.is_file():
+            continue
+        original.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staged, original)
+
+
+def _discard_stage(stage_root: Path) -> None:
+    if stage_root.exists():
+        shutil.rmtree(stage_root, ignore_errors=False)
+
+
+async def run_apply(
+    *,
+    expected_photo_tickets: int,
+    confirm_empty_photo_tables: bool,
+) -> dict:
+    if not confirm_empty_photo_tables:
+        raise RuntimeError(
+            "migrate --apply 必须显式提供 --confirm-empty-photo-tables，"
+            "确认九张照片专属表允许整表清空"
+        )
     conn = await open_connection()
-    attachment_keys: list[str] = []
-    zip_keys: list[str] = []
+    staged_files: list[tuple[Path, Path]] = []
+    missing_attachment_files = 0
+    missing_zip_files = 0
+    stage_root = _retirement_stage_root() / uuid.uuid4().hex
     try:
         await conn.begin()
         async with conn.cursor() as cur:
-            before = await measure_with_cursor(cur)
-            if before["photo_work_orders"] != EXPECTED_PHOTO_TICKETS:
+            before = await measure_with_cursor(
+                cur,
+                expected_photo_tickets=expected_photo_tickets,
+            )
+            if before["photo_work_orders"] != expected_photo_tickets:
                 raise RuntimeError(
                     "照片工单数量不符合预期，已停止："
-                    f"expected={EXPECTED_PHOTO_TICKETS}, actual={before['photo_work_orders']}"
+                    f"expected={expected_photo_tickets}, actual={before['photo_work_orders']}"
                 )
             if before["shared_attachment_rows"]:
                 raise RuntimeError("发现被其他业务工单共享的照片附件，已停止")
@@ -207,48 +247,42 @@ async def run_apply() -> dict:
             inventory = await attachment_inventory(cur, ticket_ids)
             attachment_keys = list(inventory["attachment_keys"])
             zip_keys = await zip_inventory(cur)
+
+            attachment_root = Path(settings.WORKFLOW_ATTACHMENT_DIR).resolve()
+            zip_root = Path(settings.WORKFLOW_PHOTO_IMPORT_DIR).resolve()
+            for key in attachment_keys:
+                try:
+                    path = resolve_attachment(key)
+                except FileNotFoundError:
+                    missing_attachment_files += 1
+                    continue
+                staged_files.append(_stage_and_remove(path, attachment_root, stage_root / "attachments"))
+            for key in zip_keys:
+                try:
+                    path = resolve_photo_import_zip(key)
+                except FileNotFoundError:
+                    missing_zip_files += 1
+                    continue
+                staged_files.append(_stage_and_remove(path, zip_root, stage_root / "zips"))
             deleted = await delete_photo_rows(cur, ticket_ids)
         await conn.commit()
     except Exception:
+        _restore_staged(staged_files)
         await conn.rollback()
+        if stage_root.exists():
+            shutil.rmtree(stage_root, ignore_errors=True)
         raise
     finally:
         await close_connection(conn)
-
-    missing_files = 0
-    failed_files = 0
-    for key in attachment_keys:
-        try:
-            resolve_attachment(key)
-        except FileNotFoundError:
-            missing_files += 1
-        else:
-            if not remove_attachment(key):
-                failed_files += 1
-    missing_zips = 0
-    failed_zips = 0
-    for key in zip_keys:
-        try:
-            resolve_photo_import_zip(key)
-        except FileNotFoundError:
-            missing_zips += 1
-        else:
-            try:
-                remove_photo_import_zip(key)
-            except OSError:
-                failed_zips += 1
-    if failed_files or failed_zips:
-        raise RuntimeError(
-            f"照片文件删除失败：attachments={failed_files}, zips={failed_zips}；请保留数据库备份并人工处理"
-        )
+    _discard_stage(stage_root)
     return {
         "command": "migrate",
-        "expected_photo_tickets": EXPECTED_PHOTO_TICKETS,
+        "expected_photo_tickets": expected_photo_tickets,
         "deleted": deleted,
         "attachment_keys": len(attachment_keys),
-        "missing_attachment_files": missing_files,
+        "missing_attachment_files": missing_attachment_files,
         "zip_keys": len(zip_keys),
-        "missing_zip_files": missing_zips,
+        "missing_zip_files": missing_zip_files,
         "backup_scope": "WorkflowData + private photo attachment/ZIP directories",
         "external_tencent_materials": "untouched",
     }
@@ -278,6 +312,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("measure", help="只读统计照片调取专属数据")
     migrate = sub.add_parser("migrate", help="预览或执行照片调取退役清理")
     migrate.add_argument("--apply", action="store_true", help="明确授权删除照片调取历史数据")
+    migrate.add_argument(
+        "--expect-photo-tickets",
+        type=int,
+        default=None,
+        help="执行清理前要求数据库中的照片工单数量精确匹配该值，例如 134",
+    )
+    migrate.add_argument(
+        "--confirm-empty-photo-tables",
+        action="store_true",
+        help="确认九张照片专属表为退役专属表，允许整表清空",
+    )
     sub.add_parser("verify", help="只读核验照片调取数据已清理")
     return parser
 
@@ -288,7 +333,12 @@ async def main_async(args: argparse.Namespace) -> None:
     elif args.command == "verify":
         result = await run_verify()
     elif args.apply:
-        result = await run_apply()
+        if args.expect_photo_tickets is None:
+            raise RuntimeError("migrate --apply 必须显式提供 --expect-photo-tickets")
+        result = await run_apply(
+            expected_photo_tickets=args.expect_photo_tickets,
+            confirm_empty_photo_tables=args.confirm_empty_photo_tables,
+        )
     else:
         result = await run_measure()
         result["command"] = "migrate-preview"

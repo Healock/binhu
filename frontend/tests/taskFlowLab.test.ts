@@ -35,7 +35,6 @@ function task(overrides: Record<string, unknown> = {}) {
     state: 'unchecked',
     needs_review: false,
     review_stage: '',
-    photo_fetched: false,
     source_count: 1,
     conflict: false,
     pending_sync: false,
