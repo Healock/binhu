@@ -312,6 +312,10 @@ def _parse_police_officers(value) -> list[str]:
 
 async def _resolve_department(cur, position: str, department_id: int | None):
     """按岗位规则确定部门，并返回 (部门 ID, 兼容社区字段)。"""
+    if position == "管家码":
+        if department_id is not None:
+            raise HTTPException(400, "管家码岗位不属于社区或片区")
+        return None, ""
     if position in INTERNAL_POSITIONS:
         await cur.execute(
             "SELECT id FROM _departments "
@@ -570,7 +574,7 @@ async def list_members(
             f"""
             SELECT
                 CASE
-                    WHEN member.position IN ('组员','组长','自购房','片长')
+                    WHEN member.position IN ('组员','组长','自购房','片长','管家码')
                         THEN 'flow_work'
                     WHEN member.position IN ('基础管控','中队长')
                         THEN 'internal_business'

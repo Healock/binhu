@@ -80,7 +80,7 @@ export default function GridMembers() {
     label: string
     description: string
   }> = [
-    { key: 'flow_work', label: '流口工作', description: '组员、组长、自购房、片长' },
+    { key: 'flow_work', label: '流口工作', description: '组员、组长、自购房、片长、管家码' },
     { key: 'internal_business', label: '内勤业务', description: '基础管控、中队长' },
     { key: 'police_leadership', label: '民警与领导', description: '社区民警、所队领导' },
   ]
@@ -949,6 +949,7 @@ function MemberForm({
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
+  const departmentlessPosition = position === '管家码'
   const multipleCommunities = position === '社区民警'
   const communityPosition = ['组长', '组员', '社区民警'].includes(position)
   const currentAccountId = member?.account?.id || null
@@ -1080,7 +1081,9 @@ function MemberForm({
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
             所属部门
           </label>
-          {multipleCommunities ? (
+          {departmentlessPosition ? (
+            <Input value="不属于社区或片区" disabled />
+          ) : multipleCommunities ? (
             <Select
               mode="multiple"
               value={departmentIds}
@@ -1118,7 +1121,9 @@ function MemberForm({
               setPosition(value)
               const nextIsInternal = ['片长', '中队长', '基础管控', '所队领导'].includes(value)
               const currentDepartment = departments.find(item => item.id === departmentIds[0])
-              if (nextIsInternal) {
+              if (value === '管家码') {
+                setDepartmentIds([])
+              } else if (nextIsInternal) {
                 const internalId = departments.find(item => item.type === 'internal')?.id
                 setDepartmentIds(internalId ? [internalId] : [])
               } else if (currentDepartment?.type === 'internal') {

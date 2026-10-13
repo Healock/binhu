@@ -966,11 +966,36 @@ export async function exportWorkLog(draftId: number): Promise<Blob> {
 export interface WorkLogDailyDetailPreferences {
   rental_target: number
   self_owned_target: number
+  population_coefficient: number
+}
+
+export interface WorkLogDailyDetailPopulationRow {
+  community_id: number
+  community: string
+  added: number | null
+  cancelled: number | null
+  revision: number
 }
 
 export async function getWorkLogDailyDetailPreferences(): Promise<WorkLogDailyDetailPreferences> {
   const { data } = await api.get('/work-logs/daily-detail/preferences')
   return data
+}
+
+export async function getWorkLogDailyDetailPopulation(
+  businessDate: string,
+): Promise<WorkLogDailyDetailPopulationRow[]> {
+  const { data } = await api.get('/work-logs/daily-detail/population', {
+    params: { business_date: businessDate },
+  })
+  return data.rows
+}
+
+export async function saveWorkLogDailyDetailPopulation(payload: {
+  business_date: string
+  rows: WorkLogDailyDetailPopulationRow[]
+}): Promise<void> {
+  await api.put('/work-logs/daily-detail/population', payload)
 }
 
 export async function exportWorkLogDailyDetail(payload: {
