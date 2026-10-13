@@ -38,6 +38,17 @@ test('房屋小区标注先预览后确认，已有人工确认不会默认勾�
   assert.match(source, /setApplyFailed\(true\)/)
 })
 
+test('小区标注导出使用后台任务并在完成后下载，不发送同步导出请求', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(client, /small-community-annotations\/export/)
+  assert.match(client, /small-community-annotations\/exports\/\$\{encodeURIComponent\(jobId\)\}/)
+  assert.match(client, /small-community-annotations\/exports\/\$\{encodeURIComponent\(jobId\)\}\/download/)
+  assert.match(page, /小区标注工作簿正在后台生成/)
+  assert.match(page, /propertyAnnotationExportStatus\(job\.job_id\)/)
+  assert.match(page, /downloadPropertyAnnotationExport\(job\.job_id\)/)
+})
+
 test('户号表与确认接口保留长请求超时，告知书改为后台任务', () => {
   const apiSource = readFileSync(
     new URL('../src/api/client.ts', import.meta.url),

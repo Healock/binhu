@@ -83,7 +83,7 @@ def test_invalid_workbook_and_non_ascii_signature_are_rejected():
 
 def test_upload_limit_and_duplicate_records_and_formula_detection(monkeypatch):
     monkeypatch.setattr(xlsx, "MAX_UPLOAD_BYTES", 4)
-    with pytest.raises(ValueError, match="10MB"):
+    with pytest.raises(ValueError, match="100MB"):
         xlsx.parse_annotation_workbook(b"12345", 7)
     monkeypatch.setattr(xlsx, "MAX_UPLOAD_BYTES", 10 * 1024 * 1024)
     rows, _ = xlsx.parse_annotation_workbook(annotated([PROPERTY, PROPERTY]), 7)
@@ -257,12 +257,13 @@ async def test_apply_rechecks_catalog_and_permission_with_atomic_rollback(data, 
 @pytest.mark.asyncio
 async def test_export_reuses_search_and_sort_but_excludes_manage_scope(data, monkeypatch):
     monkeypatch.setattr(registry, "_property_search_result", AsyncMock(return_value={"data": [PROPERTY, {**PROPERTY, "id": 43, "community_id": 9}]}))
-    response = await registry.export_property_annotations(registry.PropertySearch(sort="address_asc"), None, USER, Connection())
-    assert response.media_type.endswith("sheet")
-    assert registry._property_search_result.call_args.kwargs["export_all"] is True
-    assert registry._property_search_result.call_args.args[0].sort == "address_asc"
+    create_job = AsyncMock(return_value={"id": "job-1", "status": "queued", "phase": "queued"})
+    monkeypatch.setattr(registry, "create_export_job", create_job)
+    response = await registry.export_property_annotations(registry.PropertySearch(sort="address_asc"), None, USER)
+    assert response == {"job_id": "job-1", "status": "queued", "phase": "queued"}
     audit = registry.record_admin_audit.call_args.kwargs["detail"]
-    assert audit["rows"] == 1 and "合成路" not in str(audit)
+    assert audit["job_id"] == "job-1" and "合成路" not in str(audit)
+    assert create_job.await_args.args[0] == 7
 
 
 def test_routes_require_property_manage_and_precede_dynamic_route():

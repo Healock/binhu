@@ -94,7 +94,7 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
       </div>}>
       <div className="grid gap-4">
         <Upload accept=".xlsx" showUploadList={false} disabled={busy} beforeUpload={file => {
-          if (file.size > 10 * 1024 * 1024) { setError('标注文件超过 10MB，请按社区拆分'); return false }
+          if (file.size > 100 * 1024 * 1024) { setError('标注文件超过 100MB'); return false }
           void read(file); return false
         }}><Button icon={<UploadOutlined />} disabled={busy}>选择已标注工作簿并预览</Button></Upload>
         {error && <Alert type="error" showIcon message={error} />}

@@ -18,8 +18,9 @@ from openpyxl.utils.exceptions import InvalidFileException
 from config import settings
 
 FORMAT = "binhu-property-annotation-v2"
-MAX_ROWS = 10000
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_ROWS = 100000
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 SNAPSHOT_FIELDS = (
     "id", "version", "community_id", "community_name", "natural_address",
     "normalized_address", "street", "building", "room", "status",
@@ -136,11 +137,11 @@ def build_annotation_workbook(properties: list[dict], entries: list[dict], user_
 
 def parse_annotation_workbook(content: bytes, user_id: int) -> tuple[list[dict], dict[int, str]]:
     if len(content) > MAX_UPLOAD_BYTES:
-        raise ValueError("标注文件超过 10MB，请按社区拆分导出")
+        raise ValueError("标注文件超过 100MB")
     try:
         with ZipFile(BytesIO(content)) as archive:
-            if len(archive.infolist()) > 200 or sum(item.file_size for item in archive.infolist()) > 80 * 1024 * 1024:
-                raise ValueError("工作簿解压体积超限，请按社区拆分")
+            if len(archive.infolist()) > 200 or sum(item.file_size for item in archive.infolist()) > MAX_UNCOMPRESSED_BYTES:
+                raise ValueError("工作簿解压体积超过 512MB")
         workbook = load_workbook(BytesIO(content), read_only=True, data_only=False, keep_links=False)
     except (BadZipFile, KeyError, OSError, ParseError, InvalidFileException, ValueError) as exc:
         raise ValueError("无法读取 XLSX 标注工作簿") from exc
@@ -155,14 +156,14 @@ def parse_annotation_workbook(content: bytes, user_id: int) -> tuple[list[dict],
             raise ValueError("工作簿格式版本不支持，请重新导出")
         sheet = workbook["房屋标注"]
         if sheet.max_row > MAX_ROWS + 1:
-            raise ValueError("工作簿超过 10000 行，请按社区拆分")
+            raise ValueError("房屋标注表超过 100000 行")
         headers = next(sheet.iter_rows(max_row=1, values_only=True), ())
         if tuple(headers) != HEADERS:
             raise ValueError("房屋标注表头已变化，请保留原表头和原始列")
         rows = []
         for index, cells in enumerate(sheet.iter_rows(min_row=2, max_col=len(HEADERS)), 2):
             if len(rows) >= MAX_ROWS:
-                raise ValueError("工作簿超过 10000 行，请按社区拆分")
+                raise ValueError("房屋标注表超过 100000 行")
             values = [cell.value for cell in cells]
             if not any(value is not None for value in values):
                 continue
@@ -175,13 +176,13 @@ def parse_annotation_workbook(content: bytes, user_id: int) -> tuple[list[dict],
             row["duplicate"] = counts[str(row.get("id") or "")] > 1
         catalog = workbook["小区地址库"]
         if catalog.max_row > MAX_ROWS + 1:
-            raise ValueError("小区地址库超过 10000 行")
+            raise ValueError("小区地址库超过 100000 行")
         if tuple(next(catalog.iter_rows(max_row=1, values_only=True), ())) != (*ENTRY_FIELDS, "snapshot_token"):
             raise ValueError("小区地址库表头已变化，请重新导出")
         entry_tokens = {}
         for index, cells in enumerate(catalog.iter_rows(min_row=2, max_col=len(ENTRY_FIELDS) + 1), 2):
             if index > MAX_ROWS + 1:
-                raise ValueError("小区地址库超过 10000 行")
+                raise ValueError("小区地址库超过 100000 行")
             if any(cell.data_type == "f" for cell in cells):
                 raise ValueError("小区地址库不能包含公式")
             values = [cell.value for cell in cells]

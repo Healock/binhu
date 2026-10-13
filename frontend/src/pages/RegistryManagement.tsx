@@ -633,10 +633,10 @@ export default function RegistryManagement() {
   const exportRegistryRecords = async (annotations = false) => {
     if (!['properties', 'people', 'organizations'].includes(tab)) return
     setExporting(true)
+    let exportMessageKey = ''
     try {
       const exportName = annotations ? '房屋小区标注' : tab === 'properties' ? '房屋档案' : tab === 'people' ? '人员档案' : '机构档案'
-      const blob = tab === 'properties'
-        ? await (annotations ? registryApi.exportPropertyAnnotations : registryApi.exportProperties)({
+      const filters = {
           keyword: debouncedKeyword,
           community_id: communityId,
           housing_category: housingCategory,
@@ -649,15 +649,44 @@ export default function RegistryManagement() {
           small_community_ids: smallCommunityIds,
           address_match_statuses: addressMatchStatuses,
           sort: propertySort,
-        })
+        }
+      let blob: Blob | null = null
+      if (annotations) {
+        const job = await registryApi.exportPropertyAnnotations(filters)
+        const messageKey = `property-annotation-export-${job.job_id}`
+        exportMessageKey = messageKey
+        message.loading({ content: '小区标注工作簿正在后台生成', key: messageKey, duration: 0 })
+        let completed = false
+        while (!completed) {
+          await new Promise(resolve => window.setTimeout(resolve, 2000))
+          const status = await registryApi.propertyAnnotationExportStatus(job.job_id)
+          if (status.status === 'ready') {
+            blob = await registryApi.downloadPropertyAnnotationExport(job.job_id)
+            message.destroy(messageKey)
+            completed = true
+          } else if (status.status === 'failed' || status.status === 'interrupted' || status.status === 'expired') {
+            throw new Error(status.status === 'interrupted'
+              ? '导出任务因服务重启中断，请重新导出'
+              : status.status === 'expired' ? '导出文件已过期，请重新导出' : '后台生成失败，请缩小筛选范围后重试')
+          } else {
+            message.loading({ content: status.phase === 'building' ? '正在生成 XLSX 文件' : '正在读取筛选结果', key: messageKey, duration: 0 })
+          }
+        }
+      } else {
+        blob = tab === 'properties'
+          ? await registryApi.exportProperties(filters)
         : tab === 'people'
           ? await registryApi.exportPeople({ name: debouncedKeyword, category_ids: categoryIds })
           : await registryApi.exportOrganizations({ keyword: debouncedKeyword })
+      }
+      if (!blob) throw new Error('导出文件未生成，请重试')
       if (await downloadBlob(blob, `${exportName}-${new Date().toISOString().slice(0, 10)}.xlsx`)) {
         message.success('已导出当前筛选结果')
       }
     } catch (reason: any) {
+      if (exportMessageKey) message.destroy(exportMessageKey)
       let detailMessage = reason?.response?.data?.detail
+      if (!detailMessage && reason instanceof Error) detailMessage = reason.message
       if (reason?.response?.data instanceof Blob) {
         try { detailMessage = JSON.parse(await reason.response.data.text())?.detail } catch { detailMessage = '' }
       }

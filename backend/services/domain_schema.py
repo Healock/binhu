@@ -28,6 +28,24 @@ async def ensure_registry_schema(cur) -> None:
     from services.watch_import import CORE_WATCH_CATEGORIES
 
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_property_annotation_exports (
+            id CHAR(36) NOT NULL PRIMARY KEY,
+            requested_by BIGINT NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'queued',
+            phase VARCHAR(30) NOT NULL DEFAULT 'queued',
+            row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            error_code VARCHAR(60) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at DATETIME DEFAULT NULL,
+            finished_at DATETIME DEFAULT NULL,
+            expires_at DATETIME NOT NULL,
+            INDEX idx_registry_annotation_export_owner (requested_by, created_at),
+            INDEX idx_registry_annotation_export_state (status, created_at),
+            INDEX idx_registry_annotation_export_expiry (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_properties (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             street VARCHAR(200) NOT NULL DEFAULT '',
