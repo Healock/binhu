@@ -1002,6 +1002,7 @@ export async function exportWorkLogDailyDetail(payload: {
   business_date: string
   rental_target: number
   self_owned_target: number
+  population_coefficient: number
 }): Promise<Blob> {
   const { data } = await api.post(
     '/work-logs/daily-detail/export',

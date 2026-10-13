@@ -15,6 +15,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from fastapi import HTTPException
 
 from routers.work_logs import (
+    DailyDetailExportRequest,
     DraftSave,
     _draft_payload,
     _draft_summary,
@@ -36,6 +37,7 @@ from services.work_log_pdf import _display, build_daily_pdf
 from services.work_log_daily_detail import (
     build_daily_detail_data,
     build_daily_detail_workbook,
+    normalize_population_coefficient,
     normalize_targets,
 )
 from services.work_log_schema import (
@@ -933,6 +935,11 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("C4:C5", {str(item) for item in sheet.merged_cells.ranges})
         self.assertEqual(sheet.max_column, 18)
         self.assertEqual(sheet.max_row, 52)
+        self.assertEqual(sheet["F2"].value, "流动人口板块")
+        self.assertEqual(sheet["I2"].value, "入户板块")
+        self.assertEqual(sheet["N2"].value, "指令核查")
+        self.assertEqual(sheet["R2"].value, "备注")
+        self.assertEqual(sheet.print_area, "'Sheet1'!$A$1:$R$51")
         for row in sheet.iter_rows(min_row=1, max_row=52, min_col=1, max_col=18):
             for cell in row:
                 self.assertIsNone(cell.fill.fill_type)
@@ -1014,6 +1021,33 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[1]["visit_target"], 15)
         self.assertEqual(result[1]["visits"], 6)
         self.assertIsNone(result[1]["checked_instructions"])
+
+    def test_daily_detail_population_coefficient_is_request_parameter(self):
+        self.assertEqual(normalize_population_coefficient(20), 20)
+        self.assertEqual(normalize_population_coefficient(-1), 0)
+        self.assertEqual(normalize_population_coefficient("invalid"), 10)
+        request = DailyDetailExportRequest(
+            business_date=date(2026, 8, 9),
+            rental_target=10,
+            self_owned_target=15,
+            population_coefficient=12,
+        )
+        self.assertEqual(request.population_coefficient, 12)
+        self.assertEqual(
+            DailyDetailExportRequest(
+                business_date=date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            ).population_coefficient,
+            10,
+        )
+        with self.assertRaises(Exception):
+            DailyDetailExportRequest(
+                business_date=date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+                population_coefficient=1000,
+            )
 
     def test_daily_detail_targets_are_bounded(self):
         self.assertEqual(

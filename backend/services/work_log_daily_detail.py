@@ -41,7 +41,6 @@ MIN_DATA_ROWS = 47
 DATA_START_ROW = 4
 LAST_COLUMN = 18
 PREFERENCE_KEY_PREFIX = "work_log_daily_detail_targets:"
-POPULATION_COEFFICIENT_KEY = "work_log_daily_detail_population_coefficient"
 TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1]
     / "assets"
@@ -86,16 +85,6 @@ def normalize_population_coefficient(value: Any) -> int:
     except (TypeError, ValueError):
         value = DEFAULT_POPULATION_COEFFICIENT
     return min(MAX_POPULATION_COEFFICIENT, max(0, value))
-
-
-async def load_population_coefficient(conn) -> int:
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "SELECT config_value FROM _system_config WHERE config_key=%s",
-            (POPULATION_COEFFICIENT_KEY,),
-        )
-        row = await cur.fetchone()
-    return normalize_population_coefficient(row[0] if row else None)
 
 
 async def load_population_inputs(conn, business_date: date) -> list[dict[str, Any]]:
@@ -208,11 +197,23 @@ async def load_target_preferences(conn, user_id: int) -> dict[str, int]:
         )
         row = await cur.fetchone()
     if not row or not row[0]:
-        return normalize_targets({})
+        return {
+            **normalize_targets({}),
+            "population_coefficient": DEFAULT_POPULATION_COEFFICIENT,
+        }
     try:
-        return normalize_targets(json.loads(row[0]))
+        value = json.loads(row[0])
+        return {
+            **normalize_targets(value),
+            "population_coefficient": normalize_population_coefficient(
+                value.get("population_coefficient") if isinstance(value, dict) else None,
+            ),
+        }
     except (TypeError, ValueError, json.JSONDecodeError):
-        return normalize_targets({})
+        return {
+            **normalize_targets({}),
+            "population_coefficient": DEFAULT_POPULATION_COEFFICIENT,
+        }
 
 
 async def save_target_preferences(
@@ -221,7 +222,12 @@ async def save_target_preferences(
     targets: dict[str, int],
 ) -> None:
     key = f"{PREFERENCE_KEY_PREFIX}{int(user_id)}"
-    normalized = normalize_targets(targets)
+    normalized = {
+        **normalize_targets(targets),
+        "population_coefficient": normalize_population_coefficient(
+            targets.get("population_coefficient"),
+        ),
+    }
     async with conn.cursor() as cur:
         await cur.execute(
             """
@@ -407,9 +413,10 @@ async def build_daily_detail_data(
     *,
     rental_target: int,
     self_owned_target: int,
+    population_coefficient: int = DEFAULT_POPULATION_COEFFICIENT,
 ) -> list[dict[str, Any]]:
     roster = await _load_roster(conn, business_date)
-    coefficient = await load_population_coefficient(conn)
+    coefficient = normalize_population_coefficient(population_coefficient)
     population_rows = await load_population_inputs(conn, business_date)
     population_by_community = {
         row["community_id"]: row for row in population_rows
@@ -682,12 +689,14 @@ async def build_daily_detail_export(
     *,
     rental_target: int,
     self_owned_target: int,
+    population_coefficient: int = DEFAULT_POPULATION_COEFFICIENT,
 ) -> tuple[bytes, str, int]:
     rows = await build_daily_detail_data(
         conn,
         business_date,
         rental_target=rental_target,
         self_owned_target=self_owned_target,
+        population_coefficient=population_coefficient,
     )
     content, filename = build_daily_detail_workbook(business_date, rows)
     return content, filename, len(rows)

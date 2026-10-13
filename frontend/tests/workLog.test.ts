@@ -57,6 +57,12 @@ test('文件生成页面用独立 Panel 区分每日明细和工作日志', () =
   assert.match(source, /title="工作日志"/)
   assert.match(source, /出租房目标数/)
   assert.match(source, /自购房目标数/)
+  assert.match(source, /流动人口目标系数/)
+  assert.match(
+    source,
+    /流动人口目标系数[\s\S]{0,350}onChange=\{value => setPopulationCoefficient/,
+  )
+  assert.match(source, /population_coefficient: populationCoefficient/)
   assert.match(source, /生成每日明细 XLSX/)
   assert.match(source, /exportWorkLogDailyDetail/)
   assert.match(source, /dailyDetailDate/)

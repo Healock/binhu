@@ -742,6 +742,7 @@ export default function WorkLog() {
         business_date: dailyDetailDate.format('YYYY-MM-DD'),
         rental_target: rentalTarget,
         self_owned_target: selfOwnedTarget,
+        population_coefficient: populationCoefficient,
       })
       const saved = await downloadBlob(
         blob,
@@ -820,7 +821,14 @@ export default function WorkLog() {
           </div>
           <div>
             <div className="mb-2 text-sm font-medium">流动人口目标系数</div>
-            <InputNumber value={populationCoefficient} disabled min={0} precision={0} />
+            <InputNumber
+              min={0}
+              max={999}
+              precision={0}
+              value={populationCoefficient}
+              onChange={value => setPopulationCoefficient(value ?? 10)}
+            />
+            <div className="mt-1 text-xs text-slate-500">按当前账号记忆，默认 10</div>
           </div>
           <Button
             type="primary"

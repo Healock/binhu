@@ -12,15 +12,15 @@ from services.personnel_positions import (
     serialize_weekend_position_config,
 )
 from services.maintenance import invalidate_maintenance_cache, validate_maintenance_config
-from services.work_log_daily_detail import (
-    MAX_POPULATION_COEFFICIENT,
-    POPULATION_COEFFICIENT_KEY,
-)
 
 router = APIRouter(
     prefix="/api/system",
     tags=["系统配置"],
     dependencies=[Depends(require_super_admin)],
+)
+
+LEGACY_DAILY_DETAIL_COEFFICIENT_KEY = (
+    "work_log_daily_detail_population_coefficient"
 )
 
 
@@ -30,7 +30,9 @@ async def get_config(conn=Depends(get_db)):
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT config_key, config_value FROM _system_config "
-            "WHERE config_key NOT LIKE 'qmf_%'"
+            "WHERE config_key NOT LIKE 'qmf_%' "
+            "AND config_key <> %s",
+            (LEGACY_DAILY_DETAIL_COEFFICIENT_KEY,),
         )
         rows = await cur.fetchall()
     return {"data": {r[0]: r[1] for r in rows}}
@@ -83,14 +85,8 @@ async def update_config(
                     raise HTTPException(400, "空闲超时时间必须在 5 分钟至 24 小时之间")
             if k == "permission_enforcement_enabled":
                 raise HTTPException(400, "权限启用状态只能通过迁移工具修改")
-            if k == POPULATION_COEFFICIENT_KEY:
-                try:
-                    coefficient = int(v)
-                except (TypeError, ValueError) as exc:
-                    raise HTTPException(400, "流动人口目标系数必须是非负整数") from exc
-                if coefficient < 0 or coefficient > MAX_POPULATION_COEFFICIENT:
-                    raise HTTPException(400, "流动人口目标系数必须在 0 至 999 之间")
-                v = str(coefficient)
+            if k == LEGACY_DAILY_DETAIL_COEFFICIENT_KEY:
+                raise HTTPException(400, "流动人口目标系数请在文件生成页面填写")
             if k == "online_writeback_enabled":
                 normalized = str(v).strip().lower()
                 if normalized not in {"0", "1", "true", "false"}:
