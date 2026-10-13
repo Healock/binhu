@@ -1181,6 +1181,8 @@ GitHub 自动发布在正式切换同日迁移。新服务器复用现有专用�
 
 房屋档案来源导入必须先执行只读预览，再由具备 `registry.import.manage` 权限的账号确认。户号表导入和告知书挂载会写入 `RegistryData`，发布前备份范围使用 `all`。告知书读取复用走访来源平台的服务器端地址和认证配置，仅调用 GET `/api/address/queryHouseCertificate`，不向来源平台写入；请求不附加日期范围，但后端会强制校验 `VISIT_SOURCE_POLICE_NAME=滨湖新城派出所`。审计只记录批次号、数量和结果，禁止记录地址、姓名、身份证号或完整来源正文。
 
+社区别名维护后，平台会自动重算当前社区的户号表社区待核对问题；跨社区的历史存量问题使用 `python -m migrations.registry_issue_reconciliation measure`、`migrate --apply`、`verify`，执行前备份 `RegistryData`，并保留每次命令输出和运行编号。该重算只解决当前启用社区的唯一别名匹配，不删除问题历史，也不处理重复来源、告知书冲突或无法唯一匹配的数据。
+
 责任告知书图片预览另使用服务器私密配置 `BINHU_CERTIFICATE_IMAGE_BASE_URL` 指向旧平台的只读签名图片目录。不要把旧平台图片主机或文件路径写入前端、普通日志或公开文档。房屋详情按钮只对 `registry.import.manage` 显示；后端再次校验房屋社区范围、图片相对路径和 JPG/PNG 文件头，单张图片上限 10 MB，读取失败不会改变档案或来源数据。
 
 正式迁移按 [八库业务域与新档案规划](database-domain-plan.md) 分阶段执行。2026-08-08 已完成走访、下发、小区地址、平台基础、工作日志和身份证 HMAC 回填；人员标签快照因当前没有标签分配而无可回填记录，Registry/Workflow 新功能仍待后续维护窗口。旧表全部保留，未执行长期双写或删除。
