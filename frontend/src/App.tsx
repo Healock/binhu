@@ -106,17 +106,6 @@ function DesktopSummaryRoute({ children }: { children: ReactNode }) {
   return mobile ? <Navigate to="/" replace /> : <>{children}</>
 }
 
-function PhotoTaskEntry() {
-  const { user } = useAuth()
-  const permissions = new Set(user?.permissions || [])
-  const allowed = Boolean(
-    user?.member?.position === '基础管控'
-    || permissions.has('workflow.ticket.manage')
-    || ['admin', 'super_admin'].includes(user?.role || ''),
-  )
-  return allowed ? <WorkflowTickets mode="photo" /> : <Navigate to="/workflow" replace />
-}
-
 function App() {
   const isDesktop = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
@@ -203,10 +192,6 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="workflow.ticket.view" />}>
                 <Route path="/workflow" element={<WorkflowTickets />} />
               </Route>
-              <Route element={<ProtectedRoute requireAnyPermission={['workflow.ticket.handle', 'workflow.ticket.manage']} />}>
-                <Route path="/photo-tasks" element={<PhotoTaskEntry />} />
-              </Route>
-
               {/* 用户管理仅超管 */}
               <Route element={<ProtectedRoute requirePermission="user.manage" />}>
                 <Route path="/users" element={<UserManagement />} />

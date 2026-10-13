@@ -18,7 +18,6 @@ export type NavigationIconName =
   | 'online_check'
   | 'dispatch'
   | 'analysis'
-  | 'photo'
   | 'resources'
   | 'system'
   | 'summary'
@@ -152,14 +151,6 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '研判',
         icon: 'analysis',
         anyPermissions: ['online.task.manage', 'police.dispatch.manage'],
-      },
-      {
-        id: 'photo_tasks',
-        path: '/photo-tasks',
-        label: '调照片',
-        shortLabel: '调照片',
-        icon: 'photo',
-        anyPermissions: ['workflow.ticket.handle', 'workflow.ticket.manage'],
       },
     ],
   },
@@ -344,12 +335,6 @@ export function isNavigationItemAccessible(
     ))
     && !adminAccess
   ) return false
-  if (
-    item.id === 'photo_tasks'
-    && position !== '基础管控'
-    && !permissions?.includes('workflow.ticket.manage')
-    && !adminAccess
-  ) return false
   if (item.permission) {
     // Permission data is authoritative.  If it is unavailable, fail closed
     // for permission-gated items instead of exposing a menu by accident.
@@ -463,7 +448,6 @@ export function normalizeMobileDockConfig(
       ) tasks.items.push(nextId)
     }
     appendMovedTask('police_tasks', 'police_analysis')
-    appendMovedTask('workflow_tickets', 'photo_tasks')
   }
   const presentGroups = new Set(normalized.map(group => group.id))
   for (const definition of mobileAccessibleNavigationGroups(

@@ -29,17 +29,14 @@ test('全局时区来自启动接口并可在系统设置保存后更新', () =>
   assert.match(settingsSource, /setSystemTimezone\(timezone\)/)
 })
 
-test('照片工单搜索使用即时筛选并按系统时区显示时间', () => {
+test('照片工单搜索入口已随业务退役', () => {
   const workflowSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
     'utf8',
   )
 
-  assert.match(workflowSource, /className="workflow-photo-search"/)
-  assert.match(workflowSource, /useDebouncedValue\(keyword\.trim\(\), 350, keywordFlush\)/)
-  assert.match(workflowSource, /setKeywordFlush\(current => current \+ 1\)/)
-  assert.doesNotMatch(workflowSource, />\s*查询\s*<\/Button>/)
-  assert.match(workflowSource, /formatUTCTime\(value, systemTimezone\)/)
+  assert.doesNotMatch(workflowSource, /workflow-photo-search/)
+  assert.doesNotMatch(workflowSource, /photo_pending|photo-requests|photo-imports/)
 })
 
 test('运维中心不再展示已下线的腾讯运行状态', () => {

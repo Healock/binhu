@@ -1,13 +1,11 @@
 """面向全部登录用户的公告与个人通知 API。"""
 
 from typing import Literal
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from database import get_db
-from config import settings
 from deps import require_permission
 from services.permissions import ANNOUNCEMENT_MANAGE, NOTIFICATION_VIEW
 from services.audit import record_admin_audit, request_audit_fields
@@ -17,30 +15,6 @@ router = APIRouter(prefix="/api/notifications", tags=["消息中心"])
 require_notification_view = require_permission(NOTIFICATION_VIEW)
 require_announcement_manage = require_permission(ANNOUNCEMENT_MANAGE)
 _unread_cache = BoundedTTLCache[int, tuple[int, int]](ttl_seconds=5, max_entries=4096)
-
-
-async def _workflow_task_paths(cur, ticket_ids: list[int]) -> dict[int, str]:
-    if not ticket_ids or not settings.WORKFLOW_FEATURE_ENABLED:
-        return {}
-    workflow_schema = settings.MYSQL_WORKFLOW_DB.replace("`", "")
-    placeholders = ",".join(["%s"] * len(ticket_ids))
-    await cur.execute(
-        f"SELECT detail.work_order_id, detail.source_parser_type, detail.source_row_key "
-        f"FROM `{workflow_schema}`.photo_request_details detail "
-        f"JOIN `{workflow_schema}`.work_orders order_row ON order_row.id=detail.work_order_id "
-        f"WHERE detail.work_order_id IN ({placeholders}) "
-        "AND detail.external_origin='platform_task' "
-        "AND detail.source_parser_type<>'' AND detail.source_row_key<>'' "
-        "AND order_row.type_code='photo_request' "
-        "AND order_row.status IN ('approved','completed')",
-        tuple(ticket_ids),
-    )
-    return {
-        int(ticket_id): (
-            f"/tasks/{quote(str(parser_type), safe='')}/{quote(str(row_key), safe='')}"
-        )
-        for ticket_id, parser_type, row_key in await cur.fetchall()
-    }
 
 
 class AnnouncementCreate(BaseModel):
@@ -123,19 +97,6 @@ async def list_notifications(
             (user["id"], limit),
         )
         personal_rows = await cur.fetchall()
-        completed_photo_ticket_ids = {
-            int(row[5]) for row in personal_rows
-            if row[5] is not None and str(row[1]).startswith((
-                "workflow_photo_done_",
-                "workflow_complete_",
-                "workflow_approve_",
-                "workflow_external_batch_",
-            ))
-        }
-        task_paths = await _workflow_task_paths(
-            cur,
-            sorted(completed_photo_ticket_ids),
-        )
         await cur.execute(
             """
             SELECT
@@ -164,7 +125,7 @@ async def list_notifications(
             "title": row[3],
             "content": row[4],
             "related_task_id": row[5],
-            "action_path": task_paths.get(int(row[5])) if row[5] is not None else None,
+            "action_path": None,
             "is_read": bool(row[6]),
             "created_at": _iso_utc(row[7]),
             "read_at": _iso_utc(row[8]),

@@ -4008,10 +4008,6 @@ async def _mobile_task_detail_data(
             raise HTTPException(404, "任务不存在或不属于当前社区")
 
     workflow = TASK_WORKFLOWS[parser_type]
-    photo_requests = (
-        await _task_photo_results(user, parser_type, row_key)
-        if include_photo_requests else []
-    )
     qmf_config = await load_qmf_config(conn)
     qmf_allowed = has_permission(user, QMF_REGISTRATION_EXECUTE)
     effective_source_count = len(sources)
@@ -4088,7 +4084,6 @@ async def _mobile_task_detail_data(
             "该任务已进入基础管控研判队列，网格员仍可继续核查并修改结果"
             if dependency_blocked else ""
         ),
-        "photo_requests": photo_requests,
         "qmf_preview": qmf_preview,
         "qmf_registration": qmf_registration,
         "qmf_feedback": qmf_feedback,

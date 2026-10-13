@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-test('基础管控照片工作台支持只读表格、批量领取和 XLSX 导出', () => {
+test('照片工作台已从通用工单中心和客户端 API 退役', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
     'utf8',
@@ -12,20 +12,12 @@ test('基础管控照片工作台支持只读表格、批量领取和 XLSX 导�
     'utf8',
   )
 
-  assert.match(pageSource, /photo_pending/)
-  assert.match(pageSource, /领取全部待领取/)
-  assert.match(pageSource, /batchClaimPhotoRequests/)
-  assert.match(pageSource, /navigate\('\/data-upload'\)/)
-  assert.match(pageSource, /导出 XLSX/)
-  assert.match(pageSource, /getCheckboxProps: row => \(\{ disabled: row\.status !== 'queued' \}\)/)
+  assert.doesNotMatch(pageSource, /photo_pending|领取全部待领取|batchClaimPhotoRequests|导出 XLSX/)
   assert.doesNotMatch(pageSource, /QuerySpreadsheet/)
-  assert.match(apiSource, /api\.post\([\s\S]*'\/workflow\/photo-requests\/pending\/search'[\s\S]*options\.passive \? passiveRequest : activeRequest/)
-  assert.match(apiSource, /\/workflow\/photo-requests\/batch-claim/)
-  assert.match(apiSource, /api\.post\('\/workflow\/photo-requests\/pending\/export', payload/)
-  assert.doesNotMatch(apiSource, /api\.get\('\/workflow\/photo-requests/)
+  assert.doesNotMatch(apiSource, /\/workflow\/photo-requests|\/workflow\/photo-imports/)
 })
 
-test('照片批次上传使用长超时并明确提示网关大小限制', () => {
+test('数据上传中心不再提供照片批次上传', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/DataUploadCenter.tsx', import.meta.url),
     'utf8',
@@ -35,11 +27,8 @@ test('照片批次上传使用长超时并明确提示网关大小限制', () =>
     'utf8',
   )
 
-  assert.match(apiSource, /api\.post\('\/workflow\/photo-imports\/preview', form, \{[\s\S]*timeout: 300000/)
-  assert.match(apiSource, /api\.post\(`\/workflow\/photo-imports\/\$\{batchId\}\/confirm`, \{\}, \{[\s\S]*timeout: 300000/)
-  assert.match(pageSource, /error\?\.response\?\.status === 413/)
-  assert.match(pageSource, /照片 ZIP 超过服务器上传限制/)
-  assert.match(pageSource, /照片 ZIP 上传或解析超时/)
+  assert.doesNotMatch(apiSource, /\/workflow\/photo-imports/)
+  assert.doesNotMatch(pageSource, /照片 ZIP|photo-imports/)
 })
 
 test('自购自住名单上传遵守后端大小限制并明确提示网关拒绝', () => {
@@ -51,35 +40,29 @@ test('自购自住名单上传遵守后端大小限制并明确提示网关拒�
   assert.match(pageSource, /MAX_SELF_OWNED_ZIP_BYTES = 100 \* 1024 \* 1024/)
   assert.match(pageSource, /file\.size > MAX_SELF_OWNED_ZIP_BYTES/)
   assert.match(pageSource, /自购自住名单 ZIP 不能超过 100MB/)
-  assert.match(pageSource, /error\?\.response\?\.status === 413/)
+  assert.match(pageSource, /const status = error\?\.response\?\.status/)
   assert.match(pageSource, /自购自住名单 ZIP 超过服务器上传限制/)
   assert.match(pageSource, /error\?\.code === 'ECONNABORTED'/)
   assert.match(pageSource, /自购自住名单上传或处理超时/)
 })
 
-test('历史照片批次修复必须先预览再明确确认', () => {
+test('历史照片批次修复入口已退役', () => {
   const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
   const pageSource = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
 
-  assert.match(apiSource, /photo-imports\/\$\{batchId\}\/reconcile-preview/)
-  assert.match(apiSource, /photo-imports\/\$\{batchId\}\/reconcile`, \{ confirm: true \}/)
-  assert.match(pageSource, /核对遗漏工单/)
-  assert.match(pageSource, /确认修复遗漏照片工单/)
-  assert.match(pageSource, /eligible_tickets/)
+  assert.doesNotMatch(apiSource, /photo-imports|eligible_tickets/)
+  assert.doesNotMatch(pageSource, /核对遗漏工单|确认修复遗漏照片工单/)
 })
 
-test('调照片使用独立任务页面，通用工单中心不再混入照片待办标签', () => {
+test('调照片页面和入口已移除', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
     'utf8',
   )
   const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 
-  assert.match(pageSource, /mode = 'tickets'/)
-  assert.match(pageSource, /photoOnly \? '调照片' : '工单中心'/)
-  assert.doesNotMatch(pageSource, /key: 'photo_pending', label: '未调照片'/)
-  assert.match(appSource, /path="\/photo-tasks"/)
-  assert.match(appSource, /<WorkflowTickets mode="photo" \/>/)
+  assert.doesNotMatch(pageSource, /mode = 'photo'|photoOnly|photo_pending/)
+  assert.doesNotMatch(appSource, /\/photo-tasks|WorkflowTickets mode="photo"/)
 })
 
 test('管理员和超级管理员可以把待补充工单恢复为待领取', () => {

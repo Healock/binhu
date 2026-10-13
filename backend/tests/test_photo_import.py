@@ -702,7 +702,7 @@ class PhotoImportQueuedCompletionTests(unittest.IsolatedAsyncioTestCase):
         statements = [statement for statement, _ in cursor.statements]
         self.assertTrue(any("WHERE id=%s AND status=%s" in item for item in statements))
         self.assertTrue(any("status IN ('queued','in_progress')" in item for item in statements))
-        self.assertTrue(any("external_sync_status='paused'" in item for item in statements))
+        self.assertFalse(any("external_sync_status='paused'" in item for item in statements))
         enqueue.assert_not_awaited()
         notify.assert_awaited_once()
 
@@ -735,7 +735,7 @@ class PhotoImportQueuedCompletionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(completed)
-        enqueue.assert_awaited_once_with(ANY, 31, "mark_completed")
+        enqueue.assert_not_awaited()
 
 
 class PhotoImportReconcileTests(unittest.IsolatedAsyncioTestCase):

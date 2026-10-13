@@ -30,10 +30,8 @@ import {
   getMobileTaskFilterOptions,
   getPoliceDispatchWorkbench,
   listMobileTasks,
-  workflowApi,
   type MobileTaskFilterOption,
   type MobileTaskItem,
-  type PendingPhotoRequest,
   type PoliceDispatchBatch,
 } from '../api/client'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -44,7 +42,6 @@ import { TASK_FLOW_LANES, taskFlowLane, taskFlowNodeId, type TaskFlowLane } from
 const AUTO_REFRESH_MS = 30_000
 const MAX_PERSON_TASKS_PER_TYPE = 100
 const MAX_CONTROL_ANALYSIS_NODES = 60
-const MAX_CONTROL_PHOTO_NODES = 50
 const MAX_STACK_VISUAL_LAYERS = 5
 const LAST_INSPECTOR_KEY = 'binhu-task-flow-lab:last-inspector'
 const LAST_VIEW_KEY = 'binhu-task-flow-lab:last-view'
@@ -160,16 +157,6 @@ function analysisDependencyEdge(task: MobileTaskItem): Edge {
     selectable: false,
     deletable: false,
     data: { system: true, label: '等待研判' },
-  }
-}
-
-function photoTaskItem(task: PendingPhotoRequest): TaskFlowItem {
-  return {
-    id: `photo:${task.id}`, lane: task.overdue ? 'exception' : 'ready', category: '调照片',
-    title: task.subject_name || task.title || task.ticket_no,
-    statusLabel: task.overdue ? '已逾期' : '待领取', statusColor: task.overdue ? 'red' : 'blue',
-    community: task.community_name, deadline: '', description: task.source_label || task.ticket_no,
-    owner: task.requester_name || '申请人未匹配', openPath: `/photo-tasks?ticket=${task.id}`, weight: 1,
   }
 }
 
@@ -380,20 +367,18 @@ async function loadPersonTasks(inspector: string, passive: boolean): Promise<Loa
 }
 
 async function loadControlTasks(passive: boolean): Promise<LoadedTaskFlowItems> {
-  const [analysisResults, photoResult, dispatchResult] = await Promise.all([
+  const [analysisResults, dispatchResult] = await Promise.all([
     Promise.all(MOBILE_TASK_TYPES.map(parserType => listMobileTasks({ parser_type: parserType, scope: 'all', status: 'all', review_stage: 'waiting_analysis', sort: 'priority', page: 1, page_size: 20 }, { passive }))),
-    workflowApi.pendingPhotoRequests({ page: 1, page_size: MAX_CONTROL_PHOTO_NODES }, { passive }),
     getPoliceDispatchWorkbench({ passive }),
   ])
   const analysisItems = analysisResults.flatMap(result => result.data).slice(0, MAX_CONTROL_ANALYSIS_NODES).map(analysisTaskItem)
-  const photoItems = photoResult.data.map(photoTaskItem)
   const dispatchItems = dispatchResult.batches.flatMap(dispatchBatchItems)
   const dispatchTotal = dispatchItems.reduce((sum, item) => sum + item.weight, 0)
   return {
-    items: [...analysisItems, ...photoItems, ...dispatchItems],
+    items: [...analysisItems, ...dispatchItems],
     systemEdges: [],
-    total: analysisResults.reduce((sum, result) => sum + result.total, 0) + photoResult.total + dispatchTotal,
-    loadedTotal: analysisItems.length + photoItems.length + dispatchTotal,
+    total: analysisResults.reduce((sum, result) => sum + result.total, 0) + dispatchTotal,
+    loadedTotal: analysisItems.length + dispatchTotal,
   }
 }
 

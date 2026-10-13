@@ -319,7 +319,7 @@ export interface AdminTaskQueueDetailItem {
   diagnosis: string
   recommended_action: string
   can_retry: boolean
-  retry_kind: 'photo_outbox' | null
+  retry_kind: string | null
   updated_at: string | null
 }
 
@@ -1784,16 +1784,6 @@ export interface MobileTaskDetailData {
   analysis_mode?: boolean
   dependency_blocked?: boolean
   dependency_message?: string
-  photo_requests: Array<{
-    ticket_id: number
-    ticket_no: string
-    attachments: Array<{
-      file_id: string
-      original_name: string
-      mime_type: string
-      size_bytes: number
-    }>
-  }>
   qmf_preview?: {
     visible: boolean
     enabled: boolean
@@ -5213,66 +5203,6 @@ export interface WorkOrderDetail extends WorkOrderSummary {
   attachments: WorkOrderAttachment[]
 }
 
-export interface PhotoImportItem {
-  safe_name: string
-  person_name: string
-  identity_number: string
-  size_bytes: number
-  sha256: string
-  match_status: 'matched' | 'unmatched' | 'duplicate' | 'conflict' | 'failed'
-  match_reason: string
-  matched_ticket_ids: number[]
-}
-
-export interface PhotoImportBatch {
-  id: number
-  batch_no: string
-  status: 'preview' | 'processing' | 'completed' | 'partial' | 'failed'
-  total_files: number
-  matched_files: number
-  unmatched_files: number
-  conflict_files: number
-  duplicate_files: number
-  failed_files: number
-  error_message: string
-  previewed_at: string | null
-  confirmed_at: string | null
-  created_at: string | null
-  updated_at: string | null
-  items?: PhotoImportItem[]
-}
-
-export interface PhotoImportReconcileResult {
-  batch_id: number
-  batch_no: string
-  eligible_tickets: number
-  attachment_copies: number
-  already_attached: number
-  manual_review_tickets: number
-  missing_source_files: number
-  repaired_tickets: number
-}
-
-export interface PendingPhotoRequest {
-  id: number
-  ticket_no: string
-  title: string
-  requester_user_id: number | null
-  current_queue: string
-  status: string
-  priority: string
-  due_at: string | null
-  version_no: number
-  updated_at: string | null
-  subject_name: string
-  identity_number: string
-  community_name: string
-  source_label: string
-  requester_name: string
-  requested_at: string | null
-  overdue: boolean
-}
-
 export const workflowApi = {
   async types() {
     return (await api.get('/workflow/types', activeRequest)).data as { data: WorkflowType[] }
@@ -5348,65 +5278,6 @@ export const workflowApi = {
     return resolveRuntimeApiUrl(
       `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`,
     )
-  },
-  async pendingPhotoRequests(payload: {
-    keyword?: string
-    community?: string
-    source_label?: string
-    page?: number
-    page_size?: number
-  } = {}, options: { passive?: boolean } = {}) {
-    return (await api.post(
-      '/workflow/photo-requests/pending/search',
-      payload,
-      options.passive ? passiveRequest : activeRequest,
-    )).data as {
-      data: PendingPhotoRequest[]; total: number; page: number; page_size: number
-    }
-  },
-  async batchClaimPhotoRequests(payload: { ticket_ids?: number[]; claim_all?: boolean }) {
-    return (await api.post('/workflow/photo-requests/batch-claim', payload)).data as {
-      claimed_ids: number[]; skipped_ids: number[]; claimed_count: number
-    }
-  },
-  async exportPendingPhotoRequests(payload: {
-    keyword?: string
-    community?: string
-    source_label?: string
-  } = {}) {
-    return (await api.post('/workflow/photo-requests/pending/export', payload, {
-      ...activeRequest,
-      responseType: 'blob',
-    })).data as Blob
-  },
-  async previewPhotoImport(file: File) {
-    const form = new FormData()
-    form.append('file', file)
-    return (await api.post('/workflow/photo-imports/preview', form, {
-      ...activeRequest,
-      timeout: 300000,
-    })).data as PhotoImportBatch
-  },
-  async confirmPhotoImport(batchId: number) {
-    return (await api.post(`/workflow/photo-imports/${batchId}/confirm`, {}, {
-      ...activeRequest,
-      timeout: 300000,
-    })).data as PhotoImportBatch
-  },
-  async photoImports(page = 1, pageSize = 20) {
-    return (await api.get('/workflow/photo-imports', {
-      ...activeRequest,
-      params: { page, page_size: pageSize },
-    })).data as { data: PhotoImportBatch[]; total: number; page: number; page_size: number }
-  },
-  async photoImport(batchId: number) {
-    return (await api.get(`/workflow/photo-imports/${batchId}`, activeRequest)).data as PhotoImportBatch
-  },
-  async previewPhotoImportReconcile(batchId: number) {
-    return (await api.get(`/workflow/photo-imports/${batchId}/reconcile-preview`, activeRequest)).data as PhotoImportReconcileResult
-  },
-  async reconcilePhotoImport(batchId: number) {
-    return (await api.post(`/workflow/photo-imports/${batchId}/reconcile`, { confirm: true }, activeRequest)).data as PhotoImportReconcileResult
   },
 }
 

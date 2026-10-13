@@ -646,9 +646,10 @@ class PhotoSheetMaintenanceTests(unittest.IsolatedAsyncioTestCase):
              patch.object(photo_sheet_sync.db_manager, "get_pool", return_value=_SourcePool(business_date)):
             result = await photo_sheet_sync.run_photo_sheet_maintenance_once()
 
-        self.assertEqual(order, ["incremental", "outbox"])
-        self.assertEqual(result["sync"], {"disabled": False})
+        self.assertEqual(order, [])
+        self.assertEqual(result["sync"], {"disabled": True, "retired": True})
         self.assertFalse(result["full_sync_scheduled"])
+        self.assertTrue(result["retired"])
 
     async def test_incremental_failure_does_not_prevent_outbox(self):
         business_date = date(2026, 8, 12)
@@ -663,9 +664,9 @@ class PhotoSheetMaintenanceTests(unittest.IsolatedAsyncioTestCase):
              patch.object(photo_sheet_sync.db_manager, "get_pool", return_value=_SourcePool(business_date)):
             result = await photo_sheet_sync.run_photo_sheet_maintenance_once()
 
-        outbox.assert_awaited_once()
-        self.assertIsNone(result["sync"])
-        self.assertEqual(result["outbox"], {"processed": 1})
+        outbox.assert_not_awaited()
+        self.assertEqual(result["sync"], {"disabled": True, "retired": True})
+        self.assertEqual(result["outbox"], {"processed": 0, "failed": 0, "paused": 0, "disabled": True, "retired": True})
 
     async def test_due_daily_full_sync_is_launched_without_waiting(self):
         business_date = date(2026, 8, 12)
@@ -679,8 +680,9 @@ class PhotoSheetMaintenanceTests(unittest.IsolatedAsyncioTestCase):
              patch.object(photo_sheet_sync, "launch_daily_full_sync", new=launch):
             result = await photo_sheet_sync.run_photo_sheet_maintenance_once()
 
-        launch.assert_called_once_with()
-        self.assertTrue(result["full_sync_scheduled"])
+        launch.assert_not_called()
+        self.assertFalse(result["full_sync_scheduled"])
+        self.assertTrue(result["retired"])
 
     async def test_photo_sheet_scheduler_stays_stopped_in_local_mode(self):
         maintenance = AsyncMock(side_effect=asyncio.CancelledError)

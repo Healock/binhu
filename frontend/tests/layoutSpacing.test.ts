@@ -36,8 +36,7 @@ test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
 
   assert.match(workflowSource, /<ListToolbar/)
-  assert.match(workflowSource, /notice={<Alert/)
-  assert.match(workflowSource, /meta={<>/)
+  assert.match(workflowSource, /meta={<span>/)
   assert.match(workflowSource, /workflow-ticket-detail__section/)
   assert.match(styles, /\.workflow-ticket-detail\s*\{[^}]*gap:\s*24px/s)
   assert.match(styles, /\.list-toolbar\s*\{[^}]*gap:\s*12px/s)
