@@ -114,6 +114,18 @@ class MobileNavigationConfigTests(unittest.TestCase):
                 for item in group["items"]
             },
         )
+
+    def test_all_task_positions_match_desktop_navigation_contract(self):
+        for position in ("组长", "组员", "片长", "基础管控", "中队长", "社区民警", "所队领导"):
+            config = default_mobile_dock_config(
+                "member", ["online.raw.view"], position=position
+            )
+            self.assertIn(
+                "flow_tasks",
+                {item for group in config["groups"] for item in group["items"]},
+                position,
+            )
+
     def test_normalize_filters_unknown_duplicate_and_forbidden_items(self):
         result = normalize_mobile_dock_config(
             {

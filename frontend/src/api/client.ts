@@ -253,6 +253,7 @@ export interface AppBootstrapSummary {
   environment: 'production' | 'staging' | 'development' | 'shadow'
   environment_label: string
   load_test_run_id: string
+  available_modules?: string[]
 }
 
 export interface LoginSessionSummary {

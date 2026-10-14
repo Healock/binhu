@@ -62,12 +62,14 @@ export default function MobileDock({
   permissions,
   position,
   permissionGroupCodes,
+  availableModules,
 }: {
   config: MobileDockConfig
   role: Role
   permissions: PermissionCode[]
   position?: string | null
   permissionGroupCodes?: string[]
+  availableModules?: string[]
 }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -81,8 +83,9 @@ export default function MobileDock({
       permissions,
       permissionGroupCodes,
       position,
+      availableModules,
     ),
-    [config, permissionGroupCodes, permissions, position, role],
+    [availableModules, config, permissionGroupCodes, permissions, position, role],
   )
   const groups = normalized.groups.flatMap((groupConfig) => {
     const definition = navigationGroupById(groupConfig.id)
