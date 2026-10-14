@@ -49,7 +49,7 @@ try {
       if (baseline && counts.me > 20) return route.abort()
       const now = Date.now()
       return send({ user: { id: 1, username: 'synthetic-viewer', display_name: '合成测试账号',
-        role: 'user', permissions: ['registry.property.view', 'presence.detail.view'], preferences: {},
+        role: 'user', available_modules: ['common', 'community_police'], permissions: ['registry.property.view', 'presence.detail.view'], preferences: {},
         session_policy: { last_activity_at: new Date(now).toISOString(), server_time: new Date(now).toISOString(),
           absolute_expires_at: new Date(now + 3_600_000).toISOString(), idle_timeout_minutes: 30, warning_seconds: 60 } } })
     }
