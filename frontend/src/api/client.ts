@@ -261,7 +261,8 @@ export interface AppBootstrapSummary {
 export interface FunctionModuleItem {
   module_id: string
   name: string
-  owner_unit: 'common' | 'community_police' | 'internal' | string
+  department_ids: number[]
+  departments?: FunctionModuleDepartment[]
   is_public: boolean
   required_permissions: string[]
   route: string
@@ -271,9 +272,17 @@ export interface FunctionModuleItem {
   version: number
 }
 
+export interface FunctionModuleDepartment {
+  id: number
+  name: string
+  parent_id: number | null
+  type: string
+  is_active: boolean
+}
+
 export interface FunctionModulePayload {
   name: string
-  owner_unit: string
+  department_ids: number[]
   is_public: boolean
   required_permissions: string[]
   route: string
@@ -282,7 +291,7 @@ export interface FunctionModulePayload {
   module_id?: string
 }
 
-export async function listFunctionModules(): Promise<{ data: FunctionModuleItem[] }> {
+export async function listFunctionModules(): Promise<{ data: FunctionModuleItem[]; departments: FunctionModuleDepartment[] }> {
   return (await api.get('/function-modules')).data
 }
 

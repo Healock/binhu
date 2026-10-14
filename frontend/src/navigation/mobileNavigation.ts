@@ -310,7 +310,9 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
   },
 ]
 
-export const MAX_DOCK_GROUPS = 4
+// Keep all five first-class navigation groups.  A fourth-group cap silently
+// hid newly registered modules (notably future drinking-report entry points).
+export const MAX_DOCK_GROUPS = 5
 
 function moduleForNavigationItem(
   item: NavigationItemDefinition,

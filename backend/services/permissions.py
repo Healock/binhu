@@ -97,7 +97,7 @@ PERMISSION_CATALOG = [
     (VENUE_VIEW, "基础资料", "查看场所码和登记记录"),
     (VENUE_MANAGE, "基础资料", "管理场所码和二维码"),
     (VENUE_EXPORT, "业务操作", "导出场所码登记记录"),
-    (MODULE_ACCESS_MANAGE, "平台管理", "管理功能模块归属单位"),
+    (MODULE_ACCESS_MANAGE, "平台管理", "管理功能模块部门归属"),
 ]
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}
