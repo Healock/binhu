@@ -27,6 +27,7 @@ try {
     if (url.pathname.endsWith('/me')) sessionReads += 1
     return send({ user: {
       id: 1, username: 'synthetic-viewer', display_name: '合成测试账号', role: 'user',
+      available_modules: ['common', 'community_police'],
       permissions: ['visit.summary.view', 'visit.source.manage'], preferences: { theme_mode: dark ? 'dark' : 'light' },
     } })
     }
