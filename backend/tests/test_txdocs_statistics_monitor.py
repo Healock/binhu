@@ -36,6 +36,56 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monitor._safe_error_code(error), "monitor_buckets_failed")
         self.assertNotIn("external row text", str(error))
 
+    def test_each_monitor_stage_has_a_stable_safe_code(self):
+        for code in (
+            "monitor_read_failed",
+            "monitor_snapshot_failed",
+            "monitor_buckets_failed",
+            "monitor_task_states_failed",
+            "monitor_persist_failed",
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    monitor._safe_error_code(monitor.MonitorStageError(code, RuntimeError("secret"))),
+                    code,
+                )
+
+    async def test_failure_persistence_does_not_replace_current_snapshot(self):
+        class Cursor:
+            def __init__(self):
+                self.queries = []
+
+            async def execute(self, query, params=None):
+                self.queries.append(query)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        class Connection:
+            def __init__(self):
+                self.cursor_instance = Cursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            async def commit(self):
+                return None
+
+        conn = Connection()
+        await monitor._persist_failure(
+            conn,
+            {"id": 1, "parser_type": "全链条"},
+            datetime(2026, 10, 14).date(),
+            datetime(2026, 10, 14, 1, 0),
+            "monitor_snapshot_failed",
+        )
+        sql = " ".join(conn.cursor_instance.queries).upper()
+        self.assertIn("INSERT INTO _TXDOCS_MONITOR_RUNS", sql)
+        self.assertNotIn("DELETE FROM _TXDOCS_MONITOR_CURRENT", sql)
+
     def test_allowlist_is_fixed_positive_ids(self):
         self.assertEqual(monitor.monitoring_spreadsheet_ids("3, 2, 3"), (3, 2))
         for invalid in ("0", "-1", "1,abc"):
