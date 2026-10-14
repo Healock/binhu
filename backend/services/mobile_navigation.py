@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_MOBILE_NAVIGATION_MODE = "dock"
-MAX_DOCK_GROUPS = 4
+MAX_DOCK_GROUPS = 5
 DOCK_CONFIG_VERSION = 2
 
 GROUP_ITEMS: dict[str, tuple[str, ...]] = {
@@ -175,7 +175,7 @@ def default_mobile_dock_config(
     position: str | None = None,
     available_modules: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """返回新版本默认 Dock；所有岗位按同一分类顺序取前四组。"""
+    """返回新版本默认 Dock；所有岗位按同一分类顺序保留全部五组。"""
     groups = []
     for group_id, item_ids in GROUP_ITEMS.items():
         items = [
@@ -337,7 +337,7 @@ def validate_mobile_dock_config(
     if not isinstance(raw_groups, list):
         raise ValueError("Dock 配置格式不正确")
     if not 1 <= len(raw_groups) <= MAX_DOCK_GROUPS:
-        raise ValueError("Dock 必须保留 1 至 4 个分类")
+        raise ValueError("Dock 必须保留 1 至 5 个分类")
 
     groups: list[dict[str, Any]] = []
     seen_groups: set[str] = set()

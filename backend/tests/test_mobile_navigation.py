@@ -52,8 +52,8 @@ class MobileNavigationConfigTests(unittest.TestCase):
         self.assertNotIn("task_flow_lab", admin_items)
         self.assertNotIn("users", admin_items)
         self.assertIn("users", super_items)
-        # 设置是第五组，默认 Dock 最多四组；用户可在个性化设置中替换进入。
-        self.assertNotIn("operations", super_items)
+        # 五个一级分类都保留，避免新模块入口被静默挤出 Dock。
+        self.assertIn("operations", super_items)
         self.assertIn("data_upload", super_items)
         self.assertIn("work_log", super_items)
         self.assertIn("flow_tasks", super_items)
@@ -355,14 +355,14 @@ class MobileNavigationConfigTests(unittest.TestCase):
             )
 
     def test_strict_validation_rejects_group_count_and_empty_group(self):
-        with self.assertRaisesRegex(ValueError, "1 至 4"):
+        with self.assertRaisesRegex(ValueError, "1 至 5"):
             validate_mobile_dock_config(
                 {
                     "version": 2,
                     "groups": [
-                        {"id": "workspace", "items": ["online_summary"]},
+                        {"id": "workspace", "items": ["dashboard"]},
                     ]
-                    * 5,
+                    * 6,
                 },
                 "member",
             )

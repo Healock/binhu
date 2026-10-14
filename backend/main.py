@@ -339,7 +339,10 @@ auth_dep = [Depends(get_current_user)]
 community_police_dep = auth_dep + [Depends(require_module("community_police"))]
 platform_admin_dep = auth_dep + [Depends(require_module("platform_admin"))]
 workflow_dep = auth_dep + [Depends(require_module("workflow"))]
-app.include_router(function_modules_router, dependencies=platform_admin_dep)
+# Module administration is gated by the dedicated module.access.manage
+# permission in the router itself.  It must not depend on a legacy “internal”
+# department or on the platform_admin module's department bindings.
+app.include_router(function_modules_router, dependencies=auth_dep)
 app.include_router(spreadsheets_router, dependencies=community_police_dep)
 app.include_router(sync_router, dependencies=community_police_dep)
 app.include_router(stats_router, dependencies=community_police_dep)
