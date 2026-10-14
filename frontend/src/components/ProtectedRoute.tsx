@@ -26,12 +26,21 @@ export default function ProtectedRoute({ requireRole, requireRoles, requirePermi
     return <Navigate to="/login" replace />
   }
 
-  const pathModule = location.pathname.startsWith('/workflow') ? 'workflow'
+  const matchesPrefix = (prefix: string) => (
+    prefix === '/' ? location.pathname === '/' : (
+      location.pathname === prefix || location.pathname.startsWith(`${prefix}/`)
+    )
+  )
+  const registeredRoute = Object.entries(user.available_module_routes || {})
+    .flatMap(([moduleId, routes]) => routes.map(route => ({ moduleId, route })))
+    .filter(item => matchesPrefix(item.route))
+    .sort((a, b) => b.route.length - a.route.length)[0]?.moduleId
+  const pathModule = registeredRoute || (location.pathname.startsWith('/workflow') ? 'workflow'
     : ['/query', '/tasks', '/summary', '/address-confirmation', '/police', '/registry', '/visit-summary', '/code-summary', '/qr-codes', '/data-upload', '/work-log'].some(prefix => location.pathname.startsWith(prefix))
       ? 'community_police'
       : ['/users', '/permission-groups', '/operations', '/settings/system', '/settings/server-mac', '/settings/workflow', '/settings/txdocs-monitor', '/task-flow-lab'].some(prefix => location.pathname.startsWith(prefix))
         ? 'platform_admin'
-        : null
+        : null)
   if ((requireModule || pathModule) && !user.available_modules?.includes(requireModule || pathModule || '')) {
     return <AccessDenied title="当前账号所属单位未开通该功能模块，请联系管理员确认模块归属和权限。" />
   }

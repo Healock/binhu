@@ -177,6 +177,18 @@ test('Bootstrap 模块集合同时过滤桌面侧栏和手机 Dock', () => {
   )
 })
 
+test('注册表路由前缀可以覆盖导航项的代码归属', () => {
+  const groups = accessibleNavigationGroups(
+    'member',
+    ['online.raw.view'],
+    [],
+    '组员',
+    ['common', 'special'],
+    { common: ['/'], special: ['/query'] },
+  )
+  assert.equal(groups.some(group => group.items.some(item => item.id === 'online_query')), true)
+})
+
 test('下发权限可以单独进入数据上传中心和小区管理', () => {
   const config = defaultMobileDockConfig('member', [
     'police.dispatch.manage',

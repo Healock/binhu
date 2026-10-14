@@ -44,6 +44,7 @@ import VenueCodeManagement, { PublicVenuePage } from './pages/VenueCodeManagemen
 import WorkflowTickets from './pages/WorkflowTickets'
 import AnalysisWorkbench from './pages/AnalysisWorkbench'
 import WorkflowConfig from './pages/WorkflowConfig'
+import FunctionModulesSettings from './pages/FunctionModulesSettings'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
   canAccessFlowTaskWorkbench,
@@ -217,6 +218,9 @@ function App() {
                 </Route>
                 <Route element={<ProtectedRoute requirePermission="workflow.config.manage" />}>
                   <Route path="workflow" element={<WorkflowConfig />} />
+                </Route>
+                <Route element={<ProtectedRoute requirePermission="module.access.manage" />}>
+                  <Route path="function-modules" element={<FunctionModulesSettings />} />
                 </Route>
               </Route>
             </Route>

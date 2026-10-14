@@ -456,6 +456,8 @@ export interface User extends UserPreferences {
   theme_mode: ThemeMode
   permissions: PermissionCode[]
   available_modules?: string[]
+  available_module_routes?: Record<string, string[]>
+  available_mobile_modules?: string[]
   data_scope: 'all' | 'own_department'
   permission_scopes: Partial<Record<PermissionCode, 'all' | 'own_department'>>
   member: { id: number; name: string; position: string } | null

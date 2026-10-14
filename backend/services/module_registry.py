@@ -22,7 +22,9 @@ MODULE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "module_id": "community_police", "name": "社区警务", "owner_unit": COMMUNITY_POLICE_UNIT,
-        "is_public": False, "required_permissions": [], "route": "/query", "mobile_visible": True,
+        "is_public": False, "required_permissions": [],
+        "route": "/query,/tasks,/address-confirmation,/police-tasks,/police-analysis,/summary,/visit-summary,/code-summary,/data-upload,/work-log,/police-addresses,/qr-codes,/registry",
+        "mobile_visible": True,
     },
     {
         "module_id": "workflow", "name": "工单中心", "owner_unit": COMMUNITY_POLICE_UNIT,
@@ -31,7 +33,9 @@ MODULE_DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "module_id": "platform_admin", "name": "平台管理", "owner_unit": "internal",
-        "is_public": False, "required_permissions": [], "route": "/users", "mobile_visible": True,
+        "is_public": False, "required_permissions": [],
+        "route": "/users,/permission-groups,/operations,/settings/system,/settings/server-mac,/settings/workflow,/settings/function-modules,/settings/txdocs-monitor,/task-flow-lab,/task-flow-rete-lab",
+        "mobile_visible": True,
     },
 )
 
@@ -62,6 +66,15 @@ def _required_permissions(value: Any) -> list[str]:
     return [str(item) for item in value or [] if str(item).strip()]
 
 
+def route_prefixes(value: Any) -> list[str]:
+    """Normalize the stored route field into site-local path prefixes."""
+    if isinstance(value, (list, tuple)):
+        parts = value
+    else:
+        parts = str(value or "").replace("\n", ",").split(",")
+    return sorted({str(item).strip().rstrip("/") or "/" for item in parts if str(item).strip()})
+
+
 def can_access_definition(user: dict[str, Any], definition: dict[str, Any]) -> bool:
     if not definition.get("enabled", True):
         return False
@@ -82,6 +95,28 @@ def available_module_ids(user: dict[str, Any], definitions: Iterable[dict[str, A
     return sorted(str(item["module_id"]) for item in source if can_access_definition(user, item))
 
 
+def available_module_routes(
+    user: dict[str, Any], definitions: Iterable[dict[str, Any]] | None = None,
+) -> dict[str, list[str]]:
+    source = definitions if definitions is not None else MODULE_DEFINITIONS
+    return {
+        str(item["module_id"]): route_prefixes(item.get("route"))
+        for item in source
+        if can_access_definition(user, item)
+    }
+
+
+def available_mobile_module_ids(
+    user: dict[str, Any], definitions: Iterable[dict[str, Any]] | None = None,
+) -> list[str]:
+    source = definitions if definitions is not None else MODULE_DEFINITIONS
+    return sorted(
+        str(item["module_id"])
+        for item in source
+        if item.get("mobile_visible", True) and can_access_definition(user, item)
+    )
+
+
 async def load_module_definitions(cur) -> list[dict[str, Any]]:
     await cur.execute(
         "SELECT module_id, name, owner_unit, is_public, required_permissions, "
@@ -93,7 +128,8 @@ async def load_module_definitions(cur) -> list[dict[str, Any]]:
         {
             "module_id": str(row[0]), "name": str(row[1]), "owner_unit": str(row[2] or ""),
             "is_public": bool(row[3]), "required_permissions": _required_permissions(row[4]),
-            "route": str(row[5] or ""), "mobile_visible": bool(row[6]),
+            "route": str(row[5] or ""), "routes": route_prefixes(row[5]),
+            "mobile_visible": bool(row[6]),
             "enabled": bool(row[7]), "version": int(row[8] or 1),
         }
         for row in rows
@@ -104,10 +140,12 @@ async def available_module_ids_from_cursor(user: dict[str, Any], cur) -> list[st
     return available_module_ids(user, await load_module_definitions(cur))
 
 
-async def user_can_access_module(user: dict[str, Any], module_id: str, cur=None) -> bool:
-    definitions = await load_module_definitions(cur) if cur is not None else list(MODULE_DEFINITIONS)
-    definition = next((item for item in definitions if item.get("module_id") == module_id), None)
-    return bool(definition and can_access_definition(user, definition))
+async def available_module_routes_from_cursor(user: dict[str, Any], cur) -> dict[str, list[str]]:
+    return available_module_routes(user, await load_module_definitions(cur))
+
+
+async def available_mobile_module_ids_from_cursor(user: dict[str, Any], cur) -> list[str]:
+    return available_mobile_module_ids(user, await load_module_definitions(cur))
 
 
 async def ensure_function_module_schema(cur) -> None:

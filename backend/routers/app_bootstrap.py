@@ -107,6 +107,8 @@ async def get_app_bootstrap(
         "authenticated": user is not None,
         "available_features": sorted(user.get("permissions") or []) if user else [],
         "available_modules": sorted(user.get("available_modules") or []) if user else [],
+        "available_module_routes": (user.get("available_module_routes") or {}) if user else {},
+        "available_mobile_modules": sorted(user.get("available_mobile_modules") or []) if user else [],
         "feature_flags": {
             "registry": settings.REGISTRY_FEATURE_ENABLED,
             "workflow": settings.WORKFLOW_FEATURE_ENABLED,

@@ -46,13 +46,15 @@ export default function PersonalizationSettings() {
         user.permissions,
         user.permission_groups?.map(group => group.code),
         user.member?.position,
-        user.available_modules,
+        user.available_mobile_modules || user.available_modules,
+        user.available_module_routes,
       ),
       user.role,
       user.permissions,
       user.permission_groups?.map(group => group.code),
       user.member?.position,
-      user.available_modules,
+      user.available_mobile_modules || user.available_modules,
+      user.available_module_routes,
     ))
   // Session activity refreshes the user object while this page is open. Keep
   // unsaved personalization choices intact until the account itself changes.
@@ -170,6 +172,8 @@ export default function PersonalizationSettings() {
                     user.permissions,
                     user.permission_groups?.map(group => group.code),
                     user.member?.position,
+                    user.available_mobile_modules || user.available_modules,
+                    user.available_module_routes,
                   ),
                 )}
               >
@@ -185,7 +189,8 @@ export default function PersonalizationSettings() {
               permissions={user.permissions}
               position={user.member?.position}
               permissionGroupCodes={user.permission_groups?.map(group => group.code)}
-              availableModules={user.available_modules}
+              availableModules={user.available_mobile_modules || user.available_modules}
+              availableModuleRoutes={user.available_module_routes}
               onChange={setDockConfig}
             />
           </div>
