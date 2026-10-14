@@ -259,7 +259,6 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 str(role),
             ),
             "theme_mode": normalize_theme_mode(theme_mode),
-            "available_modules": [],
             "avatar_url": (
                 f"/api/auth/avatar/{int(user_id)}?v={Path(str(avatar_storage_key)).stem}"
                 if avatar_storage_key else None

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from database import get_db
 from deps import require_permission
-from services.module_registry import load_module_definitions
+from services.module_registry import load_module_definitions, route_prefixes
 from services.permissions import ALL_PERMISSIONS, MODULE_ACCESS_MANAGE
 
 router = APIRouter(prefix="/api/function-modules", tags=["功能模块"])
@@ -44,7 +44,7 @@ def _validate_payload(payload: ModulePayload) -> None:
         raise HTTPException(status_code=422, detail="common 模块必须标记为公共模块")
     if payload.is_public and payload.owner_unit != "common":
         raise HTTPException(status_code=422, detail="公共模块的归属单位必须为 common")
-    if payload.route and not payload.route.startswith("/"):
+    if payload.route and any(not item.startswith("/") for item in route_prefixes(payload.route)):
         raise HTTPException(status_code=422, detail="模块路由必须是站内绝对路径")
 
 

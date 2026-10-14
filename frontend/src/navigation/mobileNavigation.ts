@@ -312,7 +312,17 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
 
 export const MAX_DOCK_GROUPS = 4
 
-function moduleForNavigationItem(item: NavigationItemDefinition): string {
+function moduleForNavigationItem(
+  item: NavigationItemDefinition,
+  availableModuleRoutes?: Record<string, string[]>,
+): string {
+  if (availableModuleRoutes) {
+    const matches = Object.entries(availableModuleRoutes)
+      .flatMap(([moduleId, routes]) => routes.map(route => ({ moduleId, route })))
+      .filter(({ route }) => route === '/' ? item.path === '/' : (item.path === route || item.path.startsWith(`${route}/`)))
+      .sort((a, b) => b.route.length - a.route.length)
+    if (matches[0]) return matches[0].moduleId
+  }
   return item.moduleId || 'common'
 }
 
@@ -323,6 +333,7 @@ export function mobileAccessibleNavigationGroups(
   permissionGroupCodes: string[] = [],
   position?: string | null,
   availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): NavigationGroupDefinition[] {
   return accessibleNavigationGroups(
     role,
@@ -330,6 +341,7 @@ export function mobileAccessibleNavigationGroups(
     permissionGroupCodes,
     position,
     availableModules,
+    availableModuleRoutes,
   ).filter(group => group.id !== 'summaries')
 }
 
@@ -340,8 +352,9 @@ export function isNavigationItemAccessible(
   permissionGroupCodes: string[] = [],
   position?: string | null,
   availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): boolean {
-  const moduleId = moduleForNavigationItem(item)
+  const moduleId = moduleForNavigationItem(item, availableModuleRoutes)
   if (availableModules && !availableModules.includes(moduleId)) return false
   const adminAccess = ['admin', 'super_admin'].includes(role)
     || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
@@ -389,11 +402,12 @@ export function accessibleNavigationGroups(
   permissionGroupCodes: string[] = [],
   position?: string | null,
   availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): NavigationGroupDefinition[] {
   return NAVIGATION_GROUPS.map(group => ({
     ...group,
     items: group.items.filter(item => (
-      isNavigationItemAccessible(item, role, permissions, permissionGroupCodes, position, availableModules)
+      isNavigationItemAccessible(item, role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes)
     )),
   })).filter(group => group.items.length > 0)
 }
@@ -404,10 +418,11 @@ export function defaultMobileDockConfig(
   permissionGroupCodes: string[] = [],
   position?: string | null,
   availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): MobileDockConfig {
   return {
     version: 2,
-    groups: mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position, availableModules).slice(0, MAX_DOCK_GROUPS).map(group => ({
+    groups: mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes).slice(0, MAX_DOCK_GROUPS).map(group => ({
       id: group.id,
       items: group.items.map(item => item.id),
     })),
@@ -421,13 +436,14 @@ export function normalizeMobileDockConfig(
   permissionGroupCodes: string[] = [],
   position?: string | null,
   availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): MobileDockConfig {
   if (!value || value.version !== 2 || !Array.isArray(value.groups)) {
-    return defaultMobileDockConfig(role, permissions, permissionGroupCodes, position, availableModules)
+    return defaultMobileDockConfig(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes)
   }
 
   const definitions = new Map(
-    mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position, availableModules).map(group => [group.id, group]),
+    mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes).map(group => [group.id, group]),
   )
   const rawTaskItems = new Set(
     value.groups
@@ -453,7 +469,7 @@ export function normalizeMobileDockConfig(
 
   const normalized = groups.length > 0
     ? groups
-    : defaultMobileDockConfig(role, permissions, permissionGroupCodes, position, availableModules).groups
+    : defaultMobileDockConfig(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes).groups
   const workspaceDefinition = definitions.get('workspace')
   let workspace = normalized.find(group => group.id === 'workspace')
   if (workspaceDefinition) {
@@ -492,6 +508,7 @@ export function normalizeMobileDockConfig(
     permissionGroupCodes,
     position,
     availableModules,
+    availableModuleRoutes,
   )) {
     if (normalized.length >= MAX_DOCK_GROUPS) break
     if (presentGroups.has(definition.id)) continue

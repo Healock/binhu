@@ -1,9 +1,12 @@
 import unittest
+from pathlib import Path
 
 from services.module_registry import (
     MODULE_DEFINITIONS,
     available_module_ids,
     can_access_definition,
+    available_mobile_module_ids,
+    route_prefixes,
 )
 
 
@@ -42,6 +45,28 @@ class ModuleRegistryTests(unittest.TestCase):
     def test_empty_registry_fallback_does_not_expose_non_public_modules(self):
         user = {"role": "member", "departments": [], "permissions": []}
         self.assertEqual(available_module_ids(user, []), [])
+
+    def test_registered_routes_are_normalized_and_mobile_visibility_is_applied(self):
+        self.assertEqual(route_prefixes('/query, /tasks\n/summary/'), ['/query', '/summary', '/tasks'])
+        user = {"role": "admin", "departments": [], "permissions": []}
+        hidden = {"module_id": "private", "owner_unit": "common", "is_public": True,
+                  "required_permissions": [], "route": "/private", "mobile_visible": False, "enabled": True}
+        self.assertNotIn("private", available_mobile_module_ids(user, [hidden]))
+
+    def test_router_gate_assignments_match_registered_module_contract(self):
+        source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+        for router_name, dependency in (
+            ("spreadsheets_router", "community_police_dep"),
+            ("query_router", "community_police_dep"),
+            ("workflow_router", "workflow_dep"),
+            ("workflow_extended_router", "workflow_dep"),
+            ("function_modules_router", "platform_admin_dep"),
+            ("users_router", "platform_admin_dep"),
+        ):
+            self.assertIn(
+                f"app.include_router({router_name}, dependencies={dependency})",
+                source,
+            )
 
 
 if __name__ == "__main__":
