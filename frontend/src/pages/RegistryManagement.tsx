@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Button, DatePicker, Descriptions, Drawer, Form, Image, Input, Modal, Popconfirm,
+  Alert, Button, DatePicker, Descriptions, Drawer, Dropdown, Form, Image, Input, Modal, Pagination, Popconfirm,
   Select, Space, Spin, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 import type { ReactNode } from 'react'
-import { DownloadOutlined, FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
+import { DownloadOutlined, EllipsisOutlined, FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import AppTable from '../components/AppTable'
 import PropertyAnnotationImport from '../components/PropertyAnnotationImport'
@@ -136,6 +136,7 @@ export default function RegistryManagement() {
   const [propertySort, setPropertySort] = useState<'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'>('id_desc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [propertyFiltersOpen, setPropertyFiltersOpen] = useState(false)
   const [total, setTotal] = useState(0)
   const [matchStatusCounts, setMatchStatusCounts] = useState<Record<string, number>>({})
   const [importFiles, setImportFiles] = useState<HouseholdImportFile[]>([])
@@ -900,7 +901,27 @@ export default function RegistryManagement() {
     className="w-full md:w-80"
   />
 
-  const toolbarFilters = tab === 'properties' ? <>
+  const propertyFilterCount = [
+    communityId,
+    housingCategory,
+    certificateStatus,
+    householdStatus,
+    visitStatus,
+    visitDateRange,
+    starRatings.length ? starRatings : undefined,
+    smallCommunityIds.length ? smallCommunityIds : undefined,
+    addressMatchStatuses.length ? addressMatchStatuses : undefined,
+  ].filter(Boolean).length
+  const visitFilterDisabled = visitStatus === 'never'
+
+  const compactPropertyToolbarFilters = <div className="registry-mobile-toolbar-filters">
+    {renderSearchInput('搜索地址、户号或幢室')}
+    <Button icon={<FilterFilled />} onClick={() => setPropertyFiltersOpen(true)}>
+      筛选{propertyFilterCount ? `（${propertyFilterCount}）` : ''}
+    </Button>
+  </div>
+
+  const toolbarFilters = tab === 'properties' ? (responsiveLayout.isCompact ? compactPropertyToolbarFilters : <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
     <Select value={householdStatus || undefined} allowClear placeholder="全部注销状态" className="w-full md:w-44"
       options={[{ value: 'cancelled', label: '已注销' }, { value: 'not_cancelled', label: '未注销' }, { value: 'unknown', label: '未知' }]}
@@ -942,7 +963,7 @@ export default function RegistryManagement() {
       ]}
       className="w-full md:w-44"
     />
-  </> : tab === 'issues' ? <>
+  </>) : tab === 'issues' ? <>
     {renderSearchInput('搜索问题编号、地址、户号、来源行或错误值')}
     <Select
       allowClear
@@ -1013,6 +1034,92 @@ export default function RegistryManagement() {
     description="平台不会直接修改居住证系统。请根据“问题字段与错误值”和原因，到居住证系统更新正确内容；再次导入最新数据后即可重新核对。"
   /> : undefined
 
+  const clearPropertyFilters = () => {
+    setCommunityId(undefined)
+    setHousingCategory('')
+    setCertificateStatus('')
+    setHouseholdStatus('')
+    setVisitDateRange(undefined)
+    setVisitStatus('')
+    setStarRatings([])
+    setSmallCommunityIds([])
+    setAddressMatchStatuses([])
+    setPropertySort('id_desc')
+    setPage(1)
+  }
+
+  const mobilePropertyFilters = (
+    <div className="registry-mobile-filters">
+      <div className="registry-mobile-filter-group">
+        <span className="registry-mobile-filter-group__title">范围</span>
+        <Select allowClear showSearch optionFilterProp="label" value={communityId} options={communityOptions}
+          onChange={value => { setCommunityId(value); setSmallCommunityIds([]) }} placeholder="全部社区" />
+        <Select mode="multiple" allowClear showSearch optionFilterProp="label" value={smallCommunityIds}
+          onChange={setSmallCommunityIds} options={smallCommunityOptions.map(item => ({ value: item.id, label: `${item.name}（${item.community_name}）` }))}
+          maxTagCount="responsive" placeholder="全部小区" />
+      </div>
+      <div className="registry-mobile-filter-group">
+        <span className="registry-mobile-filter-group__title">房屋状态</span>
+        <Select value={housingCategory || undefined} allowClear placeholder="全部住房类型"
+          options={housingCategoryOptions.filter(item => item.value)} onChange={value => setHousingCategory((value || '') as RegistryHousingCategory)} />
+        <Select value={householdStatus || undefined} allowClear placeholder="全部注销状态"
+          options={[{ value: 'cancelled', label: '已注销' }, { value: 'not_cancelled', label: '未注销' }, { value: 'unknown', label: '未知' }]}
+          onChange={value => setHouseholdStatus((value || '') as '' | 'cancelled' | 'not_cancelled' | 'unknown')} />
+      </div>
+      <div className="registry-mobile-filter-group">
+        <span className="registry-mobile-filter-group__title">责任书和走访</span>
+        <Select value={certificateStatus || undefined} allowClear placeholder="全部责任书状态"
+          options={certificateStatusOptions.filter(item => item.value)} onChange={value => setCertificateStatus((value || '') as RegistryCertificateStatus)} />
+        <Select value={visitStatus || undefined} allowClear placeholder="全部走访情况"
+          options={[{ value: 'visited', label: '有走访记录' }, { value: 'never', label: '从未走访' }]}
+          onChange={value => { setVisitStatus((value || '') as '' | 'visited' | 'never'); if (value === 'never') { setVisitDateRange(undefined); setStarRatings([]) } }} />
+        <Select mode="multiple" allowClear disabled={visitFilterDisabled} value={starRatings}
+          onChange={setStarRatings} options={starRatingOptions.map(value => ({ value, label: value }))} maxTagCount="responsive" placeholder="全部星级" />
+        <DatePicker.RangePicker disabled={visitFilterDisabled} value={visitPickerValue}
+          onChange={values => setVisitDateRange(values?.[0] && values[1] ? [values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')] : undefined)} />
+      </div>
+      <div className="registry-mobile-filter-group">
+        <span className="registry-mobile-filter-group__title">小区匹配</span>
+        <Select mode="multiple" allowClear value={addressMatchStatuses} onChange={setAddressMatchStatuses}
+          options={addressMatchStatusOptions.map(item => ({ value: item.value, label: item.label }))} maxTagCount="responsive" placeholder="全部匹配状态" />
+        <Select value={propertySort} onChange={value => setPropertySort(value)} options={[
+          { value: 'id_desc', label: '默认排序（最新）' },
+          { value: 'address_asc', label: '地址升序' },
+          { value: 'community_asc', label: '社区升序' },
+          { value: 'updated_desc', label: '最近更新' },
+          { value: 'visit_desc', label: '最近走访' },
+        ]} />
+      </div>
+    </div>
+  )
+
+  const mobilePropertyList = (
+    <section className="registry-mobile-property-list" aria-label="房屋档案列表">
+      {loading && !properties.length && <div className="registry-mobile-property-empty">正在读取房屋档案</div>}
+      {!loading && !properties.length && <div className="registry-mobile-property-empty">当前筛选条件下没有房屋档案</div>}
+      {properties.map(row => {
+        const match = addressMatchStatusView(row.address_match_status)
+        const address = row.natural_address || row.normalized_address || '未填写地址'
+        return <button key={row.id} type="button" className="registry-mobile-property-row" onClick={() => void openDetail('property', row)}>
+          <span className="registry-mobile-property-row__main">
+            <strong title={address}>{address}</strong>
+            <span>{row.community_name || '未关联社区'}{row.small_community_name ? `，${row.small_community_name}` : ''}</span>
+          </span>
+          <span className="registry-mobile-property-row__status">
+            <Tag color={certificateStatusColors[row.certificate_status || 'not_uploaded']}>{row.certificate_status_label || '未签订'}</Tag>
+            <Tag color={match.color}>{match.label}</Tag>
+            <Tag color={row.household_status === '已注销' ? 'default' : row.household_status === '未注销' ? 'green' : 'gold'}>{row.household_status || '未知'}</Tag>
+          </span>
+          <span className="registry-mobile-property-row__meta">
+            <span>{row.latest_visit_date ? `最近走访 ${row.latest_visit_date}` : '暂无走访'}</span>
+            {row.latest_star_rating && <span>{row.latest_star_rating}</span>}
+          </span>
+        </button>
+      })}
+      <Pagination size="small" simple current={page} pageSize={pageSize} total={total} onChange={nextPage => setPage(nextPage)} />
+    </section>
+  )
+
   const certificateRunActive = Boolean(certificateRun && ['pending', 'running'].includes(certificateRun.status))
   const certificatePhaseLabel = certificateRun?.phase === 'reading'
     ? `正在读取第 ${certificateRun.current_page + 1} 页`
@@ -1037,8 +1144,7 @@ export default function RegistryManagement() {
     multiple_or_conflict: '来源待核对',
   }
 
-  const toolbarActions = <>
-    {tab !== 'imports' && <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>}
+  const toolbarActionItems = <>
     {['properties', 'people', 'organizations'].includes(tab) && (
       <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportRegistryRecords()}>
         导出当前结果
@@ -1079,6 +1185,21 @@ export default function RegistryManagement() {
       </Button>}
     </>}
   </>
+
+  const toolbarActions = <>
+    {tab !== 'imports' && <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>}
+    {toolbarActionItems}
+  </>
+
+  const compactPropertyActions = <div className="registry-mobile-actions">
+    <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
+    <Dropdown
+      trigger={['click']}
+      dropdownRender={() => <div className="registry-mobile-actions-menu">{toolbarActionItems}</div>}
+    >
+      <Button icon={<EllipsisOutlined />}>更多</Button>
+    </Dropdown>
+  </div>
 
   const listPagination = ['properties', 'issues'].includes(tab) ? {
     current: page,
@@ -1144,7 +1265,9 @@ export default function RegistryManagement() {
                 + (matchStatusCounts.invalid || 0)
               )} 条</span>
             </Space> : <span>当前筛选共 {total} 条</span>}
-            actions={toolbarActions}
+            actions={tab === 'properties' && responsiveLayout.isCompact
+              ? compactPropertyActions
+              : toolbarActions}
           />}
           {tab === 'issues' && <AppTable
             rowKey="id"
@@ -1250,27 +1373,27 @@ export default function RegistryManagement() {
               </div>
             </div>}
           </ExternalDataPanel>}
-        {tab === 'properties' && <AppTable
-          fitHeight
-          rowKey="id"
-          loading={loading}
-          columns={propertyColumns}
-          responsiveDetails
-          dataSource={properties}
-          pagination={listPagination}
-          rowSelection={canManage ? {
-            selectedRowKeys: selectedPropertyIds,
-            onChange: keys => setSelectedPropertyIds(keys.map(Number)),
-            getCheckboxProps: row => ({
-              disabled: row.address_match_status !== 'suggested' || !row.small_community_id,
-              title: row.address_match_status === 'suggested' && row.small_community_id
-                ? '选择后可批量处理自动匹配'
-                : '只有唯一自动匹配可批量处理',
-            }),
-          } : undefined}
-          scroll={{ x: 1660 }}
-          emptyText="当前筛选条件下没有房屋档案"
-        />}
+          {tab === 'properties' && (responsiveLayout.isCompact ? mobilePropertyList : <AppTable
+            fitHeight
+            rowKey="id"
+            loading={loading}
+            columns={propertyColumns}
+            responsiveDetails
+            dataSource={properties}
+            pagination={listPagination}
+            rowSelection={canManage ? {
+              selectedRowKeys: selectedPropertyIds,
+              onChange: keys => setSelectedPropertyIds(keys.map(Number)),
+              getCheckboxProps: row => ({
+                disabled: row.address_match_status !== 'suggested' || !row.small_community_id,
+                title: row.address_match_status === 'suggested' && row.small_community_id
+                  ? '选择后可批量处理自动匹配'
+                  : '只有唯一自动匹配可批量处理',
+              }),
+            } : undefined}
+            scroll={{ x: 1660 }}
+            emptyText="当前筛选条件下没有房屋档案"
+          />)}
         {tab === 'people' && <AppTable rowKey="id" loading={loading} columns={personColumns} dataSource={people} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'organizations' && <AppTable rowKey="id" loading={loading} columns={organizationColumns} dataSource={organizations} pagination={false} scroll={{ x: 850 }} />}
         {tab === 'merges' && <AppTable rowKey="id" loading={loading} dataSource={merges} pagination={false} columns={[
@@ -1297,6 +1420,20 @@ export default function RegistryManagement() {
         ]} />}
         </div>
       </Panel>
+
+      <Drawer
+        open={propertyFiltersOpen}
+        title="筛选房屋"
+        placement="bottom"
+        height="min(86vh, 720px)"
+        onClose={() => setPropertyFiltersOpen(false)}
+        footer={<div className="registry-mobile-filter-footer">
+          <Button onClick={clearPropertyFilters}>重置</Button>
+          <Button type="primary" onClick={() => setPropertyFiltersOpen(false)}>应用筛选</Button>
+        </div>}
+      >
+        {mobilePropertyFilters}
+      </Drawer>
 
       <Modal
         open={Boolean(matchConfirmProperty)}
