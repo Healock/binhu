@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from copy import copy
 from datetime import date
 from io import BytesIO
@@ -412,6 +414,7 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
     roster.sort(key=lambda item: (
         int(item["group_order"]),
         str(item["group_label"]),
+        1 if str(item["position"]) == "自购房" else 0,
         str(item["community"]),
         position_order.get(str(item["position"]), 50),
         str(item["name"]),
@@ -426,6 +429,55 @@ def _summary_by_name(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for row in rows
         if normalized_person_name(row.get("姓名"))
     }
+
+
+def _normalize_daily_detail_community(value: Any) -> str:
+    """Normalize formal community labels and common committee suffix aliases."""
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = re.sub(r"[\s\u3000]+", "", text).casefold()
+    text = re.sub(r"(?:居民委员会|居委会)$", "", text)
+    return re.sub(r"社区$", "", text)
+
+
+def _summary_by_member(
+    payload: dict[str, Any],
+) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    """按社区和姓名建立日报候选索引，重复记录不得静默覆盖。"""
+    rows = (payload.get("inspector") or {}).get("data") or []
+    by_member: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        name = normalized_person_name(row.get("姓名"))
+        if not name:
+            continue
+        community = _normalize_daily_detail_community(row.get("社区"))
+        by_member.setdefault((community, name), []).append(row)
+        by_name.setdefault(name, []).append(row)
+    return by_member, by_name
+
+
+def _combine_instruction_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Sum one unambiguous row per community and recalculate its aggregate rate."""
+    by_community: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        community = _normalize_daily_detail_community(row.get("社区"))
+        by_community.setdefault(community, []).append(row)
+    if not rows or any(len(candidates) != 1 for candidates in by_community.values()):
+        return None
+
+    unique_rows = [candidates[0] for candidates in by_community.values()]
+    combined: dict[str, Any] = {}
+    for field in ("数据总数", "未核查", "已核查", "已完成", "无法见底数"):
+        values = [row.get(field) for row in unique_rows]
+        present = [value for value in values if value is not None]
+        if present:
+            combined[field] = sum(int(value or 0) for value in present)
+    if len(unique_rows) == 1:
+        combined["核查见底率"] = unique_rows[0].get("核查见底率")
+    elif all(row.get("无法见底数") is not None for row in unique_rows):
+        denominator = combined.get("已完成", 0) + combined.get("无法见底数", 0)
+        combined["核查见底率"] = combined.get("已完成", 0) / denominator if denominator else 0
+    return combined
 
 
 async def build_daily_detail_data(
@@ -479,7 +531,13 @@ async def build_daily_detail_data(
 
     rental_rows = _summary_by_name(rental)
     self_owned_rows = _summary_by_name(self_owned)
-    online_rows = _summary_by_name(online) if online.get("exists") else {}
+    online_by_member, online_by_name = (
+        _summary_by_member(online) if online.get("exists") else ({}, {})
+    )
+    roster_name_counts: dict[str, int] = {}
+    for roster_member in roster:
+        roster_name = normalized_person_name(roster_member.get("name"))
+        roster_name_counts[roster_name] = roster_name_counts.get(roster_name, 0) + 1
 
     result: list[dict[str, Any]] = []
     for member in roster:
@@ -495,7 +553,14 @@ async def build_daily_detail_data(
             visit_row = None
             target = None
 
-        task_row = online_rows.get(normalized_name)
+        if roster_name_counts.get(normalized_name) == 1:
+            task_row = _combine_instruction_rows(online_by_name.get(normalized_name, []))
+        else:
+            member_rows = online_by_member.get(
+                (_normalize_daily_detail_community(member.get("community")), normalized_name),
+                [],
+            )
+            task_row = member_rows[0] if len(member_rows) == 1 else None
         absent = member["attendance"] == "否"
         population = population_by_community.get(member.get("community_id"), {})
         population_target = duty_counts.get(member.get("community_id"), 0) * coefficient
@@ -611,10 +676,36 @@ def _merge_groups(ws, rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _ordered_daily_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep each area's self-owned row after all community rows."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    group_order: list[str] = []
+    for item in rows:
+        key = str(item.get("group_key") or "")
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(item)
+    ordered: list[dict[str, Any]] = []
+    for key in group_order:
+        regular = [
+            item for item in groups[key]
+            if str(item.get("position") or "") != "自购房"
+        ]
+        self_owned = [
+            item for item in groups[key]
+            if str(item.get("position") or "") == "自购房"
+        ]
+        ordered.extend(regular)
+        ordered.extend(self_owned)
+    return ordered
+
+
 def build_daily_detail_workbook(
     business_date: date,
     rows: list[dict[str, Any]],
 ) -> tuple[bytes, str]:
+    rows = _ordered_daily_detail_rows(rows)
     workbook = load_workbook(TEMPLATE_PATH)
     worksheet = workbook["Sheet1"]
     final_data_rows = max(MIN_DATA_ROWS, len(rows))
@@ -692,11 +783,13 @@ def build_daily_detail_workbook(
     total_checked = worksheet.cell(total_row, 15).value
     worksheet.cell(total_row, 17, (total_checked / total_instruction) if total_instruction else None)
     for row_number in range(DATA_START_ROW, total_row + 1):
-        worksheet.cell(row_number, 17).number_format = "0.0%"
+        worksheet.cell(row_number, 13).number_format = "0.00"
+        worksheet.cell(row_number, 17).number_format = "0.00%"
 
     for cell in worksheet[total_row]:
         cell.font = Font(name="宋体", size=12, bold=True)
-    worksheet.column_dimensions["Q"].number_format = "0.0%"
+    worksheet.column_dimensions["M"].number_format = "0.00"
+    worksheet.column_dimensions["Q"].number_format = "0.00%"
     worksheet.print_area = f"A1:R{total_row}"
     worksheet.sheet_view.showGridLines = False
 
