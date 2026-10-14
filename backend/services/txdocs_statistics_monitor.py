@@ -1450,6 +1450,8 @@ async def get_txdocs_business_overlay(
     parser_types: list[str],
     communities: list[str] | None,
     inspector: str | None = None,
+    *,
+    configured_source_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Return external business counts for overlaying local statistics.
 
@@ -1476,7 +1478,8 @@ async def get_txdocs_business_overlay(
         return result
     if communities is not None and not communities:
         return result
-    source_ids = await _configured_monitor_source_ids()
+    source_ids = (await _configured_monitor_source_ids()
+                  if configured_source_ids is None else configured_source_ids)
     if not source_ids:
         return result
 
