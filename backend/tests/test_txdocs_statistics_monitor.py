@@ -28,6 +28,14 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(monitor.settings, "APP_ENVIRONMENT", environment):
                 self.assertFalse(monitor.monitoring_environment_allowed())
 
+    def test_monitor_stage_error_maps_to_safe_code_without_cause_text(self):
+        error = monitor.MonitorStageError(
+            "monitor_buckets_failed",
+            ValueError("external row text must not enter diagnostics"),
+        )
+        self.assertEqual(monitor._safe_error_code(error), "monitor_buckets_failed")
+        self.assertNotIn("external row text", str(error))
+
     def test_allowlist_is_fixed_positive_ids(self):
         self.assertEqual(monitor.monitoring_spreadsheet_ids("3, 2, 3"), (3, 2))
         for invalid in ("0", "-1", "1,abc"):

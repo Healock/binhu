@@ -242,6 +242,15 @@ class MonitorTaskState:
     identity_status: str = "matched"
 
 
+class MonitorStageError(RuntimeError):
+    """Privacy-safe failure classification for one monitoring stage."""
+
+    def __init__(self, code: str, cause: BaseException):
+        self.code = code
+        self.cause = cause
+        super().__init__(code)
+
+
 @dataclass(frozen=True)
 class MonitorDelta:
     current_total: int
@@ -1194,6 +1203,8 @@ async def _persist_success(
 
 
 def _safe_error_code(exc: BaseException) -> str:
+    if isinstance(exc, MonitorStageError):
+        return exc.code
     if isinstance(exc, asyncio.TimeoutError):
         return "read_timeout"
     if exc.__class__.__name__ == "TxDocsAPIError":
@@ -1310,23 +1321,38 @@ async def run_txdocs_statistics_once(
         for config in configs:
             started_at = datetime.now(timezone.utc).replace(tzinfo=None)
             try:
-                rows = await asyncio.wait_for(
-                    _read_config(client, config),
-                    timeout=max(10, settings.TXDOCS_MONITORING_SHEET_TIMEOUT_SECONDS),
-                )
-                snapshot, unkeyed = build_monitor_snapshot(
-                    config["id"], config["parser_type"], rows
-                )
-                buckets = build_monitor_business_buckets(
-                    config["parser_type"], rows, business_date
-                )
-                task_states, ambiguous_count = build_monitor_task_states(
-                    config["id"], config["parser_type"], rows, business_date
-                )
-                await _persist_success(
-                    report_conn, config, business_date, started_at,
-                    snapshot, unkeyed + ambiguous_count, buckets, task_states,
-                )
+                try:
+                    rows = await asyncio.wait_for(
+                        _read_config(client, config),
+                        timeout=max(10, settings.TXDOCS_MONITORING_SHEET_TIMEOUT_SECONDS),
+                    )
+                except Exception as exc:
+                    raise MonitorStageError("monitor_read_failed", exc) from exc
+                try:
+                    snapshot, unkeyed = build_monitor_snapshot(
+                        config["id"], config["parser_type"], rows
+                    )
+                except Exception as exc:
+                    raise MonitorStageError("monitor_snapshot_failed", exc) from exc
+                try:
+                    buckets = build_monitor_business_buckets(
+                        config["parser_type"], rows, business_date
+                    )
+                except Exception as exc:
+                    raise MonitorStageError("monitor_buckets_failed", exc) from exc
+                try:
+                    task_states, ambiguous_count = build_monitor_task_states(
+                        config["id"], config["parser_type"], rows, business_date
+                    )
+                except Exception as exc:
+                    raise MonitorStageError("monitor_task_states_failed", exc) from exc
+                try:
+                    await _persist_success(
+                        report_conn, config, business_date, started_at,
+                        snapshot, unkeyed + ambiguous_count, buckets, task_states,
+                    )
+                except Exception as exc:
+                    raise MonitorStageError("monitor_persist_failed", exc) from exc
                 succeeded += 1
             except asyncio.CancelledError:
                 raise
