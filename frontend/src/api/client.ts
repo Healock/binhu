@@ -4750,10 +4750,12 @@ export interface PropertyAnnotationPreview {
     status: 'ready' | 'blocked' | 'review' | 'skipped' | 'applied'
     address?: string
     community?: string
+    community_id?: number | null
     reason: string
     target_name?: string
     annotation_reason?: string
     replaces_manual?: boolean
+    manual_confirm_item?: Pick<PropertyAnnotationApplyItem, 'property_id' | 'expected_snapshot'>
     apply_item?: PropertyAnnotationApplyItem
   }>
 }
@@ -4861,7 +4863,7 @@ export const registryApi = {
       params: communityId ? { community_id: communityId } : undefined,
     })).data as { data: RegistrySmallCommunityOption[] }
   },
-  async confirmPropertySmallCommunities(items: Array<{ property_id: number; small_community_id: number }>) {
+  async confirmPropertySmallCommunities(items: Array<{ property_id: number; small_community_id: number; expected_snapshot?: string; expected_entry_snapshot?: string }>) {
     return (await api.post('/registry/properties/small-community-links/confirm', { items }, activeRequest)).data as {
       message: string
       confirmed: number

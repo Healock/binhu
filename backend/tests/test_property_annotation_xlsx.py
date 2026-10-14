@@ -164,6 +164,23 @@ async def test_preview_is_read_only_and_apply_reuses_confirm_in_transaction(data
 
 
 @pytest.mark.asyncio
+async def test_review_preview_exposes_scoped_manual_confirmation_snapshot(data):
+    result = await preview(annotated(mutate=lambda _, sheet, columns: (
+        sheet.cell(2, columns["decision"]).__setattr__("value", "review"),
+        sheet.cell(2, columns["annotated_small_community_id"]).__setattr__("value", None),
+        sheet.cell(2, columns["annotation_reason"]).__setattr__("value", "地址存在冲突"),
+    )))
+    item = result["items"][0]
+    assert item["status"] == "review"
+    assert item["community_id"] == 8
+    assert item["manual_confirm_item"] == {
+        "property_id": 42,
+        "expected_snapshot": xlsx.property_token(PROPERTY, USER["id"]),
+    }
+    assert "identity_number" not in str(item)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changed", [
     {"version": 4}, {"natural_address": "已变化"}, {"status": "inactive"}, {"household_status": "已注销"},
     {"address_match_status": "confirmed", "small_community_id": 15}, {"community_id": 9},

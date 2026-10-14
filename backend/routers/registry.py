@@ -1066,7 +1066,8 @@ async def preview_property_annotations(
             if current is None or (allowed is not None and current.get("community_id") not in allowed):
                 raise ValueError("房屋不存在或不在当前账号维护范围内")
             item.update(address=current.get("natural_address") or current.get("normalized_address") or "",
-                        community=current.get("community_name") or "")
+                        community=current.get("community_name") or "",
+                        community_id=current.get("community_id"))
             if row["formula"] or row["duplicate"]:
                 raise ValueError("同一房屋重复或标注行包含公式，请使用唯一的纯文本标注")
             decision = str(row.get("decision") or "").strip()
@@ -1081,6 +1082,11 @@ async def preview_property_annotations(
                 item.update(status="review" if decision == "review" else "skipped",
                             annotation_reason=reason if decision == "review" else "",
                             reason="需人工复核" if decision == "review" else "未申请修改")
+                if decision == "review":
+                    item["manual_confirm_item"] = {
+                        "property_id": property_id,
+                        "expected_snapshot": property_token(current, int(user["id"])),
+                    }
             else:
                 expected = str(row.get("snapshot_token") or "")
                 if not valid_token(expected, property_token(row, int(user["id"]))) or not valid_token(expected, property_token(current, int(user["id"]))):
