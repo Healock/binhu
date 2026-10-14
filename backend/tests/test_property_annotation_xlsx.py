@@ -164,6 +164,24 @@ async def test_preview_is_read_only_and_apply_reuses_confirm_in_transaction(data
 
 
 @pytest.mark.asyncio
+async def test_review_preview_exposes_scoped_manual_confirmation_snapshot(data):
+    result = await preview(annotated(mutate=lambda _, sheet, columns: (
+        sheet.cell(2, columns["decision"]).__setattr__("value", "review"),
+        sheet.cell(2, columns["annotated_small_community_id"]).__setattr__("value", None),
+        sheet.cell(2, columns["annotation_reason"]).__setattr__("value", "地址存在冲突"),
+    )))
+    item = result["items"][0]
+    assert item["status"] == "review"
+    assert item["community_id"] == 8
+    assert item["manual_confirm_item"] == {
+        "property_id": 42,
+        "expected_snapshot": xlsx.property_token(PROPERTY, USER["id"]),
+        "expected_match_snapshot": xlsx.property_match_token(PROPERTY, USER["id"]),
+    }
+    assert "identity_number" not in str(item)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changed", [
     {"version": 4}, {"natural_address": "已变化"}, {"status": "inactive"}, {"household_status": "已注销"},
     {"address_match_status": "confirmed", "small_community_id": 15}, {"community_id": 9},
@@ -253,6 +271,28 @@ async def test_apply_rejects_modified_preview_and_later_concurrent_change(data):
         await registry.apply_property_annotations(registry.PropertyAnnotationApply(confirm=True, items=[item]), None, USER, conn)
     assert error.value.status_code == 409 and conn.rolled_back and not conn.committed
     assert not any("INSERT INTO" in sql for sql in conn.sql)
+
+
+@pytest.mark.asyncio
+async def test_repeated_manual_confirmation_rejects_changed_link_snapshot(data):
+    expected = xlsx.property_match_token(PROPERTY, USER["id"])
+    item = registry.PropertySmallCommunityConfirmItem(
+        property_id=42, small_community_id=12, expected_match_snapshot=expected,
+    )
+    first = Connection()
+    result = await registry.confirm_property_small_communities(
+        registry.PropertySmallCommunityConfirm(items=[item]), None, USER, first,
+    )
+    assert result["confirmed"] == 1 and first.committed
+
+    data[0][42].update({"small_community_id": 12, "address_match_status": "confirmed", "version": 4})
+    second = Connection()
+    with pytest.raises(HTTPException) as error:
+        await registry.confirm_property_small_communities(
+            registry.PropertySmallCommunityConfirm(items=[item]), None, USER, second,
+        )
+    assert error.value.status_code == 409
+    assert second.rolled_back and not second.committed
 
 
 @pytest.mark.asyncio

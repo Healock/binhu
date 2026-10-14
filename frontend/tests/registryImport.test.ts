@@ -339,6 +339,19 @@ test('房屋档案显示小区匹配状态、待确认数量和人工确认入�
   assert.match(styleSource, /registry-small-community-match/)
 })
 
+test('小区标注待复核行只允许携带房屋快照人工确认', () => {
+  const pageSource = readFileSync(
+    new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(pageSource, /row\.status === 'review'/)
+  assert.match(pageSource, /manual_confirm_item/)
+  assert.match(pageSource, /expected_snapshot: snapshot\.expected_snapshot/)
+  assert.match(pageSource, /expected_match_snapshot: snapshot\.expected_match_snapshot/)
+  assert.match(apiSource, /manual_confirm_item\?: Pick<PropertyAnnotationApplyItem/)
+})
+
 test('人员标签整合到人员档案并保留独立权限和历史', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),

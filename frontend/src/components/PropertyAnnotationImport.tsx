@@ -1,7 +1,7 @@
 import { UploadOutlined } from '@ant-design/icons'
 import { Alert, Button, Modal, Select, Tag, Upload, message } from 'antd'
 import { useState } from 'react'
-import { registryApi, type PropertyAnnotationPreview } from '../api/client'
+import { registryApi, type PropertyAnnotationPreview, type RegistrySmallCommunityOption } from '../api/client'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import AppTable from './AppTable'
 import type { ResponsiveColumns } from './responsiveTable'
@@ -26,6 +26,11 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
   const [error, setError] = useState('')
   const [applyFailed, setApplyFailed] = useState(false)
   const [statusFilter, setStatusFilter] = useState<PreviewStatusFilter>('all')
+  const [manualRow, setManualRow] = useState<PreviewRow | null>(null)
+  const [manualOptions, setManualOptions] = useState<RegistrySmallCommunityOption[]>([])
+  const [manualSmallCommunityId, setManualSmallCommunityId] = useState<number>()
+  const [manualLoading, setManualLoading] = useState(false)
+  const [manualSaving, setManualSaving] = useState(false)
 
   const read = async (file: File) => {
     setBusy(true)
@@ -71,6 +76,57 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
     }
   }
 
+  const openManualConfirm = async (row: PreviewRow) => {
+    if (!row.property_id || !row.community_id || busy || applyFailed) return
+    setManualRow(row)
+    setManualOptions([])
+    setManualSmallCommunityId(undefined)
+    setManualLoading(true)
+    try {
+      const result = await registryApi.smallCommunityOptions(row.community_id)
+      setManualOptions(result.data)
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '读取当前社区小区失败，请稍后重试')
+      setManualRow(null)
+    } finally {
+      setManualLoading(false)
+    }
+  }
+
+  const confirmManual = async () => {
+    if (!manualRow?.property_id || !manualSmallCommunityId || manualSaving) return
+    const target = manualOptions.find(option => option.id === manualSmallCommunityId)
+    if (!target) return
+    setManualSaving(true)
+    try {
+      const snapshot = manualRow.manual_confirm_item
+      if (!snapshot) {
+        message.error('预览缺少房屋版本信息，请重新上传工作簿')
+        return
+      }
+      await registryApi.confirmPropertySmallCommunities([{
+        property_id: snapshot.property_id,
+        small_community_id: target.id,
+        expected_snapshot: snapshot.expected_snapshot,
+        expected_match_snapshot: snapshot.expected_match_snapshot,
+      }])
+      setPreview(current => current && ({ ...current, items: current.items.map(row => row.xlsx_row === manualRow.xlsx_row
+        ? { ...row, status: 'applied', target_name: target.name, reason: '已人工确认', annotation_reason: row.annotation_reason || '管理员核实后确认' }
+        : row) }))
+      setManualRow(null)
+      message.success('已确认该房屋的小区归属')
+      try {
+        await onChanged()
+      } catch {
+        message.warning('小区已确认，但房屋列表刷新失败，请手动刷新')
+      }
+    } catch (reason: any) {
+      message.error(reason?.response?.data?.detail || '人工确认失败，请刷新后重试')
+    } finally {
+      setManualSaving(false)
+    }
+  }
+
   const selectedRows = preview?.items.filter(row => selected.includes(row.xlsx_row) && row.status === 'ready') || []
   const replacementCount = selectedRows.filter(row => row.replaces_manual).length
   const counts = Object.fromEntries(Object.keys(states).map(state => [state, preview?.items.filter(row => row.status === state).length || 0])) as Record<PreviewStatus, number>
@@ -86,6 +142,7 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
     { title: '标注小区', dataIndex: 'target_name', width: 170, responsivePriority: 'always', render: (value, row) => <div className="grid gap-2"><span>{value || '未选择'}</span>{row.replaces_manual && <Tag color="warning">替换已有人工确认</Tag>}</div> },
     { title: '状态', dataIndex: 'status', width: 120, responsivePriority: 'always', render: value => <Tag color={states[value as keyof typeof states].color}>{states[value as keyof typeof states].label}</Tag> },
     { title: '依据与处理原因', key: 'reason', width: 270, responsivePriority: 'always', render: (_, row) => <div className="grid gap-2" style={{ overflowWrap: 'anywhere' }}><span>{row.annotation_reason}</span><span>{row.reason}</span></div> },
+    { title: '操作', key: 'actions', width: 130, responsivePriority: 'always', responsiveAction: true, render: (_, row) => row.status === 'review' && row.property_id && row.community_id && row.manual_confirm_item ? <Button size="small" onClick={() => void openManualConfirm(row)} disabled={busy || applyFailed}>确认小区</Button> : null },
   ]
   const close = () => { if (!busy) setOpen(false) }
   return <>
@@ -120,6 +177,13 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
               getCheckboxProps: row => ({ disabled: busy || applyFailed || row.status !== 'ready' }),
             }} />
         </>}
+      </div>
+    </Modal>
+    <Modal title="人工确认小区" open={Boolean(manualRow)} centered onCancel={() => { if (!manualSaving) setManualRow(null) }} onOk={() => void confirmManual()} okText="确认" cancelText="取消" confirmLoading={manualSaving} okButtonProps={{ disabled: !manualSmallCommunityId || manualLoading }} destroyOnClose>
+      <div className="grid gap-3">
+        <div>房屋地址：{manualRow?.address || '无可查看地址'}</div>
+        <div>所属社区：{manualRow?.community || '未识别'}</div>
+        <Select showSearch optionFilterProp="label" placeholder="请选择确认的小区" value={manualSmallCommunityId} loading={manualLoading} onChange={setManualSmallCommunityId} options={manualOptions.map(option => ({ value: option.id, label: option.detail_address ? `${option.name}（${option.detail_address}）` : option.name }))} />
       </div>
     </Modal>
   </>

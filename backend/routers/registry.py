@@ -34,6 +34,7 @@ from services.address_matching import MATCHER_VERSION
 from services.property_annotation_xlsx import (
     MAX_ROWS, MAX_UPLOAD_BYTES, SNAPSHOT_FIELDS, build_annotation_workbook, parse_annotation_workbook,
     property_token, entry_token, signature, valid_token, positive_id,
+    property_match_token,
 )
 from services.property_annotation_exports import (
     create_export_job, get_export_file, get_export_job, set_export_phase,
@@ -106,6 +107,7 @@ class PropertySmallCommunityConfirmItem(BaseModel):
     property_id: int = Field(gt=0)
     small_community_id: int = Field(gt=0)
     expected_snapshot: str | None = Field(default=None, min_length=64, max_length=64)
+    expected_match_snapshot: str | None = Field(default=None, min_length=64, max_length=64)
     expected_entry_snapshot: str | None = Field(default=None, min_length=64, max_length=64)
 
 
@@ -869,6 +871,8 @@ async def confirm_property_small_communities(
                 model = item_models[property_id]
                 if model.expected_snapshot and not valid_token(model.expected_snapshot, property_token(snapshots[property_id], int(user["id"]))):
                     raise HTTPException(409, f"房屋 {property_id} 的地址、版本或人工确认已变化，请重新导出标注")
+                if model.expected_match_snapshot and not valid_token(model.expected_match_snapshot, property_match_token(snapshots[property_id], int(user["id"]))):
+                    raise HTTPException(409, f"房屋 {property_id} 的小区关联已被其他操作更新，请重新导出标注")
                 if model.expected_entry_snapshot and not valid_token(model.expected_entry_snapshot, entry_token(entry, int(user["id"]))):
                     raise HTTPException(409, f"小区 {entry_id} 的配置已变化，请重新导出标注")
                 if allowed is not None and property_row["community_id"] not in allowed:
@@ -1066,7 +1070,8 @@ async def preview_property_annotations(
             if current is None or (allowed is not None and current.get("community_id") not in allowed):
                 raise ValueError("房屋不存在或不在当前账号维护范围内")
             item.update(address=current.get("natural_address") or current.get("normalized_address") or "",
-                        community=current.get("community_name") or "")
+                        community=current.get("community_name") or "",
+                        community_id=current.get("community_id"))
             if row["formula"] or row["duplicate"]:
                 raise ValueError("同一房屋重复或标注行包含公式，请使用唯一的纯文本标注")
             decision = str(row.get("decision") or "").strip()
@@ -1081,6 +1086,12 @@ async def preview_property_annotations(
                 item.update(status="review" if decision == "review" else "skipped",
                             annotation_reason=reason if decision == "review" else "",
                             reason="需人工复核" if decision == "review" else "未申请修改")
+                if decision == "review":
+                    item["manual_confirm_item"] = {
+                        "property_id": property_id,
+                        "expected_snapshot": property_token(current, int(user["id"])),
+                        "expected_match_snapshot": property_match_token(current, int(user["id"])),
+                    }
             else:
                 expected = str(row.get("snapshot_token") or "")
                 if not valid_token(expected, property_token(row, int(user["id"]))) or not valid_token(expected, property_token(current, int(user["id"]))):
@@ -1091,7 +1102,9 @@ async def preview_property_annotations(
                     raise ValueError("小区不存在、已停用、越权或所属社区与房屋不一致")
                 expected_entry = entry_token(entry, int(user["id"]))
                 payload = {"property_id": property_id, "small_community_id": target_id,
-                           "expected_snapshot": expected, "expected_entry_snapshot": expected_entry}
+                           "expected_snapshot": expected,
+                           "expected_match_snapshot": property_match_token(current, int(user["id"])),
+                           "expected_entry_snapshot": expected_entry}
                 already_confirmed = current.get("address_match_status") == "confirmed" and current.get("small_community_id") == target_id
                 item.update(status="skipped" if already_confirmed else "ready", reason="已人工确认同一小区，无需重复提交" if already_confirmed else "可确认", target_name=entry["name"], annotation_reason=reason,
                             replaces_manual=current.get("address_match_status") == "confirmed" and current.get("small_community_id") != target_id,

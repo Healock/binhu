@@ -7,12 +7,13 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 0 } })
 await server.listen()
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`
 const browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) })
-const applyItem = id => ({ property_id: id, small_community_id: 12, expected_snapshot: 'a'.repeat(64), expected_entry_snapshot: 'b'.repeat(64), preview_token: 'c'.repeat(64) })
+const applyItem = id => ({ property_id: id, small_community_id: 12, expected_snapshot: 'a'.repeat(64), expected_match_snapshot: 'm'.repeat(64), expected_entry_snapshot: 'b'.repeat(64), preview_token: 'c'.repeat(64) })
 try {
   for (const [width, height, dark, denied] of [[1280, 720, false, false], [390, 844, false, false], [1024, 640, true, false], [1280, 960, true, false], [1680, 1050, false, false], [1920, 1080, true, false], [1280, 720, false, true]]) {
     const page = await browser.newPage({ viewport: { width, height } })
     const errors = []
     const applied = []
+    const manualConfirmed = []
     let exported = null
     let exportJobPolls = 0
     let lastSearch = null
@@ -43,13 +44,20 @@ try {
       if (url.pathname.endsWith('/small-community-annotations/exports/00000000-0000-4000-8000-000000000007/download')) {
         return route.fulfill({ contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', body: 'synthetic-workbook' })
       }
-      if (url.pathname.endsWith('/small-community-annotations/preview')) return send({ total: 5, ready: 2, blocked: 1, review: 1, skipped: 1, items: [
-        { xlsx_row: 2, property_id: 42, status: 'ready', address: '合成路1号', community: '合成社区', target_name: '合成小区', annotation_reason: '正式名称与地址相符', reason: '可确认', apply_item: applyItem(42) },
-        { xlsx_row: 3, property_id: 43, status: 'ready', address: '合成路2号'.repeat(10), community: '合成社区', target_name: '合成小区', annotation_reason: '人工复核建议', reason: '可确认', replaces_manual: true, apply_item: applyItem(43) },
-        { xlsx_row: 4, property_id: 44, status: 'blocked', address: '合成路3号', community: '合成社区', reason: '房屋版本已变化，请重新导出' },
-        { xlsx_row: 5, property_id: 45, status: 'review', address: '合成路4号', community: '合成社区', reason: '需人工复核', annotation_reason: '地址与小区存在冲突' },
-        { xlsx_row: 6, property_id: 46, status: 'skipped', address: '合成路5号', community: '合成社区', reason: '未申请修改' },
+      if (url.pathname.endsWith('/small-community-annotations/preview')) return send({ total: 7, ready: 2, blocked: 1, review: 3, skipped: 1, items: [
+        { xlsx_row: 2, property_id: 42, community_id: 8, status: 'ready', address: '合成路1号', community: '合成社区', target_name: '合成小区', annotation_reason: '正式名称与地址相符', reason: '可确认', apply_item: applyItem(42) },
+        { xlsx_row: 3, property_id: 43, community_id: 8, status: 'ready', address: '合成路2号'.repeat(10), community: '合成社区', target_name: '合成小区', annotation_reason: '人工复核建议', reason: '可确认', replaces_manual: true, apply_item: applyItem(43) },
+        { xlsx_row: 4, property_id: 44, community_id: 8, status: 'blocked', address: '合成路3号', community: '合成社区', reason: '房屋版本已变化，请重新导出' },
+        { xlsx_row: 5, property_id: 45, community_id: 8, status: 'review', address: '合成路4号', community: '合成社区', reason: '需人工复核', annotation_reason: '地址与小区存在冲突', manual_confirm_item: { property_id: 45, expected_snapshot: 'd'.repeat(64), expected_match_snapshot: 'g'.repeat(64) } },
+        { xlsx_row: 6, property_id: 46, community_id: 8, status: 'review', address: '合成路5号', community: '合成社区', reason: '需人工复核', annotation_reason: '无法唯一匹配', manual_confirm_item: { property_id: 46, expected_snapshot: 'e'.repeat(64), expected_match_snapshot: 'h'.repeat(64) } },
+        { xlsx_row: 7, property_id: 47, community_id: 8, status: 'review', address: '合成路6号', community: '合成社区', reason: '需人工复核', annotation_reason: '社区别名冲突', manual_confirm_item: { property_id: 47, expected_snapshot: 'f'.repeat(64), expected_match_snapshot: 'i'.repeat(64) } },
+        { xlsx_row: 8, property_id: 48, community_id: 8, status: 'skipped', address: '合成路7号', community: '合成社区', reason: '未申请修改' },
       ] })
+      if (url.pathname.endsWith('/small-community-options')) return send({ data: [{ id: 12, name: '合成确认小区', community_id: 8, detail_address: '合成路188号' }] })
+      if (url.pathname.endsWith('/small-community-links/confirm')) {
+        manualConfirmed.push(route.request().postDataJSON())
+        return send({ message: '已确认', confirmed: 1 })
+      }
       if (url.pathname.endsWith('/small-community-annotations/apply')) {
         const payload = route.request().postDataJSON()
         applied.push(payload)
@@ -102,8 +110,8 @@ try {
       await modal.getByText('房屋版本已变化，请重新导出').waitFor()
       const statusFilter = modal.getByRole('combobox', { name: '标注状态筛选' })
       await statusFilter.click()
-      await page.getByText('待人工复核（1）', { exact: true }).click()
-      assert.equal(await modal.locator('tr.ant-table-row').count(), 1)
+      await page.getByText('待人工复核（3）', { exact: true }).click()
+      assert.equal(await modal.locator('tr.ant-table-row').count(), 3)
       await statusFilter.click()
       await page.getByText('跳过（1）', { exact: true }).click()
       assert.equal(await modal.locator('tr.ant-table-row').count(), 1)
@@ -111,7 +119,21 @@ try {
       await page.getByText('拒绝应用（1）', { exact: true }).click()
       assert.equal(await modal.locator('tr.ant-table-row').count(), 1)
       await statusFilter.click()
-      await page.getByText('全部状态（5）', { exact: true }).click()
+      await page.getByText('全部状态（7）', { exact: true }).click()
+      await modal.locator('tr.ant-table-row').filter({ hasText: '合成路4号' }).getByRole('button', { name: '确认小区', exact: true }).click()
+      const manualModal = page.locator('.ant-modal:visible').filter({ hasText: '人工确认小区' }).last()
+      await manualModal.locator('.ant-select').click()
+      await page.getByText('合成确认小区（合成路188号）', { exact: true }).click()
+      await manualModal.locator('.ant-modal-footer button').last().click()
+      await modal.getByText('已人工确认', { exact: true }).first().waitFor()
+      assert.deepEqual(manualConfirmed[0].items.map(item => item.property_id), [45])
+      assert.match(manualConfirmed[0].items[0].expected_snapshot, /^[a-f0-9]{64}$/)
+      assert.match(manualConfirmed[0].items[0].expected_match_snapshot, /^[a-z0-9]{64}$/)
+      await statusFilter.click()
+      await page.getByText('待人工复核（2）', { exact: true }).click()
+      assert.equal(await modal.locator('tr.ant-table-row').count(), 2, 'other review rows remain untouched')
+      await statusFilter.click()
+      await page.getByText('全部状态（7）', { exact: true }).click()
       assert.equal(applied.length, 0, 'preview must not apply changes')
       assert.equal(await modal.getByRole('button', { name: '确认所选 1 条' }).count(), 1)
       assert.equal(await modal.getByText('替换已有人工确认', { exact: true }).count(), 1)
@@ -125,8 +147,8 @@ try {
       await modal.getByRole('button', { name: '确认所选 1 条' }).click()
       assert.equal(applied.length, 0, 'final confirmation is required')
       await page.getByRole('button', { name: '确认应用', exact: true }).click()
-      await modal.getByText('已人工确认', { exact: true }).waitFor()
-      await modal.getByText('已应用 1', { exact: true }).waitFor()
+      await modal.getByText('已人工确认', { exact: true }).first().waitFor()
+      await modal.getByText('已应用 2', { exact: true }).waitFor()
       assert.equal(applied.length, 1)
       assert.equal(applied[0].confirm, true)
       assert.deepEqual(applied[0].items.map(item => item.property_id), [42], 'manual replacement and blocked records must stay untouched')
