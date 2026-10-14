@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from copy import copy
 from datetime import date
@@ -430,21 +431,27 @@ def _summary_by_name(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+def _normalize_daily_detail_community(value: Any) -> str:
+    """Normalize formal community labels and common committee suffix aliases."""
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = re.sub(r"[\s\u3000]+", "", text).casefold()
+    text = re.sub(r"(?:居民委员会|居委会)$", "", text)
+    return re.sub(r"社区$", "", text)
+
+
 def _summary_by_member(
     payload: dict[str, Any],
-) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-    """按社区和姓名建立日报索引，并保留同名候选供安全兜底。"""
+) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    """按社区和姓名建立日报候选索引，重复记录不得静默覆盖。"""
     rows = (payload.get("inspector") or {}).get("data") or []
-    by_member: dict[tuple[str, str], dict[str, Any]] = {}
+    by_member: dict[tuple[str, str], list[dict[str, Any]]] = {}
     by_name: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         name = normalized_person_name(row.get("姓名"))
         if not name:
             continue
-        community = unicodedata.normalize(
-            "NFKC", str(row.get("社区") or "")
-        ).strip().casefold()
-        by_member[(community, name)] = row
+        community = _normalize_daily_detail_community(row.get("社区"))
+        by_member.setdefault((community, name), []).append(row)
         by_name.setdefault(name, []).append(row)
     return by_member, by_name
 
@@ -518,14 +525,11 @@ async def build_daily_detail_data(
             visit_row = None
             target = None
 
-        task_row = online_by_member.get(
-            (
-                unicodedata.normalize(
-                    "NFKC", str(member.get("community") or "")
-                ).strip().casefold(),
-                normalized_name,
-            )
+        member_rows = online_by_member.get(
+            (_normalize_daily_detail_community(member.get("community")), normalized_name),
+            [],
         )
+        task_row = member_rows[0] if len(member_rows) == 1 else None
         if task_row is None:
             same_name_rows = online_by_name.get(normalized_name, [])
             if len(same_name_rows) == 1:

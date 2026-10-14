@@ -1160,13 +1160,55 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         by_member, by_name = _summary_by_member({
             "inspector": {"data": [
                 {"社区": "甲社区", "姓名": "张三", "数据总数": 4},
-                {"社区": "乙社区", "姓名": "张三", "数据总数": 9},
+                {"社区": "乙社区居委会", "姓名": "张三", "数据总数": 9},
                 {"社区": "甲社区", "姓名": "李四", "数据总数": 2},
+                {"社区": "甲社区居委会", "姓名": "李四", "数据总数": 3},
             ]},
         })
-        self.assertEqual(by_member[("甲社区", "张三")]["数据总数"], 4)
+        self.assertEqual(by_member[("甲", "张三")][0]["数据总数"], 4)
+        self.assertEqual(by_member[("乙", "张三")][0]["数据总数"], 9)
+        self.assertEqual(len(by_member[("甲", "李四")]), 2)
         self.assertEqual(len(by_name["张三"]), 2)
-        self.assertEqual(len(by_name["李四"]), 1)
+        self.assertEqual(len(by_name["李四"]), 2)
+
+    async def test_daily_detail_duplicate_same_community_name_is_left_blank(self):
+        roster = [{
+            "name": "李四",
+            "position": "组员",
+            "group_key": "area:东片",
+            "group_label": "东片",
+            "community": "甲社区",
+            "community_id": 1,
+            "attendance": "是",
+        }]
+        online = {
+            "exists": True,
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "李四", "数据总数": 2},
+                {"社区": "甲社区居委会", "姓名": "李四", "数据总数": 3},
+            ]},
+        }
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={"inspector": {"data": []}})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(), date(2026, 8, 9), rental_target=10, self_owned_target=15,
+            )
+        self.assertIsNone(result[0]["instruction_total"])
+
+    def test_daily_detail_workbook_orders_self_owned_at_area_end(self):
+        rows = [
+            {"group_key": "area:东片", "group_label": "东片", "community": "甲", "name": "自购房甲", "position": "自购房", "attendance": "是"},
+            {"group_key": "area:东片", "group_label": "东片", "community": "乙", "name": "组员乙", "position": "组员", "attendance": "是"},
+        ]
+        content, _ = build_daily_detail_workbook(date(2026, 8, 9), rows)
+        sheet = load_workbook(BytesIO(content), data_only=False).active
+        self.assertEqual([sheet[f"D{row}"].value for row in (4, 5)], ["组员乙", "自购房甲"])
 
     async def test_daily_detail_excludes_leadership_and_keeps_self_owned_under_area(self):
         rows = [
