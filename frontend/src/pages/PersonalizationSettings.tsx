@@ -46,11 +46,13 @@ export default function PersonalizationSettings() {
         user.permissions,
         user.permission_groups?.map(group => group.code),
         user.member?.position,
+        user.available_modules,
       ),
       user.role,
       user.permissions,
       user.permission_groups?.map(group => group.code),
       user.member?.position,
+      user.available_modules,
     ))
   // Session activity refreshes the user object while this page is open. Keep
   // unsaved personalization choices intact until the account itself changes.
@@ -183,6 +185,7 @@ export default function PersonalizationSettings() {
               permissions={user.permissions}
               position={user.member?.position}
               permissionGroupCodes={user.permission_groups?.map(group => group.code)}
+              availableModules={user.available_modules}
               onChange={setDockConfig}
             />
           </div>

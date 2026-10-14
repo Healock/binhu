@@ -71,6 +71,32 @@ ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
     "police_analysis": ("online.task.manage", "police.dispatch.manage"),
 }
 
+COMMUNITY_POLICE_ITEMS = {
+    "online_query", "flow_tasks", "address_confirmation", "police_tasks",
+    "police_analysis", "online_summary", "visit_summary", "code_summary",
+    "data_upload", "work_log", "workflow_tickets", "police_addresses",
+    "venue", "registry",
+}
+FLOW_TASK_POSITIONS = {
+    "组长", "组员", "片长", "基础管控", "中队长", "社区民警", "所队领导",
+}
+PLATFORM_ADMIN_ITEMS = {"users", "permission_groups", "operations"}
+COMMON_ITEMS = {"communities", "grid_members"}
+
+
+def _item_has_module_access(item_id: str, available_modules: Iterable[str] | None) -> bool:
+    if available_modules is None:
+        return True
+    if item_id in PLATFORM_ADMIN_ITEMS:
+        module_id = "platform_admin"
+    elif item_id in COMMON_ITEMS:
+        module_id = "common"
+    elif item_id in COMMUNITY_POLICE_ITEMS:
+        module_id = "workflow" if item_id == "workflow_tickets" else "community_police"
+    else:
+        module_id = "common"
+    return module_id in set(available_modules)
+
 
 def normalize_mobile_navigation_mode(value: Any) -> str:
     return (
@@ -96,13 +122,16 @@ def _item_is_accessible(
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
     position: str | None = None,
+    available_modules: Iterable[str] | None = None,
 ) -> bool:
+    if not _item_has_module_access(item_id, available_modules):
+        return False
     admin_access = _admin_code_access(role, permission_group_codes)
     if item_id == "task_flow_lab":
         return role == "super_admin"
     if item_id == "flow_tasks":
         has_task_manage = permissions is not None and "online.task.manage" in permissions
-        if position not in {"组长", "组员"} and not has_task_manage and not admin_access:
+        if position not in FLOW_TASK_POSITIONS and not has_task_manage and not admin_access:
             return False
     if item_id == "police_tasks":
         if position not in {"基础管控", "中队长"} and not (not position and admin_access):
@@ -132,6 +161,7 @@ def default_mobile_dock_config(
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
     position: str | None = None,
+    available_modules: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """返回新版本默认 Dock；所有岗位按同一分类顺序取前四组。"""
     groups = []
@@ -145,6 +175,7 @@ def default_mobile_dock_config(
                 permissions,
                 permission_group_codes,
                 position,
+                available_modules,
             )
         ]
         if items:
@@ -173,17 +204,18 @@ def normalize_mobile_dock_config(
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
     position: str | None = None,
+    available_modules: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """过滤配置；旧版本配置故意不迁移，直接返回 v2 默认值。"""
     parsed = _load_config(value)
     if not parsed or parsed.get("version") != DOCK_CONFIG_VERSION:
         return default_mobile_dock_config(
-            role, permissions, permission_group_codes, position
+            role, permissions, permission_group_codes, position, available_modules
         )
     raw_groups = parsed.get("groups")
     if not isinstance(raw_groups, list):
         return default_mobile_dock_config(
-            role, permissions, permission_group_codes, position
+            role, permissions, permission_group_codes, position, available_modules
         )
 
     raw_task_items = {
@@ -219,6 +251,7 @@ def normalize_mobile_dock_config(
                     permissions,
                     permission_group_codes,
                     position,
+                    available_modules,
                 )
             ):
                 continue
@@ -229,7 +262,7 @@ def normalize_mobile_dock_config(
             groups.append({"id": group_id, "items": items})
 
     accessible_defaults = default_mobile_dock_config(
-        role, permissions, permission_group_codes, position
+        role, permissions, permission_group_codes, position, available_modules
     )["groups"]
     if not groups:
         return {
@@ -282,6 +315,7 @@ def validate_mobile_dock_config(
     permissions: Iterable[str] | None = None,
     permission_group_codes: Iterable[str] | None = None,
     position: str | None = None,
+    available_modules: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """保存配置前做严格校验，避免静默接受错误或越权入口。"""
     parsed = _load_config(value)
@@ -321,6 +355,7 @@ def validate_mobile_dock_config(
                 permissions,
                 permission_group_codes,
                 position,
+                available_modules,
             ):
                 raise ValueError("Dock 配置包含当前账号无权访问的页面")
             seen_items.add(item_id)
@@ -339,7 +374,7 @@ def validate_mobile_dock_config(
         groups = [workspace, *[group for group in groups if group is not workspace]]
     present = {group["id"] for group in groups}
     for candidate in default_mobile_dock_config(
-        role, permissions, permission_group_codes, position
+        role, permissions, permission_group_codes, position, available_modules
     )["groups"]:
         if len(groups) >= MAX_DOCK_GROUPS:
             break

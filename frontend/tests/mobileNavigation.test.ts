@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  NAVIGATION_GROUPS,
   accessibleNavigationGroups,
   mobileAccessibleNavigationGroups,
   defaultMobileDockConfig,
@@ -9,6 +10,15 @@ import {
   reorderMobileDockGroups,
   reorderMobileDockItems,
 } from '../src/navigation/mobileNavigation.ts'
+
+test('每个桌面和手机导航入口都显式声明模块归属', () => {
+  const missing = NAVIGATION_GROUPS
+    .flatMap(group => group.items)
+    .filter(item => !item.moduleId)
+    .map(item => item.id)
+
+  assert.deepEqual(missing, [])
+})
 
 test('普通账号默认 Dock 隐藏超级管理员页面', () => {
   const config = defaultMobileDockConfig('member')
@@ -139,6 +149,31 @@ test('电脑端保留汇总导航，手机端移除整个汇总分组', () => {
     defaultMobileDockConfig('admin', ['online.summary.view', 'visit.summary.view'])
       .groups.some(group => group.id === 'summaries'),
     false,
+  )
+})
+
+test('Bootstrap 模块集合同时过滤桌面侧栏和手机 Dock', () => {
+  const publicOnly = accessibleNavigationGroups(
+    'member',
+    ['online.raw.view'],
+    [],
+    '组员',
+    ['common'],
+  )
+  const community = mobileAccessibleNavigationGroups(
+    'member',
+    ['online.raw.view'],
+    [],
+    '组员',
+    ['common', 'community_police'],
+  )
+  assert.equal(
+    publicOnly.some(group => group.items.some(item => item.id === 'online_query')),
+    false,
+  )
+  assert.equal(
+    community.some(group => group.items.some(item => item.id === 'online_query')),
+    true,
   )
 })
 

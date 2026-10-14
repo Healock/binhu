@@ -259,6 +259,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 str(role),
             ),
             "theme_mode": normalize_theme_mode(theme_mode),
+            "available_modules": [],
             "avatar_url": (
                 f"/api/auth/avatar/{int(user_id)}?v={Path(str(avatar_storage_key)).stem}"
                 if avatar_storage_key else None
@@ -645,6 +646,7 @@ async def update_preferences(
                     if isinstance(group, dict)
                 ],
                 (user.get("member") or {}).get("position"),
+                user.get("available_modules"),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -684,6 +686,7 @@ async def update_preferences(
                     if isinstance(group, dict)
                 ],
                 (user.get("member") or {}).get("position"),
+                user.get("available_modules"),
             ),
             "theme_mode": normalize_theme_mode(
                 updated_user.get("theme_mode"),
