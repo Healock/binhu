@@ -108,6 +108,7 @@ export default function PropertyAnnotationImport({ onChanged }: { onChanged: () 
         property_id: snapshot.property_id,
         small_community_id: target.id,
         expected_snapshot: snapshot.expected_snapshot,
+        expected_match_snapshot: snapshot.expected_match_snapshot,
       }])
       setPreview(current => current && ({ ...current, items: current.items.map(row => row.xlsx_row === manualRow.xlsx_row
         ? { ...row, status: 'applied', target_name: target.name, reason: '已人工确认', annotation_reason: row.annotation_reason || '管理员核实后确认' }

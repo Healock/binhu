@@ -32,6 +32,10 @@ HEADERS = (*SNAPSHOT_FIELDS, "address_match_score", "address_match_reason",
            "snapshot_token", *LABEL_FIELDS)
 ENTRY_FIELDS = ("id", "name", "community_id", "community_name", "detail_address",
                 "aliases", "address_type")
+MATCH_SNAPSHOT_FIELDS = (
+    "id", "version", "community_id", "small_community_id", "address_match_status",
+    "address_match_confirmed_by", "address_match_confirmed_at",
+)
 
 
 def signature(kind: str, data: dict, user_id: int) -> str:
@@ -46,6 +50,11 @@ def property_snapshot(row: dict) -> dict:
 
 def property_token(row: dict, user_id: int) -> str:
     return signature("property", property_snapshot(row), user_id)
+
+
+def property_match_token(row: dict, user_id: int) -> str:
+    snapshot = {key: "" if row.get(key) is None else str(row[key]) for key in MATCH_SNAPSHOT_FIELDS}
+    return signature("property-small-community-link", snapshot, user_id)
 
 
 def entry_token(entry: dict, user_id: int) -> str:

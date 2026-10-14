@@ -7,7 +7,7 @@ const server = await createServer({ server: { host: '127.0.0.1', port: 0 } })
 await server.listen()
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`
 const browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) })
-const applyItem = id => ({ property_id: id, small_community_id: 12, expected_snapshot: 'a'.repeat(64), expected_entry_snapshot: 'b'.repeat(64), preview_token: 'c'.repeat(64) })
+const applyItem = id => ({ property_id: id, small_community_id: 12, expected_snapshot: 'a'.repeat(64), expected_match_snapshot: 'm'.repeat(64), expected_entry_snapshot: 'b'.repeat(64), preview_token: 'c'.repeat(64) })
 try {
   for (const [width, height, dark, denied] of [[1280, 720, false, false], [390, 844, false, false], [1024, 640, true, false], [1280, 960, true, false], [1680, 1050, false, false], [1920, 1080, true, false], [1280, 720, false, true]]) {
     const page = await browser.newPage({ viewport: { width, height } })
@@ -48,9 +48,9 @@ try {
         { xlsx_row: 2, property_id: 42, community_id: 8, status: 'ready', address: '合成路1号', community: '合成社区', target_name: '合成小区', annotation_reason: '正式名称与地址相符', reason: '可确认', apply_item: applyItem(42) },
         { xlsx_row: 3, property_id: 43, community_id: 8, status: 'ready', address: '合成路2号'.repeat(10), community: '合成社区', target_name: '合成小区', annotation_reason: '人工复核建议', reason: '可确认', replaces_manual: true, apply_item: applyItem(43) },
         { xlsx_row: 4, property_id: 44, community_id: 8, status: 'blocked', address: '合成路3号', community: '合成社区', reason: '房屋版本已变化，请重新导出' },
-        { xlsx_row: 5, property_id: 45, community_id: 8, status: 'review', address: '合成路4号', community: '合成社区', reason: '需人工复核', annotation_reason: '地址与小区存在冲突', manual_confirm_item: { property_id: 45, expected_snapshot: 'd'.repeat(64) } },
-        { xlsx_row: 6, property_id: 46, community_id: 8, status: 'review', address: '合成路5号', community: '合成社区', reason: '需人工复核', annotation_reason: '无法唯一匹配', manual_confirm_item: { property_id: 46, expected_snapshot: 'e'.repeat(64) } },
-        { xlsx_row: 7, property_id: 47, community_id: 8, status: 'review', address: '合成路6号', community: '合成社区', reason: '需人工复核', annotation_reason: '社区别名冲突', manual_confirm_item: { property_id: 47, expected_snapshot: 'f'.repeat(64) } },
+        { xlsx_row: 5, property_id: 45, community_id: 8, status: 'review', address: '合成路4号', community: '合成社区', reason: '需人工复核', annotation_reason: '地址与小区存在冲突', manual_confirm_item: { property_id: 45, expected_snapshot: 'd'.repeat(64), expected_match_snapshot: 'g'.repeat(64) } },
+        { xlsx_row: 6, property_id: 46, community_id: 8, status: 'review', address: '合成路5号', community: '合成社区', reason: '需人工复核', annotation_reason: '无法唯一匹配', manual_confirm_item: { property_id: 46, expected_snapshot: 'e'.repeat(64), expected_match_snapshot: 'h'.repeat(64) } },
+        { xlsx_row: 7, property_id: 47, community_id: 8, status: 'review', address: '合成路6号', community: '合成社区', reason: '需人工复核', annotation_reason: '社区别名冲突', manual_confirm_item: { property_id: 47, expected_snapshot: 'f'.repeat(64), expected_match_snapshot: 'i'.repeat(64) } },
         { xlsx_row: 8, property_id: 48, community_id: 8, status: 'skipped', address: '合成路7号', community: '合成社区', reason: '未申请修改' },
       ] })
       if (url.pathname.endsWith('/small-community-options')) return send({ data: [{ id: 12, name: '合成确认小区', community_id: 8, detail_address: '合成路188号' }] })
@@ -128,6 +128,7 @@ try {
       await modal.getByText('已人工确认', { exact: true }).first().waitFor()
       assert.deepEqual(manualConfirmed[0].items.map(item => item.property_id), [45])
       assert.match(manualConfirmed[0].items[0].expected_snapshot, /^[a-f0-9]{64}$/)
+      assert.match(manualConfirmed[0].items[0].expected_match_snapshot, /^[a-z0-9]{64}$/)
       await statusFilter.click()
       await page.getByText('待人工复核（2）', { exact: true }).click()
       assert.equal(await modal.locator('tr.ant-table-row').count(), 2, 'other review rows remain untouched')

@@ -348,6 +348,7 @@ test('小区标注待复核行只允许携带房屋快照人工确认', () => {
   assert.match(pageSource, /row\.status === 'review'/)
   assert.match(pageSource, /manual_confirm_item/)
   assert.match(pageSource, /expected_snapshot: snapshot\.expected_snapshot/)
+  assert.match(pageSource, /expected_match_snapshot: snapshot\.expected_match_snapshot/)
   assert.match(apiSource, /manual_confirm_item\?: Pick<PropertyAnnotationApplyItem/)
 })
 
