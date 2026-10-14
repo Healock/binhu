@@ -456,6 +456,30 @@ def _summary_by_member(
     return by_member, by_name
 
 
+def _combine_instruction_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Sum one unambiguous row per community and recalculate its aggregate rate."""
+    by_community: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        community = _normalize_daily_detail_community(row.get("社区"))
+        by_community.setdefault(community, []).append(row)
+    if not rows or any(len(candidates) != 1 for candidates in by_community.values()):
+        return None
+
+    unique_rows = [candidates[0] for candidates in by_community.values()]
+    combined: dict[str, Any] = {}
+    for field in ("数据总数", "未核查", "已核查", "已完成", "无法见底数"):
+        values = [row.get(field) for row in unique_rows]
+        present = [value for value in values if value is not None]
+        if present:
+            combined[field] = sum(int(value or 0) for value in present)
+    if len(unique_rows) == 1:
+        combined["核查见底率"] = unique_rows[0].get("核查见底率")
+    elif all(row.get("无法见底数") is not None for row in unique_rows):
+        denominator = combined.get("已完成", 0) + combined.get("无法见底数", 0)
+        combined["核查见底率"] = combined.get("已完成", 0) / denominator if denominator else 0
+    return combined
+
+
 async def build_daily_detail_data(
     conn,
     business_date: date,
@@ -510,6 +534,10 @@ async def build_daily_detail_data(
     online_by_member, online_by_name = (
         _summary_by_member(online) if online.get("exists") else ({}, {})
     )
+    roster_name_counts: dict[str, int] = {}
+    for roster_member in roster:
+        roster_name = normalized_person_name(roster_member.get("name"))
+        roster_name_counts[roster_name] = roster_name_counts.get(roster_name, 0) + 1
 
     result: list[dict[str, Any]] = []
     for member in roster:
@@ -525,15 +553,14 @@ async def build_daily_detail_data(
             visit_row = None
             target = None
 
-        member_rows = online_by_member.get(
-            (_normalize_daily_detail_community(member.get("community")), normalized_name),
-            [],
-        )
-        task_row = member_rows[0] if len(member_rows) == 1 else None
-        if task_row is None:
-            same_name_rows = online_by_name.get(normalized_name, [])
-            if len(same_name_rows) == 1:
-                task_row = same_name_rows[0]
+        if roster_name_counts.get(normalized_name) == 1:
+            task_row = _combine_instruction_rows(online_by_name.get(normalized_name, []))
+        else:
+            member_rows = online_by_member.get(
+                (_normalize_daily_detail_community(member.get("community")), normalized_name),
+                [],
+            )
+            task_row = member_rows[0] if len(member_rows) == 1 else None
         absent = member["attendance"] == "否"
         population = population_by_community.get(member.get("community_id"), {})
         population_target = duty_counts.get(member.get("community_id"), 0) * coefficient

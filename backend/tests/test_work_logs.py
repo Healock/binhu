@@ -1201,6 +1201,40 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIsNone(result[0]["instruction_total"])
 
+    async def test_daily_detail_combines_unique_person_tasks_across_communities(self):
+        roster = [{
+            "name": "张三",
+            "position": "组员",
+            "group_key": "area:东片",
+            "group_label": "东片",
+            "community": "甲社区",
+            "community_id": 1,
+            "attendance": "是",
+        }]
+        online = {
+            "exists": True,
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "张三", "数据总数": 4, "未核查": 1, "已核查": 1, "已完成": 2, "无法见底数": 2, "核查见底率": 0.5},
+                {"社区": "乙社区居委会", "姓名": "张三", "数据总数": 9, "未核查": 1, "已核查": 3, "已完成": 5, "无法见底数": 1, "核查见底率": 0.83},
+            ]},
+        }
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={"inspector": {"data": []}})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(), date(2026, 8, 9), rental_target=10, self_owned_target=15,
+            )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["instruction_total"], 13)
+        self.assertEqual(result[0]["checked_instructions"], 11)
+        self.assertEqual(result[0]["completed_instructions"], 7)
+        self.assertEqual(result[0]["bottom_rate"], 0.7)
+
     def test_daily_detail_workbook_orders_self_owned_at_area_end(self):
         rows = [
             {"group_key": "area:东片", "group_label": "东片", "community": "甲", "name": "自购房甲", "position": "自购房", "attendance": "是"},
