@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from copy import copy
 from datetime import date
 from io import BytesIO
@@ -412,6 +413,7 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
     roster.sort(key=lambda item: (
         int(item["group_order"]),
         str(item["group_label"]),
+        1 if str(item["position"]) == "自购房" else 0,
         str(item["community"]),
         position_order.get(str(item["position"]), 50),
         str(item["name"]),
@@ -426,6 +428,25 @@ def _summary_by_name(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for row in rows
         if normalized_person_name(row.get("姓名"))
     }
+
+
+def _summary_by_member(
+    payload: dict[str, Any],
+) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """按社区和姓名建立日报索引，并保留同名候选供安全兜底。"""
+    rows = (payload.get("inspector") or {}).get("data") or []
+    by_member: dict[tuple[str, str], dict[str, Any]] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        name = normalized_person_name(row.get("姓名"))
+        if not name:
+            continue
+        community = unicodedata.normalize(
+            "NFKC", str(row.get("社区") or "")
+        ).strip().casefold()
+        by_member[(community, name)] = row
+        by_name.setdefault(name, []).append(row)
+    return by_member, by_name
 
 
 async def build_daily_detail_data(
@@ -479,7 +500,9 @@ async def build_daily_detail_data(
 
     rental_rows = _summary_by_name(rental)
     self_owned_rows = _summary_by_name(self_owned)
-    online_rows = _summary_by_name(online) if online.get("exists") else {}
+    online_by_member, online_by_name = (
+        _summary_by_member(online) if online.get("exists") else ({}, {})
+    )
 
     result: list[dict[str, Any]] = []
     for member in roster:
@@ -495,7 +518,18 @@ async def build_daily_detail_data(
             visit_row = None
             target = None
 
-        task_row = online_rows.get(normalized_name)
+        task_row = online_by_member.get(
+            (
+                unicodedata.normalize(
+                    "NFKC", str(member.get("community") or "")
+                ).strip().casefold(),
+                normalized_name,
+            )
+        )
+        if task_row is None:
+            same_name_rows = online_by_name.get(normalized_name, [])
+            if len(same_name_rows) == 1:
+                task_row = same_name_rows[0]
         absent = member["attendance"] == "否"
         population = population_by_community.get(member.get("community_id"), {})
         population_target = duty_counts.get(member.get("community_id"), 0) * coefficient
@@ -611,10 +645,36 @@ def _merge_groups(ws, rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _ordered_daily_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep each area's self-owned row after all community rows."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    group_order: list[str] = []
+    for item in rows:
+        key = str(item.get("group_key") or "")
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(item)
+    ordered: list[dict[str, Any]] = []
+    for key in group_order:
+        regular = [
+            item for item in groups[key]
+            if str(item.get("position") or "") != "自购房"
+        ]
+        self_owned = [
+            item for item in groups[key]
+            if str(item.get("position") or "") == "自购房"
+        ]
+        ordered.extend(regular)
+        ordered.extend(self_owned)
+    return ordered
+
+
 def build_daily_detail_workbook(
     business_date: date,
     rows: list[dict[str, Any]],
 ) -> tuple[bytes, str]:
+    rows = _ordered_daily_detail_rows(rows)
     workbook = load_workbook(TEMPLATE_PATH)
     worksheet = workbook["Sheet1"]
     final_data_rows = max(MIN_DATA_ROWS, len(rows))
@@ -692,11 +752,13 @@ def build_daily_detail_workbook(
     total_checked = worksheet.cell(total_row, 15).value
     worksheet.cell(total_row, 17, (total_checked / total_instruction) if total_instruction else None)
     for row_number in range(DATA_START_ROW, total_row + 1):
-        worksheet.cell(row_number, 17).number_format = "0.0%"
+        worksheet.cell(row_number, 13).number_format = "0.00"
+        worksheet.cell(row_number, 17).number_format = "0.00%"
 
     for cell in worksheet[total_row]:
         cell.font = Font(name="宋体", size=12, bold=True)
-    worksheet.column_dimensions["Q"].number_format = "0.0%"
+    worksheet.column_dimensions["M"].number_format = "0.00"
+    worksheet.column_dimensions["Q"].number_format = "0.00%"
     worksheet.print_area = f"A1:R{total_row}"
     worksheet.sheet_view.showGridLines = False
 

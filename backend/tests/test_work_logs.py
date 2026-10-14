@@ -35,6 +35,8 @@ from services.work_log_data import (
 )
 from services.work_log_pdf import _display, build_daily_pdf
 from services.work_log_daily_detail import (
+    _ordered_daily_detail_rows,
+    _summary_by_member,
     build_daily_detail_data,
     build_daily_detail_workbook,
     normalize_population_coefficient,
@@ -1022,6 +1024,52 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[1]["visits"], 6)
         self.assertIsNone(result[1]["checked_instructions"])
 
+    async def test_daily_detail_instruction_rows_match_community_before_name_fallback(self):
+        roster = [
+            {
+                "name": "张三",
+                "position": "组员",
+                "group_key": "area:东片",
+                "group_label": "东片",
+                "community": "甲社区",
+                "community_id": 1,
+                "attendance": "是",
+            },
+            {
+                "name": "张三",
+                "position": "组员",
+                "group_key": "area:东片",
+                "group_label": "东片",
+                "community": "乙社区",
+                "community_id": 2,
+                "attendance": "是",
+            },
+        ]
+        online = {
+            "exists": True,
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "张三", "数据总数": 4, "已核查": 1, "已完成": 2, "核查见底率": 0.5},
+                {"社区": "乙社区", "姓名": "张三", "数据总数": 9, "已核查": 3, "已完成": 5, "核查见底率": 0.7},
+            ]},
+        }
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={"inspector": {"data": []}})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(),
+                date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            )
+        self.assertEqual([row["instruction_total"] for row in result], [4, 9])
+        self.assertEqual([row["checked_instructions"] for row in result], [3, 8])
+        self.assertEqual([row["completed_instructions"] for row in result], [2, 5])
+
     def test_daily_detail_population_coefficient_is_request_parameter(self):
         self.assertEqual(normalize_population_coefficient(20), 20)
         self.assertEqual(normalize_population_coefficient(-1), 0)
@@ -1093,6 +1141,32 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sheet["N51"].value, 8)
         self.assertEqual(sheet["O51"].value, 4)
         self.assertEqual(sheet["Q51"].value, 0.5)
+        self.assertEqual(sheet["M4"].number_format, "0.00")
+        self.assertEqual(sheet["Q4"].number_format, "0.00%")
+
+    def test_daily_detail_places_self_owned_rows_at_area_end(self):
+        rows = [
+            {"group_key": "area:东片", "position": "自购房", "name": "自购房甲"},
+            {"group_key": "area:东片", "position": "组员", "name": "组员甲"},
+            {"group_key": "area:东片", "position": "组长", "name": "组长甲"},
+        ]
+        ordered = _ordered_daily_detail_rows(rows)
+        self.assertEqual(
+            [row["name"] for row in ordered],
+            ["组员甲", "组长甲", "自购房甲"],
+        )
+
+    def test_daily_detail_instruction_summary_matches_community_and_name(self):
+        by_member, by_name = _summary_by_member({
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "张三", "数据总数": 4},
+                {"社区": "乙社区", "姓名": "张三", "数据总数": 9},
+                {"社区": "甲社区", "姓名": "李四", "数据总数": 2},
+            ]},
+        })
+        self.assertEqual(by_member[("甲社区", "张三")]["数据总数"], 4)
+        self.assertEqual(len(by_name["张三"]), 2)
+        self.assertEqual(len(by_name["李四"]), 1)
 
     async def test_daily_detail_excludes_leadership_and_keeps_self_owned_under_area(self):
         rows = [
