@@ -33,6 +33,12 @@ from services.maintenance import enforce_maintenance, is_super_admin_user
 from services.dashboard_scope import is_admin_account
 from services.session_devices import infer_device_type, hash_device_id
 from services.environment_identity import username_allowed_in_environment
+from services.module_registry import (
+    available_mobile_module_ids,
+    available_module_ids,
+    available_module_routes as build_module_routes,
+    load_module_definitions,
+)
 
 
 FEATURE_PERMISSION_GATES = {
@@ -401,6 +407,16 @@ async def _load_current_user(
                     "name": row[13],
                     "position": row[14],
                 }
+            module_user = {
+                "role": row[2],
+                "departments": departments,
+                "permissions": permissions,
+                "permission_groups": groups,
+            }
+            module_definitions = await load_module_definitions(cur)
+            available_modules = available_module_ids(module_user, module_definitions)
+            available_module_routes = build_module_routes(module_user, module_definitions)
+            available_mobile_modules = available_mobile_module_ids(module_user, module_definitions)
 
             return {
                 "id": row[0],
@@ -426,6 +442,7 @@ async def _load_current_user(
                     permissions,
                     [group["code"] for group in groups],
                     row[14],
+                    available_modules,
                 ),
                 "theme_mode": normalize_theme_mode(row[7]),
                 "member": member,
@@ -449,6 +466,9 @@ async def _load_current_user(
                     for group in groups
                 ],
                 "permissions": permissions,
+                "available_modules": available_modules,
+                "available_module_routes": available_module_routes,
+                "available_mobile_modules": available_mobile_modules,
                 "data_scope": data_scope,
                 "permission_scopes": permission_scopes,
                 "password_is_temporary": bool(row[10]),
@@ -507,6 +527,27 @@ def require_permission(permission: str) -> Callable:
         return user
 
     dependency.__name__ = f"require_{permission.replace('.', '_')}"
+    return dependency
+
+
+def require_module(module_id: str) -> Callable:
+    """Require both the module's unit ownership and its existing permissions."""
+    async def dependency(user: dict = Depends(get_current_user)) -> dict:
+        # get_current_user already evaluates the database-backed registry in the
+        # same request context. Reuse that snapshot instead of opening a second
+        # connection and risking a different module decision mid-request.
+        if module_id not in set(user.get("available_modules") or []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "module_access_denied",
+                    "module_id": module_id,
+                    "message": "当前单位不能访问该功能模块",
+                },
+            )
+        return user
+
+    dependency.__name__ = f"require_module_{module_id.replace('-', '_')}"
     return dependency
 
 

@@ -45,7 +45,7 @@ async def resolve_departments(
         return []
     if position in INTERNAL_POSITIONS:
         await cur.execute(
-            "SELECT id, name, department_type, NULL "
+            "SELECT id, name, department_type, NULL, NULL "
             "FROM _departments WHERE department_type='internal' "
             "AND is_active=1 ORDER BY id LIMIT 1"
         )
@@ -90,6 +90,7 @@ def _department_row(row) -> dict[str, Any]:
         "name": str(row[1] or ""),
         "type": str(row[2] or ""),
         "community_name": str(row[3] or "") or None,
+        "parent_id": int(row[4]) if len(row) > 4 and row[4] is not None else None,
     }
 
 

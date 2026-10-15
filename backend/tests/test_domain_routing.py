@@ -91,6 +91,15 @@ def test_help_documents_are_stored_in_platform_domain():
     assert "`PlatformData`.`_help_documents`" in sql
 
 
+def test_function_module_registry_is_stored_in_platform_domain():
+    with patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", True):
+        sql = rewrite_domain_sql(
+            "SELECT * FROM _function_modules JOIN _function_module_versions USING (module_id)"
+        )
+    assert "`PlatformData`.`_function_modules`" in sql
+    assert "`PlatformData`.`_function_module_versions`" in sql
+
+
 def test_legacy_daily_report_qualifier_routes_to_shadow_daily_schema():
     """Split-schema shadow runs must never fall back to the production name."""
     with patch.object(settings, "MYSQL_DAILY_REPORT_DB", "LoadTest_LT_20260904_04_daily"), patch.object(

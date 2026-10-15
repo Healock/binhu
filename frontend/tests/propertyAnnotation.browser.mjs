@@ -30,6 +30,7 @@ try {
       if (url.pathname === '/api/app/bootstrap') return send({ environment: 'production', timezone: 'Asia/Shanghai', server_version: '0.30.28' })
       if (url.pathname === '/api/auth/me' || url.pathname === '/api/auth/activity') return send({ user: {
         id: 7, username: 'synthetic-admin', display_name: '合成测试账号', role: 'user',
+        available_modules: ['common', 'community_police'],
         permissions: ['registry.property.view', ...(denied ? [] : ['registry.property.manage'])],
         preferences: { theme_mode: dark ? 'dark' : 'light' },
       } })

@@ -45,6 +45,7 @@ export interface NavigationItemDefinition {
   roles?: Role[]
   permission?: PermissionCode
   anyPermissions?: PermissionCode[]
+  moduleId?: string
 }
 
 export interface NavigationGroupDefinition {
@@ -69,6 +70,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '首页',
         icon: 'dashboard',
         end: true,
+        moduleId: 'common',
       },
       {
         id: 'task_flow_lab',
@@ -77,6 +79,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '任务流',
         icon: 'task_flow',
         roles: ['super_admin'],
+        moduleId: 'platform_admin',
       },
       {
         id: 'online_query',
@@ -85,6 +88,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '在线查询',
         icon: 'data_query',
         permission: 'online.raw.view',
+        moduleId: 'community_police',
       },
       {
         id: 'data_upload',
@@ -94,6 +98,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'data_upload',
         anyPermissions: ['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage'],
         roles: ['super_admin', 'admin'],
+        moduleId: 'community_police',
       },
       {
         id: 'work_log',
@@ -103,6 +108,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'file_generation',
         permission: 'worklog.manage',
         roles: ['super_admin', 'admin'],
+        moduleId: 'community_police',
       },
       {
         id: 'workflow_tickets',
@@ -111,6 +117,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '工单',
         icon: 'ticket_center',
         permission: 'workflow.ticket.view',
+        moduleId: 'workflow',
       },
     ],
   },
@@ -127,6 +134,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '指令核查',
         icon: 'online_check',
         permission: 'online.raw.view',
+        moduleId: 'community_police',
       },
       {
         id: 'address_confirmation',
@@ -135,6 +143,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '确认地址',
         icon: 'online_check',
         permission: 'online.raw.edit',
+        moduleId: 'community_police',
       },
       {
         id: 'police_tasks',
@@ -143,6 +152,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '任务下发',
         icon: 'dispatch',
         permission: 'police.dispatch.manage',
+        moduleId: 'community_police',
       },
       {
         id: 'police_analysis',
@@ -151,6 +161,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '研判',
         icon: 'analysis',
         anyPermissions: ['online.task.manage', 'police.dispatch.manage'],
+        moduleId: 'community_police',
       },
     ],
   },
@@ -168,6 +179,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'summary',
         end: true,
         permission: 'online.summary.view',
+        moduleId: 'community_police',
       },
       {
         id: 'visit_summary',
@@ -176,6 +188,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '走访汇总',
         icon: 'visit',
         permission: 'visit.summary.view',
+        moduleId: 'community_police',
       },
       {
         id: 'code_summary',
@@ -184,6 +197,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '平安码汇总',
         icon: 'code_summary',
         permission: 'visit.summary.view',
+        moduleId: 'community_police',
       },
     ],
   },
@@ -200,6 +214,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '人员管理',
         icon: 'members',
         permission: 'personnel.basic.view',
+        moduleId: 'common',
       },
       {
         id: 'communities',
@@ -208,6 +223,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '社区管理',
         icon: 'communities',
         permission: 'community.view',
+        moduleId: 'common',
       },
       {
         id: 'police_addresses',
@@ -216,6 +232,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '小区管理',
         icon: 'neighborhoods',
         permission: 'police.address.manage',
+        moduleId: 'community_police',
       },
       {
         id: 'venue',
@@ -224,6 +241,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '二维码',
         icon: 'resources',
         permission: 'venue.view',
+        moduleId: 'community_police',
       },
       {
         id: 'registry',
@@ -232,6 +250,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         shortLabel: '辖区档案',
         icon: 'registry',
         permission: 'registry.property.view',
+        moduleId: 'community_police',
       },
       {
         id: 'users',
@@ -241,6 +260,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'users',
         permission: 'user.manage',
         roles: ['super_admin'],
+        moduleId: 'platform_admin',
       },
       {
         id: 'permission_groups',
@@ -250,6 +270,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'permissions',
         permission: 'permission.manage',
         roles: ['super_admin'],
+        moduleId: 'platform_admin',
       },
     ],
   },
@@ -265,6 +286,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '帮助',
         shortLabel: '帮助',
         icon: 'help',
+        moduleId: 'common',
       },
       {
         id: 'settings',
@@ -272,6 +294,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '设置',
         shortLabel: '系统设置',
         icon: 'settings',
+        moduleId: 'common',
       },
       {
         id: 'operations',
@@ -281,12 +304,29 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         icon: 'operations',
         permission: 'ops.manage',
         roles: ['super_admin'],
+        moduleId: 'platform_admin',
       },
     ],
   },
 ]
 
-export const MAX_DOCK_GROUPS = 4
+// Keep all five first-class navigation groups.  A fourth-group cap silently
+// hid newly registered modules (notably future drinking-report entry points).
+export const MAX_DOCK_GROUPS = 5
+
+function moduleForNavigationItem(
+  item: NavigationItemDefinition,
+  availableModuleRoutes?: Record<string, string[]>,
+): string {
+  if (availableModuleRoutes) {
+    const matches = Object.entries(availableModuleRoutes)
+      .flatMap(([moduleId, routes]) => routes.map(route => ({ moduleId, route })))
+      .filter(({ route }) => route === '/' ? item.path === '/' : (item.path === route || item.path.startsWith(`${route}/`)))
+      .sort((a, b) => b.route.length - a.route.length)
+    if (matches[0]) return matches[0].moduleId
+  }
+  return item.moduleId || 'common'
+}
 
 /** 汇总页面仅供电脑端使用，手机端导航和个性化配置统一排除。 */
 export function mobileAccessibleNavigationGroups(
@@ -294,12 +334,16 @@ export function mobileAccessibleNavigationGroups(
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
   position?: string | null,
+  availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): NavigationGroupDefinition[] {
   return accessibleNavigationGroups(
     role,
     permissions,
     permissionGroupCodes,
     position,
+    availableModules,
+    availableModuleRoutes,
   ).filter(group => group.id !== 'summaries')
 }
 
@@ -309,7 +353,11 @@ export function isNavigationItemAccessible(
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
   position?: string | null,
+  availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): boolean {
+  const moduleId = moduleForNavigationItem(item, availableModuleRoutes)
+  if (availableModules && !availableModules.includes(moduleId)) return false
   const adminAccess = ['admin', 'super_admin'].includes(role)
     || permissionGroupCodes.some(code => ['admin', 'super_admin'].includes(code))
   if (
@@ -355,11 +403,13 @@ export function accessibleNavigationGroups(
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
   position?: string | null,
+  availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): NavigationGroupDefinition[] {
   return NAVIGATION_GROUPS.map(group => ({
     ...group,
     items: group.items.filter(item => (
-      isNavigationItemAccessible(item, role, permissions, permissionGroupCodes, position)
+      isNavigationItemAccessible(item, role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes)
     )),
   })).filter(group => group.items.length > 0)
 }
@@ -369,10 +419,12 @@ export function defaultMobileDockConfig(
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
   position?: string | null,
+  availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): MobileDockConfig {
   return {
     version: 2,
-    groups: mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position).slice(0, MAX_DOCK_GROUPS).map(group => ({
+    groups: mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes).slice(0, MAX_DOCK_GROUPS).map(group => ({
       id: group.id,
       items: group.items.map(item => item.id),
     })),
@@ -385,13 +437,15 @@ export function normalizeMobileDockConfig(
   permissions?: PermissionCode[],
   permissionGroupCodes: string[] = [],
   position?: string | null,
+  availableModules?: string[],
+  availableModuleRoutes?: Record<string, string[]>,
 ): MobileDockConfig {
   if (!value || value.version !== 2 || !Array.isArray(value.groups)) {
-    return defaultMobileDockConfig(role, permissions, permissionGroupCodes, position)
+    return defaultMobileDockConfig(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes)
   }
 
   const definitions = new Map(
-    mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position).map(group => [group.id, group]),
+    mobileAccessibleNavigationGroups(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes).map(group => [group.id, group]),
   )
   const rawTaskItems = new Set(
     value.groups
@@ -417,7 +471,7 @@ export function normalizeMobileDockConfig(
 
   const normalized = groups.length > 0
     ? groups
-    : defaultMobileDockConfig(role, permissions, permissionGroupCodes, position).groups
+    : defaultMobileDockConfig(role, permissions, permissionGroupCodes, position, availableModules, availableModuleRoutes).groups
   const workspaceDefinition = definitions.get('workspace')
   let workspace = normalized.find(group => group.id === 'workspace')
   if (workspaceDefinition) {
@@ -455,6 +509,8 @@ export function normalizeMobileDockConfig(
     permissions,
     permissionGroupCodes,
     position,
+    availableModules,
+    availableModuleRoutes,
   )) {
     if (normalized.length >= MAX_DOCK_GROUPS) break
     if (presentGroups.has(definition.id)) continue

@@ -150,6 +150,8 @@ async def _authorize(socket, *, active=False):
     user = await asyncio.wait_for(get_current_user(_request(socket, active=active)), timeout=5)
     if not has_permission(user, ONLINE_RAW_VIEW):
         raise HTTPException(403, '无在线查询权限')
+    if 'available_modules' in user and 'community_police' not in (user.get('available_modules') or []):
+        raise HTTPException(403, '当前单位不能访问该功能模块')
     return user
 
 

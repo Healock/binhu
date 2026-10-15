@@ -179,7 +179,7 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 response=response,
                 client_platform="windows",
                 client_version="1.9.0",
-                user={"permissions": ["online.raw.view", "online.raw.edit"]},
+                user={"permissions": ["online.raw.view", "online.raw.edit"], "available_modules": ["common"]},
                 conn=FakeConnection(),
             )
 
@@ -195,6 +195,7 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             payload["available_features"],
             ["online.raw.edit", "online.raw.view"],
         )
+        self.assertEqual(payload["available_modules"], ["common"])
         self.assertTrue(payload["feature_flags"]["registry"])
         self.assertTrue(payload["feature_flags"]["online_writeback"])
         self.assertFalse(

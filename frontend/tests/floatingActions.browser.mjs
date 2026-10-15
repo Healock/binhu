@@ -23,7 +23,7 @@ try {
       if (!url.pathname.startsWith('/api/')) return route.continue()
       const send = body => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
       if (url.pathname === '/api/app/bootstrap') return send({ environment: 'production', timezone: 'Asia/Shanghai', server_version: '0.30.26' })
-      if (url.pathname === '/api/auth/me') return send({ user: { id: 1, username: 'synthetic-admin', display_name: '合成测试账号', role: 'super_admin', permissions: ['registry.property.view'], permission_groups: [], preferences: { theme_mode: dark ? 'dark' : 'light' } } })
+      if (url.pathname === '/api/auth/me') return send({ user: { id: 1, username: 'synthetic-admin', display_name: '合成测试账号', role: 'super_admin', available_modules: ['common', 'community_police'], permissions: ['registry.property.view'], permission_groups: [], preferences: { theme_mode: dark ? 'dark' : 'light' } } })
       return send({ data: [], items: [], unavailable_sources: [], total: 0, active_count: 0, queued_count: 0, running_count: 0, attention_count: 0, match_status_counts: {}, unread_count: 0 })
     })
     await page.goto(`${origin}/registry`)
