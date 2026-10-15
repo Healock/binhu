@@ -695,6 +695,38 @@ def _merge_groups(ws, rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _merged_anchor_row(ws, row_number: int, column: int) -> int:
+    """Return the visible anchor row for a vertically merged cell."""
+    for merged in ws.merged_cells.ranges:
+        if merged.min_col == column and merged.max_col == column and merged.min_row <= row_number <= merged.max_row:
+            return merged.min_row
+    return row_number
+
+
+def _apply_daily_detail_colors(ws, rows: list[dict[str, Any]]) -> None:
+    """Apply fills after merging so Excel retains them on visible cells."""
+    red = PatternFill("solid", fgColor="F4CCCC")
+    yellow = PatternFill("solid", fgColor="FFF2CC")
+    green = PatternFill("solid", fgColor="D9EAD3")
+    for index, item in enumerate(rows):
+        row_number = DATA_START_ROW + index
+        population_target = item.get("population_target")
+        added = item.get("population_added")
+        cancelled = item.get("population_cancelled")
+        if population_target and added is not None and cancelled is not None:
+            ratio = (added + cancelled) / population_target
+            fill = red if ratio < 0.5 else yellow if ratio < 1 else green
+            for column in (7, 8):
+                anchor = _merged_anchor_row(ws, row_number, column)
+                ws.cell(anchor, column).fill = copy(fill)
+
+        visit_target = item.get("visit_target")
+        visits = item.get("visits")
+        if visit_target and visits is not None and visits <= visit_target * 0.5:
+            anchor = _merged_anchor_row(ws, row_number, 10)
+            ws.cell(anchor, 10).fill = copy(yellow)
+
+
 def _ordered_daily_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep each area's self-owned row after all community rows."""
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -785,13 +817,8 @@ def build_daily_detail_workbook(
         if item.get("attendance") == "否" and item.get("position") != "管家码":
             for column in range(6, 18):
                 worksheet.cell(row_number, column).value = "/"
-        if population_target and item.get("population_added") is not None and item.get("population_cancelled") is not None:
-            ratio = (item["population_added"] + item["population_cancelled"]) / population_target
-            fill = PatternFill("solid", fgColor=("F4CCCC" if ratio < 0.5 else "FFF2CC" if ratio < 1 else "D9EAD3"))
-            worksheet.cell(row_number, 7).fill = fill
-            worksheet.cell(row_number, 8).fill = fill
-
     _merge_groups(worksheet, rows)
+    _apply_daily_detail_colors(worksheet, rows)
     worksheet.cell(total_row, 1, "合计")
     worksheet.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=5)
     for column in range(6, 18):
