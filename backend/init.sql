@@ -1089,9 +1089,6 @@ SELECT id, department_id, 0
 FROM _grid_members
 WHERE department_id IS NOT NULL;
 
-INSERT IGNORE INTO _departments (name, department_type)
-VALUES ('内勤', 'internal');
-
 INSERT IGNORE INTO _departments (name, department_type, community_id)
 SELECT name, 'community', id FROM _communities;
 

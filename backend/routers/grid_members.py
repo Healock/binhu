@@ -45,7 +45,6 @@ from services.permissions import (
     COMMUNITY_MANAGE,
     COMMUNITY_POSITIONS,
     COMMUNITY_VIEW,
-    INTERNAL_POSITIONS,
     PERSONNEL_BASIC_VIEW,
     PERSONNEL_MANAGE,
     PERSONNEL_SENSITIVE_VIEW,
@@ -342,15 +341,6 @@ async def _resolve_department(cur, position: str, department_id: int | None):
         if not row or row[1] != "unit":
             raise HTTPException(400, "管家码岗位只能选择在岗的单位级部门")
         return int(row[0]), ""
-    if position in INTERNAL_POSITIONS:
-        await cur.execute(
-            "SELECT id FROM _departments "
-            "WHERE department_type='internal' ORDER BY id LIMIT 1"
-        )
-        row = await cur.fetchone()
-        if not row:
-            raise HTTPException(500, "内勤部门尚未初始化")
-        return int(row[0]), ""
     if department_id is None:
         if position in COMMUNITY_POSITIONS:
             raise HTTPException(400, "该岗位必须选择社区部门")
@@ -368,9 +358,11 @@ async def _resolve_department(cur, position: str, department_id: int | None):
     row = await cur.fetchone()
     if not row:
         raise HTTPException(400, "所属部门不存在")
-    if row[1] != "community":
+    if row[1] not in {"community", "unit"}:
+        raise HTTPException(400, "该岗位只能选择社区级或单位级部门")
+    if position in COMMUNITY_POSITIONS and row[1] != "community":
         raise HTTPException(400, "该岗位只能选择社区部门")
-    return int(row[0]), str(row[2] or "")
+    return int(row[0]), str(row[2] or "") if row[1] == "community" else ""
 
 
 async def _resolved_departments_for_payload(

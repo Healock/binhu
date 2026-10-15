@@ -236,7 +236,6 @@ POSITION_DEFAULT_GROUP = {
     "管家码": "flow_post",
 }
 
-INTERNAL_POSITIONS = {"片长", "中队长", "基础管控", "所队领导"}
 COMMUNITY_POSITIONS = {"组长", "组员", "社区民警"}
 
 

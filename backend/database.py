@@ -222,11 +222,6 @@ async def ensure_permission_schema(cur) -> None:
         "idx_department_area",
         "INDEX idx_department_area (area_id)",
     )
-    await cur.execute(
-        "INSERT IGNORE INTO _departments "
-        "(name, department_type, community_id) "
-        "VALUES ('内勤', 'internal', NULL)"
-    )
     await cur.execute("""
         INSERT INTO _departments (name, department_type, community_id)
         SELECT community.name, 'community', community.id
@@ -491,15 +486,6 @@ async def ensure_permission_schema(cur) -> None:
         "idx_grid_department",
         "INDEX idx_grid_department (department_id)",
     )
-    await cur.execute("""
-        UPDATE _grid_members AS member
-        JOIN _departments AS department
-          ON department.name='内勤' AND department.department_type='internal'
-        SET member.department_id=department.id,
-            member.community=''
-        WHERE member.position IN ('片长', '中队长', '基础管控', '所队领导')
-          AND (member.department_id IS NULL OR member.department_id<>department.id)
-    """)
     await cur.execute("""
         UPDATE _grid_members AS member
         JOIN _departments AS department

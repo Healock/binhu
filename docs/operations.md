@@ -1260,7 +1260,7 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - 按项目管理人明确授权，服务器保持现有系统时间，不执行回拨；本次操作的逻辑迁移窗口记录为服务器显示的 `2026-08-09`，不代表修改了系统时钟。
 - 维护期间先切换 `new-maintenance`，关闭同步计划、每日备份计划和在线回写；创建并校验八库备份后，启用 `BINHU_REGISTRY_FEATURE_ENABLED=true` 与 `BINHU_WORKFLOW_FEATURE_ENABLED=true`，重建 `binhu-backend`、`binhu-ops-agent`，再恢复 `new-production`。
 - 生产验收：健康接口返回 `0.16.0`；三个容器正常；RegistryData 26 张表、WorkflowData 14 张表；辖区档案、人员标签、任务快照和工单均为 0 行；照片调取流程 1 个已发布版本/1 个基础管控处理节点，请假流程保持未发布。
-- 权限核验：社区民警使用 `community_registry_viewer` 且仅有 `own_department` 只读档案权限；内勤岗位可维护全所档案和处理工单；超级管理员拥有 `workflow.config.manage`；功能权限没有因开关开启而扩大。
+- 权限核验：社区民警使用 `community_registry_viewer` 且仅有 `own_department` 只读档案权限；基础管控、中队长等具备全所数据范围的权限组可维护相应档案和处理工单；超级管理员拥有 `workflow.config.manage`；功能权限没有因开关开启而扩大。
 - 备份副本：`/backup/binhu/migration/0.16.0-registry-workflow-pre-switch-20260808T192125Z.sql.gz`；SHA-256 为 `c942942ea0af8768f9fbdb25e3c3c389e22fe373ccb90d7a8a9c629882c9fc68`。同名 manifest 和附件归档一并保留；附件目录为空。
 - 恢复后同步计划为 5 分钟、每日备份为 02:00/保留 7 天，在线回写维持切换前的关闭状态；最近同步任务 `3459` 成功，后端与运维代理近期错误计数为 0。旧表、旧备份和迁移副本均未删除。
 

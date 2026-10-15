@@ -42,7 +42,20 @@ order: 500
 
 平台同时保留两种“所属”口径：行政编成由 `_departments` 和人员部门关系维护，例如“社区警务队 → 中片 → 冬梅”；业务管辖由片区、社区和小区资料维护，用于统计、社区民警和网格范围。两者不能互相代替。片区的名称、负责人和社区归属仍以 `_areas`、`_area_leader_links`、`_communities.area_id` 为业务管辖权威；部门管理中的片区部门只通过 `area_id` 引用该记录，不复制片区负责人或社区清单。
 
-有成员或下级部门的部门不能直接删除或停用。页面会显示成员和下级数量，并说明先调整人员归属、移动下级部门后再重试。暂时没有确定归属的人员可以保持未分配部门，不要为了填满组织树创建“内勤”替代部门。
+有成员或下级部门的部门不能直接删除或停用。页面会显示成员和下级数量，并说明先调整人员归属、移动下级部门后再重试。暂时没有确定归属的人员可以保持未分配部门；历史“内勤”部门不再用于新人员归属，已有记录须按维护窗口中的内勤取消迁移处理。
+
+### 内勤取消维护
+
+历史“内勤”部门的人员归位不是启动时自动完成的。维护人员必须先备份
+`PlatformData`，再通过独立脚本按 `measure → migrate --apply → verify` 执行：
+
+```text
+python -m migrations.internal_department_retirement measure
+python -m migrations.internal_department_retirement migrate --apply --run-id <运行编号> --backup-manifest <备份清单> --expect-internal-members <人数> --confirm-remove-internal
+python -m migrations.internal_department_retirement verify
+```
+
+脚本只处理人员部门关系和空的历史 `internal` 部门。目标部门不存在、人员归属不明确、发现共享部门或下级引用时会整批停止；“暂不指定部门”的人员会清空部门而不会被放入新的替代部门。真实维护必须保留备份清单、命令输出和连续重启后的归属核验。
 
 ## 编辑帮助文档
 

@@ -436,7 +436,8 @@ flowchart LR
 从 `0.9.0` 开始，人员不再直接把“所属社区”当作组织关系，而是关联“所属部门”：
 
 - 社区部门与社区资料一一对应；新增、改名和删除社区时，部门同步变化。
-- 部门归属由 `_departments` 与 `_grid_member_department_links` 保存。当前仍保留历史 `internal` 兼容部门；内勤取消和人员归位由后续独立维护 PR 处理，本 PR 不改变启动期兼容逻辑。
+- 部门归属由 `_departments` 与 `_grid_member_department_links` 保存。历史 `internal` 部门不再由初始化或岗位解析逻辑创建、补回；已有数据通过独立的内勤取消迁移归位后清理。迁移完成前仍可只读识别该历史类型，不能把它作为新人员的默认归属。
+- 内勤取消使用 `python -m migrations.internal_department_retirement measure`、`migrate --apply`、`verify` 三段式维护命令；脚本只修改 PlatformData 的部门关系和空的历史 `internal` 部门，目标缺失、共享或下级引用会停止，不自动猜测人员归属。
 - `_areas`、`_area_leader_links` 和 `_communities.area_id` 仍是片区业务管辖的权威来源；部门树中的片区部门只通过 `area_id` 引用片区，不复制负责人或社区清单。
 - 组长、组员必须且只能选择一个社区部门；社区民警必须选择至少一个社区部门，并且可以同时属于多个社区。
 - 自购房岗位按业务管辖片区保存 `area_id`，若已建立对应片区单位部门，人员管理会同步其行政部门关系；没有社区范围时不能查看业务数据。
