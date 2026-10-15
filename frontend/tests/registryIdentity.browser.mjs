@@ -34,16 +34,19 @@ try {
         { ...base, id: 1, latest_visit_date: '2026-10-10', visit_count: 1, latest_star_rating: '五星出租房' },
         { ...base, id: 2, visit_association_status: 'ambiguous' },
         { ...base, id: 3, visit_association_status: 'historical_registration', household_status: '已注销' },
-      ], total: 3 })
+        { ...base, id: 4, visit_association_status: 'community_unresolved' },
+      ], total: 4 })
       if (url.pathname === '/api/registry/properties/2') return send({ ...base, id: 2, visit_association_status: 'ambiguous' })
+      if (url.pathname === '/api/registry/properties/4') return send({ ...base, id: 4, visit_association_status: 'community_unresolved' })
       return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
     })
     await page.goto(`${origin}/registry`, { waitUntil: 'domcontentloaded', timeout: 60000 })
     await page.getByText('档案重复，走访待核对', { exact: true }).waitFor()
     await page.getByText('历史户号，请查看现行档案', { exact: true }).waitFor()
+    await page.getByText('社区关联待核对', { exact: true }).waitFor()
     assert.equal(await page.locator('html').getAttribute('data-theme'), dark ? 'dark' : 'light')
-    await page.getByRole('button', { name: /详\s*情/ }).nth(1).click()
-    await page.getByText('请档案管理员核对户号、注销状态及来源时间，整理后刷新。').waitFor()
+    await page.getByRole('button', { name: /详\s*情/ }).nth(3).click()
+    await page.getByText('请档案管理员核对房屋正式社区及社区历史名称映射，修正后刷新重试。').waitFor()
     assert.equal(await page.getByText('visit_association_status', { exact: true }).count(), 0)
     const drawer = page.getByRole('dialog')
     await drawer.waitFor()

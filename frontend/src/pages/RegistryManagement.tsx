@@ -1440,6 +1440,7 @@ export default function RegistryManagement() {
               <span>最近一次走访</span>
               <strong>{registryVisitText(detail)}</strong>
               {detail.visit_association_status === 'ambiguous' && <span>请档案管理员核对户号、注销状态及来源时间，整理后刷新。</span>}
+              {detail.visit_association_status === 'community_unresolved' && <span>请档案管理员核对房屋正式社区及社区历史名称映射，修正后刷新重试。</span>}
             </div>
             <div>
               <span>历史走访</span>

@@ -67,16 +67,6 @@ async def ensure_registry_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     # 来源导入字段采用幂等补列，兼容 0.20.0 以前已经创建的房屋档案库。
-    await cur.execute("""
-        CREATE TABLE IF NOT EXISTS registry_property_identity_merges (
-            old_property_id BIGINT NOT NULL PRIMARY KEY,
-            canonical_property_id BIGINT NOT NULL,
-            snapshot_json JSON NOT NULL,
-            run_id VARCHAR(64) NOT NULL,
-            merged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_registry_identity_canonical (canonical_property_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    """)
     await _ensure_column(cur, "registry_properties", "housing_type", "VARCHAR(50) NOT NULL DEFAULT '' AFTER room")
     await _ensure_column(cur, "registry_properties", "residence_type", "VARCHAR(100) NOT NULL DEFAULT '' AFTER housing_type")
     await _ensure_column(cur, "registry_properties", "source_house_no", "VARCHAR(100) NOT NULL DEFAULT '' AFTER residence_type")

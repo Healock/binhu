@@ -387,5 +387,6 @@ test('visit ambiguity and historical registrations never look like missing visit
   assert.equal(registryVisitText({ latest_visit_date: '2026-10-10' }), '2026-10-10')
   assert.equal(registryVisitText({ visit_association_status: 'ambiguous' }), '档案重复，走访待核对')
   assert.equal(registryVisitText({ visit_association_status: 'historical_registration' }), '历史户号，请查看现行档案')
+  assert.equal(registryVisitText({ visit_association_status: 'community_unresolved' }), '社区关联待核对')
   assert.equal(registryVisitText({}), '暂无走访记录')
 })

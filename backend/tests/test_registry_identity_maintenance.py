@@ -7,7 +7,7 @@ import pytest
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from services.registry_identity_maintenance import plan_identity_merges, prepare_merges, apply_merge
+from services.registry_identity_maintenance import plan_identity_merges, prepare_merges
 from migrations import registry_property_identity as migration
 
 
@@ -72,27 +72,27 @@ async def test_measurement_blocks_cross_domain_references_and_human_confirmation
         assert not any(sql.startswith(("UPDATE", "INSERT", "DELETE")) for sql, _ in cursor.calls)
 
 
-@pytest.mark.asyncio
-async def test_apply_archives_before_removing_and_preserves_source_and_address_ids():
-    cursor = Cursor()
-    await apply_merge(cursor, old_id=2, current_id=1, run_id="synthetic-run")
-    statements = [sql for sql, _ in cursor.calls]
-    archive = next(i for i, sql in enumerate(statements) if sql.startswith("INSERT INTO registry_property_identity_merges"))
-    removal = next(i for i, sql in enumerate(statements) if sql.startswith("DELETE FROM registry_properties"))
-    assert archive < removal
-    assert any("UPDATE registry_source_records SET entity_id" in sql for sql in statements)
-    versions = [params for sql, params in cursor.calls if sql.startswith("UPDATE registry_property_address_versions SET property_id")]
-    assert versions == [(1, 6, 21), (1, 7, 22)]
-    assert not any("DELETE FROM registry_source_records" in sql or "DELETE FROM registry_property_address_versions" in sql for sql in statements)
+
+def test_executor_and_legacy_write_options_are_not_available():
+    from services import registry_identity_maintenance as service
+    assert not hasattr(service, "apply_merge")
+    for argv in (
+        ["migrate", "--apply", "--environment", "production"],
+        ["measure", "--apply", "--environment", "production"],
+        ["measure", "--backup-reference", "anything", "--environment", "production"],
+        ["measure", "--plan-token", "anything", "--environment", "production"],
+    ):
+        with pytest.raises(SystemExit):
+            migration.parser().parse_args(argv)
 
 
 @pytest.mark.asyncio
-async def test_apply_guard_rejects_environment_and_missing_backup_before_connect():
-    args = Namespace(command="migrate", apply=True, environment=migration.settings.APP_ENVIRONMENT,
-                     property_id=[1], plan_token="a" * 64, backup_reference=None)
+async def test_read_only_guard_rejects_write_command_and_environment_before_connect():
+    args = Namespace(command="migrate", environment=migration.settings.APP_ENVIRONMENT, property_id=[1])
     with patch.object(migration, "open_connection", AsyncMock()) as connect:
-        with pytest.raises(ValueError, match="backup_reference"):
+        with pytest.raises(ValueError, match="read_only_commands_only"):
             await migration.run(args)
+        args.command = "measure"
         args.environment = "staging" if args.environment != "staging" else "production"
         with pytest.raises(ValueError, match="identity_mismatch"):
             await migration.run(args)
@@ -100,24 +100,43 @@ async def test_apply_guard_rejects_environment_and_missing_backup_before_connect
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("changed,fail_apply", [(True, False), (False, True)])
-async def test_changed_measurement_or_apply_failure_rolls_back(tmp_path, changed, fail_apply):
-    backup = tmp_path / 'synthetic-backup-evidence.json'
-    backup.write_text('{}')
-    args = Namespace(command="migrate", apply=True, environment=migration.settings.APP_ENVIRONMENT,
-                     property_id=[1], plan_token="approved", backup_reference=str(backup))
+async def test_measurement_is_unlocked_and_hash_includes_database_scope():
+    cur = Cursor()
+    _, _, first = await prepare_merges(cur, schemas=["RegistryData"], registry_schema="RegistryData", property_ids=[])
+    _, _, second = await prepare_merges(cur, schemas=["RegistryData", "OnlineData"], registry_schema="RegistryData", property_ids=[])
+    assert first != second
+    assert all(sql.startswith("SELECT") and "FOR UPDATE" not in sql for sql, _ in cur.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["measure", "verify"])
+@pytest.mark.parametrize("failure", [None, RuntimeError, __import__("asyncio").CancelledError])
+async def test_read_only_snapshot_always_rolls_back_and_closes(command, failure):
+    args = Namespace(command=command, environment=migration.settings.APP_ENVIRONMENT, property_id=[1])
     cursor = AsyncMock()
     cursor.fetchall.return_value = [(name,) for name in migration.database_scope()]
     conn = AsyncMock()
     conn.cursor = lambda: conn
     conn.__aenter__.return_value = cursor
+    prepare = AsyncMock(return_value=([(2, 1)], 0, "hash"),
+                        side_effect=failure("synthetic") if failure else None)
+    close = AsyncMock()
     with patch.object(migration, "open_connection", AsyncMock(return_value=conn)), \
-         patch.object(migration, "close_connection", AsyncMock()), \
-         patch.object(migration, "prepare_merges", AsyncMock(return_value=([(2, 1)], 0, "changed" if changed else "approved"))), \
-         patch.object(migration, "apply_merge", AsyncMock(side_effect=RuntimeError('synthetic_failure') if fail_apply else None)) as apply:
-        with pytest.raises((ValueError, RuntimeError)):
-            await migration.run(args)
-        conn.rollback.assert_awaited()
+         patch.object(migration, "close_connection", close), \
+         patch.object(migration, "prepare_merges", prepare), \
+         patch.object(migration.settings, "APP_ENVIRONMENT", "production"), \
+         patch.object(migration, "validate_database_scope"):
+        args.environment = "production"
+        if failure:
+            with pytest.raises(failure):
+                await migration.run(args)
+        else:
+            result = await migration.run(args)
+            assert result["read_only"] and not result["execution_available"]
+            assert result.get("verified", False) is False
+        sql = [call.args[0] for call in cursor.execute.await_args_list]
+        assert sql[:2] == ["SET SESSION TRANSACTION READ ONLY", "START TRANSACTION WITH CONSISTENT SNAPSHOT"]
+        assert not any(statement.startswith(("UPDATE", "DELETE", "INSERT", "CREATE", "ALTER", "DROP")) for statement in sql)
+        conn.rollback.assert_awaited_once()
         conn.commit.assert_not_awaited()
-        if changed:
-            apply.assert_not_awaited()
+        close.assert_awaited_once_with(conn)

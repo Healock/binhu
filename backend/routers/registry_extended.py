@@ -721,6 +721,7 @@ async def get_property_detail(
     )
     visit_property = {
         "id": int(row[0]),
+        "community_id": row[2],
         "community_name": row[3],
         "natural_address": row[4],
         "normalized_address": row[13],
@@ -797,7 +798,7 @@ async def get_property_visit_history(
     async with conn.cursor() as cur:
         await _property_scope(cur, property_id, user, REGISTRY_PROPERTY_VIEW)
         await cur.execute(
-            "SELECT id,community_name_snapshot,natural_address,normalized_address "
+            "SELECT id,community_name_snapshot,natural_address,normalized_address,community_id "
             "FROM registry_properties WHERE id=%s",
             (property_id,),
         )
@@ -812,6 +813,7 @@ async def get_property_visit_history(
                 "community_name": row[1],
                 "natural_address": row[2],
                 "normalized_address": row[3],
+                "community_id": row[4],
             },
             variants.get(property_id, []),
             page=page,
