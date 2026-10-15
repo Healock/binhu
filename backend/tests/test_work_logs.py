@@ -953,7 +953,10 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sheet.print_area, "'Sheet1'!$A$1:$R$51")
         for row in sheet.iter_rows(min_row=1, max_row=52, min_col=1, max_col=18):
             for cell in row:
-                self.assertIsNone(cell.fill.fill_type)
+                if cell.coordinate == "J5":
+                    self.assertTrue(cell.fill.fgColor.rgb.endswith("FFF2CC"))
+                else:
+                    self.assertIsNone(cell.fill.fill_type)
 
     async def test_daily_detail_uses_role_specific_visits_and_snapshot_tasks(self):
         roster = [
@@ -1153,6 +1156,19 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sheet["Q51"].value, 0.5)
         self.assertEqual(sheet["M4"].number_format, "0.00")
         self.assertEqual(sheet["Q4"].number_format, "0.00%")
+
+    def test_daily_detail_colors_low_visit_count(self):
+        row = {
+            "group_key": "area:east", "group_label": "东片", "community_id": 8,
+            "community": "正式社区", "name": "组员甲", "position": "组员",
+            "attendance": "是", "population_target": 10, "population_added": 0,
+            "population_cancelled": 0, "visit_target": 10, "visits": 5,
+        }
+        content, _ = build_daily_detail_workbook(date(2026, 8, 9), [row])
+        sheet = load_workbook(BytesIO(content), data_only=False).active
+        self.assertTrue(sheet["G4"].fill.fgColor.rgb.endswith("F4CCCC"))
+        self.assertTrue(sheet["H4"].fill.fgColor.rgb.endswith("F4CCCC"))
+        self.assertTrue(sheet["J4"].fill.fgColor.rgb.endswith("FFF2CC"))
 
     def test_daily_detail_places_self_owned_rows_at_area_end(self):
         rows = [
