@@ -36,16 +36,33 @@ async def resolve_departments(
     """按岗位校验部门，返回按请求顺序排列的部门。"""
     requested = normalize_department_ids(department_ids)
     if position == "管家码":
-        if requested:
-            raise HTTPException(400, "管家码岗位不属于社区或片区")
-        return []
+        if not requested:
+            return []
+        placeholders = ", ".join(["%s"] * len(requested))
+        await cur.execute(
+            f"""
+            SELECT department.id, department.name, department.department_type,
+                   community.name, department.parent_id
+            FROM _departments AS department
+            LEFT JOIN _communities AS community
+              ON community.id=department.community_id
+            WHERE department.id IN ({placeholders})
+              AND department.is_active=1
+            """,
+            requested,
+        )
+        rows = await cur.fetchall()
+        by_id = {int(row[0]): _department_row(row) for row in rows}
+        if len(by_id) != len(requested) or any(item["type"] != "unit" for item in by_id.values()):
+            raise HTTPException(400, "管家码岗位只能选择在岗的单位级部门")
+        return [by_id[department_id] for department_id in requested]
     if position == "自购房":
         if requested:
             raise HTTPException(400, "自购房岗位按片区配置，不属于社区部门")
         return []
     if position in INTERNAL_POSITIONS:
         await cur.execute(
-            "SELECT id, name, department_type, NULL "
+            "SELECT id, name, department_type, NULL, parent_id "
             "FROM _departments WHERE department_type='internal' "
             "AND is_active=1 ORDER BY id LIMIT 1"
         )
@@ -57,7 +74,7 @@ async def resolve_departments(
     if position in COMMUNITY_POSITIONS and not requested:
         raise HTTPException(400, "该岗位必须选择社区部门")
     if position not in MULTI_COMMUNITY_POSITIONS and len(requested) > 1:
-        raise HTTPException(400, "该岗位只能选择一个社区部门")
+        raise HTTPException(400, "该岗位只能选择一个部门")
     if not requested:
         return []
 
@@ -65,7 +82,7 @@ async def resolve_departments(
     await cur.execute(
         f"""
         SELECT department.id, department.name,
-               department.department_type, community.name
+               department.department_type, community.name, department.parent_id
         FROM _departments AS department
         LEFT JOIN _communities AS community
           ON community.id=department.community_id
@@ -79,8 +96,10 @@ async def resolve_departments(
     if len(by_id) != len(requested):
         raise HTTPException(400, "所属部门不存在或已停用")
     departments = [by_id[department_id] for department_id in requested]
-    if any(item["type"] != "community" for item in departments):
+    if position in COMMUNITY_POSITIONS and any(item["type"] != "community" for item in departments):
         raise HTTPException(400, "该岗位只能选择社区部门")
+    if any(item["type"] not in {"community", "unit"} for item in departments):
+        raise HTTPException(400, "该岗位只能选择社区级或单位级部门")
     return departments
 
 
@@ -90,6 +109,7 @@ def _department_row(row) -> dict[str, Any]:
         "name": str(row[1] or ""),
         "type": str(row[2] or ""),
         "community_name": str(row[3] or "") or None,
+        "parent_id": int(row[4]) if len(row) > 4 and row[4] is not None else None,
     }
 
 
@@ -101,7 +121,7 @@ async def get_member_departments(cur, member_ids: Iterable[int]) -> dict[int, li
     await cur.execute(
         f"""
         SELECT link.member_id, department.id, department.name,
-               department.department_type, community.name
+               department.department_type, community.name, department.parent_id
         FROM _grid_member_department_links AS link
         JOIN _departments AS department ON department.id=link.department_id
         LEFT JOIN _communities AS community
