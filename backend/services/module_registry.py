@@ -110,10 +110,12 @@ def _has_department_access(user: dict[str, Any], definition: dict[str, Any]) -> 
     for item in user.get("departments") or []:
         if isinstance(item, dict) and item.get("id") is not None:
             try:
-                parent_ids[int(item["id"])] = (
+                # Legacy member queries omit parent_id and serialize it as
+                # None. They must not erase the complete registry tree.
+                parent_ids.setdefault(int(item["id"]), (
                     int(item["parent_id"])
                     if item.get("parent_id") is not None else None
-                )
+                ))
             except (TypeError, ValueError):
                 continue
     return bool(_department_ancestors(_user_department_ids(user), parent_ids) & granted)

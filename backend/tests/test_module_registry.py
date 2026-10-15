@@ -30,6 +30,18 @@ class ModuleRegistryTests(unittest.TestCase):
     def test_department_tree_expands_all_ancestors(self):
         self.assertEqual(_department_ancestors([4], {4: 3, 3: 2, 2: 1, 1: None}), {1, 2, 3, 4})
 
+    def test_partial_member_department_snapshot_does_not_erase_registry_ancestors(self):
+        # get_member_departments currently omits parent_id in its SELECT;
+        # _department_row therefore returns None even after PR-A0 migration.
+        user = {"role": "member", "departments": [{"id": 4, "parent_id": None}], "permissions": []}
+        module = {
+            "module_id": "custom", "enabled": True, "is_public": False,
+            "required_permissions": [], "department_ids": [1],
+            "_department_parent_ids": {4: 3, 3: 2, 2: 1, 1: None},
+        }
+        self.assertTrue(can_access_definition(user, module))
+        self.assertFalse(can_access_definition(user, {**module, "department_ids": [9]}))
+
     def test_department_id_not_department_type_controls_access(self):
         module = next(item for item in MODULE_DEFINITIONS if item["module_id"] == "community_police")
         outsider = {"role": "member", "departments": [{"id": 9, "parent_id": None, "type": "community"}], "permissions": []}
