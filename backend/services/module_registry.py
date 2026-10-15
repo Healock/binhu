@@ -283,7 +283,7 @@ async def ensure_function_module_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     # Development databases may have been initialized from the old draft PR.
-    # Remove only its obsolete ownership column; bindings are rebuilt below.
+    # Remove only its obsolete ownership column; historical snapshots stay intact.
     await cur.execute("SHOW COLUMNS FROM _function_modules LIKE 'owner_unit'")
     if await cur.fetchone():
         await cur.execute("SHOW INDEX FROM _function_modules WHERE Key_name='idx_function_module_owner'")
@@ -311,67 +311,111 @@ async def ensure_function_module_schema(cur) -> None:
             UNIQUE KEY uk_function_module_version (module_id, version)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    for definition in MODULE_DEFINITIONS:
+    # This startup-only function runs on the autocommit bootstrap connection.
+    # DDL above implicitly commits in MySQL, so start the seed transaction only
+    # afterwards. The persistent marker row serializes concurrent initializers;
+    # its lock is held until the bindings AND snapshots have committed.
+    await cur.execute("START TRANSACTION")
+    try:
         await cur.execute(
-            "INSERT IGNORE INTO _function_modules "
-            "(module_id, name, is_public, required_permissions, route, mobile_visible, enabled, version) "
-            "VALUES (%s,%s,%s,%s,%s,%s,1,1)",
-            (
-                definition["module_id"], definition["name"], int(definition["is_public"]),
-                json.dumps(definition["required_permissions"], ensure_ascii=False),
-                definition["route"], int(definition["mobile_visible"]),
-            ),
+            "INSERT INTO _system_config (config_key, config_value) "
+            "VALUES ('function_module_units_seeded', '0') "
+            "ON DUPLICATE KEY UPDATE config_key=config_key"
         )
-        names = [str(name) for name in definition.get("default_department_names") or []]
-        department_ids: list[int] = []
-        if names:
+        await cur.execute(
+            "SELECT config_value FROM _system_config "
+            "WHERE config_key='function_module_units_seeded' FOR UPDATE"
+        )
+        marker = await cur.fetchone()
+        if not marker or str(marker[0]) not in {"0", "1"}:
+            raise RuntimeError("功能模块种子标记无效，请管理员核对配置")
+        await _initialize_function_modules(cur, seed_units=str(marker[0]) == "0")
+        await cur.execute(
+            "UPDATE _system_config SET config_value='1' "
+            "WHERE config_key='function_module_units_seeded'"
+        )
+        await cur.execute("COMMIT")
+    except BaseException:
+        await cur.execute("ROLLBACK")
+        raise
+
+
+async def _initialize_function_modules(cur, *, seed_units: bool) -> None:
+    for definition in MODULE_DEFINITIONS:
+        module_id = definition["module_id"]
+        await cur.execute(
+            "SELECT name,is_public,required_permissions,route,mobile_visible,enabled,version "
+            "FROM _function_modules WHERE module_id=%s FOR UPDATE",
+            (module_id,),
+        )
+        current = await cur.fetchone()
+        is_new = current is None
+        if is_new:
+            await cur.execute(
+                "INSERT INTO _function_modules "
+                "(module_id, name, is_public, required_permissions, route, mobile_visible, enabled, version) "
+                "VALUES (%s,%s,%s,%s,%s,%s,1,1)",
+                (
+                    module_id, definition["name"], int(definition["is_public"]),
+                    json.dumps(definition["required_permissions"], ensure_ascii=False),
+                    definition["route"], int(definition["mobile_visible"]),
+                ),
+            )
+            current = (
+                definition["name"], int(definition["is_public"]),
+                json.dumps(definition["required_permissions"]), definition["route"],
+                int(definition["mobile_visible"]), 1, 1,
+            )
+        version = int(current[6] or 1)
+        await cur.execute(
+            "SELECT snapshot FROM _function_module_versions WHERE module_id=%s AND version=%s FOR UPDATE",
+            (module_id, version),
+        )
+        previous = await cur.fetchone()
+        previous_snapshot = json.loads(previous[0]) if previous and previous[0] else {}
+        is_legacy = "owner_unit" in previous_snapshot
+        # An existing modern module is already configured, even with no units
+        # and no marker (upgrade from the previous draft). Never infer that an
+        # empty binding means permission to restore defaults.
+        names = list(definition.get("default_department_names") or [])
+        if seed_units and (is_new or is_legacy) and names:
             placeholders = ", ".join(["%s"] * len(names))
             await cur.execute(
-                f"SELECT id FROM _departments WHERE name IN ({placeholders}) AND is_active=1",
+                f"SELECT id FROM _departments WHERE name IN ({placeholders}) AND is_active=1 ORDER BY id",
                 names,
             )
             department_ids = [int(row[0]) for row in await cur.fetchall()]
+            if not department_ids:
+                raise RuntimeError("功能模块默认归属部门尚未就绪，请先完成 PR-A0 部门迁移")
             for department_id in department_ids:
                 await cur.execute(
                     "INSERT IGNORE INTO _function_module_units "
                     "(module_id, department_id) VALUES (%s,%s)",
                     (definition["module_id"], department_id),
                 )
-        snapshot_definition = {
-            key: value for key, value in definition.items()
-            if key != "default_department_names"
-        }
-        snapshot_definition["department_ids"] = sorted(department_ids)
-        snapshot = json.dumps(snapshot_definition, ensure_ascii=False, separators=(",", ":"))
         await cur.execute(
-            "INSERT IGNORE INTO _function_module_versions "
-            "(module_id, version, snapshot) VALUES (%s, 1, %s)",
-            (definition["module_id"], snapshot),
+            "SELECT department_id FROM _function_module_units WHERE module_id=%s ORDER BY department_id FOR UPDATE",
+            (module_id,),
         )
-        # Convert a database initialized by the previous draft model without
-        # rewriting its historical snapshot: publish one current version that
-        # records department IDs instead of the removed owner_unit value.
-        await cur.execute(
-            "SELECT module.version, versions.snapshot "
-            "FROM _function_modules AS module "
-            "LEFT JOIN _function_module_versions AS versions "
-            "ON versions.module_id=module.module_id AND versions.version=module.version "
-            "WHERE module.module_id=%s",
-            (definition["module_id"],),
-        )
-        current = await cur.fetchone()
-        if current and current[1] and "owner_unit" in str(current[1]):
-            next_version = int(current[0] or 1) + 1
+        department_ids = [int(row[0]) for row in await cur.fetchall()]
+        if is_legacy:
+            version += 1
             await cur.execute(
                 "UPDATE _function_modules SET version=%s WHERE module_id=%s",
-                (next_version, definition["module_id"]),
+                (version, module_id),
             )
-            snapshot_definition["version"] = next_version
+        if not previous or is_legacy:
+            snapshot_definition = {
+                "module_id": module_id, "name": current[0], "is_public": bool(current[1]),
+                "required_permissions": _required_permissions(current[2]), "route": current[3],
+                "mobile_visible": bool(current[4]), "enabled": bool(current[5]),
+                "version": version, "department_ids": department_ids,
+            }
             await cur.execute(
-                "INSERT IGNORE INTO _function_module_versions "
+                "INSERT INTO _function_module_versions "
                 "(module_id, version, snapshot) VALUES (%s, %s, %s)",
                 (
-                    definition["module_id"], next_version,
+                    module_id, version,
                     json.dumps(snapshot_definition, ensure_ascii=False, separators=(",", ":")),
                 ),
             )
