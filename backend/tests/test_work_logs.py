@@ -71,6 +71,9 @@ class CountCursor:
     async def fetchone(self):
         return (self.count,)
 
+    async def fetchall(self):
+        return []
+
 
 class CountConnection:
     def __init__(self, count=0):
@@ -261,6 +264,12 @@ def draft_payload(values=None):
 
 
 class WorkLogTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        monitor = patch("services.work_log_daily_detail.get_txdocs_business_overlay",
+                        new=AsyncMock(return_value={"available": False}))
+        monitor.start()
+        self.addCleanup(monitor.stop)
+
     def sample_row(self):
         draft = draft_payload()
         return (
@@ -1124,9 +1133,10 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             "cancelled": 1,
             "average_changes": 0.75,
             "instruction_total": 8,
-            "checked_instructions": 4,
+            "checked_instructions": 6,
             "completed_instructions": 2,
             "bottom_rate": 0.5,
+            "unable_instructions": 2,
         }
         content, _ = build_daily_detail_workbook(date(2026, 8, 9), [row])
         sheet = load_workbook(BytesIO(content), data_only=False).active
@@ -1136,10 +1146,10 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sheet["G4"].value, 5)
         self.assertTrue(sheet["G4"].fill.fgColor.rgb.endswith("FFF2CC"))
         self.assertEqual(sheet["N4"].value, 8)
-        self.assertEqual(sheet["O4"].value, 4)
+        self.assertEqual(sheet["O4"].value, 6)
         self.assertEqual(sheet["Q4"].value, 0.5)
         self.assertEqual(sheet["N51"].value, 8)
-        self.assertEqual(sheet["O51"].value, 4)
+        self.assertEqual(sheet["O51"].value, 6)
         self.assertEqual(sheet["Q51"].value, 0.5)
         self.assertEqual(sheet["M4"].number_format, "0.00")
         self.assertEqual(sheet["Q4"].number_format, "0.00%")
@@ -1292,6 +1302,91 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["name"] for item in result], ["朱光明"])
         self.assertEqual(result[0]["group_label"], "东片\n熊朝良")
         self.assertEqual(result[0]["community"], "自购房")
+
+
+class DailyDetailExternalCountsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_export_combines_local_and_stored_monitor_person_counts(self):
+        from services.report_builders.summary import SUMMARY_INSPECTOR_OUTPUT_COLS
+        roster = [{"name": "组员甲", "position": "组员", "group_key": "area:east",
+                   "group_label": "东片", "community": "社区甲", "attendance": "是"}]
+        online = {"exists": True, "inspector": {"columns": SUMMARY_INSPECTOR_OUTPUT_COLS,
+                  "data": [{"社区": "社区甲", "姓名": "组员甲", "数据总数": 1,
+                            "已核查": 1, "已完成": 0, "无法见底数": 1}]}}
+        external = {"available": True, "communities": {
+            "社区甲": {"assignees": {"组员甲": {"total": 10, "checked": 3,
+                         "completed": 5, "unable_to_verify": 2}}},
+            "社区乙": {"assignees": {"组员甲": {"total": 4, "completed": 2,
+                         "unable_to_verify": 1}}}}}
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+            patch("services.work_log_daily_detail._get_summary_types", new=AsyncMock(return_value=["全链条"])),
+            patch("services.work_log_daily_detail.get_txdocs_business_overlay", new=AsyncMock(return_value=external)) as monitor,
+        ):
+            result = await build_daily_detail_data(EmptyConnection(), date(2026, 10, 14),
+                                                  rental_target=10, self_owned_target=15)
+        monitor.assert_awaited_once_with("2026-10-14", "2026-10-14", ["全链条"], None,
+                                        configured_source_ids=[])
+        self.assertEqual(result[0]["instruction_total"], 15)
+        self.assertEqual(result[0]["checked_instructions"], 11)
+        self.assertEqual(result[0]["completed_instructions"], 7)
+        self.assertEqual(result[0]["unable_instructions"], 4)
+        self.assertAlmostEqual(result[0]["bottom_rate"], 7 / 11)
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), result)
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertAlmostEqual(sheet["Q51"].value, 7 / 11)
+
+    def test_total_ground_rate_is_blank_without_denominator(self):
+        row = {"name": "组员甲", "position": "组员", "group_key": "east", "group_label": "东片",
+               "community": "社区甲", "attendance": "是", "instruction_total": 1,
+               "checked_instructions": 1, "completed_instructions": 0, "bottom_rate": 0}
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), [row])
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertIsNone(sheet["Q51"].value)
+
+
+    def test_stored_monitor_can_supply_report_without_local_snapshot(self):
+        from services.report_external_counts import merge_external_report_counts
+        result = merge_external_report_counts({"exists": False}, {
+            "available": True, "communities": {"社区甲": {
+                "total": 6, "completed": 4, "unable_to_verify": 2,
+                "assignees": {"组员甲": {"total": 6, "completed": 4, "unable_to_verify": 2}}
+            }}}, parser_type="总汇总表")
+        self.assertTrue(result["exists"])
+        self.assertEqual(result["inspector"]["data"][0]["数据总数"], 6)
+        self.assertEqual(result["inspector"]["data"][0]["已完成"], 4)
+
+    def test_no_snapshot_keeps_report_unavailable(self):
+        from services.report_external_counts import merge_external_report_counts
+        result = merge_external_report_counts({"exists": False}, {"available": False},
+                                               parser_type="总汇总表")
+        self.assertFalse(result["exists"])
+
+    def test_zero_completed_does_not_produce_100_percent_ground_rate(self):
+        row = {"name": "组员甲", "position": "组员", "group_key": "east", "group_label": "东片",
+               "community": "社区甲", "attendance": "是", "instruction_total": 1,
+               "checked_instructions": 1, "completed_instructions": 0, "bottom_rate": 0,
+               "unable_instructions": 1}
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), [row])
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertEqual(sheet["Q51"].value, 0)
+
+
+    async def test_supplied_empty_monitor_targets_do_not_acquire_online_connection(self):
+        from services.txdocs_statistics_monitor import get_txdocs_business_overlay
+        with (
+            patch("services.txdocs_statistics_monitor.monitoring_environment_allowed", return_value=True),
+            patch("services.txdocs_statistics_monitor._configured_monitor_source_ids",
+                  new=AsyncMock(side_effect=AssertionError("must reuse held connection"))) as loader,
+        ):
+            result = await get_txdocs_business_overlay("2026-10-14", "2026-10-14", ["全链条"],
+                                                       None, configured_source_ids=[])
+        loader.assert_not_awaited()
+        self.assertFalse(result["available"])
 
 
 if __name__ == "__main__":
