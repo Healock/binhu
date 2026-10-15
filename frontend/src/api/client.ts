@@ -4505,6 +4505,7 @@ export interface RegistryProperty {
   responsibility_identity: string
   visit_count: number
   latest_visit_date: string | null
+  visit_association_status?: 'ambiguous' | 'historical_registration'
   latest_star_rating: string | null
   latest_star_rating_at: string | null
   small_community_id: number | null

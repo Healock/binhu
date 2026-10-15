@@ -149,10 +149,9 @@ async def test_new_address_requires_existing_timestamp_evidence(confirmation_dep
     assert any("更新时间不能证明" in row_values[-1] for batch in issue_batches for row_values in batch)
 
 
-def test_distinct_household_ids_at_same_address_are_not_deduplicated():
+def test_distinct_household_ids_without_lineage_require_review():
     result = classify_household_file_rows([row("a"), row("b", house_no="H2")])
-    assert result["normal_count"] == 2 and result["duplicate_row_count"] == 0
-    assert result["issue_count"] == 0
+    assert result["normal_count"] == 0 and result["issue_count"] == 2
 
 
 def test_different_unknown_codes_and_missing_status_are_not_identical_sources():
@@ -198,7 +197,7 @@ async def test_source_status_counts_do_not_claim_conflicts_are_importable(captur
                                            "[{},{}]", {"id": 7}, None)
     summary = capture.call_args.args[-1]
     assert summary["household_status_counts"] == {"cancelled": 1, "not_cancelled": 1, "unknown": 0}
-    assert summary["importable_status_counts"] == {"cancelled": 1, "not_cancelled": 1, "unknown": 0}
+    assert summary["importable_status_counts"] == {"cancelled": 0, "not_cancelled": 0, "unknown": 0}
 
 
 @pytest.mark.asyncio
@@ -264,6 +263,30 @@ class IdentityConnection(Connection):
 def existing_property(identifier=42, *, number="H1", address="合成路1号", updated_at=None, status="已注销"):
     return (identifier, 8, "", address, "", "", extended.normalize_address(address), number,
             updated_at, "个人出租", "", status)
+
+
+@pytest.mark.asyncio
+async def test_reregistered_house_reuses_property_id(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", house_no="NEW", updated_at="2026-01-01", household_status="未注销"), None)],
+        properties=[existing_property(number="OLD", updated_at="2020-01-01")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["updated_count"] == 1 and result["inserted_count"] == 0
+    update = next(values for sql, values in conn.calls if sql.startswith("UPDATE registry_properties SET"))
+    assert update[-1] == 42 and update[5] == "NEW"
+
+
+@pytest.mark.asyncio
+async def test_old_cancelled_registration_only_links_source(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", house_no="OLD", updated_at="2020-01-01"), None)],
+        properties=[existing_property(number="NEW", updated_at="2026-01-01", status="未注销")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 1 and result["inserted_count"] == 0
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+    assert any(values == (42, 1) for sql, values in conn.calls if sql.startswith("UPDATE registry_source_records SET"))
 
 
 @pytest.fixture
@@ -359,16 +382,17 @@ async def test_new_household_insert_retains_declared_status(confirmation_depende
 
 def test_same_address_cancellation_history_and_cross_community_are_normal():
     result = classify_household_file_rows([
-        row("a"), row("b", house_no="H2", household_status="未注销"),
+        row("a", updated_at="2020-01-01"), row("b", house_no="H2", household_status="未注销", updated_at="2026-01-01"),
         row("c", community="另一合成社区"),
     ])
-    assert result["normal_count"] == 3 and result["issue_count"] == 0
-    assert [item["household_status"] for item in result["normal_rows"]] == ["已注销", "未注销", "已注销"]
+    assert result["normal_count"] == 2 and result["issue_count"] == 0
+    assert result["duplicate_row_count"] == 1
+    assert [item["household_status"] for item in result["normal_rows"]] == ["未注销", "已注销"]
 
 
 def test_five_household_conflicts_count_ten_rows_once():
-    sources = [row(str(i), house_no=f"H{i}", address="共享合成地址") for i in range(200)]
-    sources += [row(f"conflict-{i}", house_no=f"H{i}", address="共享合成地址", household_status="未注销") for i in range(5)]
+    sources = [row(str(i), house_no=f"H{i}", address=f"合成路{i}号") for i in range(200)]
+    sources += [row(f"conflict-{i}", house_no=f"H{i}", address=f"合成路{i}号", household_status="未注销") for i in range(5)]
     result = classify_household_file_rows(sources)
     assert result["issue_count"] == len(result["issues"]) == 10
     assert result["normal_count"] == 195 and result["duplicate_groups"] == 5
@@ -394,14 +418,15 @@ async def test_repaired_partial_preview_separates_file_issues_from_confirmation_
 
 
 @pytest.mark.asyncio
-async def test_same_address_distinct_households_get_distinct_source_links(confirmation_dependencies):
-    conn = IdentityConnection(sources=[(1, row("a"), None), (2, row("b", house_no="H2", household_status="未注销"), None)])
+async def test_same_address_dated_registrations_share_one_source_identity(confirmation_dependencies):
+    conn = IdentityConnection(sources=[(1, row("a", updated_at="2020-01-01"), None),
+                                       (2, row("b", house_no="H2", updated_at="2026-01-01", household_status="未注销"), None)])
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
-    assert result["inserted_count"] == 2
+    assert result["inserted_count"] == 1
     links = [values for sql, values in conn.calls if sql.startswith("UPDATE registry_source_records SET entity_id")]
-    assert links == [[(101, 1), (102, 2)]]
+    assert links == [[(102, 2), (102, 1)]]
     inserts = next(values for sql, values in conn.calls if sql.startswith("INSERT INTO registry_properties"))
-    assert [item[-3] for item in inserts] == ["已注销", "未注销"]
+    assert [item[-3] for item in inserts] == ["未注销"]
 
 
 @pytest.mark.asyncio
@@ -417,7 +442,7 @@ async def test_same_address_other_household_does_not_block_exact_update(confirma
 async def test_same_address_other_household_is_never_overwritten(confirmation_dependencies):
     conn = IdentityConnection(sources=[(1, row("a"), None)], properties=[existing_property(number="H2")])
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
-    assert result["inserted_count"] == 1 and result["updated_count"] == 0
+    assert result["inserted_count"] == 0 and result["updated_count"] == 0
     assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
 
 
@@ -426,7 +451,7 @@ async def test_multiple_households_do_not_claim_single_unnumbered_legacy_propert
     conn = IdentityConnection(sources=[(1, row("a"), None), (2, row("b", house_no="H2"), None)],
                               properties=[existing_property(number="")])
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
-    assert result["inserted_count"] == 2 and result["updated_count"] == 0
+    assert result["inserted_count"] == 0 and result["updated_count"] == 0
 
 
 @pytest.mark.asyncio

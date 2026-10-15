@@ -1654,6 +1654,26 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 浏览器组件验收可在本机 Vite 运行 `frontend/tests/addressWorkbench.browser.mjs`；通过 `PLAYWRIGHT_MODULE` 指定已安装 Playwright，`PLAYWRIGHT_CHANNEL` 指定浏览器（默认 msedge）。HTTP 全部使用虚构拦截，不连接数据库，输出在忽略的 `scratch/address-ux/`。生产构建不包含 tests fixture 页面。
 # 环境入口与隔离（production / staging / development）
 
+## 房屋户号沿革整理（需独立授权）
+
+`migrations.registry_property_identity` 仅整理同正式社区、精确完整地址一致、来源时间可区分的“旧已注销登记 → 唯一较新未注销登记”。上线不会自动运行。先在独立 MySQL 验证，再申请维护窗口，暂停户号表导入、社区问题重算、房屋编辑、别名维护、小区确认、在线房屋关联及其他引用写入，核对 Bootstrap、数据库身份与配置。备份 RegistryData 和 OnlineData，校验备份可用，并把备份清单作为服务器受保护的证据文件保留。不能使用生产制造测试数据。
+
+在 backend 工作目录执行，先用 measure 获取候选内部 ID，再按审核后的现行房屋 ID 重新 measure；migrate 使用第二次输出的 plan_token，示例中的占位符必须替换：
+
+```text
+python -m migrations.registry_property_identity measure --environment production
+python -m migrations.registry_property_identity measure --environment production --property-id <现行房屋ID>
+python -m migrations.registry_property_identity migrate --apply --environment production --property-id <现行房屋ID> --plan-token <已核对的摘要> --backup-reference <已校验的备份清单路径>
+python -m migrations.registry_property_identity verify --environment production --property-id <现行房屋ID>
+```
+
+仅在获得明确生产维护授权后通过批准的维护网关执行；只读 SSH 不执行 migrate。清单文件存在检查不能替代人工核验备份内容、环境身份和恢复能力。测量结果变化会拒绝执行，必须重新审核，不能跳过摘要检查。输出只含内部 ID、计数及摘要，不输出地址、来源正文或保护快照。
+
+旧房屋完整快照及自动小区关联保存在 RegistryData 的 `registry_property_identity_merges`，原始户号来源不删除，只迁移房屋引用；地址版本和别名保留，重新追加现行地址版本。原房屋 ID 通过该保护历史表追溯。人员、机构、房间、告知书及任何跨域引用存在时，或旧档案有人工作出的小区确认/小区冲突时，整组选定范围拒绝自动整理，需另行设计关联迁移，不能强制删除。当前脚本不处理这些复杂组。
+
+维护期间需要禁止并发引用写入；跨库引用没有统一外键，行锁不能替代维护窗口。完成 verify 后复测列表、筛选、导出、走访明细和人工小区确认，再开放写入。未通过 verify 不开放写入。回退程序不自动还原整理数据；需要回退数据时必须另行授权，在仍暂停写入且评估后续增量后使用已校验备份和保护快照恢复，禁止清空来源或业务表。保留全部测量、备份和验证证据。本地测试不等同真实 MySQL、生产维护或业务验收。
+
+
 正式环境使用 `/` 和 `binhu_session`。预发布使用 `/staging/`、脱敏数据和
 `binhu_staging_session`；Dev 使用 `/dev/`、虚构数据和 `binhu_dev_session`。
 入口、Bootstrap 返回的环境身份、数据库和 Compose 项目必须一致，任何不一致都应拒绝登录，不能回退到生产 API。

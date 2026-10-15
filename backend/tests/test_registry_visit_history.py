@@ -17,18 +17,21 @@ from services.registry_visit_history import (
 
 
 class _Cursor:
-    def __init__(self, *, aliases=(), versions=(), visits=(), count=0, history=()):
+    def __init__(self, *, aliases=(), versions=(), visits=(), count=0, history=(), peers=()):
         self.aliases = list(aliases)
         self.versions = list(versions)
         self.visits = list(visits)
         self.count = count
         self.history = list(history)
+        self.peers = list(peers)
         self.mode = ""
         self.calls = []
 
     async def execute(self, sql, params=()):
         self.calls.append((sql, tuple(params)))
-        if "FROM registry_address_aliases" in sql:
+        if "FROM registry_properties p" in sql:
+            self.mode = "peers"
+        elif "FROM registry_address_aliases" in sql:
             self.mode = "aliases"
         elif "FROM registry_property_address_versions" in sql:
             self.mode = "versions"
@@ -48,6 +51,7 @@ class _Cursor:
             "versions": self.versions,
             "visits": self.visits,
             "history": self.history,
+            "peers": self.peers,
         }.get(self.mode, [])
 
 
@@ -158,7 +162,34 @@ class RegistryVisitHistoryTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(summaries[1]["visit_count"], 0)
         self.assertEqual(summaries[2]["visit_count"], 0)
+        self.assertEqual(summaries[1]["visit_association_status"], "ambiguous")
         self.assertFalse(any("t_visit_details" in sql for sql, _ in cursor.calls))
+
+    async def test_reregistered_house_has_same_summary_on_any_page(self):
+        def peer(identifier, number, when, status):
+            return (identifier, 8, "", "合成路8号", "", "", "合成路8号", number,
+                    when, "个人出租", "", status, "合成社区")
+        peers = [peer(1, "NEW", "2026-01-01", "未注销"), peer(2, "OLD", "2020-01-01", "已注销")]
+        current = {"id": 1, "community_name": "合成社区", "natural_address": "合成路8号", "normalized_address": "合成路8号"}
+        old = {**current, "id": 2}
+        visits = [(10, "合成社区", visit_address_key("合成路8号"), date(2026, 10, 10), None, "五星出租房", None)]
+        alone = await load_property_visit_summaries(_Cursor(peers=peers, visits=visits), [current])
+        together = await load_property_visit_summaries(_Cursor(peers=peers, visits=visits), [current, old])
+        self.assertEqual(alone[1], together[1])
+        self.assertEqual(alone[1]["visit_count"], 1)
+        self.assertEqual(alone[1]["latest_visit_date"], "2026-10-10")
+        self.assertEqual(together[2]["visit_association_status"], "historical_registration")
+        filtered = await filter_property_ids_by_visit(_Cursor(peers=peers, visits=[("合成社区", visit_address_key("合成路8号"))]), [current])
+        self.assertEqual(filtered, {1})
+
+    async def test_filtered_out_conflicting_archive_still_blocks_association(self):
+        peers = [(i, 8, "", "合成路8号", "", "", "合成路8号", str(i), "2026-01-01",
+                  "个人出租", "", "未注销", "合成社区") for i in (1, 2)]
+        prop = {"id": 1, "community_name": "合成社区", "natural_address": "合成路8号"}
+        result = await load_property_visit_summaries(_Cursor(peers=peers), [prop])
+        self.assertEqual(result[1]["visit_association_status"], "ambiguous")
+        history = await load_property_visit_history(_Cursor(peers=peers), prop, [], page=1, page_size=50)
+        self.assertEqual(history["visit_association_status"], "ambiguous")
 
     async def test_property_visit_history_is_paginated_and_returns_rating(self):
         cursor = _Cursor(
