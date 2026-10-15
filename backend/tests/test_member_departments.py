@@ -65,6 +65,28 @@ class MemberDepartmentTests(unittest.IsolatedAsyncioTestCase):
             await resolve_departments(Cursor(rows), "组员", [2, 3])
         self.assertEqual(raised.exception.status_code, 400)
 
+    async def test_housekeeper_can_select_unit_department_but_not_community(self):
+        departments = await resolve_departments(
+            Cursor([(8, "管家码", "unit", None, None)]), "管家码", [8]
+        )
+        self.assertEqual(departments[0]["id"], 8)
+        with self.assertRaises(HTTPException):
+            await resolve_departments(
+                Cursor([(2, "南厍", "community", "南厍", None)]), "管家码", [2]
+            )
+
+    async def test_department_parent_id_is_preserved_in_member_snapshot(self):
+        departments = await resolve_departments(
+            Cursor([(8, "中片", "unit", None, 1)]), "片长", [8]
+        )
+        self.assertEqual(departments[0]["parent_id"], 1)
+
+    async def test_non_community_position_can_select_unit_department(self):
+        departments = await resolve_departments(
+            Cursor([(8, "综合指挥室", "unit", None, None)]), "流口岗", [8]
+        )
+        self.assertEqual(departments[0]["type"], "unit")
+
     async def test_replacing_departments_updates_links_and_legacy_primary(self):
         cursor = Cursor()
         await replace_member_departments(cursor, 7, [

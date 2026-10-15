@@ -17,6 +17,7 @@ export default function SettingsLayout() {
     { path: '/settings/system', label: '系统设置', icon: <ClockCircleOutlined />, permission: 'system.manage' },
     { path: '/settings/server-mac', label: '服务器 MAC', icon: <DesktopOutlined />, permission: 'system.server_mac.manage' },
     { path: '/settings/workflow', label: '工单流程配置', icon: <ApartmentOutlined />, permission: 'workflow.config.manage' },
+    { path: '/settings/departments', label: '部门管理', icon: <ApartmentOutlined />, permission: 'community.manage' },
     { path: '/settings/account-security', label: '账号与安全', icon: <SafetyCertificateOutlined />, permission: '' },
     { path: '/settings/personalization', label: '个性化', icon: <BgColorsOutlined />, permission: '' },
     { path: '/settings/updates', label: '应用更新', icon: <CloudDownloadOutlined />, permission: '' },

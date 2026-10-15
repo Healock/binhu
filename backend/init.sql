@@ -1057,13 +1057,18 @@ CREATE TABLE IF NOT EXISTS _police_dispatch_publish_results (
 CREATE TABLE IF NOT EXISTS _departments (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     name            VARCHAR(200) NOT NULL UNIQUE,
+    -- community marks a community-level department only; never use it as unit ownership.
     department_type VARCHAR(20) NOT NULL,
     community_id    INT DEFAULT NULL,
+    parent_id       INT DEFAULT NULL,
+    area_id         INT DEFAULT NULL,
     is_active       TINYINT(1) NOT NULL DEFAULT 1,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_department_community (community_id),
+    INDEX idx_department_parent_active (parent_id, is_active),
+    INDEX idx_department_area (area_id),
     INDEX idx_department_type_active (department_type, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

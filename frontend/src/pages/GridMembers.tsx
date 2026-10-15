@@ -960,7 +960,7 @@ function MemberForm({
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
-  const departmentlessPosition = position === '管家码'
+  const departmentlessPosition = false
   const selfOwnedPosition = position === '自购房'
   const multipleCommunities = position === '社区民警'
   const communityPosition = ['组长', '组员', '社区民警'].includes(position)
@@ -1002,7 +1002,7 @@ function MemberForm({
       return
     }
     if (!multipleCommunities && departmentIds.length > 1) {
-      setFormError('该岗位只能选择一个社区部门')
+      setFormError('该岗位只能选择一个部门')
       return
     }
     if (!member && accountMode === 'existing' && !existingUserId) {
@@ -1108,7 +1108,7 @@ function MemberForm({
               options={areas.map(area => ({ value: area.id, label: area.name }))}
             />
           ) : departmentlessPosition ? (
-            <Input value="不属于社区或片区" disabled />
+            <Input value="暂不指定部门" disabled />
           ) : multipleCommunities ? (
             <Select
               mode="multiple"
@@ -1132,7 +1132,9 @@ function MemberForm({
               options={departments
                 .filter(item => internalPosition
                   ? item.type === 'internal'
-                  : item.type === 'community' && item.is_active)
+                  : communityPosition
+                    ? item.type === 'community' && item.is_active
+                    : (item.type === 'unit' || item.type === 'community') && item.is_active)
                 .map(item => ({ value: item.id, label: item.name }))}
             />
           )}
@@ -1147,9 +1149,9 @@ function MemberForm({
               setPosition(value)
               const nextIsInternal = ['片长', '中队长', '基础管控', '所队领导'].includes(value)
               const currentDepartment = departments.find(item => item.id === departmentIds[0])
-              if (value === '管家码' || value === '自购房') {
+              if (value === '自购房') {
                 setDepartmentIds([])
-                if (value === '管家码') setAreaId(null)
+                setAreaId(null)
               } else if (nextIsInternal) {
                 const internalId = departments.find(item => item.type === 'internal')?.id
                 setDepartmentIds(internalId ? [internalId] : [])
@@ -1174,7 +1176,7 @@ function MemberForm({
             <span className="flex items-start gap-1.5 leading-5">
               <InfoCircleOutlined className="mt-0.5 shrink-0" />
               <span>
-                在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他社区岗位只能选择一个。自购房人员按片区归属，内勤岗位自动归入内勤。
+            在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他岗位按行政编成选择单位或社区部门。自购房人员按片区归属，现有内勤岗位仍按当前兼容规则处理。
               </span>
             </span>
           </p>
