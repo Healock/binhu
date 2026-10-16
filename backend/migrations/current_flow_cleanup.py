@@ -270,7 +270,7 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
                 payload = {"schema": 2, "scope": "all_current_workflows", "run_id": run_id, "business_date": business_date.isoformat(), "targets": targets, "source_ids": source_ids, "counts": await related_counts(cur, targets), "workflow_types": sorted(grouped), "measured_at": datetime.now(timezone.utc).isoformat()}
                 _json_dump(root / "target.json", payload)
                 _json_dump(root / "measure.json", {"target_count": len(targets), "workflow_counts": {key: len(value) for key, value in grouped.items()}, "counts": payload["counts"]})
-                return {"phase": phase, "target_count": len(targets), "workflow_counts": payload["workflow_counts"], "counts": payload["counts"]}
+                return {"phase": phase, "target_count": len(targets), "workflow_counts": {key: len(value) for key, value in grouped.items()}, "counts": payload["counts"]}
             manifest = await load_manifest(root)
             if phase == "prepare":
                 backup = check_backup_root(Path(os.environ.get("BINHU_DEPLOY_BACKUP_ROOT", "/root/binhu/deploy-backups/automated")))
