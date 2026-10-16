@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+
+[[ -r /etc/binhu-deploy.conf ]] && source /etc/binhu-deploy.conf
+: "${BINHU_PROJECT_DIR:=/root/binhu}"
+: "${BINHU_MAINTENANCE_EVIDENCE_ROOT:=/srv/binhu-release-evidence-maintenance}"
+: "${BINHU_MAINTENANCE_BACKUP_ROOT:=$BINHU_PROJECT_DIR/deploy-backups/automated}"
+: "${BINHU_WORKFLOW_ATTACHMENT_DIR:=/data/binhu/workflow-attachments}"
+: "${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:=/data/binhu/workflow-photo-imports}"
+
+fail() { printf '[binhu-maintenance] ERROR: %s\n' "$*" >&2; exit 1; }
+[[ $# -ge 3 && $# -le 5 ]] || fail "expected operation, phase, run id and optional apply arguments"
+
+operation="$1"
+phase="$2"
+run_id="$3"
+case "$operation" in
+  internal-department-retirement|photo-sheet-retirement) ;;
+  *) fail "unsupported maintenance operation" ;;
+esac
+case "$phase" in
+  measure|backup|apply|verify) ;;
+  *) fail "unsupported maintenance phase" ;;
+esac
+[[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || fail "invalid run id"
+
+if [[ "$phase" == apply ]]; then
+  [[ $# -eq 5 && "$4" =~ ^[0-9]+$ ]] || fail "apply requires an expected count and confirmation"
+  expected_count="$4"
+  confirmation="$5"
+else
+  [[ $# -eq 3 ]] || fail "this phase takes no extra arguments"
+  expected_count=""
+  confirmation=""
+fi
+case "$operation:$phase:$confirmation" in
+  internal-department-retirement:apply:confirm-remove-internal|photo-sheet-retirement:apply:confirm-empty-photo-tables|*:measure:|*:backup:|*:verify:) ;;
+  *) fail "invalid confirmation for operation" ;;
+esac
+
+exec 9>"/run/lock/binhu-maintenance.lock"
+flock -n 9 || fail "another production maintenance run is active"
+
+evidence_dir="$BINHU_MAINTENANCE_EVIDENCE_ROOT/$operation/$run_id"
+backup_dir="$BINHU_MAINTENANCE_BACKUP_ROOT/maintenance-$operation-$run_id"
+install -d -o root -g root -m 0700 "$evidence_dir"
+install -d -o root -g root -m 0700 "$backup_dir"
+log_file="$evidence_dir/${phase}.log"
+
+container_backup_root="/root/binhu/deploy-backups/automated/maintenance-$operation-$run_id"
+manifest_host="$backup_dir/backup-manifest.json"
+manifest_container="$container_backup_root/backup-manifest.json"
+
+run_json() {
+  local output="$1"
+  shift
+  set +e
+  docker exec binhu-backend "$@" >"$output" 2>"$log_file"
+  local status=$?
+  set -e
+  (( status == 0 )) || fail "maintenance command failed; see $log_file"
+  python3 - "$output" <<'PY'
+import json, sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps({
+    "command": payload.get("command"),
+    "ok": payload.get("ok"),
+    "internal_member_count": payload.get("internal_member_count"),
+    "photo_work_orders": payload.get("photo_work_orders"),
+    "table_counts": payload.get("table_counts"),
+    "checks": payload.get("checks"),
+}, ensure_ascii=False, sort_keys=True))
+PY
+}
+
+backup_database() {
+  local database="$1"
+  local destination="$backup_dir/${database}.sql.gz"
+  docker exec binhu-mysql sh -c \
+    'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers --default-character-set=utf8mb4 --databases '"$database" \
+    | gzip -c >"$destination"
+  [[ -s "$destination" ]] || fail "empty backup: $database"
+  gzip -t "$destination" || fail "invalid backup gzip: $database"
+  sha256sum "$destination" >"$destination.sha256"
+}
+
+write_manifest() {
+  python3 - "$backup_dir" "$operation" "$run_id" <<'PY'
+import hashlib, json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+root = Path(sys.argv[1])
+entries = []
+for path in sorted(root.glob("*.sql.gz")):
+    entries.append({"database": path.name.removesuffix(".sql.gz"), "filename": path.name,
+                    "size_bytes": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+for path in sorted(root.glob("*.tar.gz")):
+    entries.append({"artifact": path.name, "size_bytes": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+(root / "backup-manifest.json").write_text(json.dumps({
+    "schema": 1, "operation": sys.argv[2], "run_id": sys.argv[3],
+    "created_at": datetime.now(timezone.utc).isoformat(), "databases": entries,
+}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+  cp "$manifest_host" "$evidence_dir/backup-manifest.json"
+}
+
+if [[ "$phase" == measure ]]; then
+  case "$operation" in
+    internal-department-retirement)
+      run_json "$evidence_dir/measure.json" python -m migrations.internal_department_retirement measure ;;
+    photo-sheet-retirement)
+      run_json "$evidence_dir/measure.json" python -m migrations.photo_sheet_retirement measure ;;
+  esac
+  exit 0
+fi
+
+if [[ "$phase" == backup ]]; then
+  case "$operation" in
+    internal-department-retirement)
+      backup_database PlatformData ;;
+    photo-sheet-retirement)
+      backup_database WorkflowData
+      if [[ -d "$BINHU_WORKFLOW_ATTACHMENT_DIR" ]]; then
+        tar -czf "$backup_dir/workflow-attachments.tar.gz" -C "$BINHU_WORKFLOW_ATTACHMENT_DIR" .
+      fi
+      if [[ -d "$BINHU_WORKFLOW_PHOTO_IMPORT_DIR" ]]; then
+        tar -czf "$backup_dir/workflow-photo-imports.tar.gz" -C "$BINHU_WORKFLOW_PHOTO_IMPORT_DIR" .
+      fi
+      ;;
+  esac
+  write_manifest
+  printf '{"operation":"%s","phase":"backup","manifest":"%s"}\n' "$operation" "$manifest_host"
+  exit 0
+fi
+
+if [[ "$phase" == apply ]]; then
+  [[ -f "$manifest_host" ]] || fail "backup manifest is missing; run backup first"
+  case "$operation" in
+    internal-department-retirement)
+      python3 - "$evidence_dir/measure.json" "$expected_count" <<'PY'
+import json, sys
+from pathlib import Path
+actual = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("internal_member_count")
+if actual != int(sys.argv[2]): raise SystemExit(f"measure count mismatch: expected={sys.argv[2]}, actual={actual}")
+PY
+      run_json "$evidence_dir/apply.json" python -m migrations.internal_department_retirement migrate --apply \
+        --run-id "$run_id" --backup-manifest "$manifest_container" \
+        --expect-internal-members "$expected_count" --confirm-remove-internal ;;
+    photo-sheet-retirement)
+      python3 - "$evidence_dir/measure.json" "$expected_count" <<'PY'
+import json, sys
+from pathlib import Path
+actual = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("photo_work_orders")
+if actual != int(sys.argv[2]): raise SystemExit(f"measure count mismatch: expected={sys.argv[2]}, actual={actual}")
+PY
+      run_json "$evidence_dir/apply.json" python -m migrations.photo_sheet_retirement migrate --apply \
+        --expect-photo-tickets "$expected_count" --confirm-empty-photo-tables ;;
+  esac
+  exit 0
+fi
+
+case "$operation" in
+  internal-department-retirement)
+    run_json "$evidence_dir/verify.json" python -m migrations.internal_department_retirement verify ;;
+  photo-sheet-retirement)
+    run_json "$evidence_dir/verify.json" python -m migrations.photo_sheet_retirement verify ;;
+esac
+python3 - "$evidence_dir/verify.json" <<'PY'
+import json, sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if payload.get("ok") is not True: raise SystemExit("verification checks did not pass")
+PY

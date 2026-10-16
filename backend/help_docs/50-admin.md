@@ -57,6 +57,8 @@ python -m migrations.internal_department_retirement verify
 
 脚本只处理人员部门关系和空的历史 `internal` 部门。目标部门不存在、人员归属不明确、发现共享部门或下级引用时会整批停止；“暂不指定部门”的人员会清空部门而不会被放入新的替代部门。真实维护必须保留备份清单、命令输出和连续重启后的归属核验。
 
+生产执行必须从“Production maintenance”固定维护工作流进入，不能直接 SSH 或在容器内手工执行。工作流按同一运行编号执行 `measure → backup → apply → verify`；`measure` 输出的内勤人数作为 `expected-count`，`apply` 还需要显式确认 `confirm-remove-internal`。
+
 ## 编辑帮助文档
 
 超级管理员进入“帮助”，打开任意文档后点击“编辑 Markdown”：
