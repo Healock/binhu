@@ -959,7 +959,6 @@ function MemberForm({
   const [password, setPassword] = useState('')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
-  const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
   const departmentlessPosition = false
   const selfOwnedPosition = position === '自购房'
   const multipleCommunities = position === '社区民警'
@@ -1125,14 +1124,11 @@ function MemberForm({
             <Select
               value={departmentIds[0]}
               onChange={value => setDepartmentIds(value ? [value] : [])}
-              allowClear={!internalPosition && !communityPosition}
+              allowClear={!communityPosition}
               placeholder="请选择部门"
               className="w-full"
-              disabled={internalPosition}
               options={departments
-                .filter(item => internalPosition
-                  ? item.type === 'internal'
-                  : communityPosition
+                .filter(item => communityPosition
                     ? item.type === 'community' && item.is_active
                     : (item.type === 'unit' || item.type === 'community') && item.is_active)
                 .map(item => ({ value: item.id, label: item.name }))}
@@ -1147,14 +1143,9 @@ function MemberForm({
             value={position}
             onChange={(value: PersonnelPosition) => {
               setPosition(value)
-              const nextIsInternal = ['片长', '中队长', '基础管控', '所队领导'].includes(value)
               const currentDepartment = departments.find(item => item.id === departmentIds[0])
               if (value === '自购房') {
                 setDepartmentIds([])
-                setAreaId(null)
-              } else if (nextIsInternal) {
-                const internalId = departments.find(item => item.type === 'internal')?.id
-                setDepartmentIds(internalId ? [internalId] : [])
                 setAreaId(null)
               } else if (currentDepartment?.type === 'internal') {
                 setDepartmentIds([])
@@ -1176,7 +1167,7 @@ function MemberForm({
             <span className="flex items-start gap-1.5 leading-5">
               <InfoCircleOutlined className="mt-0.5 shrink-0" />
               <span>
-            在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他岗位按行政编成选择单位或社区部门。自购房人员按片区归属，现有内勤岗位仍按当前兼容规则处理。
+            在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他岗位按行政编成选择单位或社区部门。自购房人员按片区归属，历史内勤部门正在通过独立迁移清理。
               </span>
             </span>
           </p>

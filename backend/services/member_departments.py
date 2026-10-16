@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from services.permissions import COMMUNITY_POSITIONS, INTERNAL_POSITIONS
+from services.permissions import COMMUNITY_POSITIONS
 
 
 MULTI_COMMUNITY_POSITIONS = {"社区民警"}
@@ -60,17 +60,6 @@ async def resolve_departments(
         if requested:
             raise HTTPException(400, "自购房岗位按片区配置，不属于社区部门")
         return []
-    if position in INTERNAL_POSITIONS:
-        await cur.execute(
-            "SELECT id, name, department_type, NULL, parent_id "
-            "FROM _departments WHERE department_type='internal' "
-            "AND is_active=1 ORDER BY id LIMIT 1"
-        )
-        row = await cur.fetchone()
-        if not row:
-            raise HTTPException(500, "内勤部门尚未初始化")
-        return [_department_row(row)]
-
     if position in COMMUNITY_POSITIONS and not requested:
         raise HTTPException(400, "该岗位必须选择社区部门")
     if position not in MULTI_COMMUNITY_POSITIONS and len(requested) > 1:

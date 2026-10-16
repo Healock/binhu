@@ -71,14 +71,14 @@ class MultiPermissionGroupTests(unittest.IsolatedAsyncioTestCase):
             {ONLINE_SUMMARY_VIEW, REGISTRY_PROPERTY_VIEW},
         )
 
-    async def test_community_police_requires_department_and_leader_uses_internal(self):
+    async def test_community_police_requires_department_and_noncommunity_uses_selection(self):
         with self.assertRaises(HTTPException):
             await _resolve_department(GroupCursor(), "社区民警", None)
 
         department_id, community = await _resolve_department(
-            GroupCursor([(9,)]),
+            GroupCursor([(9, "unit", None)]),
             "所队领导",
-            None,
+            9,
         )
         self.assertEqual((department_id, community), (9, ""))
 
