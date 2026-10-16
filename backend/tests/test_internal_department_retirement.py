@@ -45,6 +45,15 @@ class InternalDepartmentRetirementTests(unittest.TestCase):
         self.assertTrue(args.confirm_remove_internal)
         self.assertEqual(args.expect_internal_members, 12)
 
+    def test_direct_comprehensive_command_member_has_no_position(self):
+        self.assertEqual(
+            _target_for_member({"name": "高泽鑫", "position": "", "area_id": None}),
+            "综合指挥室",
+        )
+        self.assertIsNone(
+            _target_for_member({"name": "高泽鑫", "position": "科员", "area_id": None})
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
