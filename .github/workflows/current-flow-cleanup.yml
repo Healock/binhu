@@ -14,9 +14,8 @@ on:
         required: true
         type: string
       business_date:
-        description: Approved business date (fixed to 2026-09-14)
+        description: Maintenance evidence date (does not filter current tasks)
         required: true
-        default: '2026-09-14'
         type: string
 
 permissions:
@@ -54,7 +53,7 @@ jobs:
           BUSINESS_DATE: ${{ inputs.business_date }}
         run: |
           set -Eeuo pipefail
-          [[ "$BUSINESS_DATE" == "2026-09-14" ]]
+          [[ "$BUSINESS_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
           [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]]
           ssh -F /dev/null \
             -i "$RUNNER_TEMP/binhu-ssh/deploy_key" \
