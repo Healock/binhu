@@ -1678,3 +1678,18 @@ python -m migrations.photo_sheet_retirement verify
 清理采用两阶段文件处置：先将附件和 ZIP 复制到退役临时目录并从原路径移除，再删除数据库记录；文件删除、数据库删除和事务提交全部成功后才清理临时目录。任一步骤失败都会恢复临时文件并回滚数据库事务，维护人员不得用强制参数跳过恢复。
 
 本脚本不删除普通工单，不删除其他腾讯快照、迁移审计或回滚材料，也不改变 `TXDOCS_MIGRATION_MODE=readonly` 的历史兼容范围。真实 MySQL、生产备份和清理未在开发机验证，不能以本机测试替代生产维护验收。
+
+## 生产基础归位与照片退役固定维护入口
+
+部门归位和照片退役都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或在容器中手工拼接命令。两项操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
+
+```text
+production-maintenance <operation> <phase> <run-id>
+production-maintenance <operation> apply <run-id> <expected-count> <confirmation>
+```
+
+允许的 `operation` 只有 `internal-department-retirement` 和 `photo-sheet-retirement`；允许的 `phase` 只有 `measure`、`backup`、`apply`、`verify`。`apply` 前必须已经完成同一运行编号的 `measure` 和 `backup`，脚本会重新核对数量、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
+
+该入口由服务器 root 安装，不随普通应用发布自动覆盖。安装或更新时机是：对应网关/维护脚本 PR 合并、CI 通过，且生产发布前；由部署负责人执行 `deploy/install-server-deployer.sh`，先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再运行 `visudo -cf`、检查脚本 SHA-256，并使用 `status` 和一个拒绝性参数测试确认入口边界。安装完成后才允许触发维护工作流。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
+
+部门归位的执行顺序固定为：`measure → backup → apply → verify`。`measure` 输出的内勤人数必须原样作为 `expected-count`；`backup` 只备份 `PlatformData`；`apply` 调用 `migrations.internal_department_retirement` 的完整参数（包括 `--run-id`、`--backup-manifest`、`--expect-internal-members`、`--confirm-remove-internal`）。照片退役同样按四阶段执行，`backup` 包含 `WorkflowData`、照片附件和 ZIP 目录，`apply` 调用既有 `--expect-photo-tickets` 与 `--confirm-empty-photo-tables`。任一阶段失败都停止后续阶段，不覆盖失败证据。

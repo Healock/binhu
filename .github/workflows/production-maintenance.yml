@@ -1,0 +1,108 @@
+name: Production maintenance
+run-name: Production maintenance ${{ inputs.operation }} ${{ inputs.phase }} ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Registered maintenance operation
+        required: true
+        type: choice
+        options:
+          - internal-department-retirement
+          - photo-sheet-retirement
+      phase:
+        description: Maintenance phase
+        required: true
+        type: choice
+        options: [measure, backup, apply, verify]
+      run_id:
+        description: Immutable evidence run id
+        required: true
+        type: string
+      expected_count:
+        description: Count confirmed from measure (apply only)
+        required: false
+        type: string
+      confirmation:
+        description: Explicit destructive-action confirmation (apply only)
+        required: false
+        type: choice
+        options:
+          - none
+          - confirm-remove-internal
+          - confirm-empty-photo-tables
+        default: none
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Prepare restricted SSH identity
+        shell: bash
+        env:
+          DEPLOY_KEY: ${{ secrets.BINHU_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/deploy_key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-ssh/deploy_key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          ssh-keygen -y -f "$RUNNER_TEMP/binhu-ssh/deploy_key" >/dev/null
+      - name: Validate maintenance contract inputs
+        shell: bash
+        env:
+          OPERATION: ${{ inputs.operation }}
+          PHASE: ${{ inputs.phase }}
+          RUN_ID: ${{ inputs.run_id }}
+          EXPECTED_COUNT: ${{ inputs.expected_count }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$OPERATION" =~ ^(internal-department-retirement|photo-sheet-retirement)$ ]]
+          [[ "$PHASE" =~ ^(measure|backup|apply|verify)$ ]]
+          [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]]
+          if [[ "$PHASE" == apply ]]; then
+            [[ "$EXPECTED_COUNT" =~ ^[0-9]+$ ]]
+            if [[ "$OPERATION" == internal-department-retirement ]]; then
+              [[ "$CONFIRMATION" == confirm-remove-internal ]]
+            else
+              [[ "$CONFIRMATION" == confirm-empty-photo-tables ]]
+            fi
+          else
+            [[ -z "$EXPECTED_COUNT" && "$CONFIRMATION" == none ]]
+          fi
+      - name: Run fixed production maintenance gateway
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.BINHU_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.BINHU_DEPLOY_PORT }}
+          OPERATION: ${{ inputs.operation }}
+          PHASE: ${{ inputs.phase }}
+          RUN_ID: ${{ inputs.run_id }}
+          EXPECTED_COUNT: ${{ inputs.expected_count }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          command=(production-maintenance "$OPERATION" "$PHASE" "$RUN_ID")
+          if [[ "$PHASE" == apply ]]; then
+            command+=("$EXPECTED_COUNT" "$CONFIRMATION")
+          fi
+          ssh -F /dev/null \
+            -i "$RUNNER_TEMP/binhu-ssh/deploy_key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o PasswordAuthentication=no -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/binhu-ssh/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 -p "$DEPLOY_PORT" \
+            "binhu-deploy@$DEPLOY_HOST" "${command[@]}"
