@@ -850,7 +850,7 @@ def build_daily_detail_workbook(
     output = BytesIO()
     workbook.save(output)
     filename = (
-        f"{business_date.strftime('%m%d')}滨湖网格工作每日明细.xlsx"
+        f"滨湖网格工作每日明细-{business_date.strftime('%Y%m%d')}.xlsx"
     )
     return output.getvalue(), filename
 
