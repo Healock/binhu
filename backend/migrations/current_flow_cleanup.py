@@ -150,7 +150,7 @@ async def related_counts(cur, targets: list[dict[str, Any]]) -> dict[str, int]:
         result["address_match"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_online_task_address_matches` WHERE parser_type=%s AND row_key IN ({ph})", (parser_type, *keys)))[0])
         result["local_source"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_local_source_records` WHERE parser_type=%s AND business_key IN ({ph}) AND archived_at IS NULL", (parser_type, *keys)))[0])
         result["review_flow"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_unverifiable_review_flows` WHERE parser_type=%s AND row_key IN ({ph}) AND archived_at IS NULL", (parser_type, *keys)))[0])
-        result["registration"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_task_registration_links` WHERE parser_type=%s AND row_key IN ({ph})", (parser_type, *keys)))[0])
+        result["registration"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_task_registration_links` WHERE parser_type=%s AND row_key IN ({ph}) AND status NOT IN ('cancelled','archived')", (parser_type, *keys)))[0])
         workflow_db = os.environ.get("MYSQL_WORKFLOW_DB", "WorkflowData")
         if await table_exists(cur, workflow_db, "task_graph_nodes"):
             result["graph_nodes"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `{workflow_db}`.`task_graph_nodes` WHERE provider='online' AND parser_type=%s AND source_ref IN ({ph}) AND archived_at IS NULL", (parser_type, *keys)))[0])
