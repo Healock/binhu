@@ -24,6 +24,7 @@ from services.work_activity import (
 )
 from services.work_log_data import build_system_snapshot
 from services.work_log_pdf import build_daily_pdf
+from services.visit_source import VisitSourceError, ensure_daily_detail_visit_data
 from services.work_log_daily_detail import (
     DEFAULT_POPULATION_COEFFICIENT,
     MAX_POPULATION_COEFFICIENT,
@@ -397,6 +398,15 @@ async def export_daily_detail(
         "self_owned_target": data.self_owned_target,
     })
     targets["population_coefficient"] = data.population_coefficient
+    try:
+        visit_source = await ensure_daily_detail_visit_data(
+            conn,
+            data.business_date,
+            user_id=int(user["id"]),
+        )
+    except VisitSourceError as exc:
+        status_code = 409 if exc.code == "busy" else 502
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
     content, filename, row_count = await build_daily_detail_export(
         conn,
         data.business_date,
@@ -416,6 +426,11 @@ async def export_daily_detail(
             "rental_target": targets["rental_target"],
             "self_owned_target": targets["self_owned_target"],
             "population_coefficient": targets["population_coefficient"],
+            "visit_source": {
+                "status": visit_source["status"],
+                "record_count": visit_source.get("record_count", 0),
+                "source_run_id": visit_source.get("source_run_id"),
+            },
             "file_format": "XLSX",
         },
         conn=conn,

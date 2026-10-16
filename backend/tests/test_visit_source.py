@@ -1,11 +1,16 @@
 import unittest
+import os
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+os.environ.setdefault("MYSQL_PASSWORD", "test-password")
+os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.star_rating_import import STAR_RATING_HEADERS
 from services.visit_import import VISIT_HEADERS
 from services.visit_source import (
     VisitSourceError,
+    ensure_daily_detail_visit_data,
     fetch_rows,
     preview_diff,
     workbook_bytes,
@@ -69,6 +74,9 @@ class EmptyCursor:
 
     async def fetchall(self):
         return []
+
+    async def fetchone(self):
+        return (0,)
 
 
 class EmptyConnection:
@@ -277,6 +285,91 @@ class VisitSourceAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["inserted"], 1)
         self.assertEqual(result["unmatched"], 0)
         self.assertEqual(result["ambiguous"], 0)
+
+    async def test_daily_detail_refresh_skips_fetch_when_local_rows_exist(self):
+        class ExistingCursor(EmptyCursor):
+            async def fetchone(self):
+                return (3,)
+
+        class ExistingConnection(EmptyConnection):
+            def cursor(self):
+                return ExistingCursor()
+
+        with patch("services.visit_source.fetch_rows", new=AsyncMock()) as fetch:
+            result = await ensure_daily_detail_visit_data(
+                ExistingConnection(), date(2026, 8, 14), user_id=7
+            )
+        self.assertEqual(result, {"status": "existing", "record_count": 3})
+        fetch.assert_not_awaited()
+
+    async def test_daily_detail_refresh_skips_when_source_is_not_configured(self):
+        with (
+            patch("services.visit_source.settings.VISIT_SOURCE_MOCK", False),
+            patch("services.visit_source.settings.VISIT_SOURCE_BASE_URL", ""),
+            patch("services.visit_source.fetch_rows", new=AsyncMock()) as fetch,
+        ):
+            result = await ensure_daily_detail_visit_data(
+                EmptyConnection(), date(2026, 8, 14), user_id=7
+            )
+        self.assertEqual(result["status"], "skipped")
+        fetch.assert_not_awaited()
+
+    async def test_daily_detail_refresh_imports_fetched_rows(self):
+        class RefreshCursor(EmptyCursor):
+            def __init__(self, connection):
+                self.connection = connection
+
+            async def execute(self, sql, params=None):
+                self.connection.queries.append((sql, params))
+                if sql.lstrip().upper().startswith("INSERT INTO _VISIT_SOURCE_RUNS"):
+                    self.lastrowid = 41
+
+            async def fetchone(self):
+                sql = self.connection.queries[-1][0].upper()
+                if "COUNT(*) FROM T_VISIT_DETAILS" in sql:
+                    return (0,)
+                if "GET_LOCK" in sql:
+                    return (1,)
+                return None
+
+        class RefreshConnection:
+            def __init__(self):
+                self.queries = []
+                self.commits = 0
+
+            def cursor(self):
+                return RefreshCursor(self)
+
+            async def commit(self):
+                self.commits += 1
+
+            async def rollback(self):
+                return None
+
+        connection = RefreshConnection()
+        fetched = {
+            "rows": [{"社区": "测试社区", "操作人": "测试人员"}],
+            "record_count": 1,
+            "valid_count": 1,
+            "issue_count": 0,
+            "issues": [],
+            "response_business_date": "2026-08-14",
+        }
+        with (
+            patch("services.visit_source.settings.VISIT_SOURCE_MOCK", True),
+            patch("services.visit_source.fetch_rows", new=AsyncMock(return_value=fetched)) as fetch,
+            patch("services.visit_source.commit_rows", new=AsyncMock(return_value={"status": "success", "batch_id": 73})) as commit,
+        ):
+            result = await ensure_daily_detail_visit_data(
+                connection, date(2026, 8, 14), user_id=7
+            )
+        self.assertEqual(result["status"], "refreshed")
+        self.assertEqual(result["record_count"], 1)
+        self.assertEqual(result["source_run_id"], 41)
+        fetch.assert_awaited_once()
+        commit.assert_awaited_once()
+        self.assertEqual(commit.await_args.kwargs["source_type"], "daily_detail_export")
+        self.assertEqual(connection.commits, 3)
 
 
 if __name__ == "__main__":
