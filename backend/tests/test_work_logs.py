@@ -946,15 +946,16 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("C4:C5", {str(item) for item in sheet.merged_cells.ranges})
         self.assertEqual(sheet.max_column, 18)
         self.assertEqual(sheet.max_row, 52)
-        self.assertEqual(sheet["F2"].value, "流动人口板块")
-        self.assertEqual(sheet["I2"].value, "入户板块")
+        self.assertEqual(sheet["F2"].value, "流动人口")
+        self.assertEqual(sheet["I2"].value, "入户走访")
         self.assertEqual(sheet["N2"].value, "指令核查")
         self.assertEqual(sheet["R2"].value, "备注")
         self.assertEqual(sheet.print_area, "'Sheet1'!$A$1:$R$51")
         for row in sheet.iter_rows(min_row=1, max_row=52, min_col=1, max_col=18):
             for cell in row:
-                if cell.coordinate == "J5":
-                    self.assertTrue(cell.fill.fgColor.rgb.endswith("FFF2CC"))
+                if cell.coordinate == "J4":
+                    self.assertEqual(cell.fill.fill_type, "solid")
+                    self.assertTrue(cell.fill.fgColor.rgb.endswith("D9EAD3"))
                 else:
                     self.assertIsNone(cell.fill.fill_type)
 
@@ -1169,6 +1170,50 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sheet["G4"].fill.fgColor.rgb.endswith("F4CCCC"))
         self.assertTrue(sheet["H4"].fill.fgColor.rgb.endswith("F4CCCC"))
         self.assertTrue(sheet["J4"].fill.fgColor.rgb.endswith("FFF2CC"))
+
+    def test_daily_detail_visit_and_instruction_color_boundaries(self):
+        base = {
+            "group_key": "area:east", "group_label": "东片", "community_id": 8,
+            "community": "正式社区", "name": "组员甲", "position": "组员",
+            "attendance": "是", "population_target": 10, "population_added": 0,
+            "population_cancelled": 0, "visit_target": 10, "instruction_total": 10,
+        }
+        cases = [
+            ({"visits": 0, "checked_instructions": 0}, "FFF2CC"),
+            ({"visits": 4, "checked_instructions": 4}, "FFF2CC"),
+            ({"visits": 5, "checked_instructions": 5}, "FFF2CC"),
+            ({"visits": 6, "checked_instructions": 6}, "D9EAD3"),
+            ({"visits": 10, "checked_instructions": 10}, "D9EAD3"),
+            ({"visits": 12, "checked_instructions": 12}, "D9EAD3"),
+            ({"visits": None, "checked_instructions": None}, None),
+            ({"visit_target": 0, "instruction_total": 0,
+              "visits": 0, "checked_instructions": 0}, None),
+            ({"visits": 0, "checked_instructions": 0, "attendance": "否"}, None),
+            ({"visits": 0, "checked_instructions": 0, "position": "管家码",
+              "community_id": None, "community": ""}, None),
+        ]
+        # Exercise row extension and merged community cells, then reopen the XLSX.
+        rows = [{**base, **values} for values, _ in cases] * 7
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), rows)
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertEqual(sheet["F2"].value, "流动人口")
+        self.assertEqual(sheet["I2"].value, "入户走访")
+        self.assertEqual(sheet["N2"].value, "指令核查")
+        for index, row in enumerate(rows, start=4):
+            expected = cases[(index - 4) % len(cases)][1]
+            with self.subTest(row=index):
+                for column in (10, 15):
+                    cell = sheet.cell(index, column)
+                    self.assertEqual(cell.fill.fill_type, "solid" if expected else None)
+                    if expected:
+                        self.assertTrue(cell.fill.fgColor.rgb.endswith(expected))
+                for column in (9, 14, 16, 17):
+                    self.assertIsNone(sheet.cell(index, column).fill.fill_type)
+                if row["attendance"] == "否" or row["position"] == "管家码":
+                    for column in (7, 8):
+                        self.assertIsNone(sheet.cell(index, column).fill.fill_type)
+        for cell in sheet[4 + len(rows)]:
+            self.assertIsNone(cell.fill.fill_type)
 
     def test_daily_detail_places_self_owned_rows_at_area_end(self):
         rows = [

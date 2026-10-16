@@ -709,6 +709,8 @@ def _apply_daily_detail_colors(ws, rows: list[dict[str, Any]]) -> None:
     yellow = PatternFill("solid", fgColor="FFF2CC")
     green = PatternFill("solid", fgColor="D9EAD3")
     for index, item in enumerate(rows):
+        if item.get("attendance") == "否" or item.get("position") == "管家码":
+            continue
         row_number = DATA_START_ROW + index
         population_target = item.get("population_target")
         added = item.get("population_added")
@@ -722,9 +724,14 @@ def _apply_daily_detail_colors(ws, rows: list[dict[str, Any]]) -> None:
 
         visit_target = item.get("visit_target")
         visits = item.get("visits")
-        if visit_target and visits is not None and visits <= visit_target * 0.5:
+        if visit_target and visits is not None:
             anchor = _merged_anchor_row(ws, row_number, 10)
-            ws.cell(anchor, 10).fill = copy(yellow)
+            ws.cell(anchor, 10).fill = copy(yellow if visits <= visit_target * 0.5 else green)
+
+        instruction_total = item.get("instruction_total")
+        checked = item.get("checked_instructions")
+        if instruction_total and checked is not None:
+            ws.cell(row_number, 15).fill = copy(yellow if checked <= instruction_total * 0.5 else green)
 
 
 def _ordered_daily_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -774,6 +781,8 @@ def build_daily_detail_workbook(
             worksheet.unmerge_cells(str(merged))
 
     worksheet["A1"] = f"滨湖网格工作每日明细（{business_date.month}月{business_date.day}号）"
+    worksheet["F2"] = "流动人口"
+    worksheet["I2"] = "入户走访"
     no_fill = PatternFill(fill_type=None)
     for row in worksheet.iter_rows(
         min_row=DATA_START_ROW,
