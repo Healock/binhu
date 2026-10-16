@@ -1660,9 +1660,9 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 
 预发布账号使用 `@staging` 后缀，Dev 账号使用 `@dev` 后缀；这些账号不能跨环境使用。
 旧 `@shadow` 仅用于历史迁移和证据核对，停用前必须先完成新环境验收和影子资源证据留存。
-## 生产当前任务按日期归档
+## 生产当前任务归档
 
-“流口指令核查”当前任务清理必须使用固定网关的 `current-flow-cleanup` 五阶段命令，不能通过只读 SSH、临时 SQL 或浏览器接口批量删除。2026-09-14 本次运行只允许 `全链条` 和该业务日期；先执行 `measure`、`backup-check`、`prepare`，确认证据目录与八库备份后才能执行 `apply`，最后必须执行 `verify`。完整范围、证据和回退要求见 `docs/plans/current-flow-cleanup-20260914.md`。
+当前任务归档必须使用固定网关的 `current-flow-cleanup` 五阶段命令，不能通过只读 SSH、临时 SQL 或浏览器接口批量删除。工具按 `TASK_WORKFLOWS` 中登记的全部业务类型逐表处理，维护参数中的 `business_date` 只作为运行证据日期，不筛选历史下发日期，也不删除日报、审计或外部历史材料。必须先执行 `measure`、`backup-check`、`prepare`，确认证据目录与八库备份后才能执行 `apply`，最后必须执行 `verify`；任一业务类型失败时整个事务回滚。历史的 2026-09-14 全链条清理记录见 `docs/plans/current-flow-cleanup-20260914.md`。
 # 照片调取业务退役维护
 
 照片调取业务已经停止服务。维护窗口中只允许执行以下顺序，且必须先完成 `WorkflowData`、私人照片附件和 ZIP 目录备份：
