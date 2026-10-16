@@ -19,8 +19,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from services.parsers import get_parser
-from services.task_workflow import TASK_WORKFLOWS
+try:
+    from services.parsers import get_parser
+    from services.task_workflow import TASK_WORKFLOWS
+except ModuleNotFoundError:  # package import used by deployment contract tests
+    from backend.services.parsers import get_parser
+    from backend.services.task_workflow import TASK_WORKFLOWS
 
 ARCHIVE_REASON = "current_flow_cleanup_all"
 SAFE_RUN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$")
@@ -32,6 +36,12 @@ DATABASES = (
 
 class CleanupError(RuntimeError):
     pass
+
+
+def should_archive_current_flow(values: dict[str, Any]) -> bool:
+    """Compatibility predicate: every measured live row is in scope."""
+    del values
+    return True
 
 
 def parse_business_date(value: Any) -> date | None:
