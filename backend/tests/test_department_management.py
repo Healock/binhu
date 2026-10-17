@@ -16,6 +16,7 @@ from routers.grid_members import (
     DepartmentStatusUpdate,
     _validate_department_parent,
     _validate_department_payload,
+    create_department,
     delete_department,
     list_communities,
     update_department_status,
@@ -38,6 +39,7 @@ class FakeCursor:
         self.one = list(one)
         self.all_rows = list(all_rows)
         self.calls = []
+        self.lastrowid = 42
 
     async def execute(self, sql, params=None):
         self.calls.append((" ".join(sql.split()), params))
@@ -145,3 +147,40 @@ async def test_no_module_access_gate_was_added_to_department_routes():
     assert "/api/grid-members/departments" in paths
     assert "/api/grid-members/departments/{department_id}" in paths
     assert not any("module" in path for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_department_create_audit_is_part_of_the_same_transaction(monkeypatch):
+    cursor = FakeCursor(one=[None])
+    conn = fake_connection(cursor)
+    audit = AsyncMock()
+    monkeypatch.setattr(grid_members, "record_admin_audit", audit)
+
+    response = await create_department(
+        DepartmentCreate(name="社区警务队", department_type="unit"),
+        request(), {"id": 1}, conn,
+    )
+
+    assert response["id"] == 42
+    audit.assert_awaited_once()
+    assert audit.await_args.kwargs["conn"] is conn
+    conn.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_department_create_rolls_back_when_audit_fails(monkeypatch):
+    cursor = FakeCursor(one=[None])
+    conn = fake_connection(cursor)
+
+    async def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(grid_members, "record_admin_audit", fail_audit)
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await create_department(
+            DepartmentCreate(name="综合指挥室", department_type="unit"),
+            request(), {"id": 1}, conn,
+        )
+
+    conn.rollback.assert_awaited_once()
+    conn.commit.assert_not_awaited()

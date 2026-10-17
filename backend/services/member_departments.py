@@ -32,6 +32,8 @@ async def resolve_departments(
     cur,
     position: str,
     department_ids: Iterable[Any] | None,
+    *,
+    allowed_internal_ids: Iterable[int] | None = None,
 ) -> list[dict[str, Any]]:
     """按岗位校验部门，返回按请求顺序排列的部门。"""
     requested = normalize_department_ids(department_ids)
@@ -85,10 +87,17 @@ async def resolve_departments(
     if len(by_id) != len(requested):
         raise HTTPException(400, "所属部门不存在或已停用")
     departments = [by_id[department_id] for department_id in requested]
-    if position in COMMUNITY_POSITIONS and any(item["type"] != "community" for item in departments):
-        raise HTTPException(400, "该岗位只能选择社区部门")
-    if any(item["type"] not in {"community", "unit"} for item in departments):
-        raise HTTPException(400, "该岗位只能选择社区级或单位级部门")
+    if position in COMMUNITY_POSITIONS:
+        if any(item["type"] != "community" for item in departments):
+            raise HTTPException(400, "该岗位只能选择社区部门")
+    if position not in COMMUNITY_POSITIONS:
+        legacy_internal_ids = {int(value) for value in (allowed_internal_ids or [])}
+        if any(
+            item["type"] != "unit"
+            and not (item["type"] == "internal" and item["id"] in legacy_internal_ids)
+            for item in departments
+        ):
+            raise HTTPException(400, "该岗位只能选择单位级部门；社区岗位请选择社区部门")
     return departments
 
 
