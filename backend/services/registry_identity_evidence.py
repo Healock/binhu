@@ -15,13 +15,17 @@ POLYMORPHIC_REFERENCE_TABLES = {
     "registry_source_records": "household_property",
     "registry_change_candidates": "household_property",
 }
+KNOWN_ENTITY_TYPES = {
+    "household_property",
+    "property_certificate",
+}
 
 
 def _quote(identifier: str) -> str:
     return "`" + str(identifier).replace("`", "``") + "`"
 
 
-async def discover_reference_inventory(cur, schemas: list[str], registry_schema: str) -> tuple[list[dict], list[dict]]:
+async def discover_reference_inventory(cur, schemas: list[str], registry_schema: str) -> tuple[list[dict], list[dict], list[dict]]:
     placeholders = ",".join(["%s"] * len(schemas))
     await cur.execute(
         "SELECT c.TABLE_SCHEMA,c.TABLE_NAME,c.COLUMN_NAME,c.DATA_TYPE "
@@ -51,6 +55,7 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
 
     inventory = []
     opaque_json = []
+    polymorphic_warnings = []
     for schema, table, column, data_type in columns:
         schema, table, column = str(schema), str(table), str(column)
         table_primary_keys = primary_keys.get((schema, table), [])
@@ -60,7 +65,7 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
         is_reference = (
             lower == "property_id"
             or lower == "registration_property_id"
-            or ("property" in lower and lower.endswith("_id"))
+            or lower.endswith("_property_id")
             or key in foreign_keys
             or (column == "entity_id" and is_poly)
         )
@@ -82,7 +87,25 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
         })
     inventory.sort(key=lambda item: (item["schema"], item["table"], item["column"]))
     opaque_json.sort(key=lambda item: (item["schema"], item["table"], item["column"]))
-    return inventory, opaque_json
+    for table in POLYMORPHIC_REFERENCE_TABLES:
+        if (registry_schema, table, "entity_id") not in {(item["schema"], item["table"], item["column"]) for item in inventory}:
+            continue
+        await cur.execute(
+            f"SELECT entity_type,COUNT(*) FROM {_quote(registry_schema)}.{_quote(table)} "
+            "WHERE entity_id IS NOT NULL GROUP BY entity_type"
+        )
+        for entity_type, count in await cur.fetchall():
+            if str(entity_type or "") not in KNOWN_ENTITY_TYPES:
+                polymorphic_warnings.append({
+                    "schema": registry_schema,
+                    "table": table,
+                    "column": "entity_id",
+                    "entity_type": str(entity_type or ""),
+                    "count": int(count),
+                    "warning": "unknown_entity_type_blocks_review",
+                })
+    polymorphic_warnings.sort(key=lambda item: (item["schema"], item["table"], item.get("entity_type", "")))
+    return inventory, opaque_json, polymorphic_warnings
 
 
 async def scan_references(cur, inventory: list[dict], property_ids: list[int], *, chunk_size: int = 200) -> list[dict]:
@@ -146,6 +169,42 @@ async def scan_references(cur, inventory: list[dict], property_ids: list[int], *
             "record_key_sha256": key_digest,
             "stable_record_keys": not data.get("unkeyed", False),
         })
+    return findings
+
+
+async def scan_certificate_source_references(
+    cur, *, registry_schema: str, property_ids: list[int], chunk_size: int = 200
+) -> list[dict]:
+    """Resolve certificate source-record IDs to their property without exposing payloads."""
+    findings = []
+    for start in range(0, len(property_ids), chunk_size):
+        chunk = property_ids[start:start + chunk_size]
+        placeholders = ",".join(["%s"] * len(chunk))
+        await cur.execute(
+            "SELECT certificate.property_id,source.id,certificate.id "
+            f"FROM {_quote(registry_schema)}.registry_property_certificates certificate "
+            f"JOIN {_quote(registry_schema)}.registry_source_records source "
+            "ON source.entity_type='property_certificate' AND source.entity_id=certificate.id "
+            "WHERE certificate.property_id IN (" + placeholders + ")"
+            " AND certificate.source_type='certificate'",
+            tuple(chunk),
+        )
+        grouped = defaultdict(list)
+        for property_id, source_id, certificate_id in await cur.fetchall():
+            grouped[int(property_id)].append((str(source_id), str(certificate_id)))
+        for property_id, keys in sorted(grouped.items()):
+            canonical = json.dumps(sorted(keys), ensure_ascii=False, separators=(",", ":"))
+            findings.append({
+                "property_id": property_id,
+                "schema": registry_schema,
+                "table": "registry_source_records",
+                "column": "entity_id",
+                "kind": "certificate_source_reference",
+                "entity_type": "property_certificate",
+                "count": len(keys),
+                "record_key_sha256": sha256(canonical.encode("utf-8")).hexdigest(),
+                "stable_record_keys": True,
+            })
     return findings
 
 

@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ from config import settings
 from migrations.registry_issue_reconciliation import open_connection, close_connection
 from services.registry_identity_evidence import (
     discover_reference_inventory,
+    scan_certificate_source_references,
     scan_references,
     seal_artifact,
 )
@@ -35,18 +37,33 @@ def validate_database_scope():
         raise ValueError("database_environment_scope_mismatch")
 
 
+def validate_query_budget(args):
+    if not 1000 <= args.max_execution_ms <= 120000:
+        raise ValueError("invalid_max_execution_time")
+    if not 1 <= args.lock_wait_timeout <= 10:
+        raise ValueError("invalid_lock_wait_timeout")
+
+
 async def build_evidence(cur, schemas: list[str], registry_schema: str, property_ids: list[int], run_id: str):
-    inventory, opaque_json = await discover_reference_inventory(cur, schemas, registry_schema)
+    inventory, opaque_json, polymorphic_warnings = await discover_reference_inventory(cur, schemas, registry_schema)
     await cur.execute(
         "SELECT id,community_id,street,natural_address,building,room,normalized_address,"
         "source_house_no,source_updated_at,housing_type,residence_type,household_status,source_type,status,current_version "
         "FROM registry_properties ORDER BY id"
     )
     all_rows = list(await cur.fetchall())
+    snapshot_rows = list(all_rows)
     requested = set(property_ids)
     if requested:
         matching_keys = {(row[1], row[6]) for row in all_rows if row[0] in requested}
         all_rows = [row for row in all_rows if (row[1], row[6]) in matching_keys]
+    address_communities = {}
+    for row in snapshot_rows:
+        if row[6]:
+            address_communities.setdefault(row[6], set()).add(row[1])
+    cross_community_addresses = {
+        address for address, communities in address_communities.items() if len(communities) > 1
+    }
     counts = {}
     for row in all_rows:
         key = (row[1], row[6])
@@ -54,7 +71,15 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
     duplicate_rows = [row for row in all_rows if counts[(row[1], row[6])] > 1]
     planned_pairs, identity_blocked_groups = plan_identity_merges(duplicate_rows)
     candidate_property_ids = sorted({int(row[0]) for row in duplicate_rows})
-    references = await scan_references(cur, inventory, candidate_property_ids)
+    reference_property_ids = sorted({
+        property_id
+        for pair in planned_pairs
+        for property_id in pair
+    })
+    references = await scan_references(cur, inventory, reference_property_ids)
+    references.extend(await scan_certificate_source_references(
+        cur, registry_schema=registry_schema, property_ids=reference_property_ids,
+    ))
     refs_by_property = {}
     for reference in references:
         refs_by_property.setdefault(reference["property_id"], []).append(reference)
@@ -75,6 +100,18 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
             reference_disposition = "certificate_only_exception_candidate"
         else:
             reference_disposition = "no_references_candidate"
+        old_certificate_count = sum(ref["count"] for ref in certificate_refs)
+        current_refs = refs_by_property.get(canonical_id, [])
+        current_certificate_count = sum(1 for ref in current_refs if ref["kind"] == "direct" and ref["table"] == "registry_property_certificates")
+        certificate_source_count = sum(ref["count"] for ref in old_refs if ref["kind"] == "certificate_source_reference")
+        if reference_disposition == "certificate_only_exception_candidate" and (
+            old_certificate_count != 1 or certificate_source_count != 1 or current_certificate_count
+        ):
+            blockers.append("certificate_migration_not_unique")
+        if old_id and any(
+            row[0] == old_id and row[6] in cross_community_addresses for row in snapshot_rows
+        ):
+            blockers.append("cross_community_address")
         if any(not ref["stable_record_keys"] for ref in old_refs):
             blockers.append("reference_without_stable_record_key")
         await cur.execute(
@@ -92,6 +129,9 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
             "reference_disposition": reference_disposition,
             "blockers": sorted(set(blockers)),
             "reference_count": sum(ref["count"] for ref in old_refs),
+            "old_certificate_count": old_certificate_count,
+            "old_certificate_source_count": certificate_source_count,
+            "canonical_certificate_count": current_certificate_count,
         })
 
     grouped_ids = {}
@@ -104,6 +144,26 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
         ) else "blocked"}
         for ids in sorted(grouped_ids.values(), key=lambda values: tuple(sorted(values)))
     ]
+    cross_community_groups = len(cross_community_addresses)
+    property_snapshot = [
+        {
+            "id": int(row[0]),
+            "community_id": row[1],
+            "normalized_address_sha256": sha256(str(row[6] or "").encode("utf-8")).hexdigest(),
+            "status": row[13],
+            "household_status": row[11],
+            "source_updated_at": str(row[8]) if row[8] is not None else None,
+            "current_version": row[14],
+        }
+        for row in snapshot_rows
+    ]
+    measurement_hash = sha256(json.dumps({
+        "database_scope": sorted(schemas),
+        "properties": property_snapshot,
+        "references": references,
+        "candidates": candidates,
+        "polymorphic_warnings": polymorphic_warnings,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return {
         "schema_version": 1,
         "artifact_type": "registry_property_identity_readonly_evidence",
@@ -111,6 +171,7 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
         "environment": settings.APP_ENVIRONMENT,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "database_scope": sorted(schemas),
+        "measurement_hash": measurement_hash,
         "candidate_group_count": len(candidate_groups),
         "identity_shape_blocked_group_count": identity_blocked_groups,
         "candidate_pair_count": len(candidates),
@@ -121,12 +182,16 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
             candidate["disposition"] == "no_references_candidate" for candidate in candidates
         ),
         "blocked_candidate_count": sum(candidate["disposition"] == "blocked" for candidate in candidates),
+        "cross_community_address_group_count": cross_community_groups,
+        "cross_community_identity_blocked": cross_community_groups > 0,
         "reference_inventory": inventory,
         "references": references,
         "candidates": candidates,
         "candidate_groups": candidate_groups,
         "opaque_json_column_count": len(opaque_json),
         "opaque_json_columns": opaque_json,
+        "polymorphic_warnings": polymorphic_warnings,
+        "review_blocked_by_unknown_entity_types": bool(polymorphic_warnings),
         "coverage": "column_and_discriminator_scan; JSON payload contents are not interpreted",
         "execution_available": False,
         "read_only": True,
@@ -137,6 +202,7 @@ async def run(args):
     if args.environment != settings.APP_ENVIRONMENT:
         raise ValueError("environment_identity_mismatch")
     validate_database_scope()
+    validate_query_budget(args)
     if any(identifier <= 0 for identifier in args.property_id):
         raise ValueError("invalid_property_identity")
     schemas = database_scope()
@@ -144,6 +210,8 @@ async def run(args):
     try:
         async with conn.cursor() as cur:
             await cur.execute("SET SESSION TRANSACTION READ ONLY")
+            await cur.execute("SET SESSION MAX_EXECUTION_TIME=%s", (args.max_execution_ms,))
+            await cur.execute("SET SESSION innodb_lock_wait_timeout=%s", (args.lock_wait_timeout,))
             await cur.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT")
             await cur.execute(
                 "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ("
@@ -156,7 +224,7 @@ async def run(args):
                     await cur.execute(f"SELECT id,environment FROM `{schema}`._environment_identity")
                     if list(await cur.fetchall()) != [(1, settings.APP_ENVIRONMENT)]:
                         raise ValueError("database_identity_marker_mismatch")
-            run_id = args.run_id or f"registry-identity-evidence-{uuid.uuid4().hex}"
+            run_id = f"registry-identity-evidence-{uuid.uuid4().hex}"
             artifact = seal_artifact(await build_evidence(
                 cur, schemas, settings.MYSQL_REGISTRY_DB, args.property_id, run_id
             ))
@@ -190,7 +258,8 @@ def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--environment", required=True, choices=("production", "staging", "development"))
     result.add_argument("--property-id", action="append", type=int, default=[])
-    result.add_argument("--run-id", help="Non-sensitive evidence run identifier")
+    result.add_argument("--max-execution-ms", type=int, default=30000)
+    result.add_argument("--lock-wait-timeout", type=int, default=2)
     result.add_argument("--output", help="Create a new evidence file; existing files are never overwritten")
     return result
 
