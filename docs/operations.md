@@ -1666,6 +1666,15 @@ python -m migrations.registry_property_identity measure --environment production
 python -m migrations.registry_property_identity verify --environment production --property-id <现行房屋ID>
 ```
 
+第一阶段的引用证据使用独立命令生成，不扩展上述命令的写入能力：
+
+```text
+python -m migrations.registry_property_identity_evidence --environment production --output <新建证据文件路径>
+python -m migrations.registry_property_identity_evidence --environment production --property-id <房屋ID>
+```
+
+该命令只读取八库的一致性快照，枚举直接房屋引用、已知 `entity_id` 多态引用及可用的行主键，输出数量、内部 ID 和 SHA-256 摘要；不会读取或输出 JSON 载荷正文。每次运行生成唯一的非敏感 `run_id` 和自校验 `artifact_sha256`；已有证据文件不会覆盖，文件由调用方在受保护目录中创建。`opaque_json_columns` 仅表示尚未解释 JSON 内容的覆盖警告，不能据此申请归并。该证据只用于设计和审查独立维护网关，不能作为 `apply`、备份完成或生产迁移授权。
+
 输出仅包含内部 ID、计数、测量摘要和只读标记，不输出地址或来源正文。测量摘要包含数据库范围；它不是写入许可。verify 在仍有待整理或阻塞组时返回失败，不表示发生过归并。存在人员、机构、房间、告知书、跨域引用或历史人工小区确认的候选会标记为阻塞。真实 MySQL 和驱动未在本地验证，不能使用生产制造测试数据。
 
 本 PR 修复后续导入中的身份复用和走访展示，不自动消除已经存在的重复档案。历史整理必须另立经过评审的固定维护网关：验证备份内容、环境及恢复能力，阻断所有并发写入并排空持有旧房屋 ID 的任务，检查跨库引用和人工确认的保留方案，通过独立 MySQL 验收后再申请生产维护授权。人工暂停说明、文件存在检查或单纯表锁均不能替代这些要求。
