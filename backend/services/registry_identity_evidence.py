@@ -13,11 +13,12 @@ HISTORICAL_REFERENCE_TABLES = {
 }
 POLYMORPHIC_REFERENCE_TABLES = {
     "registry_source_records": "household_property",
-    "registry_change_candidates": "household_property",
+    "registry_change_candidates": "property",
 }
 KNOWN_ENTITY_TYPES = {
     "household_property",
     "property_certificate",
+    "property",
 }
 
 

@@ -84,6 +84,10 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
     for reference in references:
         refs_by_property.setdefault(reference["property_id"], []).append(reference)
 
+    pairs_by_canonical = {}
+    for old_id, canonical_id in planned_pairs:
+        pairs_by_canonical.setdefault(canonical_id, []).append(old_id)
+
     candidates = []
     for old_id, canonical_id in planned_pairs:
         old_refs = refs_by_property.get(old_id, [])
@@ -102,10 +106,23 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
             reference_disposition = "no_references_candidate"
         old_certificate_count = sum(ref["count"] for ref in certificate_refs)
         current_refs = refs_by_property.get(canonical_id, [])
-        current_certificate_count = sum(1 for ref in current_refs if ref["kind"] == "direct" and ref["table"] == "registry_property_certificates")
+        current_certificate_count = sum(
+            ref["count"] for ref in current_refs
+            if ref["kind"] == "direct" and ref["table"] == "registry_property_certificates"
+        )
         certificate_source_count = sum(ref["count"] for ref in old_refs if ref["kind"] == "certificate_source_reference")
+        group_old_certificate_count = sum(
+            sum(ref["count"] for ref in refs_by_property.get(group_old_id, [])
+                if ref["kind"] == "direct" and ref["table"] == "registry_property_certificates")
+            for group_old_id in pairs_by_canonical[canonical_id]
+        )
+        group_old_source_count = sum(
+            sum(ref["count"] for ref in refs_by_property.get(group_old_id, [])
+                if ref["kind"] == "certificate_source_reference")
+            for group_old_id in pairs_by_canonical[canonical_id]
+        )
         if reference_disposition == "certificate_only_exception_candidate" and (
-            old_certificate_count != 1 or certificate_source_count != 1 or current_certificate_count
+            group_old_certificate_count != 1 or group_old_source_count != 1 or current_certificate_count
         ):
             blockers.append("certificate_migration_not_unique")
         if old_id and any(
@@ -132,6 +149,8 @@ async def build_evidence(cur, schemas: list[str], registry_schema: str, property
             "old_certificate_count": old_certificate_count,
             "old_certificate_source_count": certificate_source_count,
             "canonical_certificate_count": current_certificate_count,
+            "group_old_certificate_count": group_old_certificate_count,
+            "group_old_certificate_source_count": group_old_source_count,
         })
 
     grouped_ids = {}
@@ -211,6 +230,7 @@ async def run(args):
         async with conn.cursor() as cur:
             await cur.execute("SET SESSION TRANSACTION READ ONLY")
             await cur.execute("SET SESSION MAX_EXECUTION_TIME=%s", (args.max_execution_ms,))
+            await cur.execute("SET SESSION lock_wait_timeout=%s", (args.lock_wait_timeout,))
             await cur.execute("SET SESSION innodb_lock_wait_timeout=%s", (args.lock_wait_timeout,))
             await cur.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT")
             await cur.execute(

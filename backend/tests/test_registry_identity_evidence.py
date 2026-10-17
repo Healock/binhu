@@ -81,7 +81,7 @@ async def test_inventory_covers_direct_and_typed_polymorphic_references():
         ("OnlineData", "task_links", "registration_property_id", "direct", None),
         ("RegistryData", "registry_property_certificates", "property_id", "direct", None),
         ("RegistryData", "registry_source_records", "entity_id", "historical_polymorphic", "household_property"),
-        ("RegistryData", "registry_change_candidates", "entity_id", "polymorphic", "household_property"),
+        ("RegistryData", "registry_change_candidates", "entity_id", "polymorphic", "property"),
     }
     assert not any(item["column"] == "property_manager_id" for item in inventory)
 
@@ -190,6 +190,51 @@ async def test_reference_scan_includes_canonical_property_for_certificate_confli
     assert "certificate_migration_not_unique" in artifact["candidates"][0]["blockers"]
 
 
+@pytest.mark.asyncio
+async def test_certificate_exception_is_checked_across_all_old_properties_for_canonical():
+    class GroupCursor:
+        def __init__(self):
+            self.sql = ""
+
+        async def execute(self, sql, params=()):
+            self.sql = sql
+
+        async def fetchall(self):
+            if self.sql.startswith("SELECT id,community_id,street,natural_address"):
+                return [
+                    (7, 1, "", "", "", "", "同址", "", None, "", "", "", "household", "active", 1),
+                    (8, 1, "", "", "", "", "同址", "", None, "", "", "", "household", "active", 1),
+                    (9, 1, "", "", "", "", "同址", "", None, "", "", "", "household", "active", 1),
+                ]
+            return []
+
+        async def fetchone(self):
+            return None
+
+    cursor = GroupCursor()
+    with patch.object(migration, "plan_identity_merges", return_value=([(7, 9), (8, 9)], 0)), \
+         patch.object(migration, "scan_references", AsyncMock(return_value=[
+             {"property_id": 7, "schema": "RegistryData", "table": "registry_property_certificates",
+              "column": "property_id", "kind": "direct", "count": 1, "record_key_sha256": "old-7",
+              "stable_record_keys": True},
+             {"property_id": 8, "schema": "RegistryData", "table": "registry_property_certificates",
+              "column": "property_id", "kind": "direct", "count": 1, "record_key_sha256": "old-8",
+              "stable_record_keys": True},
+         ])), \
+         patch.object(migration, "scan_certificate_source_references", AsyncMock(return_value=[
+             {"property_id": 7, "schema": "RegistryData", "table": "registry_source_records", "column": "entity_id",
+              "kind": "certificate_source_reference", "entity_type": "property_certificate", "count": 1,
+              "record_key_sha256": "source-7", "stable_record_keys": True},
+             {"property_id": 8, "schema": "RegistryData", "table": "registry_source_records", "column": "entity_id",
+              "kind": "certificate_source_reference", "entity_type": "property_certificate", "count": 1,
+              "record_key_sha256": "source-8", "stable_record_keys": True},
+         ])):
+        artifact = await migration.build_evidence(cursor, ["RegistryData"], "RegistryData", [], "run-test")
+    assert len(artifact["candidates"]) == 2
+    assert all("certificate_migration_not_unique" in candidate["blockers"] for candidate in artifact["candidates"])
+    assert all(candidate["group_old_certificate_count"] == 2 for candidate in artifact["candidates"])
+
+
 def test_artifact_hash_is_self_verifying():
     artifact = seal_artifact({"schema_version": 1, "references": [], "read_only": True})
     assert verify_artifact(artifact)
@@ -229,8 +274,9 @@ async def test_command_enforces_read_only_snapshot_and_always_rolls_back():
          patch.object(migration, "validate_database_scope"):
         artifact = await migration.run(args)
     sql = [call.args[0] for call in cursor.execute.await_args_list]
-    assert sql[:4] == ["SET SESSION TRANSACTION READ ONLY", "SET SESSION MAX_EXECUTION_TIME=%s",
-                       "SET SESSION innodb_lock_wait_timeout=%s", "START TRANSACTION WITH CONSISTENT SNAPSHOT"]
+    assert sql[:5] == ["SET SESSION TRANSACTION READ ONLY", "SET SESSION MAX_EXECUTION_TIME=%s",
+                       "SET SESSION lock_wait_timeout=%s", "SET SESSION innodb_lock_wait_timeout=%s",
+                       "START TRANSACTION WITH CONSISTENT SNAPSHOT"]
     assert not any(statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP"))
                    for statement in sql)
     assert verify_artifact(artifact)
@@ -283,6 +329,8 @@ async def test_selected_measurement_keeps_cross_community_address_blocking():
             "old_certificate_count": 0,
             "old_certificate_source_count": 0,
             "canonical_certificate_count": 0,
+            "group_old_certificate_count": 0,
+            "group_old_certificate_source_count": 0,
         }
     ]
 
