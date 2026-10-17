@@ -48,6 +48,83 @@ def _image_type(content: bytes) -> tuple[str, str] | None:
     return None
 
 
+def _certificate_total_pages(payload: Any) -> int | None:
+    """Read pagination metadata without trusting any source row contents."""
+    if not isinstance(payload, dict):
+        return None
+    candidates = [payload]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        candidates.append(data)
+        for key in ("page", "pagination", "pager"):
+            if isinstance(data.get(key), dict):
+                candidates.append(data[key])
+    for item in candidates:
+        for key in ("totalPages", "total_pages", "pageCount", "page_count"):
+            value = item.get(key)
+            try:
+                pages = int(value)
+            except (TypeError, ValueError):
+                continue
+            if pages > 0:
+                return pages
+        for key in ("total", "totalCount", "total_count"):
+            value = item.get(key)
+            try:
+                total = int(value)
+            except (TypeError, ValueError):
+                continue
+            if total >= 0:
+                return max(1, (total + CERTIFICATE_PAGE_SIZE - 1) // CERTIFICATE_PAGE_SIZE)
+    return None
+
+
+async def fetch_certificate_page_count() -> int | None:
+    """Fetch only pagination metadata before the full read starts."""
+    if not settings.VISIT_SOURCE_BASE_URL:
+        raise VisitSourceError("not_configured", "来源平台地址尚未配置")
+    headers = {"Accept": "application/json"}
+    if settings.VISIT_SOURCE_AUTHORIZATION:
+        headers["Authorization"] = settings.VISIT_SOURCE_AUTHORIZATION
+    elif not settings.VISIT_SOURCE_USERNAME or not settings.VISIT_SOURCE_PASSWORD:
+        raise VisitSourceError("authentication_required", "来源平台认证信息尚未配置")
+    async with httpx.AsyncClient(
+        base_url=settings.VISIT_SOURCE_BASE_URL.rstrip("/"),
+        timeout=settings.VISIT_SOURCE_TIMEOUT_SECONDS,
+        headers=headers,
+    ) as client:
+        if "Authorization" not in headers:
+            try:
+                response = await client.post(
+                    settings.VISIT_SOURCE_LOGIN_PATH,
+                    params={"username": settings.VISIT_SOURCE_USERNAME, "password": settings.VISIT_SOURCE_PASSWORD},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                token = payload.get("data") if isinstance(payload, dict) and str(payload.get("code", "")) == "200" else None
+                if not isinstance(token, str) or not token.strip():
+                    raise VisitSourceError("authentication_failed", "来源平台认证失败")
+                client.headers["Authorization"] = token.strip()
+            except VisitSourceError:
+                raise
+            except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
+                raise VisitSourceError("authentication_failed", "来源平台认证响应无法读取") from exc
+        try:
+            response = await client.get(
+                CERTIFICATE_ENDPOINT,
+                params={"deptCode": settings.VISIT_SOURCE_POLICE_CODE, "pageNum": 1, "pageSize": 1},
+            )
+            response.raise_for_status()
+            return _certificate_total_pages(response.json())
+        except httpx.TimeoutException as exc:
+            raise VisitSourceError("timeout", "来源平台请求超时") from exc
+        except httpx.HTTPStatusError as exc:
+            code = "forbidden" if exc.response.status_code in (401, 403) else "http_error"
+            raise VisitSourceError(code, f"告知书来源返回 HTTP {exc.response.status_code}") from exc
+        except (httpx.RequestError, ValueError) as exc:
+            raise VisitSourceError("request_error", "来源平台响应无法读取") from exc
+
+
 async def fetch_certificate_image(value: Any) -> tuple[bytes, str, str]:
     reference = normalize_certificate_image_ref(value)
     if not settings.CERTIFICATE_IMAGE_BASE_URL:

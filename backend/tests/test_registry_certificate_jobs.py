@@ -41,6 +41,8 @@ class _Cursor:
         if normalized.startswith("UPDATE registry_certificate_source_runs SET current_page"):
             if len(params) == 5:
                 page, fetched, accepted, rejected, run_id = params
+            elif len(params) == 6:
+                page, fetched, accepted, rejected, _summary_json, run_id = params
             else:
                 page, fetched, accepted, rejected, run_id = (*params,)
             self.state["runs"][int(run_id)].update(
@@ -49,6 +51,9 @@ class _Cursor:
                 accepted_count=int(accepted),
                 rejected_count=int(rejected),
             )
+            self.rowcount = 1
+            return
+        if normalized.startswith("UPDATE registry_certificate_source_runs SET summary_json"):
             self.rowcount = 1
             return
         if normalized.startswith("INSERT INTO registry_certificate_source_pages"):

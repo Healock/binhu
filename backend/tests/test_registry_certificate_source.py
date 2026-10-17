@@ -12,6 +12,7 @@ from services.registry_certificate_source import (
     CERTIFICATE_ENDPOINT,
     fetch_certificate_image,
     fetch_certificate_rows,
+    fetch_certificate_page_count,
     iter_certificate_pages,
     normalize_certificate_image_ref,
     normalize_certificate_page,
@@ -55,6 +56,24 @@ class _Client:
 
 
 class RegistryCertificateSourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_total_pages_from_source_metadata_without_source_rows(self):
+        class MetadataResponse(_Response):
+            def json(self):
+                return {"code": 200, "data": {"total": 401, "records": []}}
+
+        class MetadataClient(_Client):
+            async def get(self, endpoint, params=None):
+                type(self).last_request = (endpoint, params)
+                return MetadataResponse()
+
+        with (
+            patch("services.registry_certificate_source.httpx.AsyncClient", MetadataClient),
+            patch("services.registry_certificate_source.settings.VISIT_SOURCE_BASE_URL", "http://source.invalid"),
+            patch("services.registry_certificate_source.settings.VISIT_SOURCE_AUTHORIZATION", "token"),
+        ):
+            self.assertEqual(3, await fetch_certificate_page_count())
+        self.assertEqual(1, MetadataClient.last_request[1]["pageSize"])
+
     def test_image_reference_is_restricted_to_source_relative_jpeg_or_png(self):
         self.assertEqual(
             normalize_certificate_image_ref("2026-08-19/signature_001.JPG"),
