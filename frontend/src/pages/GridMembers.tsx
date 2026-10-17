@@ -31,6 +31,7 @@ import {
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import AppTable from '../components/AppTable'
+import MemberDepartmentCascader from '../components/MemberDepartmentCascader'
 import {
   createGridMember,
   deleteGridMember,
@@ -68,7 +69,6 @@ import {
 import {
   buildDepartmentPathMap,
   departmentOptionLabel,
-  selectableDepartments,
 } from '../utils/departmentTree'
 
 export default function GridMembers() {
@@ -1003,13 +1003,7 @@ function MemberForm({
   const departmentLoadFailed = referenceErrors.includes('部门树加载失败')
   const areaLoadFailed = referenceErrors.includes('片区列表加载失败')
   const accountLoadFailed = referenceErrors.includes('账号列表加载失败')
-  const departmentPaths = buildDepartmentPathMap(departments)
   const areaScopedPosition = position === '片长' || position === '自购房'
-  const departmentOptions = selectableDepartments(departments, departmentIds, communityPosition)
-    .map(item => ({
-      value: item.id,
-      label: `${departmentOptionLabel(item, departmentPaths)}${item.is_active ? '' : '（已停用）'}`,
-    }))
 
   useEffect(() => {
     if (!member) return
@@ -1171,24 +1165,14 @@ function MemberForm({
               className="w-full"
               options={areas.map(area => ({ value: area.id, label: area.name }))}
             />
-          ) : multipleCommunities ? (
-            <Select
-              mode="multiple"
+          ) : (
+            <MemberDepartmentCascader
+              departments={departments}
               value={departmentIds}
               onChange={setDepartmentIds}
-              placeholder="可选择一个或多个社区"
-              className="w-full"
-              maxTagCount="responsive"
-              options={departmentOptions}
-            />
-          ) : (
-            <Select
-              value={departmentIds[0]}
-              onChange={value => setDepartmentIds(value ? [value] : [])}
-              allowClear={!communityPosition}
-              placeholder="请选择部门"
-              className="w-full"
-              options={departmentOptions}
+              communityPosition={communityPosition}
+              multiple={multipleCommunities}
+              disabled={departmentLoadFailed || saving}
             />
           )}
           {position === '片长' && (
