@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { registryVisitText } from '../src/utils/registryVisit.ts'
 
 test('户号表多文件合并预览保留逐文件筛选声明与行数核对，变更后作废旧预览', () => {
   const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
@@ -391,4 +392,12 @@ test('人员标签整合到人员档案并保留独立权限和历史', () => {
   assert.match(appSource, /path="\/watch-people" element=\{<Navigate to="\/registry" replace \/>\}/)
   assert.doesNotMatch(appSource, /import WatchPeopleManagement/)
   assert.doesNotMatch(navigationSource, /id: 'watch_people'/)
+})
+
+test('visit ambiguity and historical registrations never look like missing visits', () => {
+  assert.equal(registryVisitText({ latest_visit_date: '2026-10-10' }), '2026-10-10')
+  assert.equal(registryVisitText({ visit_association_status: 'ambiguous' }), '档案重复，走访待核对')
+  assert.equal(registryVisitText({ visit_association_status: 'historical_registration' }), '历史户号，请查看现行档案')
+  assert.equal(registryVisitText({ visit_association_status: 'community_unresolved' }), '社区关联待核对')
+  assert.equal(registryVisitText({}), '暂无走访记录')
 })

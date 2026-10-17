@@ -1,4 +1,7 @@
 import json
+from unittest.mock import AsyncMock
+
+import pytest
 
 from services.registry_issue_reconciliation import (
     community_labels,
@@ -40,3 +43,23 @@ def test_unique_community_match_requires_one_active_owner():
 def test_reconciliation_uses_the_active_organization_domain():
     assert organization_pool_key(False) == "online_data"
     assert organization_pool_key(True) == "platform"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical", [False, True])
+async def test_reconciliation_uses_the_same_registration_lineage_rules(historical):
+    from services.registry_issue_reconciliation import _reconcile_source_row
+    from tests.test_household_multi_file_import import IdentityConnection, existing_property, row
+    conn = IdentityConnection(sources=[], properties=[existing_property(
+        number="NEW" if historical else "OLD", updated_at="2026-01-01" if historical else "2020-01-01",
+        status="未注销" if historical else "已注销",
+    )])
+    conn.rowcount = 1
+    conn.fetchone = AsyncMock(return_value=None)
+    payload = row("synthetic", house_no="OLD" if historical else "NEW",
+                  updated_at="2020-01-01" if historical else "2026-01-01",
+                  household_status="已注销" if historical else "未注销")
+    assert await _reconcile_source_row(conn, batch_id=10, source_ref="synthetic", payload=payload,
+                                       community_id=8, community_name="合成社区", reviewer_id=7)
+    assert not any(sql.startswith("INSERT INTO registry_properties") for sql, _ in conn.calls)
+    assert any(sql.startswith("UPDATE registry_properties") for sql, _ in conn.calls) is not historical

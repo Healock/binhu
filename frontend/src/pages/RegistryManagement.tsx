@@ -33,6 +33,7 @@ import {
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import { downloadBlob } from '../utils/fileDownload'
+import { registryVisitText } from '../utils/registryVisit'
 
 type TabKey = 'properties' | 'people' | 'organizations' | 'merges' | 'candidates' | 'conflicts' | 'issues' | 'imports'
 type ModalKind = 'property' | 'person' | 'organization' | 'phone' | 'alias' | 'personRelation' | 'organizationRelation' | 'merge' | 'personTag'
@@ -804,7 +805,7 @@ export default function RegistryManagement() {
       ),
       render: (_, row) => (
       <div className="registry-visit-cell">
-        <strong>{row.latest_visit_date || '暂无走访'}</strong>
+        <strong>{registryVisitText(row)}</strong>
       </div>
       ) },
     {
@@ -1577,7 +1578,9 @@ export default function RegistryManagement() {
           {detailKind === 'property' && <section className="registry-visit-summary">
             <div>
               <span>最近一次走访</span>
-              <strong>{detail.latest_visit_date || '暂无走访记录'}</strong>
+              <strong>{registryVisitText(detail)}</strong>
+              {detail.visit_association_status === 'ambiguous' && <span>请档案管理员核对户号、注销状态及来源时间，整理后刷新。</span>}
+              {detail.visit_association_status === 'community_unresolved' && <span>请档案管理员核对房屋正式社区及社区历史名称映射，修正后刷新重试。</span>}
             </div>
             <div>
               <span>历史走访</span>
@@ -1628,7 +1631,7 @@ export default function RegistryManagement() {
             </section>
           })()}
           {detailKind === 'property' && <Descriptions bordered size="small" column={1} items={[{ key: 'household_status', label: '注销状态（户号表）', children: detail.household_status || '未知' }]} />}
-          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'small_community_match', ...(detailKind === 'property' ? ['status', 'household_status'] : [])].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'visit_association_status', 'small_community_match', ...(detailKind === 'property' ? ['status', 'household_status'] : [])].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
           {detailKind === 'person' && canViewTags && <Panel
             title="人员标签"
             extra={canManageTags ? <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openCreate('personTag')}>添加标签</Button> : undefined}
@@ -1662,7 +1665,7 @@ export default function RegistryManagement() {
               loading={propertyVisitLoading}
               dataSource={propertyVisits}
               scroll={{ x: 980 }}
-              emptyText="当前房屋暂无可关联的走访记录"
+              emptyText={detail.visit_association_status ? registryVisitText(detail) : '当前房屋暂无可关联的走访记录'}
               pagination={{
                 current: propertyVisitPage,
                 pageSize: 20,

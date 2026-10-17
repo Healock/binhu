@@ -614,7 +614,7 @@ async def _property_search_result(
     if data.visit_status or data.visit_start_date or data.visit_end_date or data.star_ratings:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT property.id,property.community_name_snapshot,property.natural_address,property.normalized_address "
+                "SELECT property.id,property.community_name_snapshot,property.natural_address,property.normalized_address,property.community_id "
                 f"FROM registry_properties property{joins}{clause}",
                 tuple(params),
             )
@@ -625,6 +625,7 @@ async def _property_search_result(
                     "community_name": row[1],
                     "natural_address": row[2],
                     "normalized_address": row[3],
+                    "community_id": row[4],
                 }
                 for row in candidate_rows
             ]

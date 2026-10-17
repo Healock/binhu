@@ -421,8 +421,39 @@ def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 skipped.add(id(row))
         else:
             conflicts.append(grouped)
+    # A proven cancellation/re-registration is one physical house. Keep all
+    # protected source rows, but only the latest registration is applied.
+    from services.registry_property_identity import current_household_snapshot
+    address_groups = defaultdict(list)
+    already_conflicting = {id(row) for group in conflicts for row in group}
+    excluded = skipped | already_conflicting
+    for row in rows:
+        if id(row) not in excluded:
+            address_groups[(normalize_community(row.get("community")), normalize_address(row.get("address")))].append(row)
+    redirects = {}
+    for (community, _), grouped in address_groups.items():
+        if len({normalize_text(row.get("house_no")) for row in grouped} - {""}) < 2:
+            continue
+        snapshots = [{**row, "community_id": community} for row in grouped]
+        current = current_household_snapshot(snapshots)
+        if current:
+            winner = grouped[snapshots.index(current)]
+            winner_ref = str(winner.get("import_source_ref") or "")
+            suppressed_refs = {str(row.get("import_source_ref") or "") for row in grouped if row is not winner}
+            redirects.update({ref: winner_ref for ref in suppressed_refs})
+            for row in grouped:
+                if row is not winner:
+                    row["import_skip"] = "historical_household_registration"
+                    row["import_duplicate_of"] = winner_ref
+                    skipped.add(id(row))
+        else:
+            conflicts.append(grouped)
+    for row in rows:
+        if row.get("import_duplicate_of") in redirects:
+            row["import_duplicate_of"] = redirects[row["import_duplicate_of"]]
     conflict_ids = {id(row) for grouped in conflicts for row in grouped}
-    result = classify_household_rows(row for row in rows if id(row) not in skipped | conflict_ids)
+    excluded = skipped | conflict_ids
+    result = classify_household_rows(row for row in rows if id(row) not in excluded)
     blocked = set()
     for grouped in conflicts:
         result["duplicate_groups"] += 1
@@ -433,9 +464,9 @@ def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "issue_type": ISSUE_HOUSEHOLD_DUPLICATE,
                 "entity_key": normalize_address(row.get("address")),
                 "source_ref": ref, "payload": row,
-                "reason": "同社区同户号同地址的重复来源缺少可区分的新旧更新时间，或更新时间相同但内容冲突，需核对来源",
+                "reason": "同社区同地址的多户号或重复来源无法证明唯一的注销沿革，需核对来源状态及更新时间",
             })
-    result["rows"].extend(row for row in rows if id(row) in skipped | conflict_ids)
+    result["rows"].extend(row for row in rows if id(row) in excluded)
     result["normal_rows"] = [row for row in result["normal_rows"] if row.get("import_source_ref") not in blocked]
     result["normal_count"] = len(result["normal_rows"])
     result["issue_count"] = len({str(item["payload"].get("import_source_ref") or item["source_ref"])

@@ -322,6 +322,11 @@ async def test_never_visit_filter_resolves_full_scoped_candidates_before_page_an
     monkeypatch.setattr(registry_router, "filter_property_ids_by_visit", match)
     for export_all in (False, True):
         conn = _PropertySearchConnection()
+        async def rows():
+            if "property.normalized_address,property.community_id" in conn.search_cursor.calls[-1][0]:
+                return [(2, "合成旧社区", "合成路8号", "合成路8号", 3)]
+            return []
+        conn.search_cursor.fetchall = rows
         await _property_search_result(
             PropertySearch(visit_status="never", page=2, page_size=20), {"id": 1}, conn,
             export_all=export_all,
@@ -336,6 +341,9 @@ async def test_never_visit_filter_resolves_full_scoped_candidates_before_page_an
         assert ("LIMIT %s OFFSET %s" in row_sql) == (not export_all)
         assert "source_missing_since IS NULL" in count_sql
         assert match.call_args.kwargs["visit_status"] == "never"
+        assert match.call_args.args[1] == [{"id": 2, "community_name": "合成旧社区",
+                                          "natural_address": "合成路8号", "normalized_address": "合成路8号",
+                                          "community_id": 3}]
 
 
 @pytest.mark.asyncio
