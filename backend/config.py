@@ -255,6 +255,11 @@ class Settings(BaseSettings):
     REDIS_MAX_MEMORY_BYTES: int = 1_073_741_824
     REALTIME_EVENTS_ENABLED: bool = True
 
+    # Public machine-to-machine house candidate lookup. Keep disabled until
+    # production has an approved Ed25519 key set and Redis-backed controls.
+    HOUSE_CANDIDATE_ENABLED: bool = False
+    HOUSE_CANDIDATE_PUBLIC_KEYS_JSON: str = "{}"
+
     @property
     def cors_allowed_origins(self) -> list[str]:
         """Return the explicit CORS allowlist; same-origin deployments leave it empty."""

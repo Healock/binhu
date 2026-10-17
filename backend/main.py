@@ -48,6 +48,7 @@ from routers.qmf_registration import router as qmf_registration_router
 from routers.task_graph import router as task_graph_router
 from routers.qmf_source import router as qmf_source_router
 from routers.residence_platform import router as residence_platform_router
+from routers.house_candidate import router as house_candidate_router
 from routers.maintenance import router as maintenance_router
 from routers.app_bootstrap import router as app_bootstrap_router
 from routers.help_docs import router as help_docs_router
@@ -328,6 +329,9 @@ app.include_router(events_router)
 app.include_router(maintenance_router)
 app.include_router(app_bootstrap_router)
 app.include_router(help_docs_router)
+# This router has its own Ed25519 machine-token boundary and is intentionally
+# mounted outside the browser-session dependencies.
+app.include_router(house_candidate_router)
 
 # 业务路由（全部需要登录）
 auth_dep = [Depends(get_current_user)]
