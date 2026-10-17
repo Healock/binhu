@@ -12,13 +12,15 @@ HISTORICAL_REFERENCE_TABLES = {
     "registry_source_records",
 }
 POLYMORPHIC_REFERENCE_TABLES = {
-    "registry_source_records": "household_property",
-    "registry_change_candidates": "property",
+    "registry_source_records": ("household_property", "property"),
+    "registry_change_candidates": ("property",),
 }
 KNOWN_ENTITY_TYPES = {
     "household_property",
     "property_certificate",
     "property",
+    "person",
+    "organization",
 }
 
 
@@ -62,7 +64,8 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
         table_primary_keys = primary_keys.get((schema, table), [])
         key = (schema, table, column)
         lower = column.lower()
-        is_poly = schema == registry_schema and POLYMORPHIC_REFERENCE_TABLES.get(table)
+        entity_types = POLYMORPHIC_REFERENCE_TABLES.get(table) if schema == registry_schema else None
+        is_poly = bool(entity_types)
         is_reference = (
             lower == "property_id"
             or lower == "registration_property_id"
@@ -74,18 +77,19 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
             opaque_json.append({"schema": schema, "table": table, "column": column})
         if not is_reference:
             continue
-        discriminator = POLYMORPHIC_REFERENCE_TABLES.get(table) if column == "entity_id" else None
-        inventory.append({
-            "schema": schema,
-            "table": table,
-            "column": column,
-            "primary_keys": list(table_primary_keys),
-            "kind": ("historical_polymorphic" if table == "registry_source_records" else "polymorphic") if discriminator else (
-                "historical" if schema == registry_schema and table in HISTORICAL_REFERENCE_TABLES
-                else "direct"
-            ),
-            "entity_type": discriminator,
-        })
+        discriminators = entity_types if column == "entity_id" and entity_types else (None,)
+        for discriminator in discriminators:
+            inventory.append({
+                "schema": schema,
+                "table": table,
+                "column": column,
+                "primary_keys": list(table_primary_keys),
+                "kind": ("historical_polymorphic" if table == "registry_source_records" else "polymorphic") if discriminator else (
+                    "historical" if schema == registry_schema and table in HISTORICAL_REFERENCE_TABLES
+                    else "direct"
+                ),
+                "entity_type": discriminator,
+            })
     inventory.sort(key=lambda item: (item["schema"], item["table"], item["column"]))
     opaque_json.sort(key=lambda item: (item["schema"], item["table"], item["column"]))
     for table in POLYMORPHIC_REFERENCE_TABLES:
@@ -129,7 +133,7 @@ async def scan_references(cur, inventory: list[dict], property_ids: list[int], *
                 sql += " WHERE " + " AND ".join(predicates) + " GROUP BY " + _quote(item["column"])
                 await cur.execute(sql, tuple(params))
                 for property_id, count in await cur.fetchall():
-                    key = (int(property_id), item["schema"], item["table"], item["column"], item["kind"])
+                    key = (int(property_id), item["schema"], item["table"], item["column"], item["kind"], item["entity_type"])
                     grouped[key]["count"] += int(count)
                     grouped[key]["unkeyed"] = True
             continue
@@ -148,12 +152,12 @@ async def scan_references(cur, inventory: list[dict], property_ids: list[int], *
             await cur.execute(sql, tuple(params))
             for row in await cur.fetchall():
                 property_id = int(row[0])
-                key = (property_id, item["schema"], item["table"], item["column"], item["kind"])
+                key = (property_id, item["schema"], item["table"], item["column"], item["kind"], item["entity_type"])
                 grouped[key]["count"] += 1
                 grouped[key]["keys"].append(tuple(str(value) for value in row[1:]))
 
     findings = []
-    for (property_id, schema, table, column, kind), data in sorted(grouped.items()):
+    for (property_id, schema, table, column, kind, entity_type), data in sorted(grouped.items()):
         if not data["count"] and not data.get("unkeyed"):
             continue
         key_digest = None
@@ -166,6 +170,7 @@ async def scan_references(cur, inventory: list[dict], property_ids: list[int], *
             "table": table,
             "column": column,
             "kind": kind,
+            "entity_type": entity_type,
             "count": data["count"],
             "record_key_sha256": key_digest,
             "stable_record_keys": not data.get("unkeyed", False),

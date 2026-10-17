@@ -81,6 +81,7 @@ async def test_inventory_covers_direct_and_typed_polymorphic_references():
         ("OnlineData", "task_links", "registration_property_id", "direct", None),
         ("RegistryData", "registry_property_certificates", "property_id", "direct", None),
         ("RegistryData", "registry_source_records", "entity_id", "historical_polymorphic", "household_property"),
+        ("RegistryData", "registry_source_records", "entity_id", "historical_polymorphic", "property"),
         ("RegistryData", "registry_change_candidates", "entity_id", "polymorphic", "property"),
     }
     assert not any(item["column"] == "property_manager_id" for item in inventory)
@@ -116,10 +117,11 @@ async def test_reference_scan_adds_discriminator_and_only_returns_digests():
         cursor, ["RegistryData", "OnlineData"], "RegistryData"
     )
     findings = await scan_references(cursor, inventory, [7])
-    assert {(item["table"], item["count"]) for item in findings} == {
-        ("registry_property_certificates", 2),
-        ("registry_source_records", 1),
-        ("task_links", 1),
+    assert {(item["table"], item["entity_type"], item["count"]) for item in findings} == {
+        ("registry_property_certificates", None, 2),
+        ("registry_source_records", "household_property", 1),
+        ("registry_source_records", "property", 1),
+        ("task_links", None, 1),
     }
     assert all("payload" not in json.dumps(item) for item in findings)
     source_query = next(sql for sql, _ in cursor.calls
@@ -128,6 +130,21 @@ async def test_reference_scan_adds_discriminator_and_only_returns_digests():
     source_params = next(params for sql, params in cursor.calls
                          if "registry_source_records`" in sql and "`entity_type`=%s" in sql)
     assert source_params[-1] == "household_property"
+
+
+@pytest.mark.asyncio
+async def test_source_records_property_entity_type_is_scanned():
+    cursor = Cursor()
+    inventory, _, _ = await discover_reference_inventory(
+        cursor, ["RegistryData"], "RegistryData"
+    )
+    property_inventory = [
+        item for item in inventory
+        if item["table"] == "registry_source_records" and item["entity_type"] == "property"
+    ]
+    assert property_inventory
+    findings = await scan_references(cursor, property_inventory, [7])
+    assert findings and findings[0]["property_id"] == 7
 
 
 @pytest.mark.asyncio
