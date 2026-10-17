@@ -314,6 +314,59 @@ class VisitSourceAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "skipped")
         fetch.assert_not_awaited()
 
+    async def test_daily_detail_refresh_rechecks_existing_rows_after_lock(self):
+        class LockedRefreshCursor(EmptyCursor):
+            def __init__(self, connection):
+                self.connection = connection
+
+            async def execute(self, sql, params=None):
+                self.connection.queries.append((sql, params))
+
+            async def fetchone(self):
+                sql = self.connection.queries[-1][0].upper()
+                if "COUNT(*) FROM T_VISIT_DETAILS" in sql:
+                    self.connection.count_checks += 1
+                    # Rows arrive after the initial empty check but before the
+                    # caller obtains the named import lock.
+                    return (0,) if self.connection.count_checks == 1 else (4,)
+                if "GET_LOCK" in sql:
+                    return (1,)
+                return None
+
+        class LockedRefreshConnection:
+            def __init__(self):
+                self.queries = []
+                self.count_checks = 0
+                self.commits = 0
+
+            def cursor(self):
+                return LockedRefreshCursor(self)
+
+            async def commit(self):
+                self.commits += 1
+
+            async def rollback(self):
+                return None
+
+        connection = LockedRefreshConnection()
+        with (
+            patch("services.visit_source.settings.VISIT_SOURCE_MOCK", True),
+            patch("services.visit_source.fetch_rows", new=AsyncMock()) as fetch,
+            patch("services.visit_source.commit_rows", new=AsyncMock()) as commit,
+        ):
+            result = await ensure_daily_detail_visit_data(
+                connection, date(2026, 8, 14), user_id=7
+            )
+
+        self.assertEqual(result, {"status": "existing", "record_count": 4})
+        fetch.assert_not_awaited()
+        commit.assert_not_awaited()
+        self.assertEqual(connection.commits, 0)
+        sql = [query.upper() for query, _ in connection.queries]
+        self.assertEqual(sum("COUNT(*) FROM T_VISIT_DETAILS" in query for query in sql), 2)
+        self.assertEqual(sum("RELEASE_LOCK" in query for query in sql), 1)
+        self.assertFalse(any("INSERT INTO _VISIT_SOURCE_RUNS" in query for query in sql))
+
     async def test_daily_detail_refresh_imports_fetched_rows(self):
         class RefreshCursor(EmptyCursor):
             def __init__(self, connection):

@@ -577,6 +577,19 @@ async def ensure_daily_detail_visit_data(
 
     run_id: int | None = None
     try:
+        # Another import may have completed while this request waited for the
+        # named lock. Recheck under the lock before creating a source run or
+        # replacing the day's rows.
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT COUNT(*) FROM t_visit_details WHERE `业务日期`=%s",
+                (business_date,),
+            )
+            row = await cur.fetchone()
+        existing_count = int(row[0] or 0) if row else 0
+        if existing_count:
+            return {"status": "existing", "record_count": existing_count}
+
         async with conn.cursor() as cur:
             await cur.execute(
                 """
