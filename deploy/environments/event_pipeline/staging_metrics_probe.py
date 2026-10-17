@@ -29,7 +29,7 @@ def _container(project: str, service: str) -> str:
     return f"{project}-{service}-1"
 
 
-def _mysql_status(container: str) -> dict[str, int]:
+def _mysql_status(container: str) -> dict[str, int | None]:
     sql = (
         "SHOW GLOBAL STATUS WHERE Variable_name IN "
         "('Threads_connected','Threads_running','Innodb_row_lock_current_waits',"
@@ -40,7 +40,7 @@ def _mysql_status(container: str) -> dict[str, int]:
         'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -u"$MYSQL_USER" --batch --skip-column-names -e "$1"',
         "staging-metrics", sql,
     ])
-    result: dict[str, int] = {}
+    result: dict[str, int | None] = {}
     for line in output.splitlines():
         name, _, value = line.partition("\t")
         if name and value.strip().lstrip("-").isdigit():
@@ -52,9 +52,8 @@ def _mysql_status(container: str) -> dict[str, int]:
     if not required <= set(result):
         raise RuntimeError("Staging MySQL metrics contract incomplete")
     # MariaDB and some MySQL-compatible images do not expose the optional
-    # cumulative deadlock counter. Keep a stable report field with an
-    # explicit zero when the server cannot provide it.
-    result.setdefault("Innodb_deadlocks", 0)
+    # cumulative deadlock counter. Preserve that as unavailable, not zero.
+    result.setdefault("Innodb_deadlocks", None)
     return result
 
 
