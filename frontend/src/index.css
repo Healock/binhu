@@ -3660,6 +3660,152 @@ html.desktop-shell .ant-notification-topRight {
   min-width: 0;
 }
 
+.registry-mobile-toolbar-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.registry-mobile-toolbar-filters .ant-input-affix-wrapper {
+  min-width: 0;
+}
+
+.registry-mobile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.registry-mobile-actions-menu {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+  max-width: min(92vw, 360px);
+  padding: 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow-lg);
+}
+
+.registry-mobile-actions-menu .list-toolbar__actions {
+  display: grid;
+  gap: 8px;
+}
+
+.registry-mobile-actions-menu .ant-btn {
+  width: 100%;
+}
+
+.registry-mobile-filters {
+  display: grid;
+  gap: 18px;
+}
+
+.registry-mobile-filter-group {
+  display: grid;
+  gap: 8px;
+}
+
+.registry-mobile-filter-group > .ant-select,
+.registry-mobile-filter-group > .ant-picker {
+  width: 100%;
+  min-width: 0;
+}
+
+.registry-mobile-filter-group__title {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.registry-mobile-filter-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.registry-mobile-property-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.registry-mobile-property-row {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.registry-mobile-property-row:hover,
+.registry-mobile-property-row:focus-visible {
+  border-color: var(--app-primary-border);
+  background: var(--app-primary-soft);
+  outline: none;
+}
+
+.registry-mobile-property-row__main,
+.registry-mobile-property-row__meta,
+.registry-mobile-property-row__status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.registry-mobile-property-row__main {
+  display: grid;
+  gap: 2px;
+}
+
+.registry-mobile-property-row__main strong,
+.registry-mobile-property-row__main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registry-mobile-property-row__main strong {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.registry-mobile-property-row__main span,
+.registry-mobile-property-row__meta {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.registry-mobile-property-row__status {
+  flex-wrap: wrap;
+}
+
+.registry-mobile-property-row__status .ant-tag {
+  margin-inline-end: 0;
+}
+
+.registry-mobile-property-row__meta {
+  justify-content: space-between;
+}
+
+.registry-mobile-property-empty {
+  padding: 32px 12px;
+  color: var(--app-text-secondary);
+  text-align: center;
+}
+
 .registry-management-layout,
 .operations-log-layout {
   display: grid;

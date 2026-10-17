@@ -339,6 +339,17 @@ test('房屋档案显示小区匹配状态、待确认数量和人工确认入�
   assert.match(styleSource, /registry-small-community-match/)
 })
 
+test('房屋档案手机端使用紧凑列表和单一筛选入口', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  assert.match(page, /registry-mobile-toolbar-filters/)
+  assert.match(page, /title="筛选房屋"/)
+  assert.match(page, /registry-mobile-property-list/)
+  assert.match(page, /onClick=\{\(\) => void openDetail\('property', row\)\}/)
+  assert.match(styles, /\.registry-mobile-property-list\s*\{[^}]*display:\s*grid;[^}]*gap:\s*8px/s)
+  assert.match(styles, /\.registry-mobile-property-row\s*\{[^}]*width:\s*100%;[^}]*padding:/s)
+})
+
 test('小区标注待复核行只允许携带房屋快照人工确认', () => {
   const pageSource = readFileSync(
     new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url),
