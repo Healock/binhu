@@ -15,6 +15,7 @@ from config import settings
 from services.visit_import import normalize_address as normalize_visit_address
 from services.registry_import import normalize_address as normalize_registry_address
 from services.registry_property_identity import current_household_snapshot, property_snapshot
+from services.registry_property_canonical import load_property_identity_graph
 
 
 def _iso(value: Any) -> str | None:
@@ -113,8 +114,33 @@ async def _address_owners(cur, properties: list[dict], variants: dict[int, list[
     Include aliases and address history so filtering a duplicate out of a page
     cannot turn an ambiguous address into an apparently unique association.
     """
+    identity_graph = await load_property_identity_graph(cur)
+    requested_ids = [int(item["id"]) for item in properties if item.get("id")]
+    family_ids = sorted(identity_graph.family(requested_ids) - set(requested_ids))
+    family_properties = {}
+    if family_ids:
+        for start in range(0, len(family_ids), 500):
+            batch = family_ids[start:start + 500]
+            placeholders = ",".join(["%s"] * len(batch))
+            await cur.execute(
+                "SELECT p.id,p.community_id,p.street,p.natural_address,p.building,p.room,"
+                "p.normalized_address,p.source_house_no,p.source_updated_at,p.housing_type,"
+                "p.residence_type,p.household_status,p.community_name_snapshot "
+                f"FROM registry_properties p WHERE p.id IN ({placeholders})",
+                tuple(batch),
+            )
+            for row in await cur.fetchall():
+                family_properties[int(row[0])] = {
+                    **property_snapshot(row), "natural_address": row[3],
+                    "normalized_address": row[6], "community_name": row[12],
+                }
+        historical_variants = await load_property_address_variants(cur, family_ids)
+        for family_id, values_for_id in historical_variants.items():
+            target_id = identity_graph.resolve(family_id).canonical_id
+            variants.setdefault(target_id, []).extend(values_for_id)
     all_properties = {int(item["id"]): item for item in properties if item.get("community_id")}
-    values = {str(value) for item in properties for value in
+    all_properties.update(family_properties)
+    values = {str(value) for item in all_properties.values() for value in
               [item.get("natural_address"), item.get("normalized_address"), *variants.get(int(item["id"]), [])]
               if value}
     communities = sorted({int(item["community_id"]) for item in all_properties.values()})
@@ -142,8 +168,26 @@ async def _address_owners(cur, properties: list[dict], variants: dict[int, list[
                 **property_snapshot(row), "natural_address": row[3], "normalized_address": row[6],
                 "community_name": row[12],
             }
-    extra = sorted(set(all_properties) - {int(item["id"]) for item in properties})
+    extra = sorted(set(all_properties) - {int(item["id"]) for item in properties}
+                   - set(family_properties))
     variants = {**variants, **await load_property_address_variants(cur, extra)}
+    # Keep historical address/version ownership intact in storage, while
+    # projecting matching candidates to the current household identity.
+    collapsed: dict[int, dict] = {}
+    collapsed_variants: dict[int, list[str]] = defaultdict(list)
+    for property_id, item in all_properties.items():
+        resolution = identity_graph.resolve(property_id)
+        canonical_id = resolution.canonical_id
+        if property_id == canonical_id or canonical_id not in collapsed:
+            collapsed[canonical_id] = {**item, "id": canonical_id}
+        collapsed_variants[canonical_id].extend(variants.get(property_id, []))
+        if property_id != canonical_id:
+            collapsed_variants[canonical_id].extend([
+                str(item.get("natural_address") or ""),
+                str(item.get("normalized_address") or ""),
+            ])
+    all_properties = collapsed
+    variants = collapsed_variants
     owners = defaultdict(set)
     for identifier, item in all_properties.items():
         for key in property_visit_keys(item, variants.get(identifier)):

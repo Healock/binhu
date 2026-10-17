@@ -251,6 +251,15 @@ class _PropertySearchConnection:
         return self.search_cursor
 
 
+def _property_search_calls(cursor):
+    """Ignore the canonical-identity preflight added to property queries."""
+    return [
+        call for call in cursor.calls
+        if not call[0].startswith("SELECT old_property_id,canonical_property_id,community_id,version")
+        and "SELECT id,community_id,normalized_address FROM registry_properties WHERE id IN" not in call[0]
+    ]
+
+
 @pytest.mark.asyncio
 async def test_property_search_combines_scope_keyword_community_and_housing_filters(monkeypatch):
     async def allowed_ids(_user, _permission):
@@ -271,15 +280,18 @@ async def test_property_search_combines_scope_keyword_community_and_housing_filt
         conn,
     )
 
-    count_sql, count_params = conn.search_cursor.calls[0]
-    status_sql, status_params = conn.search_cursor.calls[1]
-    row_sql, row_params = conn.search_cursor.calls[2]
+    calls = _property_search_calls(conn.search_cursor)
+    count_sql, count_params = calls[0]
+    status_sql, status_params = calls[1]
+    row_sql, row_params = calls[2]
     assert "community_id IN" in count_sql
     assert "community_id=%s" in count_sql
     assert "housing_type IN" in count_sql
     assert "registry_address_aliases" in count_sql
-    assert sum(isinstance(value, str) and value.startswith("%") for value in count_params) == 11
+    assert sum(isinstance(value, str) and value.startswith("%") for value in count_params) == 15
     assert "property_match.small_community_name LIKE %s" in count_sql
+    assert "registry_property_identity_mappings" in count_sql
+    assert "COALESCE(identity_map.canonical_property_id,certificate.property_id)" in count_sql
     assert "GROUP BY COALESCE(property_match.match_status,'unmatched')" in status_sql
     assert status_params == count_params
     assert row_params[-2:] == (20, 20)
@@ -305,11 +317,12 @@ async def test_property_search_separates_not_required_from_pending_source_issues
         conn,
     )
 
-    count_sql, count_params = conn.search_cursor.calls[0]
+    count_sql, count_params = _property_search_calls(conn.search_cursor)[0]
     assert "certificate_issues.issue_count" in count_sql
     assert "certificate_source_state.source_ready" in count_sql
     assert "certificate_count,0)=0" in count_sql
     assert "issue_count,0)=0" in count_sql
+    assert "registry_property_identity_mappings" in count_sql
     assert count_params == ("active", "个人出租", "单位出租")
 
 
@@ -331,9 +344,10 @@ async def test_never_visit_filter_resolves_full_scoped_candidates_before_page_an
             PropertySearch(visit_status="never", page=2, page_size=20), {"id": 1}, conn,
             export_all=export_all,
         )
-        candidate_sql = conn.search_cursor.calls[0][0]
-        count_sql, params = conn.search_cursor.calls[1]
-        row_sql, row_params = conn.search_cursor.calls[3]
+        calls = _property_search_calls(conn.search_cursor)
+        candidate_sql = calls[0][0]
+        count_sql, params = calls[1]
+        row_sql, row_params = calls[3]
         assert "LIMIT" not in candidate_sql
         assert "community_id IN" in candidate_sql
         assert "property.id IN (%s,%s)" in count_sql

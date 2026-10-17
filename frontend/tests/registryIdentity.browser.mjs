@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, resolve } from 'node:path'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
 
-const server = await createServer({ server: { host: '127.0.0.1', port: 0 } })
+const testDirectory = dirname(fileURLToPath(import.meta.url))
+const frontendRoot = resolve(testDirectory, '..')
+const repositoryRoot = resolve(frontendRoot, '..')
+const server = await createServer({ root: frontendRoot, server: { host: '127.0.0.1', port: 0 } })
 await server.listen()
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`
 const browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) })
@@ -13,7 +18,8 @@ const base = {
   visit_count: 0, latest_visit_date: null, latest_star_rating: null, latest_star_rating_at: null,
 }
 try {
-  mkdirSync('scratch/registry-identity', { recursive: true })
+  const screenshotDirectory = resolve(repositoryRoot, 'scratch/registry-identity')
+  mkdirSync(screenshotDirectory, { recursive: true })
   for (const [width, height, dark] of [[390, 844, false], [1024, 640, true], [1280, 720, false], [1280, 960, true], [1680, 1050, false], [1920, 1080, true]]) {
     const page = await browser.newPage({ viewport: { width, height } })
     const errors = []
@@ -31,13 +37,34 @@ try {
       } })
       if (url.pathname === '/api/grid-members/communities') return send([{ id: 8, name: '合成社区', is_active: true }])
       if (url.pathname === '/api/registry/properties/search') return send({ data: [
-        { ...base, id: 1, latest_visit_date: '2026-10-10', visit_count: 1, latest_star_rating: '五星出租房' },
-        { ...base, id: 2, visit_association_status: 'ambiguous' },
-        { ...base, id: 3, visit_association_status: 'historical_registration', household_status: '已注销' },
-        { ...base, id: 4, visit_association_status: 'community_unresolved' },
+        { ...base, id: 1, natural_address: '合成路1号301室', latest_visit_date: '2026-10-10', visit_count: 1, latest_star_rating: '五星出租房' },
+        { ...base, id: 2, natural_address: '合成路2号301室', visit_association_status: 'ambiguous' },
+        { ...base, id: 3, natural_address: '合成路3号301室', visit_association_status: 'historical_registration', household_status: '已注销' },
+        { ...base, id: 4, natural_address: '合成路4号301室', visit_association_status: 'community_unresolved' },
       ], total: 4 })
       if (url.pathname === '/api/registry/properties/2') return send({ ...base, id: 2, visit_association_status: 'ambiguous' })
-      if (url.pathname === '/api/registry/properties/4') return send({ ...base, id: 4, visit_association_status: 'community_unresolved' })
+      if (url.pathname === '/api/registry/properties/4') return send({
+        ...base,
+        id: 4,
+        visit_association_status: 'community_unresolved',
+        identity: {
+          requested_id: 4,
+          canonical_id: 4,
+          redirected: false,
+          mapping_version: 1,
+          path: [4],
+          historical_ids: [{
+            old_property_id: 3,
+            canonical_property_id: 4,
+            community_id: 8,
+            mapping_version: 1,
+            mapped_at: '2026-10-17T02:00:00Z',
+            source_house_no: 'SYNTHETIC-OLD-HOUSEHOLD',
+            household_status: '已注销',
+            source_count: 2,
+          }],
+        },
+      })
       return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
     })
     await page.goto(`${origin}/registry`, { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -45,13 +72,17 @@ try {
     await page.getByText('历史户号，请查看现行档案', { exact: true }).waitFor()
     await page.getByText('社区关联待核对', { exact: true }).waitFor()
     assert.equal(await page.locator('html').getAttribute('data-theme'), dark ? 'dark' : 'light')
-    await page.getByRole('button', { name: /详\s*情/ }).nth(3).click()
+    const detailButtons = page.getByRole('button', { name: /详\s*情/ })
+    if (await detailButtons.count() >= 4) await detailButtons.nth(3).click()
+    else await page.locator('.registry-mobile-property-row').nth(3).click()
     await page.getByText('请档案管理员核对房屋正式社区及社区历史名称映射，修正后刷新重试。').waitFor()
+    await page.getByText('历史户号（1）', { exact: true }).click()
+    await page.getByText(/户号 SYNTHETIC-OLD-HOUSEHOLD/).waitFor()
     assert.equal(await page.getByText('visit_association_status', { exact: true }).count(), 0)
     const drawer = page.getByRole('dialog')
     await drawer.waitFor()
     await page.waitForTimeout(400)
-    await page.screenshot({ path: `scratch/registry-identity/${width}-${height}-${dark ? 'dark' : 'light'}.png` })
+    await page.screenshot({ path: resolve(screenshotDirectory, `${width}-${height}-${dark ? 'dark' : 'light'}.png`) })
     const overflow = await drawer.evaluate(element => element.scrollWidth > element.clientWidth + 1)
     assert.equal(overflow, false, 'new association guidance must not overflow the detail drawer')
     assert.deepEqual(errors, [])

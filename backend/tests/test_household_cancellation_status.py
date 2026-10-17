@@ -151,7 +151,10 @@ async def test_search_and_export_share_cancellation_filter(monkeypatch, state, v
     for export_all in [False, True]:
         conn = _PropertySearchConnection()
         await registry._property_search_result(registry.PropertySearch(household_status=state), {"id": 7}, conn, export_all=export_all)
-        sql, params = conn.search_cursor.calls[0]
+        sql, params = next(
+            call for call in conn.search_cursor.calls
+            if call[0].startswith("SELECT COUNT(*) FROM registry_properties property")
+        )
         assert "property.status=%s" not in sql
         assert "community_id IN" in sql
         if value:

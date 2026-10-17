@@ -17,7 +17,7 @@ from services.registry_visit_history import (
 
 
 class _Cursor:
-    def __init__(self, *, aliases=(), versions=(), visits=(), count=0, history=(), peers=(), communities=None, community_aliases=(), snapshots=()):
+    def __init__(self, *, aliases=(), versions=(), visits=(), count=0, history=(), peers=(), communities=None, community_aliases=(), snapshots=(), identity_mappings=(), identity_properties=()):
         self.communities = communities if communities is not None else [(8, "测试社区"), (8, "长板社区"), (8, "合成社区"), (8, "测试甲社区"), (9, "测试乙社区")]
         self.community_aliases = list(community_aliases)
         self.snapshots = list(snapshots)
@@ -27,12 +27,18 @@ class _Cursor:
         self.count = count
         self.history = list(history)
         self.peers = list(peers)
+        self.identity_mappings = list(identity_mappings)
+        self.identity_properties = list(identity_properties)
         self.mode = ""
         self.calls = []
 
     async def execute(self, sql, params=()):
         self.calls.append((sql, tuple(params)))
-        if "._communities" in sql:
+        if "old_property_id,canonical_property_id,community_id,version" in sql:
+            self.mode = "identity_mappings"
+        elif "SELECT id,community_id FROM" in sql and "registry_properties" in sql:
+            self.mode = "identity_properties"
+        elif "._communities" in sql:
             self.mode = "communities"
         elif "._community_aliases" in sql:
             self.mode = "community_aliases"
@@ -64,6 +70,8 @@ class _Cursor:
             "visits": self.visits,
             "history": self.history,
             "peers": self.peers,
+            "identity_mappings": self.identity_mappings,
+            "identity_properties": self.identity_properties,
         }.get(self.mode, [])
 
 

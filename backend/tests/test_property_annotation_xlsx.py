@@ -113,11 +113,14 @@ class Connection:
     async def execute(self, sql, params=()):
         self.sql.append(sql)
         self.params.append(params)
+        self._last_sql = sql
 
     async def executemany(self, sql, params):
         await self.execute(sql, params)
 
     async def fetchall(self):
+        if getattr(self, "_last_sql", "").startswith("SELECT old_property_id,canonical_property_id,community_id,version"):
+            return []
         return [(42, 8, "合成社区", 3, "active")]
 
     async def begin(self):
@@ -205,7 +208,11 @@ async def test_legacy_inactive_cancelled_property_can_confirm_community(data):
     result = await preview(annotated([property_row]))
     assert result["ready"] == 1
     conn = Connection()
-    conn.fetchall = AsyncMock(return_value=[(42, 8, "合成社区", 3, "inactive")])
+    async def fetch_rows():
+        if conn._last_sql.startswith("SELECT old_property_id,canonical_property_id,community_id,version"):
+            return []
+        return [(42, 8, "合成社区", 3, "inactive")]
+    conn.fetchall = fetch_rows
     applied = await registry.apply_property_annotations(
         registry.PropertyAnnotationApply(confirm=True, items=[result["items"][0]["apply_item"]]), None, USER, conn,
     )

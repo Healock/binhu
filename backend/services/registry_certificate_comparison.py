@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from services.registry_certificate_source import certificate_content_hash, certificate_source_ref, legacy_certificate_source_ref
 from services.registry_certificate_status import certificate_status_summary
 from services.registry_import import normalize_address, normalize_community, normalize_text
+from services.registry_property_canonical import load_property_identity_graph
 
 
 STATUS_KEYS = (
@@ -52,6 +53,43 @@ def _status(value: dict[str, Any], *, housing_type: str, count: int = 1) -> str:
 
 def _empty_status() -> dict[str, dict[str, int]]:
     return {key: {"total": 0, "entered": 0, "exited": 0} for key in STATUS_KEYS}
+
+
+def _canonicalize_comparison_inputs(
+    properties: Iterable[dict[str, Any]],
+    existing: Iterable[dict[str, Any]],
+    identity_graph,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project read-only certificate comparisons onto current property IDs."""
+    properties_by_identity: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for source in properties:
+        item = dict(source)
+        original_id = int(item["id"])
+        canonical_id = identity_graph.resolve(original_id).canonical_id
+        item["id"] = canonical_id
+        key = (
+            canonical_id,
+            str(item.get("normalized_address") or ""),
+            normalize_community(item.get("community_name") or ""),
+        )
+        previous = properties_by_identity.get(key)
+        if previous is None or original_id == canonical_id:
+            properties_by_identity[key] = item
+
+    existing_by_reference: dict[str, dict[str, Any]] = {}
+    existing_without_reference: list[dict[str, Any]] = []
+    for source in existing:
+        item = dict(source)
+        original_id = int(item.get("property_id") or 0)
+        item["property_id"] = identity_graph.resolve(original_id).canonical_id if original_id else 0
+        source_ref = normalize_text(item.get("source_ref"))
+        if not source_ref:
+            existing_without_reference.append(item)
+            continue
+        previous = existing_by_reference.get(source_ref)
+        if previous is None or original_id == item["property_id"]:
+            existing_by_reference[source_ref] = item
+    return list(properties_by_identity.values()), [*existing_by_reference.values(), *existing_without_reference]
 
 
 def compare_certificate_snapshot(
@@ -197,6 +235,7 @@ async def load_certificate_comparison(conn, rows: Iterable[dict[str, Any]], clas
     incoming = list(classified["normal_rows"] if "normal_rows" in classified else rows)
     properties: list[dict[str, Any]] = []
     async with conn.cursor() as cur:
+        identity_graph = await load_property_identity_graph(cur)
         await cur.execute(
             "SELECT p.id,p.normalized_address,p.housing_type,c.name "
             "FROM registry_properties p LEFT JOIN OnlineData._communities c ON c.id=p.community_id"
@@ -221,11 +260,15 @@ async def load_certificate_comparison(conn, rows: Iterable[dict[str, Any]], clas
         existing = []
         for row in await cur.fetchall():
             existing.append({
-                "property_id": int(row[0]), "source_ref": str(row[1] or ""), "source_content_hash": str(row[2] or ""),
+                "property_id": identity_graph.resolve(int(row[0])).canonical_id,
+                "source_ref": str(row[1] or ""), "source_content_hash": str(row[2] or ""),
                 "actual_renter_name": str(row[3] or ""), "actual_renter_identity_number": str(row[4] or ""),
                 "landlord_name": str(row[5] or ""), "signed_status": str(row[6] or ""), "sign_type": str(row[7] or ""),
                 "payload": _payload(row[8]),
             })
+        # Use each current property as authoritative while keeping exact
+        # address/community aliases, and project certificates off retired IDs.
+        properties, existing = _canonicalize_comparison_inputs(properties, existing, identity_graph)
         existing_property_ids = sorted({int(row["property_id"]) for row in existing if int(row.get("property_id") or 0)})
         known_property_ids = {int(row.get("id") or 0) for row in properties}
         missing_property_ids = [item for item in existing_property_ids if item not in known_property_ids]
