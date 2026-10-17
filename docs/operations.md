@@ -1260,7 +1260,7 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 - 按项目管理人明确授权，服务器保持现有系统时间，不执行回拨；本次操作的逻辑迁移窗口记录为服务器显示的 `2026-08-09`，不代表修改了系统时钟。
 - 维护期间先切换 `new-maintenance`，关闭同步计划、每日备份计划和在线回写；创建并校验八库备份后，启用 `BINHU_REGISTRY_FEATURE_ENABLED=true` 与 `BINHU_WORKFLOW_FEATURE_ENABLED=true`，重建 `binhu-backend`、`binhu-ops-agent`，再恢复 `new-production`。
 - 生产验收：健康接口返回 `0.16.0`；三个容器正常；RegistryData 26 张表、WorkflowData 14 张表；辖区档案、人员标签、任务快照和工单均为 0 行；照片调取流程 1 个已发布版本/1 个基础管控处理节点，请假流程保持未发布。
-- 权限核验：社区民警使用 `community_registry_viewer` 且仅有 `own_department` 只读档案权限；内勤岗位可维护全所档案和处理工单；超级管理员拥有 `workflow.config.manage`；功能权限没有因开关开启而扩大。
+- 权限核验：社区民警使用 `community_registry_viewer` 且仅有 `own_department` 只读档案权限；基础管控、中队长等具备全所数据范围的权限组可维护相应档案和处理工单；超级管理员拥有 `workflow.config.manage`；功能权限没有因开关开启而扩大。
 - 备份副本：`/backup/binhu/migration/0.16.0-registry-workflow-pre-switch-20260808T192125Z.sql.gz`；SHA-256 为 `c942942ea0af8768f9fbdb25e3c3c389e22fe373ccb90d7a8a9c629882c9fc68`。同名 manifest 和附件归档一并保留；附件目录为空。
 - 恢复后同步计划为 5 分钟、每日备份为 02:00/保留 7 天，在线回写维持切换前的关闭状态；最近同步任务 `3459` 成功，后端与运维代理近期错误计数为 0。旧表、旧备份和迁移副本均未删除。
 
@@ -1660,9 +1660,9 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 
 预发布账号使用 `@staging` 后缀，Dev 账号使用 `@dev` 后缀；这些账号不能跨环境使用。
 旧 `@shadow` 仅用于历史迁移和证据核对，停用前必须先完成新环境验收和影子资源证据留存。
-## 生产当前任务按日期归档
+## 生产当前任务归档
 
-“流口指令核查”当前任务清理必须使用固定网关的 `current-flow-cleanup` 五阶段命令，不能通过只读 SSH、临时 SQL 或浏览器接口批量删除。2026-09-14 本次运行只允许 `全链条` 和该业务日期；先执行 `measure`、`backup-check`、`prepare`，确认证据目录与八库备份后才能执行 `apply`，最后必须执行 `verify`。完整范围、证据和回退要求见 `docs/plans/current-flow-cleanup-20260914.md`。
+当前任务归档必须使用固定网关的 `current-flow-cleanup` 五阶段命令，不能通过只读 SSH、临时 SQL 或浏览器接口批量删除。工具按 `TASK_WORKFLOWS` 中登记的全部业务类型逐表处理，维护参数中的 `business_date` 只作为运行证据日期，不筛选历史下发日期，也不删除日报、审计或外部历史材料。必须先执行 `measure`、`backup-check`、`prepare`，确认证据目录与八库备份后才能执行 `apply`，最后必须执行 `verify`；任一业务类型失败时整个事务回滚。历史的 2026-09-14 全链条清理记录见 `docs/plans/current-flow-cleanup-20260914.md`。
 # 照片调取业务退役维护
 
 照片调取业务已经停止服务。维护窗口中只允许执行以下顺序，且必须先完成 `WorkflowData`、私人照片附件和 ZIP 目录备份：
@@ -1678,3 +1678,18 @@ python -m migrations.photo_sheet_retirement verify
 清理采用两阶段文件处置：先将附件和 ZIP 复制到退役临时目录并从原路径移除，再删除数据库记录；文件删除、数据库删除和事务提交全部成功后才清理临时目录。任一步骤失败都会恢复临时文件并回滚数据库事务，维护人员不得用强制参数跳过恢复。
 
 本脚本不删除普通工单，不删除其他腾讯快照、迁移审计或回滚材料，也不改变 `TXDOCS_MIGRATION_MODE=readonly` 的历史兼容范围。真实 MySQL、生产备份和清理未在开发机验证，不能以本机测试替代生产维护验收。
+
+## 生产基础归位与照片退役固定维护入口
+
+部门归位和照片退役都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或在容器中手工拼接命令。两项操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
+
+```text
+production-maintenance <operation> <phase> <run-id>
+production-maintenance <operation> apply <run-id> <expected-count> <confirmation>
+```
+
+允许的 `operation` 只有 `internal-department-retirement` 和 `photo-sheet-retirement`；允许的 `phase` 只有 `measure`、`backup`、`apply`、`verify`。`apply` 前必须已经完成同一运行编号的 `measure` 和 `backup`，脚本会重新核对数量、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
+
+该入口由服务器 root 安装，不随普通应用发布自动覆盖。安装或更新时机是：对应网关/维护脚本 PR 合并、CI 通过，且生产发布前；由部署负责人执行 `deploy/install-server-deployer.sh`，先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再运行 `visudo -cf`、检查脚本 SHA-256，并使用 `status` 和一个拒绝性参数测试确认入口边界。安装完成后才允许触发维护工作流。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
+
+部门归位的执行顺序固定为：`measure → backup → apply → verify`。`measure` 输出的内勤人数必须原样作为 `expected-count`；`backup` 只备份 `PlatformData`；`apply` 调用 `migrations.internal_department_retirement` 的完整参数（包括 `--run-id`、`--backup-manifest`、`--expect-internal-members`、`--confirm-remove-internal`）。照片退役同样按四阶段执行，`backup` 包含 `WorkflowData`、照片附件和 ZIP 目录，`apply` 调用既有 `--expect-photo-tickets` 与 `--confirm-empty-photo-tables`。任一阶段失败都停止后续阶段，不覆盖失败证据。

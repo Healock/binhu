@@ -7,7 +7,11 @@ from pydantic import ValidationError
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from routers.grid_members import GridMemberCreate, _attach_account_to_new_member
+from routers.grid_members import (
+    GridMemberCreate,
+    _attach_account_to_new_member,
+    _resolve_member_area,
+)
 from services.member_departments import (
     replace_member_departments,
     resolve_departments,
@@ -86,6 +90,38 @@ class MemberDepartmentTests(unittest.IsolatedAsyncioTestCase):
             Cursor([(8, "综合指挥室", "unit", None, None)]), "流口岗", [8]
         )
         self.assertEqual(departments[0]["type"], "unit")
+
+    async def test_area_scoped_positions_keep_area_assignment(self):
+        class AreaCursor(Cursor):
+            async def fetchone(self):
+                return (12,)
+
+        self.assertEqual(await _resolve_member_area(AreaCursor(), "片长", 12), 12)
+        self.assertEqual(await _resolve_member_area(AreaCursor(), "自购房", 12), 12)
+        with self.assertRaisesRegex(HTTPException, "片长岗位必须指定片区"):
+            await _resolve_member_area(AreaCursor(), "片长", None)
+
+    async def test_direct_unit_member_may_leave_position_empty_and_keep_legacy_department(self):
+        self.assertEqual(
+            GridMemberCreate(
+                name="直属人员",
+                position="",
+                department_ids=[8],
+                account_mode="create",
+                username="direct-member",
+                password="password-123",
+            ).position,
+            "",
+        )
+        departments = await resolve_departments(
+            Cursor([(9, "历史内勤", "internal", None, None)]), "", [9],
+            allowed_internal_ids=[9],
+        )
+        self.assertEqual(departments[0]["type"], "internal")
+        with self.assertRaises(HTTPException):
+            await resolve_departments(
+                Cursor([(9, "历史内勤", "internal", None, None)]), "", [9]
+            )
 
     async def test_replacing_departments_updates_links_and_legacy_primary(self):
         cursor = Cursor()

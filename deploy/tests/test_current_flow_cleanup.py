@@ -24,10 +24,11 @@ class CurrentFlowCleanupContractTests(unittest.TestCase):
         self.assertIsNone(parse_business_date("2026-02-30"))
         self.assertIsNone(parse_business_date(""))
 
-    def test_gateway_contract_is_fixed_to_approved_date_and_parser(self):
+    def test_gateway_contract_accepts_evidence_date_without_parser_override(self):
         source = (ROOT / "deploy/binhu-deploy-gateway").read_text(encoding="utf-8")
         self.assertIn("current-flow-cleanup", source)
-        self.assertIn('"$cleanup_business_date" == "2026-09-14"', source)
+        self.assertNotIn('"$cleanup_business_date" == "2026-09-14"', source)
+        self.assertNotIn('"全链条"', source)
 
     def test_tool_has_no_raw_business_value_output(self):
         tree = ast.parse(

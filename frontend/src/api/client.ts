@@ -3041,7 +3041,7 @@ export async function listGridMembers(params: {
   keyword?: string
   community?: string
   position?: string
-  category?: 'flow_work' | 'internal_business' | 'police_leadership'
+  category?: 'flow_work' | 'internal_business' | 'police_leadership' | 'other'
   page?: number
   page_size?: number
 }): Promise<{
