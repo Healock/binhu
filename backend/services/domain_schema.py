@@ -348,6 +348,7 @@ async def ensure_registry_schema(cur) -> None:
             phase VARCHAR(30) NOT NULL DEFAULT 'queued',
             requested_by BIGINT DEFAULT NULL,
             current_page INT UNSIGNED NOT NULL DEFAULT 0,
+            total_pages INT UNSIGNED DEFAULT NULL,
             fetched_count INT UNSIGNED NOT NULL DEFAULT 0,
             accepted_count INT UNSIGNED NOT NULL DEFAULT 0,
             rejected_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -364,6 +365,12 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_certificate_run_requester (requested_by, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur,
+        "registry_certificate_source_runs",
+        "total_pages",
+        "INT UNSIGNED DEFAULT NULL AFTER current_page",
+    )
     await _ensure_column(
         cur,
         "registry_certificate_source_runs",

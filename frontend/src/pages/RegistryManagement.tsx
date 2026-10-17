@@ -1124,7 +1124,7 @@ export default function RegistryManagement() {
 
   const certificateRunActive = Boolean(certificateRun && ['pending', 'running'].includes(certificateRun.status))
   const certificatePhaseLabel = certificateRun?.phase === 'reading'
-    ? `正在读取第 ${certificateRun.current_page + 1} 页`
+    ? `正在读取第 ${certificateRun.current_page + 1} 页${certificateRun.total_pages ? ` / ${certificateRun.total_pages} 页` : ''}`
     : certificateRun?.phase === 'classifying'
       ? '正在分析重复和冲突记录'
       : certificateRun?.phase === 'writing_preview'
@@ -1306,6 +1306,13 @@ export default function RegistryManagement() {
               </>,
             } : undefined}
           >
+            {certificateRun?.phase === 'reading' && certificateRun.total_pages && (
+              <Progress
+                percent={Math.min(100, Math.round(certificateRun.current_page * 100 / certificateRun.total_pages))}
+                status="active"
+                format={value => `${value}%（第 ${certificateRun.current_page}/${certificateRun.total_pages} 页）`}
+              />
+            )}
             <HouseholdImportFiles files={importFiles} busy={importing} onChange={update => { setImportFiles(update); setImportPreview(null) }} />
             {certificateRun?.status === 'failed' && <Alert
               type="warning"

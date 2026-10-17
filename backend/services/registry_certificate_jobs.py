@@ -19,6 +19,7 @@ from services.registry_certificate_source import (
     certificate_content_hash,
     certificate_source_ref,
     iter_certificate_pages,
+    fetch_certificate_page_count,
 )
 from services.registry_import import classify_certificate_rows
 from services.visit_source import VisitSourceError
@@ -48,6 +49,17 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() + "Z" if value else None
 
 
+def _accumulate_source_status(counts: dict[str, int], row: dict[str, Any]) -> None:
+    signed = str(row.get("isSign") or row.get("signed_status") or "").strip().lower()
+    if signed in {"是", "已签署", "已签", "true", "1", "yes"}:
+        counts["signed"] = counts.get("signed", 0) + 1
+    else:
+        counts["unsigned"] = counts.get("unsigned", 0) + 1
+    renter = str(row.get("sjczrxm") or row.get("actual_renter_name") or "").strip()
+    if not renter:
+        counts["renter_missing"] = counts.get("renter_missing", 0) + 1
+
+
 def _public_run(row: tuple | None) -> dict[str, Any] | None:
     if not row:
         return None
@@ -56,24 +68,25 @@ def _public_run(row: tuple | None) -> dict[str, Any] | None:
         "status": str(row[1]),
         "phase": str(row[2]),
         "current_page": int(row[3] or 0),
-        "fetched_count": int(row[4] or 0),
-        "accepted_count": int(row[5] or 0),
-        "rejected_count": int(row[6] or 0),
-        "batch_id": int(row[7]) if row[7] is not None else None,
-        "preview": _json(row[8], {}),
-        "error_code": str(row[9]) if row[9] else None,
-        "error_message": str(row[10]) if row[10] else None,
-        "started_at": _iso(row[11]),
-        "finished_at": _iso(row[12]),
-        "created_at": _iso(row[13]),
-        "updated_at": _iso(row[14]),
-        "trigger_source": str(row[15] or "manual"),
-        "business_date": row[16].isoformat() if row[16] else None,
+        "total_pages": int(row[4]) if row[4] is not None else None,
+        "fetched_count": int(row[5] or 0),
+        "accepted_count": int(row[6] or 0),
+        "rejected_count": int(row[7] or 0),
+        "batch_id": int(row[8]) if row[8] is not None else None,
+        "preview": _json(row[9], {}),
+        "error_code": str(row[10]) if row[10] else None,
+        "error_message": str(row[11]) if row[11] else None,
+        "started_at": _iso(row[12]),
+        "finished_at": _iso(row[13]),
+        "created_at": _iso(row[14]),
+        "updated_at": _iso(row[15]),
+        "trigger_source": str(row[16] or "manual"),
+        "business_date": row[17].isoformat() if row[17] else None,
     }
 
 
 RUN_SELECT = """
-    SELECT id,status,phase,current_page,fetched_count,accepted_count,
+    SELECT id,status,phase,current_page,total_pages,fetched_count,accepted_count,
            rejected_count,batch_id,summary_json,error_code,error_message,started_at,
            finished_at,created_at,updated_at
            ,trigger_source,business_date
@@ -164,7 +177,7 @@ async def retry_certificate_source_run(run_id: int, *, restart: bool = False) ->
                             "DELETE FROM registry_certificate_source_pages WHERE run_id=%s",
                             (run_id,),
                         )
-                        counters = "current_page=0,fetched_count=0,accepted_count=0,rejected_count=0,"
+                        counters = "current_page=0,total_pages=NULL,fetched_count=0,accepted_count=0,rejected_count=0,"
                     else:
                         counters = ""
                     await cur.execute(
@@ -388,6 +401,20 @@ async def run_certificate_source_run(run_id: int) -> None:
                 return
             pages = await _stored_pages(cur, run_id)
 
+        # The metadata request is intentionally separate from page reads so the
+        # UI can show a determinate progress bar before sensitive page payloads
+        # are persisted.
+        try:
+            total_pages = await fetch_certificate_page_count()
+        except VisitSourceError:
+            total_pages = None
+        if total_pages:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE registry_certificate_source_runs SET total_pages=%s WHERE id=%s",
+                    (total_pages, run_id),
+                )
+
         page_map = {int(row[0]): row for row in pages}
         fingerprints = {str(row[4]) for row in pages}
         last_page = max(page_map, default=0)
@@ -395,6 +422,10 @@ async def run_certificate_source_run(run_id: int) -> None:
         fetched_count = sum(int(row[1] or 0) for row in pages)
         accepted_count = sum(int(row[2] or 0) for row in pages)
         rejected_count = sum(int(row[3] or 0) for row in pages)
+        progress_status: dict[str, int] = {}
+        for saved_page in pages:
+            for incoming_row in _json(saved_page[5], []):
+                _accumulate_source_status(progress_status, incoming_row)
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE registry_certificate_source_runs SET current_page=%s,fetched_count=%s,"
@@ -422,6 +453,8 @@ async def run_certificate_source_run(run_id: int) -> None:
             next_rejected = rejected_count + int(page["rejected_count"])
             if next_fetched > settings.VISIT_SOURCE_MAX_RECORDS:
                 raise VisitSourceError("too_many_records", "告知书来源记录数超过保护阈值")
+            for incoming_row in page["rows"]:
+                _accumulate_source_status(progress_status, incoming_row)
             async with conn.cursor() as cur:
                 await cur.execute(
                     "INSERT INTO registry_certificate_source_pages "
@@ -439,9 +472,14 @@ async def run_certificate_source_run(run_id: int) -> None:
                 )
                 await cur.execute(
                     "UPDATE registry_certificate_source_runs "
-                    "SET current_page=%s,fetched_count=%s,accepted_count=%s,rejected_count=%s "
+                    "SET current_page=%s,fetched_count=%s,accepted_count=%s,rejected_count=%s,summary_json=%s "
                     "WHERE id=%s",
-                    (page_no, next_fetched, next_accepted, next_rejected, run_id),
+                    (page_no, next_fetched, next_accepted, next_rejected, json.dumps({"progress": {
+                        "incoming_total": next_fetched,
+                        "scope_accepted": next_accepted,
+                        "scope_rejected": next_rejected,
+                        "status_counts": progress_status,
+                    }}, ensure_ascii=False), run_id),
                 )
             page_map[page_no] = (
                 page_no,
@@ -496,6 +534,12 @@ async def run_certificate_source_run(run_id: int) -> None:
         if trigger_source == "scheduled":
             applied = await apply_certificate_batch(conn, int(result["batch_id"]), None)
             result = {**result, "application": applied, "status": applied["status"]}
+        result["progress"] = {
+            "incoming_total": fetched_count,
+            "scope_accepted": accepted_count,
+            "scope_rejected": rejected_count,
+            "status_counts": progress_status,
+        }
         async with conn.cursor() as cur:
             await cur.execute(
                 "DELETE FROM registry_certificate_source_pages WHERE run_id=%s",

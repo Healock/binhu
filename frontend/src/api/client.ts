@@ -4642,6 +4642,7 @@ export interface RegistryCertificateSourceRun {
   status: 'pending' | 'running' | 'completed' | 'failed'
   phase: 'queued' | 'reading' | 'classifying' | 'writing_preview' | 'finished'
   current_page: number
+  total_pages: number | null
   fetched_count: number
   accepted_count: number
   rejected_count: number
@@ -4657,6 +4658,12 @@ export interface RegistryCertificateSourceRun {
     duplicate_groups?: number
     conflict_groups?: number
     comparison?: RegistryCertificateComparison
+    progress?: {
+      incoming_total?: number
+      scope_accepted?: number
+      scope_rejected?: number
+      status_counts?: Record<string, number>
+    }
   }
   error_code: string | null
   error_message: string | null
