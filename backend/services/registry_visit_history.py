@@ -13,6 +13,8 @@ from typing import Any
 
 from config import settings
 from services.visit_import import normalize_address as normalize_visit_address
+from services.registry_import import normalize_address as normalize_registry_address
+from services.registry_property_identity import current_household_snapshot, property_snapshot
 
 
 def _iso(value: Any) -> str | None:
@@ -71,6 +73,92 @@ def _visit_table() -> str:
     return f"`{schema}`.`t_visit_details`"
 
 
+async def _community_labels(cur, community_ids: set[int]):
+    """Resolve VisitData's text labels to stable IDs without guessing.
+
+    Read all identities so a stale snapshot/alias shared by two communities is
+    rejected, even when only one community is on the current page.
+    """
+    schema = (settings.MYSQL_PLATFORM_DB if settings.PLATFORM_DOMAIN_ACTIVE
+              else settings.MYSQL_ONLINE_DATA_DB).replace("`", "")
+    await cur.execute(f"SELECT id,name FROM `{schema}`._communities")
+    formal = list(await cur.fetchall())
+    valid_ids = {int(row[0]) for row in formal}
+    await cur.execute(f"SELECT community_id,alias FROM `{schema}`._community_aliases")
+    aliases = list(await cur.fetchall())
+    await cur.execute("SELECT DISTINCT community_id,community_name_snapshot FROM registry_properties WHERE community_id IS NOT NULL")
+    snapshots = list(await cur.fetchall())
+    owners = defaultdict(set)
+    for identifier, label in [*formal, *aliases, *snapshots]:
+        label = str(label or "").strip()
+        if identifier is not None and label:
+            owners[label].add(int(identifier))
+    labels = defaultdict(set)
+    resolved = {}
+    contested_ids = set()
+    for label, identifiers in owners.items():
+        if len(identifiers) == 1:
+            identifier = next(iter(identifiers))
+            if identifier in valid_ids and identifier in community_ids:
+                labels[identifier].add(label)
+                resolved[label] = identifier
+        else:
+            contested_ids.update(identifiers)
+    return labels, resolved, contested_ids
+
+
+async def _address_owners(cur, properties: list[dict], variants: dict[int, list[str]]):
+    """Resolve ownership against all matching archives, independent of paging.
+
+    Include aliases and address history so filtering a duplicate out of a page
+    cannot turn an ambiguous address into an apparently unique association.
+    """
+    all_properties = {int(item["id"]): item for item in properties if item.get("community_id")}
+    values = {str(value) for item in properties for value in
+              [item.get("natural_address"), item.get("normalized_address"), *variants.get(int(item["id"]), [])]
+              if value}
+    communities = sorted({int(item["community_id"]) for item in all_properties.values()})
+    if not communities:
+        return {}, {}
+    keys = sorted({normalize_registry_address(value) for value in values} - {""})
+    for start in range(0, len(keys), 500):
+        batch = keys[start:start + 500]
+        slots = ",".join(["%s"] * len(batch))
+        await cur.execute(
+            "SELECT p.id,p.community_id,p.street,p.natural_address,p.building,p.room,"
+            "p.normalized_address,p.source_house_no,p.source_updated_at,p.housing_type,"
+            "p.residence_type,p.household_status,p.community_name_snapshot "
+            "FROM registry_properties p WHERE p.community_id IN ("
+            + ",".join(["%s"] * len(communities)) + ") AND ("
+            f"p.normalized_address IN ({slots}) OR p.id IN ("
+            "SELECT v.property_id FROM registry_property_address_versions v "
+            f"WHERE v.normalized_address IN ({slots})) OR p.id IN ("
+            "SELECT a.property_id FROM registry_address_aliases a "
+            "WHERE a.enabled=1 AND a.normalized_alias IN (" + slots + ")))",
+            (*communities, *batch, *batch, *batch),
+        )
+        for row in await cur.fetchall():
+            all_properties[int(row[0])] = {
+                **property_snapshot(row), "natural_address": row[3], "normalized_address": row[6],
+                "community_name": row[12],
+            }
+    extra = sorted(set(all_properties) - {int(item["id"]) for item in properties})
+    variants = {**variants, **await load_property_address_variants(cur, extra)}
+    owners = defaultdict(set)
+    for identifier, item in all_properties.items():
+        for key in property_visit_keys(item, variants.get(identifier)):
+            owners[(int(item["community_id"]), key)].add(identifier)
+    unique = {}
+    for pair, identifiers in owners.items():
+        if len(identifiers) == 1:
+            unique[pair] = next(iter(identifiers))
+            continue
+        current = current_household_snapshot([all_properties[identifier] for identifier in identifiers])
+        if current:
+            unique[pair] = current["id"]
+    return owners, unique
+
+
 async def load_property_visit_summaries(cur, properties: list[dict]) -> dict[int, dict]:
     """一次读取当前房屋页的走访摘要，避免逐房查询。"""
     defaults = {
@@ -86,19 +174,18 @@ async def load_property_visit_summaries(cur, properties: list[dict]) -> dict[int
         return defaults
 
     variants = await load_property_address_variants(cur, list(defaults))
-    owners: dict[tuple[str, str], set[int]] = defaultdict(set)
+    owners, unique_owners = await _address_owners(cur, properties, variants)
+    labels, label_ids, contested_ids = await _community_labels(cur, {pair[0] for pair in owners})
     for item in properties:
-        property_id = int(item["id"])
-        community = str(item.get("community_name") or "").strip()
-        for key in property_visit_keys(item, variants.get(property_id)):
-            owners[(community, key)].add(property_id)
-
-    unique_owners = {
-        pair: next(iter(property_ids))
-        for pair, property_ids in owners.items()
-        if len(property_ids) == 1
-    }
-    keys_by_community: dict[str, set[str]] = defaultdict(set)
+        if not labels.get(item.get("community_id")) or item.get("community_id") in contested_ids:
+            defaults[int(item["id"])]["visit_association_status"] = "community_unresolved"
+    for pair, identifiers in owners.items():
+        for identifier in identifiers & defaults.keys():
+            if pair not in unique_owners:
+                defaults[identifier]["visit_association_status"] = "ambiguous"
+            elif unique_owners[pair] != identifier:
+                defaults[identifier]["visit_association_status"] = "historical_registration"
+    keys_by_community: dict[int, set[str]] = defaultdict(set)
     for community, key in unique_owners:
         keys_by_community[community].add(key)
     if not keys_by_community:
@@ -106,18 +193,21 @@ async def load_property_visit_summaries(cur, properties: list[dict]) -> dict[int
     latest_visit_order: dict[int, tuple[str, str, int]] = {}
     latest_rating_order: dict[int, tuple[str, int]] = {}
     for community, key_set in sorted(keys_by_community.items()):
+        names = sorted(labels.get(community, []))
+        if not names:
+            continue
         keys = sorted(key_set)
         for start in range(0, len(keys), 500):
             batch = keys[start:start + 500]
             placeholders = ",".join(["%s"] * len(batch))
             await cur.execute(
                 "SELECT id,`社区`,`_address_key`,`业务日期`,`入户时间`,`星级`,`星级采集时间` "
-                f"FROM {_visit_table()} WHERE `社区`=%s AND `_address_key` IN ({placeholders})",
-                (community, *batch),
+                f"FROM {_visit_table()} WHERE `社区` IN ({','.join(['%s'] * len(names))}) AND `_address_key` IN ({placeholders})",
+                (*names, *batch),
             )
             for row in await cur.fetchall():
-                owner = unique_owners.get((str(row[1] or "").strip(), str(row[2] or "")))
-                if owner is None:
+                owner = unique_owners.get((label_ids.get(str(row[1] or "").strip()), str(row[2] or "")))
+                if owner is None or owner not in defaults:
                     continue
                 summary = defaults[owner]
                 summary["visit_count"] += 1
@@ -157,18 +247,9 @@ async def filter_property_ids_by_visit(
     if not properties:
         return set()
     variants = await load_property_address_variants(cur, [int(item["id"]) for item in properties])
-    owners: dict[tuple[str, str], set[int]] = defaultdict(set)
-    for item in properties:
-        property_id = int(item["id"])
-        community = str(item.get("community_name") or "").strip()
-        for key in property_visit_keys(item, variants.get(property_id)):
-            owners[(community, key)].add(property_id)
-    unique_owners = {
-        pair: next(iter(property_ids))
-        for pair, property_ids in owners.items()
-        if len(property_ids) == 1
-    }
-    keys_by_community: dict[str, set[str]] = defaultdict(set)
+    owners, unique_owners = await _address_owners(cur, properties, variants)
+    labels, label_ids, contested_ids = await _community_labels(cur, {pair[0] for pair in owners})
+    keys_by_community: dict[int, set[str]] = defaultdict(set)
     for community, key in unique_owners:
         keys_by_community[community].add(key)
     if not keys_by_community and visit_status != "never":
@@ -182,12 +263,15 @@ async def filter_property_ids_by_visit(
     normalized_ratings = [str(value).strip() for value in (star_ratings or []) if str(value).strip()]
     matched: set[int] = set()
     for community, key_set in sorted(keys_by_community.items()):
+        names = sorted(labels.get(community, []))
+        if not names:
+            continue
         keys = sorted(key_set)
         for start in range(0, len(keys), 500):
             batch = keys[start:start + 500]
             placeholders = ",".join(["%s"] * len(batch))
-            conditions = [f"`社区`=%s", f"`_address_key` IN ({placeholders})"]
-            query_params: list[Any] = [community, *batch]
+            conditions = [f"`社区` IN ({','.join(['%s'] * len(names))})", f"`_address_key` IN ({placeholders})"]
+            query_params: list[Any] = [*names, *batch]
             if visit_start_date is not None and visit_status != "never":
                 conditions.append("`业务日期` >= %s")
                 query_params.append(visit_start_date)
@@ -203,7 +287,7 @@ async def filter_property_ids_by_visit(
                 tuple(query_params),
             )
             for visit_community, address_key in await cur.fetchall():
-                pair = (str(visit_community or "").strip(), str(address_key or ""))
+                pair = (label_ids.get(str(visit_community or "").strip()), str(address_key or ""))
                 if visit_status == "never":
                     matched.update(owners.get(pair, set()))
                     continue
@@ -211,8 +295,9 @@ async def filter_property_ids_by_visit(
                 if owner is not None:
                     matched.add(owner)
     if visit_status == "never":
-        return {int(item["id"]) for item in properties} - matched
-    return matched
+        return {int(item["id"]) for item in properties
+                if labels.get(item.get("community_id")) and item.get("community_id") not in contested_ids} - matched
+    return matched & {int(item["id"]) for item in properties}
 
 
 async def load_property_visit_history(
@@ -224,12 +309,25 @@ async def load_property_visit_history(
     page_size: int,
 ) -> dict:
     keys = property_visit_keys(property_row, variants)
-    community = str(property_row.get("community_name") or "").strip()
+    community = property_row.get("community_id")
+    labels, _, contested_ids = await _community_labels(cur, {community} if community else set())
+    names = sorted(labels.get(community, []))
+    if not names:
+        return {"data": [], "total": 0, "page": page, "page_size": page_size,
+                "visit_association_status": "community_unresolved"}
+    if property_row.get("id"):
+        owners, unique = await _address_owners(cur, [property_row], {int(property_row["id"]): variants})
+        relevant = [(community, key) for key in keys]
+        keys = {key for key in keys if unique.get((community, key)) == int(property_row["id"])}
+        if not keys:
+            ambiguous = any(pair not in unique for pair in relevant if pair in owners)
+            return {"data": [], "total": 0, "page": page, "page_size": page_size,
+                    "visit_association_status": "ambiguous" if ambiguous else "historical_registration"}
     if not community or not keys:
         return {"data": [], "total": 0, "page": page, "page_size": page_size}
     placeholders = ",".join(["%s"] * len(keys))
-    where = f"`社区`=%s AND `_address_key` IN ({placeholders})"
-    params: tuple[Any, ...] = (community, *sorted(keys))
+    where = f"`社区` IN ({','.join(['%s'] * len(names))}) AND `_address_key` IN ({placeholders})"
+    params: tuple[Any, ...] = (*names, *sorted(keys))
     await cur.execute(f"SELECT COUNT(*) FROM {_visit_table()} WHERE {where}", params)
     total = int((await cur.fetchone())[0])
     await cur.execute(
@@ -240,7 +338,7 @@ async def load_property_visit_history(
         (*params, page_size, (page - 1) * page_size),
     )
     rows = await cur.fetchall()
-    return {
+    result = {
         "data": [
             {
                 "id": int(row[0]),
@@ -265,3 +363,6 @@ async def load_property_visit_history(
         "page": page,
         "page_size": page_size,
     }
+    if not total and community in contested_ids:
+        result["visit_association_status"] = "community_unresolved"
+    return result

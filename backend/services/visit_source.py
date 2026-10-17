@@ -541,3 +541,148 @@ async def commit_rows(
     except Exception:
         await fail_import_batch(conn, batch_id, "来源快照入库失败，当前数据未替换")
         raise
+
+
+async def ensure_daily_detail_visit_data(
+    conn,
+    business_date: date,
+    *,
+    user_id: int,
+) -> dict[str, Any]:
+    """Fetch the detail source only when the export date has no local rows.
+
+    The export path is user-triggered, so it may commit a validated read-only
+    source snapshot locally. Existing rows are left untouched, and the source
+    run records only aggregate metadata rather than the fetched payload.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT COUNT(*) FROM t_visit_details WHERE `业务日期`=%s",
+            (business_date,),
+        )
+        row = await cur.fetchone()
+    existing_count = int(row[0] or 0) if row else 0
+    if existing_count:
+        return {"status": "existing", "record_count": existing_count}
+    if not settings.VISIT_SOURCE_MOCK and not settings.VISIT_SOURCE_BASE_URL:
+        return {"status": "skipped", "record_count": 0, "reason": "not_configured"}
+
+    from services.visit_import import VISIT_IMPORT_LOCK_NAME
+
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT GET_LOCK(%s, 0)", (VISIT_IMPORT_LOCK_NAME,))
+        lock_row = await cur.fetchone()
+    if not lock_row or lock_row[0] != 1:
+        raise VisitSourceError("busy", "当前已有走访数据正在处理，请稍后重试")
+
+    run_id: int | None = None
+    try:
+        # Another import may have completed while this request waited for the
+        # named lock. Recheck under the lock before creating a source run or
+        # replacing the day's rows.
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT COUNT(*) FROM t_visit_details WHERE `业务日期`=%s",
+                (business_date,),
+            )
+            row = await cur.fetchone()
+        existing_count = int(row[0] or 0) if row else 0
+        if existing_count:
+            return {"status": "existing", "record_count": existing_count}
+
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO _visit_source_runs (
+                    source_kind, trigger_source, status, requested_by,
+                    requested_start_date, requested_end_date, source_page
+                ) VALUES ('detail', 'daily_detail_export', 'running', %s, %s, %s, %s)
+                """,
+                (user_id, business_date, business_date, "走访明细"),
+            )
+            run_id = int(cur.lastrowid)
+        await conn.commit()
+        try:
+            fetched = await fetch_rows("detail", business_date, business_date)
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE _visit_source_runs
+                    SET response_business_date=%s, record_count=%s,
+                        valid_count=%s, issue_count=%s, summary_json=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        fetched.get("response_business_date"),
+                        fetched.get("record_count", 0),
+                        fetched.get("valid_count", 0),
+                        fetched.get("issue_count", 0),
+                        json.dumps({"issues": fetched.get("issues", [])}, ensure_ascii=False),
+                        run_id,
+                    ),
+                )
+            await conn.commit()
+            imported = await commit_rows(
+                conn,
+                kind="detail",
+                rows=fetched["rows"],
+                start_date=business_date,
+                user_id=user_id,
+                replace_range=True,
+                source_type="daily_detail_export",
+                source_run_id=run_id,
+            )
+            final_status = "confirmed" if imported.get("status") in ("success", "partial") else "failed"
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    UPDATE _visit_source_runs
+                    SET status=%s, summary_json=%s, confirmed_by=%s,
+                        confirmed_at=IF(%s='confirmed', UTC_TIMESTAMP(), NULL)
+                    WHERE id=%s
+                    """,
+                    (
+                        final_status,
+                        json.dumps({
+                            "batch_id": imported.get("batch_id"),
+                            "import_status": imported.get("status"),
+                            "inserted_rows": imported.get("inserted_rows", 0),
+                            "updated_rows": imported.get("updated_rows", 0),
+                        }, ensure_ascii=False),
+                        user_id if final_status == "confirmed" else None,
+                        final_status,
+                        run_id,
+                    ),
+                )
+            await conn.commit()
+            if final_status != "confirmed":
+                raise VisitSourceError(
+                    "import_failed",
+                    "入户走访数据自动获取后未能通过本地校验，未生成每日明细",
+                )
+            return {
+                "status": "refreshed",
+                "record_count": int(fetched.get("valid_count", 0) or 0),
+                "batch_id": imported.get("batch_id"),
+                "source_run_id": run_id,
+            }
+        except VisitSourceError as exc:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE _visit_source_runs SET status='failed', error_code=%s, error_message=%s WHERE id=%s",
+                    (exc.code, exc.message[:500], run_id),
+                )
+            await conn.commit()
+            raise
+        except Exception:
+            await conn.rollback()
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE _visit_source_runs SET status='failed', error_code='internal_error', error_message=%s WHERE id=%s",
+                    ("来源入库失败", run_id),
+                )
+            await conn.commit()
+            raise
+    finally:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT RELEASE_LOCK(%s)", (VISIT_IMPORT_LOCK_NAME,))

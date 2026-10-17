@@ -1654,6 +1654,27 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 浏览器组件验收可在本机 Vite 运行 `frontend/tests/addressWorkbench.browser.mjs`；通过 `PLAYWRIGHT_MODULE` 指定已安装 Playwright，`PLAYWRIGHT_CHANNEL` 指定浏览器（默认 msedge）。HTTP 全部使用虚构拦截，不连接数据库，输出在忽略的 `scratch/address-ux/`。生产构建不包含 tests fixture 页面。
 # 环境入口与隔离（production / staging / development）
 
+## 房屋户号沿革只读测量
+
+`migrations.registry_property_identity` 仅测量同正式社区、精确完整地址一致、来源时间可区分的“旧已注销登记 → 唯一较新未注销登记”。只提供 `measure` 和 `verify`；不存在 `migrate`、`--apply` 或历史归并执行入口，不新增归并历史表。命令显式校验环境及八库范围，使用数据库强制只读的一致性快照，结束时始终回滚并关闭连接。
+
+在 backend 工作目录中，通过获准的只读诊断渠道执行：
+
+```text
+python -m migrations.registry_property_identity measure --environment production
+python -m migrations.registry_property_identity measure --environment production --property-id <现行房屋ID>
+python -m migrations.registry_property_identity verify --environment production --property-id <现行房屋ID>
+```
+
+输出仅包含内部 ID、计数、测量摘要和只读标记，不输出地址或来源正文。测量摘要包含数据库范围；它不是写入许可。verify 在仍有待整理或阻塞组时返回失败，不表示发生过归并。存在人员、机构、房间、告知书、跨域引用或历史人工小区确认的候选会标记为阻塞。真实 MySQL 和驱动未在本地验证，不能使用生产制造测试数据。
+
+本 PR 修复后续导入中的身份复用和走访展示，不自动消除已经存在的重复档案。历史整理必须另立经过评审的固定维护网关：验证备份内容、环境及恢复能力，阻断所有并发写入并排空持有旧房屋 ID 的任务，检查跨库引用和人工确认的保留方案，通过独立 MySQL 验收后再申请生产维护授权。人工暂停说明、文件存在检查或单纯表锁均不能替代这些要求。
+
+走访归属按稳定 community_id 查找全局同址档案，不按页面中的社区名称快照判断唯一性。VisitData 的社区文本通过正式名称、社区别名和档案历史名称映射；名称指向多个正式社区时不猜测归属，也不把无法核对的记录列为“从未走访”。请档案管理员维护正式社区和历史名称映射后重试。
+
+程序回退只回退本次代码；不删除或恢复业务数据。历史重复档案、真实 MySQL、生产部署和业务验收仍是独立待办。
+
+
 正式环境使用 `/` 和 `binhu_session`。预发布使用 `/staging/`、脱敏数据和
 `binhu_staging_session`；Dev 使用 `/dev/`、虚构数据和 `binhu_dev_session`。
 入口、Bootstrap 返回的环境身份、数据库和 Compose 项目必须一致，任何不一致都应拒绝登录，不能回退到生产 API。

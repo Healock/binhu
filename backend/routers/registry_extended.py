@@ -62,6 +62,7 @@ from services.registry_visit_history import (
     load_property_visit_history,
     load_property_visit_summaries,
 )
+from services.registry_property_identity import current_household_snapshot, property_snapshot
 from services.registry_certificate_jobs import (
     create_certificate_source_run,
     get_certificate_source_run,
@@ -720,6 +721,7 @@ async def get_property_detail(
     )
     visit_property = {
         "id": int(row[0]),
+        "community_id": row[2],
         "community_name": row[3],
         "natural_address": row[4],
         "normalized_address": row[13],
@@ -796,7 +798,7 @@ async def get_property_visit_history(
     async with conn.cursor() as cur:
         await _property_scope(cur, property_id, user, REGISTRY_PROPERTY_VIEW)
         await cur.execute(
-            "SELECT id,community_name_snapshot,natural_address,normalized_address "
+            "SELECT id,community_name_snapshot,natural_address,normalized_address,community_id "
             "FROM registry_properties WHERE id=%s",
             (property_id,),
         )
@@ -811,6 +813,7 @@ async def get_property_visit_history(
                 "community_name": row[1],
                 "natural_address": row[2],
                 "normalized_address": row[3],
+                "community_id": row[4],
             },
             variants.get(property_id, []),
             page=page,
@@ -2262,6 +2265,24 @@ async def confirm_household_import(
                     numbered_addresses.setdefault((item[3], item[5]), set()).add(number)
                 address_groups.setdefault((item[3], item[5]), []).append(item)
             conflicting_refs = set()
+            historical_refs = set()
+            for group in address_groups.values():
+                if len({normalize_text(item[2].get("house_no")) for item in group} - {""}) < 2:
+                    continue
+                snapshots = [{**item[2], "community_id": item[3], "ref": item[1]} for item in group]
+                current = current_household_snapshot(snapshots)
+                if current:
+                    winner = current["ref"]
+                    for item in group:
+                        if item[1] != winner:
+                            superseded_source_refs.setdefault(winner, []).append(item[0])
+                            historical_refs.add(item[1])
+                else:
+                    for item in group:
+                        conflicting_refs.add(item[1])
+                        identity_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", item[1], item[5],
+                                                json.dumps(_issue_payload(item[2]), ensure_ascii=False),
+                                                "同社区同地址有不同户号，无法证明注销后重新登记的沿革，需核对来源状态及更新时间"))
             conflicting_refs.update(item[1] for group in address_groups.values() if len(group) > 1
                                     for item in group if not normalize_text(item[2].get("house_no")))
             for group in reuse_groups.values():
@@ -2276,7 +2297,7 @@ async def confirm_household_import(
                     if "household_status" in historical[2]:
                         historical[2]["source_household_status"] = historical[2]["household_status"]
                     historical[2]["household_status"] = "已注销"
-            resolved_rows = [item for item in resolved_rows if item[1] not in conflicting_refs]
+            resolved_rows = [item for item in resolved_rows if item[1] not in conflicting_refs | historical_refs]
             for group in reuse_groups.values():
                 if not any(item[1] in conflicting_refs for item in group):
                     continue
@@ -2331,8 +2352,8 @@ async def confirm_household_import(
                 address_matches = address_cache.get((normalized, community_id), [])
                 household_matches = household_cache.get((number, community_id), []) if number else []
                 exact_household_matches = [item for item in household_matches if str(item[6] or "") == normalized]
-                # A numbered source owns its identity; another numbered property
-                # at the same address is a separate household, not an update target.
+                # Household number matches take precedence, but a dated
+                # cancellation/re-registration may retain the physical house ID.
                 legacy_matches = [item for item in address_matches if not normalize_text(item[7])]
                 if number and len(numbered_addresses.get((community_id, normalized), ())) > 1:
                     legacy_matches = []
@@ -2343,8 +2364,18 @@ async def confirm_household_import(
                     fallback_matches[0] if len(fallback_matches) == 1 else None
                 )
                 reason = ""
+                historical_only = False
                 obsolete_matches = []
                 reused_matches = []
+                if number and not household_matches and address_matches and not legacy_matches:
+                    incoming = {**payload, "community_id": community_id}
+                    snapshots = [property_snapshot(item) for item in address_matches]
+                    current = current_household_snapshot([*snapshots, incoming])
+                    if len(address_matches) == 1 and current is not None:
+                        existing = address_matches[0]
+                        historical_only = current is not incoming
+                    else:
+                        reason = "同社区同地址已有其他户号档案，需先核对注销沿革或整理历史重复档案后重试"
                 if len(exact_household_matches) > 1:
                     property_times = [item[8] for item in exact_household_matches]
                     if all(property_times) and len(set(property_times)) == len(property_times):
@@ -2357,6 +2388,8 @@ async def confirm_household_import(
                 ):
                     reason = "户号或地址对应多份现有档案，请管理员核对档案后重新导入"
                 elif household_matches and not exact_household_matches:
+                    if address_matches:
+                        reason = "户号复用的新地址已有其他档案，需先核对房屋身份后重试"
                     incoming_updated_at = _source_datetime(payload.get("updated_at"))
                     old_times = [item[8] if len(item) > 8 else None for item in household_matches]
                     comparable_old_times = [_source_datetime(value) for value in old_times]
@@ -2370,9 +2403,9 @@ async def confirm_household_import(
                         existing = None
                     else:
                         reason = "同社区同户号的地址已变化，但更新时间不能证明新地址较新，需核对来源时间"
-                if not reason and any(int(item[0]) in newer_property_ids for item in household_matches):
+                if not reason and not historical_only and any(int(item[0]) in newer_property_ids for item in [*household_matches, *([existing] if existing else [])]):
                     reason = "该档案已有更新批次的户号表来源，请取得最新文件重新预览，不能用旧批次覆盖"
-                if not reason and existing:
+                if not reason and existing and not historical_only:
                     current_source_time = _source_datetime(existing[8]) if len(existing) > 8 else None
                     incoming_source_time = _source_datetime(payload.get("updated_at"))
                     if current_source_time and (
@@ -2391,6 +2424,12 @@ async def confirm_household_import(
                 if reason:
                     existing_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", source_ref, normalized,
                                             json.dumps(_issue_payload(payload), ensure_ascii=False), reason))
+                    continue
+                if historical_only:
+                    await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s", (int(existing[0]), record_id))
+                    for duplicate_id in superseded_source_refs.get(source_ref, []):
+                        await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s AND entity_id IS NULL", (int(existing[0]), duplicate_id))
+                    imported += 1
                     continue
                 if obsolete_matches:
                     await cur.executemany(

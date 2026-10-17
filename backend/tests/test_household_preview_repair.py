@@ -8,8 +8,8 @@ class Cursor:
     def __init__(self, status="preview", imported=0, linked=0):
         self.status, self.imported, self.linked = status, imported, linked
         self.issues = [(str(i), "household_duplicate", "pending", LEGACY_REASONS[0]) for i in range(200)]
-        self.rows = [row(str(i), house_no=f"H{i}", address="共享合成地址") for i in range(200)]
-        self.rows += [row(str(200+i), house_no=f"H{i}", address="共享合成地址", household_status="未注销") for i in range(5)]
+        self.rows = [row(str(i), house_no=f"H{i}", address=f"合成路{i}号") for i in range(200)]
+        self.rows += [row(str(200+i), house_no=f"H{i}", address=f"合成路{i}号", household_status="未注销") for i in range(5)]
         self.calls = []
 
     async def execute(self, sql, params=()):

@@ -13,7 +13,9 @@ from services.registry_import import (
     normalize_community,
     normalize_household_status,
     normalize_text,
+    _source_datetime as source_datetime,
 )
+from services.registry_property_identity import current_household_snapshot, property_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -97,19 +99,6 @@ def _payload(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _source_datetime(value: Any):
-    if not value:
-        return None
-    from datetime import datetime
-
-    if isinstance(value, datetime):
-        return value
-    try:
-        return datetime.fromisoformat(str(value).replace("/", "-"))
-    except (TypeError, ValueError):
-        return None
-
-
 async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
                                 payload: dict[str, Any], community_id: int,
                                 community_name: str, reviewer_id: int | None,
@@ -124,7 +113,7 @@ async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
 
     await cur.execute(
         "SELECT id, community_id, street, natural_address, building, room, "
-        "normalized_address, source_house_no FROM registry_properties "
+        "normalized_address, source_house_no, source_updated_at, housing_type, residence_type, household_status FROM registry_properties "
         "WHERE community_id=%s AND (normalized_address=%s OR (%s<>'' AND source_house_no=%s)) "
         "FOR UPDATE",
         (community_id, normalized, house_no, house_no),
@@ -142,9 +131,37 @@ async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
     if household_matches and str(household_matches[0][6] or "") != normalized:
         return False
 
+    historical_only = False
+    if house_no and not household_matches and address_matches and not legacy_matches:
+        incoming = {**payload, "community_id": community_id}
+        current = current_household_snapshot([*(property_snapshot(row) for row in address_matches), incoming])
+        if len(address_matches) != 1 or current is None:
+            return False
+        target = address_matches[0]
+        historical_only = current is not incoming
+
     status = normalize_household_status(payload.get("household_status"))
     if target:
         property_id = int(target[0])
+        if historical_only:
+            if not apply:
+                return True
+            await cur.execute(
+                "UPDATE registry_source_records SET entity_id=%s WHERE batch_id=%s "
+                "AND source_ref=%s AND entity_type='household_property' AND entity_id IS NULL",
+                (property_id, batch_id, source_ref),
+            )
+            return cur.rowcount > 0
+        previous_time = source_datetime(target[8]) if len(target) > 8 else None
+        incoming_time = source_datetime(payload.get("updated_at"))
+        if previous_time and (not incoming_time or incoming_time < previous_time):
+            return False
+        if previous_time and incoming_time == previous_time and (
+            normalize_text(target[9]) != housing_type
+            or normalize_text(target[10]) != normalize_text(payload.get("residence_type"))
+            or normalize_household_status(target[11]) != status
+        ):
+            return False
         await cur.execute(
             "SELECT 1 FROM registry_source_records WHERE entity_type='household_property' "
             "AND entity_id=%s AND batch_id>%s LIMIT 1",
@@ -157,12 +174,12 @@ async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
         await cur.execute(
             "UPDATE registry_properties SET community_id=%s, community_name_snapshot=%s, "
             "natural_address=%s, housing_type=%s, residence_type=%s, source_house_no=%s, "
-            "source_updated_at=%s, source_type='household', source_ref=%s, "
+            "source_updated_at=COALESCE(%s,source_updated_at), source_type='household', source_ref=%s, "
             "current_version=current_version+IF(%s IS NOT NULL AND NOT(household_status <=> %s),1,0), "
             "household_status=COALESCE(%s,household_status), updated_by=%s WHERE id=%s",
             (community_id, community_name, address, housing_type,
-             normalize_text(payload.get("residence_type")), house_no,
-             _source_datetime(payload.get("updated_at")), source_ref,
+             normalize_text(payload.get("residence_type")), house_no or target[7],
+             source_datetime(payload.get("updated_at")), source_ref,
              status, status, status, reviewer_id, property_id),
         )
         await cur.execute(
@@ -188,7 +205,7 @@ async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
             "created_by, updated_by) VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,'household',%s,%s,%s,%s,%s)",
             (community_id, community_name, address, housing_type,
              normalize_text(payload.get("residence_type")), house_no,
-             _source_datetime(payload.get("updated_at")), source_ref, normalized,
+             source_datetime(payload.get("updated_at")), source_ref, normalized,
              status, reviewer_id, reviewer_id),
         )
         property_id = int(cur.lastrowid)

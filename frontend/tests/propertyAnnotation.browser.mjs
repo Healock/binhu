@@ -70,15 +70,54 @@ try {
       return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
     })
     await page.goto(`${origin}/registry`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
-    await page.getByRole('button', { name: '导出当前结果' }).waitFor()
+    await page.getByRole('tab', { name: '房屋档案', exact: true }).waitFor()
+    const searchInput = page.locator('input[placeholder^="搜索地址、户号"]:visible').first()
+    await searchInput.waitFor()
+    const moreButton = page.getByRole('button', { name: /更多/ })
+    const exportButton = page.getByRole('button', { name: /导出当前结果/ })
+    const actionMode = await Promise.race([
+      moreButton.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'compact').catch(() => null),
+      exportButton.waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'standard').catch(() => null),
+    ])
+    assert.ok(actionMode, 'registry toolbar actions become visible')
+    const compact = actionMode === 'compact'
+    const openActions = async () => {
+      if (compact) await moreButton.click()
+    }
+    const openFilters = async () => {
+      if (compact) {
+        await page.getByRole('button', { name: /筛选/ }).first().click()
+        await page.getByText('筛选房屋', { exact: true }).waitFor()
+      }
+    }
+    const applyFilters = async () => {
+      if (compact) {
+        await page.getByRole('button', { name: /应用筛选/ }).click()
+        await page.waitForFunction(() => !Array.from(document.querySelectorAll('.ant-drawer.ant-drawer-open')).some(drawer => drawer.textContent?.includes('筛选房屋')))
+        await page.locator('.ant-drawer-mask').waitFor({ state: 'hidden' })
+      }
+    }
+    const waitForActiveTab = name => page.waitForFunction(expected =>
+      Array.from(document.querySelectorAll('[role="tab"]')).some(tab => tab.textContent?.trim() === expected && tab.getAttribute('aria-selected') === 'true'),
+    name)
+    await openActions()
+    await exportButton.waitFor()
+    if (compact) await moreButton.click()
     assert.equal(lastSearch.household_status, '')
     assert.equal(lastSearch.status, undefined)
+    await openFilters()
     const statusFilter = page.locator('.ant-select').filter({ hasText: '全部注销状态' }).first()
     await statusFilter.click()
     await page.locator('.ant-select-item-option').filter({ hasText: /^已注销$/ }).click()
     await page.keyboard.press('Escape')
+    await applyFilters()
     await page.getByRole('tab', { name: '人员档案', exact: true }).click()
+    await waitForActiveTab('人员档案')
+    await page.locator('input[placeholder="搜索人员姓名"]:visible').waitFor()
     await page.getByRole('tab', { name: '房屋档案', exact: true }).click()
+    await waitForActiveTab('房屋档案')
+    await searchInput.waitFor()
+    await openFilters()
     await statusFilter.waitFor()
     for (let attempt = 0; attempt < 20 && lastSearch.household_status !== ''; attempt++) await page.waitForTimeout(100)
     assert.equal(lastSearch.household_status, '', 'switching tabs resets cancellation filter')
@@ -86,6 +125,7 @@ try {
     await page.locator('.ant-select-item-option').filter({ hasText: /^已注销$/ }).click()
     for (let attempt = 0; attempt < 20 && lastSearch.household_status !== 'cancelled'; attempt++) await page.waitForTimeout(100)
     assert.equal(lastSearch.household_status, 'cancelled')
+    await applyFilters()
     assert.equal(await page.getByRole('button', { name: '停用', exact: true }).count(), 0)
     assert.equal(await page.getByRole('button', { name: '启用', exact: true }).count(), 0)
     mkdirSync('artifacts/household-status', { recursive: true })
@@ -94,9 +134,10 @@ try {
       assert.equal(await page.getByRole('button', { name: '导出小区标注' }).count(), 0)
       assert.equal(await page.getByRole('button', { name: '回导小区标注' }).count(), 0)
     } else {
-      await page.getByPlaceholder('搜索地址、户号、幢室或住房类型').fill('合成')
+      await searchInput.fill('合成')
       await page.waitForTimeout(700)
       const download = page.waitForEvent('download')
+      await openActions()
       await page.getByRole('button', { name: '导出小区标注' }).click()
       await download
       assert.equal(exportJobPolls, 1)
@@ -104,7 +145,9 @@ try {
       assert.equal(exported.sort, 'id_desc')
       assert.equal(exported.household_status, 'cancelled')
       assert.equal(exported.status, undefined)
+      await openActions()
       await page.getByRole('button', { name: '回导小区标注' }).click()
+      if (compact) await page.locator('.registry-mobile-actions-menu').waitFor({ state: 'hidden' })
       const modal = page.getByRole('dialog').filter({ hasText: '小区标注回导预览' })
       await modal.locator('input[type=file]').setInputFiles({ name: 'synthetic-labels.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('synthetic') })
       await modal.getByText('房屋版本已变化，请重新导出').waitFor()
