@@ -59,11 +59,13 @@ class Cursor:
         elif "FROM OnlineData._communities" in sql:
             self.result = (1, "测试社区")
         elif sql.startswith("SELECT old_property_id,canonical_property_id,community_id,version"):
-            self.rows = []
+            self.rows = list(self.conn.identity_mappings)
+        elif sql.startswith("SELECT id,community_id,normalized_address FROM registry_properties"):
+            self.rows = list(self.conn.identity_properties)
         elif sql.startswith("SELECT id,community_id,normalized_address"):
             self.rows = [(7, 1, "合成测试路1号", self.conn.housing_type)]
         elif sql.startswith("SELECT id,source_ref,property_id"):
-            self.rows = [(i, item["ref"], 7, item["hash"], item["payload"])
+            self.rows = [(i, item["ref"], item.get("property_id", 7), item["hash"], item["payload"])
                          for i, item in state["certificates"].items()]
         elif sql.startswith("UPDATE registry_property_certificates SET source_missing_since"):
             for item in state["certificates"].values():
@@ -100,7 +102,7 @@ class Cursor:
                 raise RuntimeError("synthetic write failure")
             for values in rows:
                 state["certificates"][values[-1]].update(
-                    ref=values[1], hash=values[2], payload=json.loads(values[14]), missing=False,
+                    property_id=values[0], ref=values[1], hash=values[2], payload=json.loads(values[14]), missing=False,
                 )
         elif "UPDATE registry_property_certificates SET source_row" in sql:
             for _, key in rows:
@@ -118,16 +120,19 @@ class Cursor:
 
 
 class Connection:
-    def __init__(self, incoming, *, full=1, latest=0, status="preview"):
+    def __init__(self, incoming, *, full=1, latest=0, status="preview", existing_property_id=7,
+                 identity_mappings=(), identity_properties=()):
         old = notice(source_id=999, signed="是")
         self.state = {"incoming": incoming, "full": full, "latest": latest, "status": status,
-                      "certificates": {10: {"ref": old["source_ref"], "hash": old["source_content_hash"],
+                      "certificates": {10: {"property_id": existing_property_id, "ref": old["source_ref"], "hash": old["source_content_hash"],
                                              "payload": old, "missing": False}},
                       "issues": [{"batch": 1, "status": "pending", "ref": "old-issue"}]}
         self.calls = []
         self.lock_result = 1
         self.fail_write = False
         self.housing_type = "个人出租"
+        self.identity_mappings = list(identity_mappings)
+        self.identity_properties = list(identity_properties)
         self.released = False
         self.committed = False
 
@@ -166,6 +171,30 @@ class CertificateApplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, result["updated_count"])
         self.assertEqual(1, len(conn.state["certificates"]))
         self.assertFalse(conn.state["certificates"][10]["missing"])
+
+    async def test_existing_historical_notice_update_keeps_original_property_id(self):
+        conn = Connection(
+            [notice(source_id=999, signed="是", sjczrxm="变更后的合成责任人")],
+            existing_property_id=7,
+            identity_mappings=[(7, 8, 1, 1)],
+            identity_properties=[(7, 1, "合成测试路1号"), (8, 1, "合成测试路1号")],
+        )
+        result = await self.apply(conn)
+        self.assertEqual(1, result["updated_count"])
+        self.assertEqual(7, conn.state["certificates"][10]["property_id"])
+
+    async def test_existing_notice_on_unrelated_identity_enters_conflict_instead_of_moving(self):
+        conn = Connection(
+            [notice(source_id=999, signed="是", sjczrxm="冲突责任人")],
+            existing_property_id=9,
+            identity_mappings=[(9, 11, 1, 1)],
+            identity_properties=[(9, 1, "合成测试路1号"), (11, 1, "合成测试路1号"), (10, 1, "合成测试路1号")],
+        )
+        result = await self.apply(conn)
+        self.assertEqual(0, result["updated_count"])
+        self.assertEqual(1, result["pending_issue_count"])
+        self.assertEqual(9, conn.state["certificates"][10]["property_id"])
+        self.assertEqual([], conn.state.get("links", []))
 
     async def test_identical_source_duplicates_have_one_current_notice(self):
         conn = Connection([notice(), notice(source_id=2)])

@@ -15,6 +15,7 @@ from services.registry_certificate_source import (
 from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_property_canonical import load_property_identity_graph
 from services.registry_import import (
+    ISSUE_CERTIFICATE_CONTENT_CONFLICT,
     ISSUE_CERTIFICATE_NON_RENTAL,
     classify_certificate_rows,
     normalize_address,
@@ -273,9 +274,6 @@ async def _apply_certificate_batch(
                     legacy_ref = legacy_certificate_source_ref(old_payload)
                     if legacy_ref != certificate_source_ref(old_payload):
                         derived[legacy_ref].append(row)
-            existing_by_derived = {
-                ref: rows[0] for ref, rows in derived.items() if len(rows) == 1
-            }
             if full_snapshot:
                 await cur.execute(
                     "UPDATE registry_property_certificates "
@@ -288,6 +286,7 @@ async def _apply_certificate_batch(
             touches: list[tuple] = []
             source_links: list[tuple] = []
             non_rental_issues: list[tuple] = []
+            identity_conflict_issues: list[tuple] = []
             claimed_existing_ids: set[int] = set()
             eligible_record_ids: set[int] = set()
 
@@ -308,6 +307,30 @@ async def _apply_certificate_batch(
                     continue
 
                 property_id = property_row[0]
+                direct_match = existing_by_ref.get(item["source_ref"])
+                derived_matches = derived.get(item["source_ref"], [])
+                existing_matches = {int(row[0]): row for row in derived_matches}
+                if direct_match:
+                    existing_matches[int(direct_match[0])] = direct_match
+                existing = next(iter(existing_matches.values())) if len(existing_matches) == 1 else None
+                identity_conflict = len(existing_matches) > 1
+                if existing and int(existing[0]) in claimed_existing_ids:
+                    identity_conflict = True
+                if existing and identity_graph.resolve(int(existing[2])).canonical_id != int(property_id):
+                    identity_conflict = True
+                if identity_conflict:
+                    identity_conflict_issues.append((
+                        batch_id,
+                        ISSUE_CERTIFICATE_CONTENT_CONFLICT,
+                        "certificate",
+                        item["source_ref"],
+                        item["normalized"],
+                        json.dumps(payload, ensure_ascii=False, default=str),
+                        "同一来源告知书关联到不同房屋档案，需人工核查",
+                    ))
+                    skipped += 1
+                    continue
+
                 eligible_record_ids.add(item["record_id"])
                 values = (
                     property_id,
@@ -326,33 +349,38 @@ async def _apply_certificate_batch(
                     str(payload.get("signurl") or payload.get("document_ref") or ""),
                     json.dumps(payload, ensure_ascii=False, default=str),
                 )
-                existing = existing_by_ref.get(item["source_ref"]) or existing_by_derived.get(item["source_ref"])
-                if existing and int(existing[0]) not in claimed_existing_ids:
+                if existing:
                     certificate_id = int(existing[0])
                     claimed_existing_ids.add(certificate_id)
+                    # Canonical IDs are only for matching and read-only
+                    # projection in this PR.  A normal import must not move an
+                    # existing notice from a historical property to its
+                    # current property; that requires the separately audited
+                    # identity-maintenance workflow.
+                    persisted_property_id = int(existing[2])
                     action = certificate_write_action(
                         existing,
                         source_ref=item["source_ref"],
                         content_hash=item["content_hash"],
-                        property_id=property_id,
+                        property_id=persisted_property_id,
                     )
                     if action == "unchanged":
                         touches.append((str(payload.get("source_row") or ""), certificate_id))
                         unchanged += 1
                     else:
-                        updates.append((*values, certificate_id))
+                        updates.append((persisted_property_id, *values[1:], certificate_id))
                         updated += 1
                     source_links.append((certificate_id, item["record_id"]))
                 else:
                     inserts.append((*values, actor_id))
 
-            if non_rental_issues:
+            if non_rental_issues or identity_conflict_issues:
                 await _executemany(
                     cur,
                     "INSERT INTO registry_import_issues "
                     "(batch_id,issue_type,source_type,source_ref,entity_key,payload_json,reason) "
                     "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                    non_rental_issues,
+                    [*non_rental_issues, *identity_conflict_issues],
                 )
             if updates:
                 await _executemany(
