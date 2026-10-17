@@ -10,6 +10,15 @@ def _integer(value: Any) -> int:
         return 0
 
 
+def _optional_integer(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _delta(samples: list[dict[str, Any]], section: str, field: str) -> int:
     if not samples:
         return 0
@@ -22,7 +31,7 @@ def summarize_resource_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
     required = {
         "mysql": {"Threads_connected", "Threads_running", "Innodb_row_lock_current_waits",
-                  "Innodb_row_lock_time_max", "Innodb_deadlocks"},
+                  "Innodb_row_lock_time_max"},
         "backend_pool": {"pool_count", "usage_ratio", "used", "max_size"},
         "redis": {"used_memory", "maxmemory", "oom_error_count", "evicted_keys",
                   "keyspace_hits", "keyspace_misses"},
@@ -70,6 +79,12 @@ def summarize_resource_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
         1 for previous, current in zip(lag_values, lag_values[1:])
         if current > previous and current > 0
     )
+    deadlock_counts = [_optional_integer(item.get("Innodb_deadlocks")) for item in mysql]
+    deadlock_delta = (
+        deadlock_counts[-1] - deadlock_counts[0]
+        if deadlock_counts and all(value is not None for value in deadlock_counts)
+        else None
+    )
     return {
         "sample_count": len(samples),
         "unverified": False,
@@ -78,7 +93,7 @@ def summarize_resource_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "threads_running_peak": max((_integer(item.get("Threads_running")) for item in mysql), default=0),
             "lock_waits_peak": max((_integer(item.get("Innodb_row_lock_current_waits")) for item in mysql), default=0),
             "row_lock_time_max_ms": max((_integer(item.get("Innodb_row_lock_time_max")) for item in mysql), default=0),
-            "deadlock_delta": _delta(samples, "mysql", "Innodb_deadlocks"),
+            "deadlock_delta": deadlock_delta,
             "pool_usage_ratio_peak": max(
                 (float(item.get("usage_ratio") or 0) for item in backend_pool), default=0.0,
             ),

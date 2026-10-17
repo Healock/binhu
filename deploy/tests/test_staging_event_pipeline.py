@@ -416,8 +416,20 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         ))
         with patch.object(staging_metrics_probe, "_run", return_value=output):
             result = staging_metrics_probe._mysql_status("derived-mysql")
-        self.assertEqual(result["Innodb_deadlocks"], 0)
+        self.assertIsNone(result["Innodb_deadlocks"])
         self.assertEqual(result["Threads_connected"], 8)
+
+    def test_mysql_probe_preserves_measured_zero_deadlock_counter(self):
+        output = "\n".join((
+            "Innodb_deadlocks\t0",
+            "Innodb_row_lock_current_waits\t0",
+            "Innodb_row_lock_time_max\t12",
+            "Threads_connected\t8",
+            "Threads_running\t2",
+        ))
+        with patch.object(staging_metrics_probe, "_run", return_value=output):
+            result = staging_metrics_probe._mysql_status("derived-mysql")
+        self.assertEqual(result["Innodb_deadlocks"], 0)
 
     def test_redis_probe_passes_runtime_password_over_stdin(self):
         info = "\n".join((

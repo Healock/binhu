@@ -280,12 +280,50 @@ class StagingLoadTests(unittest.TestCase):
             },
         ]
         result = summarize_resource_samples(samples)
+        self.assertFalse(result["unverified"])
         self.assertEqual(result["mysql"]["deadlock_delta"], 0)
         self.assertEqual(result["mysql"]["pool_usage_ratio_peak"], .75)
         self.assertEqual(result["kafka"]["lag_final"], 0)
         self.assertEqual(result["flink"]["checkpoint_completed_delta"], 2)
         self.assertEqual(result["derived_queue"]["drain_seconds"], 20)
         self.assertTrue(result["production"]["healthy_all_samples"])
+
+    def test_missing_optional_deadlock_counter_preserves_other_resource_gates(self):
+        first = {
+            "mysql": {"Threads_connected": 4, "Threads_running": 1,
+                      "Innodb_row_lock_current_waits": 0, "Innodb_row_lock_time_max": 25},
+            "backend_pool": {"pool_count": 8, "usage_ratio": .5, "used": 20, "max_size": 40},
+            "redis": {"used_memory": 50, "maxmemory": 100, "oom_error_count": 0,
+                      "evicted_keys": 0, "keyspace_hits": 10, "keyspace_misses": 1},
+            "kafka": {"lag": 1},
+            "flink": {"checkpoint_completed": 2, "checkpoint_failed": 0,
+                      "checkpoint_duration_ms": 500, "backpressure_ratio": 0},
+            "derived_queue": {"pending": 1},
+            "production": {"healthy": True, "restart_count": 0, "oom_killed_count": 0, "error_count": 0},
+        }
+        second = json.loads(json.dumps(first))
+        second["mysql"]["Threads_connected"] = 6
+        second["backend_pool"]["usage_ratio"] = .75
+        second["kafka"]["lag"] = 0
+        second["flink"]["checkpoint_completed"] = 3
+        second["derived_queue"] = {"pending": 0, "drain_seconds": 20}
+
+        summary = summarize_resource_samples([first, second])
+        self.assertFalse(summary["unverified"])
+        self.assertIsNone(summary["mysql"]["deadlock_delta"])
+        self.assertEqual(summary["mysql"]["connections_peak"], 6)
+        self.assertEqual(summary["mysql"]["pool_usage_ratio_peak"], .75)
+
+        result = evaluate_report({"resources": summary})
+        resource_unverified = [name for name in result["unverified"] if name.startswith("resources.")]
+        self.assertEqual(resource_unverified, ["resources.mysql.deadlock_delta"])
+        resource_checks = {
+            check["name"]: check["status"] for check in result["checks"]
+            if check["name"].startswith("resources.")
+        }
+        self.assertEqual(resource_checks["resources.mysql.deadlock_delta"], "unverified")
+        self.assertEqual(resource_checks["resources.mysql.pool_usage_ratio_peak"], "passed")
+        self.assertEqual(resource_checks["resources.kafka.lag_final"], "passed")
 
     def test_model_uses_timed_pollers_long_streams_and_current_write_contract(self):
         source = (Path(__file__).parent / "staging" / "locustfile.py").read_text(encoding="utf-8")
