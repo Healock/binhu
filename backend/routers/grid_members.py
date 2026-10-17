@@ -45,7 +45,6 @@ from services.permissions import (
     COMMUNITY_MANAGE,
     COMMUNITY_POSITIONS,
     COMMUNITY_VIEW,
-    INTERNAL_POSITIONS,
     PERSONNEL_BASIC_VIEW,
     PERSONNEL_MANAGE,
     PERSONNEL_SENSITIVE_VIEW,
@@ -109,7 +108,7 @@ class GridMemberCreate(BaseModel):
     @field_validator("position")
     @classmethod
     def validate_position(cls, value: str) -> str:
-        return normalize_position(value)
+        return normalize_position(value, allow_empty=True)
 
     @field_validator("id_card_number")
     @classmethod
@@ -150,7 +149,7 @@ class GridMemberUpdate(BaseModel):
     @field_validator("position")
     @classmethod
     def validate_position(cls, value: Optional[str]) -> Optional[str]:
-        return normalize_position(value) if value is not None else None
+        return normalize_position(value, allow_empty=True) if value is not None else None
 
     @field_validator("id_card_number")
     @classmethod
@@ -192,7 +191,6 @@ class CommunityAliasesUpdate(BaseModel):
     qmf_community_code: Optional[str] = Field(default=None, max_length=20)
     qmf_organization_codes: list[str] = Field(default_factory=list, max_length=30)
     residence_username: Optional[str] = Field(default=None, max_length=200)
-
     @field_validator("name")
     @classmethod
     def normalize_name(cls, value: Optional[str]) -> Optional[str]:
@@ -272,6 +270,24 @@ class CommunityAliasesUpdate(BaseModel):
         return normalized
 
 
+class DepartmentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    department_type: Literal["community", "unit", "internal"]
+    community_id: Optional[int] = Field(default=None, gt=0)
+    parent_id: Optional[int] = Field(default=None, gt=0)
+    area_id: Optional[int] = Field(default=None, gt=0)
+
+
+class DepartmentUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    parent_id: Optional[int] = Field(default=None, gt=0)
+    area_id: Optional[int] = Field(default=None, gt=0)
+
+
+class DepartmentStatusUpdate(BaseModel):
+    is_active: bool
+
+
 class CommunityStatusUpdate(BaseModel):
     is_active: bool
 
@@ -315,17 +331,15 @@ def _parse_police_officers(value) -> list[str]:
 async def _resolve_department(cur, position: str, department_id: int | None):
     """按岗位规则确定部门，并返回 (部门 ID, 兼容社区字段)。"""
     if position == "管家码":
-        if department_id is not None:
-            raise HTTPException(400, "管家码岗位不属于社区或片区")
-        return None, ""
-    if position in INTERNAL_POSITIONS:
+        if department_id is None:
+            return None, ""
         await cur.execute(
-            "SELECT id FROM _departments "
-            "WHERE department_type='internal' ORDER BY id LIMIT 1"
+            "SELECT id, department_type FROM _departments WHERE id=%s AND is_active=1",
+            (department_id,),
         )
         row = await cur.fetchone()
-        if not row:
-            raise HTTPException(500, "内勤部门尚未初始化")
+        if not row or row[1] != "unit":
+            raise HTTPException(400, "管家码岗位只能选择在岗的单位级部门")
         return int(row[0]), ""
     if department_id is None:
         if position in COMMUNITY_POSITIONS:
@@ -344,9 +358,11 @@ async def _resolve_department(cur, position: str, department_id: int | None):
     row = await cur.fetchone()
     if not row:
         raise HTTPException(400, "所属部门不存在")
-    if row[1] != "community":
+    if row[1] not in {"community", "unit"}:
+        raise HTTPException(400, "该岗位只能选择社区级或单位级部门")
+    if position in COMMUNITY_POSITIONS and row[1] != "community":
         raise HTTPException(400, "该岗位只能选择社区部门")
-    return int(row[0]), str(row[2] or "")
+    return int(row[0]), str(row[2] or "") if row[1] == "community" else ""
 
 
 async def _resolved_departments_for_payload(
@@ -354,7 +370,23 @@ async def _resolved_departments_for_payload(
     position: str,
     department_ids: list[int] | None,
     department_id: int | None,
+    area_id: int | None = None,
 ) -> list[dict]:
+    if position == "自购房" and area_id is not None:
+        await cur.execute(
+            "SELECT id, name, department_type, parent_id FROM _departments "
+            "WHERE area_id=%s AND department_type='unit' AND is_active=1",
+            (area_id,),
+        )
+        row = await cur.fetchone()
+        if row:
+            return [{
+                "id": int(row[0]),
+                "name": str(row[1] or ""),
+                "type": str(row[2] or ""),
+                "community_name": None,
+                "parent_id": int(row[3]) if row[3] is not None else None,
+            }]
     selected = department_ids
     if selected is None:
         selected = [department_id] if department_id is not None else []
@@ -362,13 +394,14 @@ async def _resolved_departments_for_payload(
 
 
 async def _resolve_member_area(cur, position: str, area_id: int | None) -> int | None:
-    """自购房人员按片区归属，其他岗位不保存人员片区。"""
-    if position != "自购房":
+    """片长和自购房人员按片区保存归属，其他岗位不保存人员片区。"""
+    area_scoped_positions = {"片长", "自购房"}
+    if position not in area_scoped_positions:
         if area_id is not None:
-            raise HTTPException(400, "只有自购房岗位需要指定片区")
+            raise HTTPException(400, "只有片长或自购房岗位需要指定片区")
         return None
     if area_id is None:
-        raise HTTPException(400, "自购房岗位必须指定片区")
+        raise HTTPException(400, f"{position}岗位必须指定片区")
     await cur.execute("SELECT id FROM _areas WHERE id=%s", (area_id,))
     if not await cur.fetchone():
         raise HTTPException(400, "所选片区不存在")
@@ -565,7 +598,7 @@ async def list_members(
     base_where_parts = list(where_parts)
     base_params = list(params)
     if category:
-        category_positions = POSITION_CATEGORIES.get(category)
+        category_positions = ("",) if category == "other" else POSITION_CATEGORIES.get(category)
         if not category_positions:
             raise HTTPException(400, "未知的人员分类")
         placeholders = ", ".join(["%s"] * len(category_positions))
@@ -694,25 +727,335 @@ async def list_departments(
     async with conn.cursor() as cur:
         await cur.execute(
             """
+            WITH RECURSIVE department_tree AS (
+                SELECT department.id, department.parent_id, 0 AS depth,
+                       CAST(LPAD(CAST(department.id AS CHAR), 10, '0') AS CHAR(2000)) AS sort_path,
+                       CAST(department.id AS CHAR(2000)) AS id_path
+                FROM _departments AS department
+                WHERE department.parent_id IS NULL
+                UNION ALL
+                SELECT child.id, child.parent_id, parent.depth + 1,
+                       CONCAT(parent.sort_path, '/', LPAD(CAST(child.id AS CHAR), 10, '0')),
+                       CONCAT(parent.id_path, ',', child.id)
+                FROM _departments AS child
+                JOIN department_tree AS parent ON child.parent_id=parent.id
+                WHERE FIND_IN_SET(child.id, parent.id_path)=0
+            )
             SELECT department.id, department.name,
                    department.department_type, community.name,
-                   CASE WHEN department.department_type='internal' THEN 1
-                        ELSE COALESCE(community.is_active, 0) END AS is_active
+                   department.parent_id, department.area_id,
+                   CASE WHEN department.community_id IS NULL THEN department.is_active
+                        ELSE COALESCE(community.is_active, 0) END AS is_active,
+                   (SELECT COUNT(DISTINCT member.id)
+                    FROM _grid_members AS member
+                    LEFT JOIN _grid_member_department_links AS link ON link.member_id=member.id
+                    WHERE link.department_id=department.id OR member.department_id=department.id) AS member_count,
+                   (SELECT COUNT(*) FROM _departments AS child
+                    WHERE child.parent_id=department.id) AS child_count
             FROM _departments AS department
+            LEFT JOIN department_tree AS tree ON tree.id=department.id
             LEFT JOIN _communities AS community
               ON community.id=department.community_id
-            ORDER BY department.department_type, department.name
+            ORDER BY COALESCE(tree.sort_path, CONCAT('~', LPAD(CAST(department.id AS CHAR), 10, '0'))),
+                     department.name
             """
         )
         rows = await cur.fetchall()
     return {"data": [
         {
-            "id": row[0], "name": row[1], "type": row[2],
-            "community_name": row[3],
-            "is_active": bool(row[4]),
+            "id": int(row[0]), "name": str(row[1]), "type": str(row[2]),
+            "community_name": row[3], "parent_id": int(row[4]) if row[4] is not None else None,
+            "area_id": int(row[5]) if row[5] is not None else None,
+            "is_active": bool(row[6]), "member_count": int(row[7] or 0),
+            "child_count": int(row[8] or 0),
         }
         for row in rows
     ]}
+
+
+async def _validate_department_parent(cur, department_id: int | None, parent_id: int | None) -> None:
+    if parent_id is None:
+        return
+    if department_id is not None and department_id == parent_id:
+        raise HTTPException(422, "部门不能把自己设置为上级")
+    await cur.execute(
+        "SELECT id, department_type, is_active FROM _departments WHERE id=%s",
+        (parent_id,),
+    )
+    parent = await cur.fetchone()
+    if not parent or not bool(parent[2]):
+        raise HTTPException(422, "上级部门不存在或已停用")
+    if str(parent[1]) != "unit":
+        raise HTTPException(422, "上级部门必须是单位级部门")
+    if department_id is not None:
+        await cur.execute(
+            """
+            WITH RECURSIVE descendants AS (
+                SELECT id, parent_id FROM _departments WHERE id=%s
+                UNION DISTINCT
+                SELECT d.id, d.parent_id FROM _departments AS d
+                JOIN descendants AS ancestor ON d.parent_id=ancestor.id
+            )
+            SELECT 1 FROM descendants WHERE id=%s LIMIT 1
+            """,
+            (department_id, parent_id),
+        )
+        if await cur.fetchone():
+            raise HTTPException(422, "不能把部门移动到自己的下级部门")
+
+
+async def _validate_department_payload(cur, data: DepartmentCreate | DepartmentUpdate, department_id: int | None = None):
+    department_type = getattr(data, "department_type", None)
+    if department_type == "community" and not data.community_id:
+        raise HTTPException(422, "社区级部门必须关联社区")
+    if department_type == "unit" and data.community_id is not None:
+        raise HTTPException(422, "单位级部门不能关联社区")
+    if department_type == "community" and data.area_id is not None:
+        raise HTTPException(422, "社区级部门不能直接关联片区")
+    if department_type == "unit" and data.area_id is not None:
+        await cur.execute("SELECT id FROM _areas WHERE id=%s", (data.area_id,))
+        if not await cur.fetchone():
+            raise HTTPException(422, "关联片区不存在")
+        await cur.execute(
+            "SELECT id FROM _departments WHERE area_id=%s AND id<>COALESCE(%s, -1)",
+            (data.area_id, department_id),
+        )
+        if await cur.fetchone():
+            raise HTTPException(409, "该片区已关联其他单位部门")
+    if data.community_id is not None:
+        await cur.execute("SELECT id, is_active FROM _communities WHERE id=%s", (data.community_id,))
+        community = await cur.fetchone()
+        if not community or not bool(community[1]):
+            raise HTTPException(422, "关联社区不存在或已停用")
+        await cur.execute(
+            "SELECT id FROM _departments WHERE community_id=%s AND id<>COALESCE(%s, -1)",
+            (data.community_id, department_id),
+        )
+        if await cur.fetchone():
+            raise HTTPException(409, "该社区已经有对应部门")
+    await _validate_department_parent(cur, department_id, data.parent_id)
+
+
+@router.post("/departments")
+async def create_department(
+    data: DepartmentCreate,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    if data.department_type != "unit" or data.community_id is not None:
+        raise HTTPException(422, "部门管理页只能新建单位级部门；社区部门请从社区管理维护")
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(422, "部门名称不能为空")
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await _validate_department_payload(cur, data)
+            await cur.execute("SELECT id FROM _departments WHERE name=%s", (name,))
+            if await cur.fetchone():
+                raise HTTPException(409, "部门名称已存在")
+            await cur.execute(
+                "INSERT INTO _departments (name, department_type, community_id, parent_id, area_id) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (name, data.department_type, data.community_id, data.parent_id, data.area_id),
+            )
+            department_id = int(cur.lastrowid)
+        await record_admin_audit(
+            user, "department.create", target_type="department",
+            target_name=str(department_id), detail={"name": name},
+            conn=conn, **request_audit_fields(request),
+        )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {"id": department_id, "message": "部门已创建"}
+
+
+@router.patch("/departments/{department_id}")
+async def update_department(
+    department_id: int,
+    data: DepartmentUpdate,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id,name,department_type,community_id,parent_id,area_id,is_active "
+                "FROM _departments WHERE id=%s FOR UPDATE", (department_id,),
+            )
+            current = await cur.fetchone()
+            if not current:
+                raise HTTPException(404, "部门不存在")
+            values = {
+                "name": str(data.name).strip() if data.name is not None else str(current[1]),
+                "department_type": str(current[2]), "community_id": current[3],
+                "parent_id": data.parent_id if "parent_id" in data.model_fields_set else current[4],
+                "area_id": data.area_id if "area_id" in data.model_fields_set else current[5],
+            }
+            if not values["name"]:
+                raise HTTPException(422, "部门名称不能为空")
+            await _validate_department_payload(cur, DepartmentCreate(**values), department_id)
+            await cur.execute("SELECT id FROM _departments WHERE name=%s AND id<>%s", (values["name"], department_id))
+            if await cur.fetchone():
+                raise HTTPException(409, "部门名称已存在")
+            await cur.execute(
+                "UPDATE _departments SET name=%s,parent_id=%s,area_id=%s WHERE id=%s",
+                (values["name"], values["parent_id"], values["area_id"], department_id),
+            )
+            if values["community_id"] is not None:
+                parent_area_id = None
+                if values["parent_id"] is not None:
+                    await cur.execute(
+                        "SELECT area_id FROM _departments WHERE id=%s",
+                        (values["parent_id"],),
+                    )
+                    parent_area = await cur.fetchone()
+                    parent_area_id = parent_area[0] if parent_area else None
+                await cur.execute(
+                    "UPDATE _communities SET area_id=%s WHERE id=%s",
+                    (parent_area_id, values["community_id"]),
+                )
+            elif (
+                values["department_type"] == "unit"
+                and (
+                    "area_id" in data.model_fields_set
+                    or ("parent_id" in data.model_fields_set and values["area_id"] is not None)
+                )
+            ):
+                await cur.execute(
+                    "WITH RECURSIVE descendants AS ("
+                    "SELECT id FROM _departments WHERE id=%s "
+                    "UNION DISTINCT "
+                    "SELECT child.id FROM _departments AS child "
+                    "JOIN descendants AS ancestor ON child.parent_id=ancestor.id"
+                    ") SELECT community_id FROM _departments "
+                    "WHERE id IN (SELECT id FROM descendants) "
+                    "AND community_id IS NOT NULL",
+                    (department_id,),
+                )
+                descendant_community_ids = [
+                    int(row[0]) for row in await cur.fetchall() if row[0] is not None
+                ]
+                if descendant_community_ids:
+                    placeholders = ", ".join(["%s"] * len(descendant_community_ids))
+                    await cur.execute(
+                        f"UPDATE _communities SET area_id=%s WHERE id IN ({placeholders})",
+                        [values["area_id"], *descendant_community_ids],
+                    )
+        await record_admin_audit(
+            user, "department.update", target_type="department",
+            target_name=str(department_id), detail={"changed": True},
+            conn=conn, **request_audit_fields(request),
+        )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {"id": department_id, "message": "部门已更新"}
+
+
+@router.patch("/departments/{department_id}/status")
+async def update_department_status(
+    department_id: int,
+    data: DepartmentStatusUpdate,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT name,is_active FROM _departments WHERE id=%s FOR UPDATE", (department_id,))
+            current = await cur.fetchone()
+            if not current:
+                raise HTTPException(404, "部门不存在")
+            if not data.is_active:
+                await cur.execute(
+                    "SELECT COUNT(DISTINCT member.id) FROM _grid_members AS member "
+                    "LEFT JOIN _grid_member_department_links AS link ON link.member_id=member.id "
+                    "WHERE link.department_id=%s OR member.department_id=%s",
+                    (department_id, department_id),
+                )
+                members = int((await cur.fetchone())[0] or 0)
+                await cur.execute("SELECT COUNT(*) FROM _departments WHERE parent_id=%s", (department_id,))
+                children = int((await cur.fetchone())[0] or 0)
+                if members or children:
+                    raise HTTPException(409, detail={
+                        "message": "该部门仍有成员或下级部门，不能停用",
+                        "next_step": "先调整成员归属并移动或停用下级部门，再重试",
+                        "allowed_role": "具备 community.manage 的管理员或超级管理员",
+                        "recovery": "完成调整后返回部门管理页面重新操作",
+                        "member_count": members, "child_count": children,
+                    })
+            await cur.execute("UPDATE _departments SET is_active=%s WHERE id=%s", (int(data.is_active), department_id))
+        await record_admin_audit(
+            user,
+            "department.enable" if data.is_active else "department.disable",
+            target_type="department", target_name=str(department_id),
+            detail={"is_active": data.is_active}, conn=conn,
+            **request_audit_fields(request),
+        )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {"message": "部门状态已更新", "is_active": data.is_active}
+
+
+@router.delete("/departments/{department_id}")
+async def delete_department(
+    department_id: int,
+    request: Request,
+    user: dict = Depends(require_permission(COMMUNITY_MANAGE)),
+    conn=Depends(get_db),
+):
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT name,department_type,community_id FROM _departments WHERE id=%s FOR UPDATE", (department_id,))
+            current = await cur.fetchone()
+            if not current:
+                raise HTTPException(404, "部门不存在")
+            if current[2] is not None:
+                raise HTTPException(409, detail={
+                    "message": "社区部门由社区管理维护，不能在部门页面删除",
+                    "next_step": "请到社区管理页面处理社区的停用或删除",
+                    "allowed_role": "具备 community.manage 的管理员或超级管理员",
+                    "recovery": "完成社区管理操作后返回部门管理页面刷新",
+                })
+            await cur.execute(
+                "SELECT COUNT(DISTINCT member.id) FROM _grid_members AS member "
+                "LEFT JOIN _grid_member_department_links AS link ON link.member_id=member.id "
+                "WHERE link.department_id=%s OR member.department_id=%s",
+                (department_id, department_id),
+            )
+            members = int((await cur.fetchone())[0] or 0)
+            await cur.execute("SELECT COUNT(*) FROM _departments WHERE parent_id=%s", (department_id,))
+            children = int((await cur.fetchone())[0] or 0)
+            if members or children:
+                raise HTTPException(409, detail={
+                    "message": "该部门仍有成员或下级部门，不能删除",
+                    "next_step": "先调整成员归属并移动或删除下级部门，再重试",
+                    "allowed_role": "具备 community.manage 的管理员或超级管理员",
+                    "recovery": "完成调整后返回部门管理页面重新操作",
+                    "member_count": members, "child_count": children,
+                })
+            await cur.execute("DELETE FROM _departments WHERE id=%s", (department_id,))
+        await record_admin_audit(
+            user, "department.delete", target_type="department",
+            target_name=str(department_id), detail={}, conn=conn,
+            **request_audit_fields(request),
+        )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    return {"message": "部门已删除"}
 
 
 @router.get("/communities")
@@ -1285,16 +1628,41 @@ async def update_community_aliases(
                 raise HTTPException(404, "社区不存在")
 
             if "area_id" in data.model_fields_set:
-                await cur.execute(
-                    "SELECT id FROM _areas WHERE id=%s",
-                    (data.area_id,),
-                )
-                if not await cur.fetchone():
-                    raise HTTPException(400, "所选片区不存在")
+                if data.area_id is not None:
+                    await cur.execute(
+                        "SELECT id FROM _areas WHERE id=%s",
+                        (data.area_id,),
+                    )
+                    if not await cur.fetchone():
+                        raise HTTPException(400, "所选片区不存在")
                 await cur.execute(
                     "UPDATE _communities SET area_id=%s WHERE id=%s",
                     (data.area_id, community_id),
                 )
+                await cur.execute(
+                    "SELECT id FROM _departments WHERE community_id=%s "
+                    "AND department_type='community'",
+                    (community_id,),
+                )
+                community_department = await cur.fetchone()
+                area_parent = None
+                if data.area_id is not None:
+                    await cur.execute(
+                        "SELECT id FROM _departments WHERE area_id=%s "
+                        "AND department_type='unit' AND is_active=1",
+                        (data.area_id,),
+                    )
+                    area_parent = await cur.fetchone()
+                    if not area_parent:
+                        raise HTTPException(
+                            409,
+                            "所选片区尚未绑定启用的单位级部门，请先在部门管理中配置片区部门",
+                        )
+                if community_department:
+                    await cur.execute(
+                        "UPDATE _departments SET parent_id=%s WHERE id=%s",
+                        (area_parent[0] if area_parent else None, community_department[0]),
+                    )
 
             if "qmf_community_code" in data.model_fields_set:
                 await cur.execute(
@@ -1639,6 +2007,8 @@ async def _attach_account_to_new_member(
     data: GridMemberCreate,
     member_id: int,
 ) -> tuple[int, str]:
+    if not data.position:
+        raise HTTPException(400, "无岗位人员不能新建或关联账号，请先选择岗位")
     group_id, group_code, _ = await _position_primary_group(cur, data.position)
     role = _legacy_role_for_group(group_code)
     if data.account_mode == "existing":
@@ -1852,13 +2222,14 @@ async def create_member(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            member_area_id = await _resolve_member_area(cur, data.position, data.area_id)
             departments = await _resolved_departments_for_payload(
                 cur,
                 data.position,
                 data.department_ids,
                 data.department_id,
+                member_area_id,
             )
-            member_area_id = await _resolve_member_area(cur, data.position, data.area_id)
             primary = departments[0] if departments else None
             if data.id_card_number:
                 await cur.execute(
@@ -2020,15 +2391,27 @@ async def update_member(
                 raise HTTPException(400, "没有要更新的字段")
 
             old_position = str(existing[3])
-            next_position = str(updates.get("position") or old_position)
+            next_position = (
+                str(updates["position"])
+                if "position" in updates
+                else old_position
+            )
             requested_area_id = (
                 data.area_id if "area_id" in fields_set
-                else (existing[5] if next_position == "自购房" else None)
+                else (existing[5] if next_position in {"片长", "自购房"} else None)
             )
-            member_area_id = await _resolve_member_area(
-                cur,
-                next_position,
-                requested_area_id,
+            area_relationship_changed = bool(
+                {"position", "area_id"} & fields_set
+                or relationship_fields & fields_set
+            )
+            member_area_id = (
+                await _resolve_member_area(cur, next_position, requested_area_id)
+                if area_relationship_changed
+                else (
+                    int(existing[5])
+                    if len(existing) > 5 and existing[5] is not None
+                    else None
+                )
             )
             departments = existing_departments.get(member_id, [])
             if relationship_fields & fields_set:
@@ -2046,7 +2429,12 @@ async def update_member(
                     cur,
                     next_position,
                     requested_ids,
+                    allowed_internal_ids=current_ids,
                 )
+                if next_position == "自购房":
+                    departments = await _resolved_departments_for_payload(
+                        cur, next_position, requested_ids, None, member_area_id,
+                    )
                 updates["area_id"] = member_area_id
 
             if updates:
@@ -2063,7 +2451,7 @@ async def update_member(
                     member_id=member_id,
                     target_account_id=int(data.account_id),
                 )
-            elif "position" in fields_set:
+            elif "position" in fields_set and next_position:
                 await _refresh_inherited_account_group(cur, member_id)
             if old_position == "社区民警" or next_position == "社区民警":
                 await sync_community_police_compat(cur)

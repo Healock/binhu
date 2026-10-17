@@ -35,8 +35,10 @@ POSITION_CONFIG_KEYS = {
 }
 
 
-def normalize_position(value: Any) -> str:
+def normalize_position(value: Any, *, allow_empty: bool = False) -> str:
     position = str(value or "").strip()
+    if not position and allow_empty:
+        return ""
     if position not in POSITION_OPTIONS:
         raise ValueError(f"不支持的岗位：{position or '空白'}")
     return position

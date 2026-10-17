@@ -26,7 +26,9 @@ from services.personnel_positions import (
     get_known_personnel_positions,
     normalized_person_name,
 )
-from services.report_builders.summary import get_summary
+from services.report_builders.summary import get_summary, _get_summary_types
+from services.report_external_counts import merge_external_report_counts
+from services.txdocs_statistics_monitor import get_txdocs_business_overlay
 from services.visit_summary import (
     VISIT_CATEGORY_RENTAL,
     VISIT_CATEGORY_SELF_OWNED,
@@ -528,6 +530,17 @@ async def build_daily_detail_data(
         known_positions=known_positions,
     )
     online = await get_summary(business_date.isoformat())
+    # Reuse the export request's OnlineData connection; never acquire a
+    # second connection from that pool while the request holds this one.
+    async with conn.cursor() as cur:
+        summary_types = await _get_summary_types(cur)
+        await cur.execute("SELECT id FROM _txdocs_monitor_target WHERE enabled=1 ORDER BY id")
+        configured_source_ids = [int(row[0]) for row in await cur.fetchall()]
+    external = await get_txdocs_business_overlay(
+        business_date.isoformat(), business_date.isoformat(), summary_types, None,
+        configured_source_ids=configured_source_ids
+    )
+    online = merge_external_report_counts(online, external, parser_type="总汇总表")
 
     rental_rows = _summary_by_name(rental)
     self_owned_rows = _summary_by_name(self_owned)
@@ -595,6 +608,11 @@ async def build_daily_detail_data(
             ),
             "instruction_total": int(task_row.get("数据总数") or 0) if task_row is not None else None,
             "bottom_rate": task_row.get("核查见底率") if task_row is not None else None,
+            "unable_instructions": (
+                int(task_row["无法见底数"] or 0)
+                if task_row is not None and task_row.get("无法见底数") is not None
+                else None
+            ),
         })
         if absent:
             result[-1].update({
@@ -610,6 +628,7 @@ async def build_daily_detail_data(
                 "completed_instructions": None,
                 "instruction_total": None,
                 "bottom_rate": None,
+                "unable_instructions": None,
             })
     return result
 
@@ -676,6 +695,45 @@ def _merge_groups(ws, rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _merged_anchor_row(ws, row_number: int, column: int) -> int:
+    """Return the visible anchor row for a vertically merged cell."""
+    for merged in ws.merged_cells.ranges:
+        if merged.min_col == column and merged.max_col == column and merged.min_row <= row_number <= merged.max_row:
+            return merged.min_row
+    return row_number
+
+
+def _apply_daily_detail_colors(ws, rows: list[dict[str, Any]]) -> None:
+    """Apply fills after merging so Excel retains them on visible cells."""
+    red = PatternFill("solid", fgColor="F4CCCC")
+    yellow = PatternFill("solid", fgColor="FFF2CC")
+    green = PatternFill("solid", fgColor="D9EAD3")
+    for index, item in enumerate(rows):
+        if item.get("attendance") == "否" or item.get("position") == "管家码":
+            continue
+        row_number = DATA_START_ROW + index
+        population_target = item.get("population_target")
+        added = item.get("population_added")
+        cancelled = item.get("population_cancelled")
+        if population_target and added is not None and cancelled is not None:
+            ratio = (added + cancelled) / population_target
+            fill = red if ratio < 0.5 else yellow if ratio < 1 else green
+            for column in (7, 8):
+                anchor = _merged_anchor_row(ws, row_number, column)
+                ws.cell(anchor, column).fill = copy(fill)
+
+        visit_target = item.get("visit_target")
+        visits = item.get("visits")
+        if visit_target and visits is not None:
+            anchor = _merged_anchor_row(ws, row_number, 10)
+            ws.cell(anchor, 10).fill = copy(yellow if visits <= visit_target * 0.5 else green)
+
+        instruction_total = item.get("instruction_total")
+        checked = item.get("checked_instructions")
+        if instruction_total and checked is not None:
+            ws.cell(row_number, 15).fill = copy(yellow if checked <= instruction_total * 0.5 else green)
+
+
 def _ordered_daily_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep each area's self-owned row after all community rows."""
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -723,6 +781,8 @@ def build_daily_detail_workbook(
             worksheet.unmerge_cells(str(merged))
 
     worksheet["A1"] = f"滨湖网格工作每日明细（{business_date.month}月{business_date.day}号）"
+    worksheet["F2"] = "流动人口"
+    worksheet["I2"] = "入户走访"
     no_fill = PatternFill(fill_type=None)
     for row in worksheet.iter_rows(
         min_row=DATA_START_ROW,
@@ -766,22 +826,25 @@ def build_daily_detail_workbook(
         if item.get("attendance") == "否" and item.get("position") != "管家码":
             for column in range(6, 18):
                 worksheet.cell(row_number, column).value = "/"
-        if population_target and item.get("population_added") is not None and item.get("population_cancelled") is not None:
-            ratio = (item["population_added"] + item["population_cancelled"]) / population_target
-            fill = PatternFill("solid", fgColor=("F4CCCC" if ratio < 0.5 else "FFF2CC" if ratio < 1 else "D9EAD3"))
-            worksheet.cell(row_number, 7).fill = fill
-            worksheet.cell(row_number, 8).fill = fill
-
     _merge_groups(worksheet, rows)
+    _apply_daily_detail_colors(worksheet, rows)
     worksheet.cell(total_row, 1, "合计")
     worksheet.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=5)
     for column in range(6, 18):
         values = [worksheet.cell(row, column).value for row in range(DATA_START_ROW, final_row + 1)]
         numbers = [value for value in values if isinstance(value, (int, float))]
         worksheet.cell(total_row, column, sum(numbers) if numbers else None)
-    total_instruction = worksheet.cell(total_row, 14).value
-    total_checked = worksheet.cell(total_row, 15).value
-    worksheet.cell(total_row, 17, (total_checked / total_instruction) if total_instruction else None)
+    counted_rows = [item for item in rows
+                    if item.get("attendance") != "否" and item.get("position") != "管家码"
+                    and item.get("instruction_total") is not None]
+    # Ground rate is completed / (completed + unable), not checked / total.
+    # Without a trustworthy denominator, leave the aggregate blank.
+    if counted_rows and all(item.get("unable_instructions") is not None for item in counted_rows):
+        completed = sum(int(item.get("completed_instructions") or 0) for item in counted_rows)
+        unable = sum(int(item["unable_instructions"] or 0) for item in counted_rows)
+        worksheet.cell(total_row, 17, completed / (completed + unable) if completed + unable else 0)
+    else:
+        worksheet.cell(total_row, 17).value = None
     for row_number in range(DATA_START_ROW, total_row + 1):
         worksheet.cell(row_number, 13).number_format = "0.00"
         worksheet.cell(row_number, 17).number_format = "0.00%"
@@ -796,7 +859,7 @@ def build_daily_detail_workbook(
     output = BytesIO()
     workbook.save(output)
     filename = (
-        f"{business_date.strftime('%m%d')}滨湖网格工作每日明细.xlsx"
+        f"滨湖网格工作每日明细-{business_date.strftime('%Y%m%d')}.xlsx"
     )
     return output.getvalue(), filename
 

@@ -1,9 +1,9 @@
-"""受控的「流口指令核查」当前任务按业务日期归档工具。
+"""受控归档所有在线业务表中的当前任务。
 
-该命令只允许在生产固定部署网关中调用。默认只处理全链条（流口指令核查）
-且只处理 ``下发日期`` 等于指定日期的当前任务。流程分为 measure、backup-check、
-prepare、apply、verify 五个不可跳过的阶段；apply 使用同一 MySQL 事务，失败时
-整体回滚。输出和证据只包含数量、哈希和安全错误码，不写出业务正文。
+维护日期只用于运行证据和工作流审计，不过滤业务行。``measure`` 会按
+``TASK_WORKFLOWS`` 逐类型建立脱敏清单；``apply`` 在同一事务中把清单中的
+当前行移入对应 ``OnlineDataArchive`` 表，并清理本地来源、投影、队列和任务图。
+日报、审计、备份及外部历史材料不会被删除。
 """
 
 from __future__ import annotations
@@ -19,49 +19,34 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-PARSER_TYPE = "全链条"
-TABLE = "t_fullchain"
-ARCHIVE_TABLE = "t_fullchain_archive"
-DATE_FIELDS = ("下发日期", "下发时间", "日期")
-DATABASES = (
-    "OnlineData",
-    "OnlineDataArchive",
-    "daily_report",
-    "PlatformData",
-    "VisitData",
-    "DispatchData",
-    "RegistryData",
-    "WorkflowData",
-)
+try:
+    from services.parsers import get_parser
+    from services.task_workflow import TASK_WORKFLOWS
+except ModuleNotFoundError:  # package import used by deployment contract tests
+    from backend.services.parsers import get_parser
+    from backend.services.task_workflow import TASK_WORKFLOWS
+
+ARCHIVE_REASON = "current_flow_cleanup_all"
 SAFE_RUN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$")
-
-
-def should_archive_current_flow(values: dict[str, Any]) -> bool:
-    """Every live row in the named flow is in the approved cleanup scope.
-
-    The workflow's fixed business date identifies the maintenance run and the
-    summary slice to remove.  It is not a filter on the current task table:
-    those rows use historical dispatch dates, while the 2026-09-14 summary is
-    a separately materialized daily-report slice.
-    """
-    return True
+DATABASES = (
+    "OnlineData", "OnlineDataArchive", "daily_report", "PlatformData",
+    "VisitData", "DispatchData", "RegistryData", "WorkflowData",
+)
 
 
 class CleanupError(RuntimeError):
     pass
 
 
+def should_archive_current_flow(values: dict[str, Any]) -> bool:
+    """Compatibility predicate: every measured live row is in scope."""
+    del values
+    return True
+
+
 def parse_business_date(value: Any) -> date | None:
-    """Parse only explicit, unambiguous business dates."""
-    text = str(value or "").strip()
-    if not text:
-        return None
-    text = text.replace("年", "-").replace("月", "-").replace("日", "")
-    match = re.fullmatch(
-        r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})"
-        r"(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?",
-        text,
-    )
+    text = str(value or "").strip().replace("年", "-").replace("月", "-").replace("日", "")
+    match = re.fullmatch(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?", text)
     if not match:
         return None
     try:
@@ -71,18 +56,7 @@ def parse_business_date(value: Any) -> date | None:
 
 
 def digest_row(values: dict[str, Any]) -> str:
-    payload = json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _safe_json(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    try:
-        parsed = json.loads(value or "{}")
-        return parsed if isinstance(parsed, dict) else {}
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def evidence_root(run_id: str) -> Path:
@@ -94,19 +68,28 @@ def _json_dump(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-async def connect():
-    # Keep the migration's pure date/manifest helpers usable in the release
-    # bundle validation job, where the database driver is intentionally absent.
-    import aiomysql
+def flow_specs() -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for parser_type, workflow in TASK_WORKFLOWS.items():
+        parser = get_parser(parser_type)
+        specs.append({
+            "parser_type": parser_type,
+            "table": parser.table_name,
+            "archive_table": f"{parser.table_name}_archive",
+            "parser": parser,
+            "workflow": workflow,
+        })
+    return specs
 
+
+async def connect():
+    import aiomysql
     return await aiomysql.connect(
         host=os.environ.get("MYSQL_HOST", "mysql"),
         port=int(os.environ.get("MYSQL_PORT", "3306")),
         user=os.environ.get("MYSQL_USER", "binhu"),
         password=os.environ.get("MYSQL_PASSWORD", ""),
-        db="OnlineData",
-        autocommit=False,
-        charset="utf8mb4",
+        db="OnlineData", autocommit=False, charset="utf8mb4",
     )
 
 
@@ -121,63 +104,64 @@ async def query_all(cur, sql: str, params: tuple[Any, ...] = ()):
 
 
 async def table_exists(cur, schema: str, table: str) -> bool:
-    row = await query_one(
-        cur,
-        "SELECT 1 FROM information_schema.tables WHERE table_schema=%s AND table_name=%s",
-        (schema, table),
-    )
-    return bool(row)
+    return bool(await query_one(cur, "SELECT 1 FROM information_schema.tables WHERE table_schema=%s AND table_name=%s", (schema, table)))
 
 
-async def load_target(cur, target_date: date) -> list[dict[str, Any]]:
-    columns = ["id", "_row_key", *DATE_FIELDS]
-    # Older installations may only expose 下发日期; inspect before selecting aliases.
-    available = {
-        str(row[0])
-        for row in await query_all(
-            cur,
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema=DATABASE() AND table_name=%s",
-            (TABLE,),
-        )
-    }
-    selected = [column for column in columns if column in {"id", "_row_key"} or column in available]
-    rows = await query_all(
-        cur,
-        "SELECT " + ",".join(f"`{column}`" for column in selected) + f" FROM `{TABLE}`",
-    )
+async def columns(cur, schema: str, table: str) -> set[str]:
+    return {str(row[0]) for row in await query_all(cur, "SELECT column_name FROM information_schema.columns WHERE table_schema=%s AND table_name=%s", (schema, table))}
+
+
+def placeholders(values: list[Any]) -> str:
+    return ",".join(["%s"] * len(values)) or "NULL"
+
+
+async def load_targets(cur) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
-    for raw in rows:
-        values = dict(zip(selected, raw))
-        business = next((parse_business_date(values.get(field)) for field in DATE_FIELDS if field in values), None)
-        if should_archive_current_flow(values):
+    for spec in flow_specs():
+        table = spec["table"]
+        if not await table_exists(cur, "OnlineData", table):
+            raise CleanupError(f"table_missing:{table}")
+        available = await columns(cur, "OnlineData", table)
+        if "id" not in available or "_row_key" not in available:
+            raise CleanupError(f"table_schema_invalid:{table}")
+        selected = ["id", "_row_key"] + [name for name in spec["parser"].COLUMNS if name in available]
+        selected = list(dict.fromkeys(selected))
+        quoted = ",".join(f"`{name}`" for name in selected)
+        for raw in await query_all(cur, f"SELECT {quoted} FROM `OnlineData`.`{table}`"):
+            values = dict(zip(selected, raw))
+            row_key = str(values.get("_row_key") or "").strip()
+            if not row_key:
+                continue
             targets.append({
-                "id": int(values["id"]),
-                "row_key": str(values.get("_row_key") or ""),
-                "row_digest": digest_row(values),
+                "parser_type": spec["parser_type"], "table": table,
+                "archive_table": spec["archive_table"], "id": int(values["id"]),
+                "row_key": row_key, "row_digest": digest_row(values),
             })
-    return [item for item in targets if item["row_key"]]
+    return targets
 
 
-async def counts(cur, row_keys: list[str], source_ids: list[int]) -> dict[str, int]:
-    if not row_keys:
-        return {"business": 0, "source": 0, "projection": 0, "address_match": 0, "local_source": 0, "review_flow": 0, "registration": 0, "graph_nodes": 0}
-    placeholders = ",".join(["%s"] * len(row_keys))
-    source_ph = ",".join(["%s"] * len(source_ids)) or "NULL"
-    result: dict[str, int] = {}
-    result["business"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `{TABLE}` WHERE `_row_key` IN ({placeholders})", tuple(row_keys)))[0])
-    result["source"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `_online_source_rows` WHERE parser_type=%s AND row_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys)))[0])
-    result["projection"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `_online_source_projection` WHERE parser_type=%s AND row_key IN ({placeholders})", (PARSER_TYPE, *row_keys)))[0])
-    result["address_match"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `_online_task_address_matches` WHERE parser_type=%s AND row_key IN ({placeholders})", (PARSER_TYPE, *row_keys)))[0])
-    result["local_source"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `_local_source_records` WHERE parser_type=%s AND business_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys)))[0])
-    result["review_flow"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `_unverifiable_review_flows` WHERE parser_type=%s AND row_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys)))[0])
-    result["registration"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `_task_registration_links` WHERE parser_type=%s AND row_key IN ({placeholders})", (PARSER_TYPE, *row_keys)))[0])
-    workflow = os.environ.get("MYSQL_WORKFLOW_DB", "WorkflowData")
-    if await table_exists(cur, workflow, "task_graph_nodes"):
-        result["graph_nodes"] = int((await query_one(cur, f"SELECT COUNT(*) FROM `{workflow}`.`task_graph_nodes` WHERE provider='online' AND parser_type=%s AND source_ref IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys)))[0])
-    else:
-        result["graph_nodes"] = 0
+async def related_counts(cur, targets: list[dict[str, Any]]) -> dict[str, int]:
+    result = {"business": len(targets), "source": 0, "projection": 0, "address_match": 0, "local_source": 0, "review_flow": 0, "registration": 0, "graph_nodes": 0}
+    for parser_type, rows in _group_targets(targets).items():
+        keys = [item["row_key"] for item in rows]
+        ph = placeholders(keys)
+        result["source"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_online_source_rows` WHERE parser_type=%s AND row_key IN ({ph}) AND archived_at IS NULL", (parser_type, *keys)))[0])
+        result["projection"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_online_source_projection` WHERE parser_type=%s AND row_key IN ({ph})", (parser_type, *keys)))[0])
+        result["address_match"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_online_task_address_matches` WHERE parser_type=%s AND row_key IN ({ph})", (parser_type, *keys)))[0])
+        result["local_source"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_local_source_records` WHERE parser_type=%s AND business_key IN ({ph}) AND archived_at IS NULL", (parser_type, *keys)))[0])
+        result["review_flow"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_unverifiable_review_flows` WHERE parser_type=%s AND row_key IN ({ph}) AND archived_at IS NULL", (parser_type, *keys)))[0])
+        result["registration"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `_task_registration_links` WHERE parser_type=%s AND row_key IN ({ph}) AND status NOT IN ('cancelled','archived')", (parser_type, *keys)))[0])
+        workflow_db = os.environ.get("MYSQL_WORKFLOW_DB", "WorkflowData")
+        if await table_exists(cur, workflow_db, "task_graph_nodes"):
+            result["graph_nodes"] += int((await query_one(cur, f"SELECT COUNT(*) FROM `{workflow_db}`.`task_graph_nodes` WHERE provider='online' AND parser_type=%s AND source_ref IN ({ph}) AND archived_at IS NULL", (parser_type, *keys)))[0])
     return result
+
+
+def _group_targets(targets: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for target in targets:
+        grouped.setdefault(str(target["parser_type"]), []).append(target)
+    return grouped
 
 
 async def load_manifest(root: Path) -> dict[str, Any]:
@@ -188,7 +172,7 @@ async def load_manifest(root: Path) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise CleanupError("target_manifest_invalid") from exc
-    if payload.get("parser_type") != PARSER_TYPE or not SAFE_RUN.fullmatch(str(payload.get("run_id") or "")):
+    if payload.get("scope") != "all_current_workflows" or not SAFE_RUN.fullmatch(str(payload.get("run_id") or "")):
         raise CleanupError("target_manifest_scope_invalid")
     return payload
 
@@ -202,28 +186,67 @@ def check_backup_root(root: Path) -> dict[str, Any]:
             if not set(DATABASES).issubset(entries):
                 continue
             files: list[dict[str, Any]] = []
-            valid = True
             for database in DATABASES:
                 entry = entries[database]
                 path = manifest_path.parent / str(entry.get("filename") or "")
                 sha_path = Path(str(path) + ".sha256")
                 if not path.is_file() or not sha_path.is_file() or path.stat().st_size <= 0:
-                    valid = False
-                    break
+                    raise ValueError
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                expected = str(entry.get("sha256") or "")
-                recorded = sha_path.read_text(encoding="ascii").split()[0] if sha_path.read_text(encoding="ascii").split() else ""
-                if digest != expected or digest != recorded:
-                    valid = False
-                    break
+                recorded = sha_path.read_text(encoding="ascii").split()[0]
+                if digest != str(entry.get("sha256") or "") or digest != recorded:
+                    raise ValueError
                 files.append({"database": database, "size_bytes": path.stat().st_size, "sha256": digest})
-            if valid:
-                age_seconds = max(0, datetime.now(timezone.utc).timestamp() - manifest_path.stat().st_mtime)
-                if age_seconds <= int(os.environ.get("BINHU_CLEANUP_MAX_BACKUP_AGE_SECONDS", "86400")):
-                    return {"backup_id": manifest_path.parent.name, "manifest": str(manifest_path), "age_seconds": int(age_seconds), "files": files}
-        except (OSError, ValueError, TypeError, IndexError):
+            age = max(0, datetime.now(timezone.utc).timestamp() - manifest_path.stat().st_mtime)
+            if age <= int(os.environ.get("BINHU_CLEANUP_MAX_BACKUP_AGE_SECONDS", "86400")):
+                return {"backup_id": manifest_path.parent.name, "manifest": str(manifest_path), "age_seconds": int(age), "files": files}
+        except (OSError, ValueError, TypeError, IndexError, json.JSONDecodeError):
             continue
     raise CleanupError("backup_missing_or_invalid")
+
+
+async def archive_flow(cur, spec: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    keys = [str(item["row_key"]) for item in rows]
+    ph = placeholders(keys)
+    table, archive = spec["table"], spec["archive_table"]
+    current_cols = await columns(cur, "OnlineData", table)
+    archive_cols = await columns(cur, "OnlineDataArchive", archive)
+    if not archive_cols:
+        raise CleanupError(f"archive_table_missing:{archive}")
+    # Resolve canonical parser fields to physical database aliases first.  For
+    # example, 疑似返苏 historically stores 身份证号码/联系号码 while newer
+    # schemas use the canonical labels.  The archive tables are LIKE the live
+    # tables, so the resolved physical names are valid on both sides.
+    try:
+        resolved = spec["parser"].resolve_database_columns(current_cols)
+    except RuntimeError as exc:
+        raise CleanupError(f"table_schema_invalid:{table}") from exc
+    copy_cols = ["_row_key"] + [resolved[name] for name in spec["parser"].COLUMNS if resolved.get(name) in archive_cols]
+    copy_cols = list(dict.fromkeys(name for name in copy_cols if name not in {"id", "_archived_at", "_archive_reason"}))
+    if "_row_key" not in copy_cols or "_archive_reason" not in archive_cols:
+        raise CleanupError(f"archive_schema_invalid:{archive}")
+    quoted = ",".join(f"`{name}`" for name in copy_cols)
+    select = ",".join(f"current.`{name}`" for name in copy_cols)
+    await cur.execute(
+        f"INSERT INTO `OnlineDataArchive`.`{archive}` ({quoted},`_archive_reason`) "
+        f"SELECT {select},%s FROM `OnlineData`.`{table}` current "
+        f"WHERE current.`_row_key` IN ({ph}) AND NOT EXISTS "
+        f"(SELECT 1 FROM `OnlineDataArchive`.`{archive}` archived WHERE archived.`_row_key`=current.`_row_key` AND archived.`_archive_reason`=%s)",
+        (ARCHIVE_REASON, *keys, ARCHIVE_REASON),
+    )
+    await cur.execute(f"DELETE FROM `OnlineData`.`{table}` WHERE `_row_key` IN ({ph})", tuple(keys))
+    await cur.execute(f"UPDATE `_online_source_rows` SET archived_at=UTC_TIMESTAMP(), revision=revision+1, source_kind='current_flow_cleanup' WHERE parser_type=%s AND row_key IN ({ph}) AND archived_at IS NULL", (spec["parser_type"], *keys))
+    await cur.execute(f"UPDATE `_local_source_records` SET status='archived', archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND business_key IN ({ph}) AND archived_at IS NULL", (spec["parser_type"], *keys))
+    for auxiliary in ("_online_source_projection", "_online_task_address_matches"):
+        await cur.execute(f"DELETE FROM `{auxiliary}` WHERE parser_type=%s AND row_key IN ({ph})", (spec["parser_type"], *keys))
+    for auxiliary in ("_online_local_changes", "_online_projection_jobs", "_online_summary_updates"):
+        await cur.execute(f"UPDATE `{auxiliary}` SET status='cancelled', error_code='current_flow_archived', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({ph}) AND status IN ('pending','processing','queued','running','retry')", (spec["parser_type"], *keys))
+    await cur.execute(f"UPDATE `_task_registration_links` SET status='cancelled', reason_code='source_missing', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({ph})", (spec["parser_type"], *keys))
+    await cur.execute(f"UPDATE `_unverifiable_review_flows` SET archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({ph}) AND archived_at IS NULL", (spec["parser_type"], *keys))
+    workflow_db = os.environ.get("MYSQL_WORKFLOW_DB", "WorkflowData")
+    if await table_exists(cur, workflow_db, "task_graph_nodes"):
+        await cur.execute(f"UPDATE `{workflow_db}`.`task_graph_nodes` SET status='source_missing', reason_code='current_flow_archived', archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE provider='online' AND parser_type=%s AND source_ref IN ({ph}) AND archived_at IS NULL", (spec["parser_type"], *keys))
+        await cur.execute(f"UPDATE `{workflow_db}`.`task_graph_dependencies` dependency JOIN `{workflow_db}`.`task_graph_nodes` predecessor ON predecessor.id=dependency.predecessor_node_id JOIN `{workflow_db}`.`task_graph_nodes` successor ON successor.id=dependency.successor_node_id SET dependency.state='cancelled', dependency.reason_code='current_flow_archived', dependency.cancelled_at=COALESCE(dependency.cancelled_at,UTC_TIMESTAMP()), dependency.updated_at=UTC_TIMESTAMP() WHERE dependency.state='active' AND ((predecessor.parser_type=%s AND predecessor.source_ref IN ({ph})) OR (successor.parser_type=%s AND successor.source_ref IN ({ph})))", (spec["parser_type"], *keys, spec["parser_type"], *keys))
 
 
 async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
@@ -237,20 +260,17 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
     try:
         async with conn.cursor() as cur:
             if phase == "measure":
-                targets = await load_target(cur, business_date)
-                row_keys = [item["row_key"] for item in targets]
-                source_rows = await query_all(cur, "SELECT id FROM `_online_source_rows` WHERE parser_type=%s AND row_key IN (" + ",".join(["%s"] * len(row_keys) or ["NULL"]) + ") AND archived_at IS NULL", (PARSER_TYPE, *row_keys)) if row_keys else []
-                payload = {"schema": 1, "run_id": run_id, "parser_type": PARSER_TYPE, "business_date": business_date.isoformat(), "targets": targets, "source_ids": [int(row[0]) for row in source_rows], "counts": await counts(cur, row_keys, [int(row[0]) for row in source_rows]), "measured_at": datetime.now(timezone.utc).isoformat()}
+                targets = await load_targets(cur)
+                grouped = _group_targets(targets)
+                source_ids: list[dict[str, Any]] = []
+                for parser_type, rows in grouped.items():
+                    keys = [item["row_key"] for item in rows]
+                    for row in await query_all(cur, f"SELECT id,row_key FROM `_online_source_rows` WHERE parser_type=%s AND row_key IN ({placeholders(keys)}) AND archived_at IS NULL", (parser_type, *keys)):
+                        source_ids.append({"parser_type": parser_type, "id": int(row[0]), "row_key": str(row[1])})
+                payload = {"schema": 2, "scope": "all_current_workflows", "run_id": run_id, "business_date": business_date.isoformat(), "targets": targets, "source_ids": source_ids, "counts": await related_counts(cur, targets), "workflow_types": sorted(grouped), "measured_at": datetime.now(timezone.utc).isoformat()}
                 _json_dump(root / "target.json", payload)
-                await cur.execute(
-                    "SELECT COUNT(*) FROM information_schema.tables "
-                    "WHERE table_schema='daily_report' AND "
-                    "(table_name LIKE %s OR table_name LIKE %s)",
-                    (f"{business_date.isoformat()}_daily_%", f"{business_date.isoformat()}_snapshot_%"),
-                )
-                report_table_count = int((await cur.fetchone())[0])
-                _json_dump(root / "measure.json", {"target_count": len(targets), "counts": payload["counts"], "current_business_count": len(targets), "report_table_count": report_table_count})
-                return {"phase": phase, "target_count": len(targets), "counts": payload["counts"]}
+                _json_dump(root / "measure.json", {"target_count": len(targets), "workflow_counts": {key: len(value) for key, value in grouped.items()}, "counts": payload["counts"]})
+                return {"phase": phase, "target_count": len(targets), "workflow_counts": {key: len(value) for key, value in grouped.items()}, "counts": payload["counts"]}
             manifest = await load_manifest(root)
             if phase == "prepare":
                 backup = check_backup_root(Path(os.environ.get("BINHU_DEPLOY_BACKUP_ROOT", "/root/binhu/deploy-backups/automated")))
@@ -259,26 +279,19 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
                 _json_dump(root / "prepare.json", {"ready": True, "backup_id": backup["backup_id"], "target_count": len(manifest.get("targets", []))})
                 return {"phase": phase, "ready": True, "target_count": len(manifest.get("targets", []))}
             if phase == "verify":
-                row_keys = [str(item["row_key"]) for item in manifest.get("targets", [])]
-                source_ids = [int(item) for item in manifest.get("source_ids", [])]
-                after = await counts(cur, row_keys, source_ids)
-                remaining = int((await query_one(cur, f"SELECT COUNT(*) FROM `{TABLE}` WHERE `_row_key` IN ({','.join(['%s'] * len(row_keys) or ['NULL'])})", tuple(row_keys)))[0]) if row_keys else 0
-                await cur.execute(
-                    "SELECT COUNT(*) FROM `OnlineDataArchive`.`t_fullchain_archive` "
-                    "WHERE `_archive_reason`=%s AND `_row_key` IN (" + ",".join(["%s"] * len(row_keys) or ["NULL"]) + ")",
-                    ("current_flow_cleanup_20260914", *row_keys),
-                )
-                archived_count = int((await cur.fetchone())[0])
-                report_remaining = 0
-                await cur.execute(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema='daily_report' "
-                    "AND (table_name LIKE %s OR table_name LIKE %s)",
-                    (f"{business_date.isoformat()}_daily_%", f"{business_date.isoformat()}_snapshot_%"),
-                )
-                for (table_name,) in await cur.fetchall():
-                    await cur.execute(f"SELECT COUNT(*) FROM `daily_report`.`{table_name}`")
-                    report_remaining += int((await cur.fetchone())[0])
-                payload = {"ready": remaining == 0 and archived_count == len(row_keys) and report_remaining == 0, "remaining_target_business": remaining, "archived_count": archived_count, "report_remaining": report_remaining, "after_counts": after}
+                grouped = _group_targets(manifest.get("targets", []))
+                remaining = 0
+                archived = 0
+                for spec in flow_specs():
+                    rows = grouped.get(spec["parser_type"], [])
+                    if not rows:
+                        continue
+                    keys = [item["row_key"] for item in rows]
+                    ph = placeholders(keys)
+                    remaining += int((await query_one(cur, f"SELECT COUNT(*) FROM `OnlineData`.`{spec['table']}` WHERE `_row_key` IN ({ph})", tuple(keys)))[0])
+                    archived += int((await query_one(cur, f"SELECT COUNT(*) FROM `OnlineDataArchive`.`{spec['archive_table']}` WHERE `_archive_reason`=%s AND `_row_key` IN ({ph})", (ARCHIVE_REASON, *keys)))[0])
+                after = await related_counts(cur, manifest.get("targets", []))
+                payload = {"ready": remaining == 0 and archived == len(manifest.get("targets", [])) and all(after[key] == 0 for key in ("source", "projection", "address_match", "local_source", "review_flow", "registration", "graph_nodes")), "remaining_target_business": remaining, "archived_count": archived, "after_counts": after}
                 _json_dump(root / "verify.json", payload)
                 if not payload["ready"]:
                     raise CleanupError("verification_failed")
@@ -287,51 +300,18 @@ async def run(phase: str, run_id: str, business_date: date) -> dict[str, Any]:
                 raise CleanupError("unsupported_phase")
             if not (root / "prepare.json").is_file():
                 raise CleanupError("prepare_required")
-            row_keys = [str(item["row_key"]) for item in manifest.get("targets", [])]
-            if not row_keys:
-                await conn.commit()
-                _json_dump(root / "apply.json", {"status": "success", "target_count": 0})
-                return {"phase": phase, "status": "success", "target_count": 0}
-            placeholders = ",".join(["%s"] * len(row_keys))
+            grouped = _group_targets(manifest.get("targets", []))
             await cur.execute("SELECT GET_LOCK('binhu-current-flow-cleanup', 10)")
             lock = await cur.fetchone()
             if not lock or int(lock[0]) != 1:
                 raise CleanupError("maintenance_lock_unavailable")
             try:
-                # Archive the exact current rows, then remove them from the live table.
-                # Keep the archive contract independent from table column order
-                # and from future additive columns.  The archive service uses
-                # the same business-column mapping and deliberately lets its
-                # own id/metadata defaults populate archive-only fields.
-                archive_columns = ["_row_key", "下发日期", "截止日期", "核查人", "社区", "来源", "姓名", "身份证号", "电话号码", "地址", "登记情况", "创建时间", "现住址", "核查结果", "研判", "二次反馈"]
-                quoted_columns = ",".join(f"`{column}`" for column in archive_columns)
-                await cur.execute(f"INSERT INTO `OnlineDataArchive`.`{ARCHIVE_TABLE}` ({quoted_columns},`_archive_reason`) SELECT {','.join(f'current.`{column}`' for column in archive_columns)}, %s FROM `OnlineData`.`{TABLE}` current WHERE current.`_row_key` IN ({placeholders}) AND NOT EXISTS (SELECT 1 FROM `OnlineDataArchive`.`{ARCHIVE_TABLE}` archived WHERE archived.`_row_key`=current.`_row_key` AND archived.`_archive_reason`=%s)", ("current_flow_cleanup_20260914", *row_keys, "current_flow_cleanup_20260914"))
-                await cur.execute(f"DELETE FROM `OnlineData`.`{TABLE}` WHERE `_row_key` IN ({placeholders})", tuple(row_keys))
-                await cur.execute(f"UPDATE `_online_source_rows` SET archived_at=UTC_TIMESTAMP(), revision=revision+1, source_kind='current_flow_cleanup' WHERE parser_type=%s AND row_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
-                await cur.execute(f"UPDATE `_local_source_records` SET status='archived', archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND business_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
-                for table in ("_online_source_projection", "_online_task_address_matches"):
-                    await cur.execute(f"DELETE FROM `{table}` WHERE parser_type=%s AND row_key IN ({placeholders})", (PARSER_TYPE, *row_keys))
-                await cur.execute(f"UPDATE `_online_local_changes` SET status='cancelled', error_code='current_flow_archived', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders}) AND status IN ('pending','processing','retry')", (PARSER_TYPE, *row_keys))
-                await cur.execute(f"UPDATE `_online_projection_jobs` SET status='cancelled', error_code='current_flow_archived', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders}) AND status IN ('pending','queued','running','retry')", (PARSER_TYPE, *row_keys))
-                await cur.execute(f"UPDATE `_online_summary_updates` SET status='cancelled', error_code='current_flow_archived', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders}) AND status IN ('pending','queued','running','retry')", (PARSER_TYPE, *row_keys))
-                await cur.execute(f"UPDATE `_task_registration_links` SET status='cancelled', reason_code='source_missing', updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders})", (PARSER_TYPE, *row_keys))
-                await cur.execute(f"UPDATE `_unverifiable_review_flows` SET archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE parser_type=%s AND row_key IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
-                # The 2026-09-14 online summary is a materialized report slice.
-                # Remove only that day's rows; historical daily reports remain.
-                await cur.execute(
-                    "SELECT table_name FROM information_schema.tables WHERE table_schema='daily_report' "
-                    "AND (table_name LIKE %s OR table_name LIKE %s)",
-                    (f"{business_date.isoformat()}_daily_%", f"{business_date.isoformat()}_snapshot_%"),
-                )
-                for (table_name,) in await cur.fetchall():
-                    await cur.execute(f"DELETE FROM `daily_report`.`{table_name}`")
-                workflow = os.environ.get("MYSQL_WORKFLOW_DB", "WorkflowData")
-                if await table_exists(cur, workflow, "task_graph_nodes"):
-                    await cur.execute(f"UPDATE `{workflow}`.`task_graph_nodes` SET status='source_missing', reason_code='current_flow_archived', archived_at=UTC_TIMESTAMP(), updated_at=UTC_TIMESTAMP() WHERE provider='online' AND parser_type=%s AND source_ref IN ({placeholders}) AND archived_at IS NULL", (PARSER_TYPE, *row_keys))
-                    await cur.execute(f"UPDATE `{workflow}`.`task_graph_dependencies` dependency JOIN `{workflow}`.`task_graph_nodes` predecessor ON predecessor.id=dependency.predecessor_node_id JOIN `{workflow}`.`task_graph_nodes` successor ON successor.id=dependency.successor_node_id SET dependency.state='cancelled', dependency.reason_code='current_flow_archived', dependency.cancelled_at=COALESCE(dependency.cancelled_at,UTC_TIMESTAMP()), dependency.updated_at=UTC_TIMESTAMP() WHERE dependency.state='active' AND ((predecessor.parser_type=%s AND predecessor.source_ref IN ({placeholders})) OR (successor.parser_type=%s AND successor.source_ref IN ({placeholders})))", (PARSER_TYPE, *row_keys, PARSER_TYPE, *row_keys))
+                specs = {spec["parser_type"]: spec for spec in flow_specs()}
+                for parser_type, rows in grouped.items():
+                    await archive_flow(cur, specs[parser_type], rows)
                 await conn.commit()
-                _json_dump(root / "apply.json", {"status": "success", "target_count": len(row_keys), "archive_reason": "current_flow_cleanup_20260914"})
-                return {"phase": phase, "status": "success", "target_count": len(row_keys)}
+                _json_dump(root / "apply.json", {"status": "success", "target_count": len(manifest.get("targets", [])), "workflow_counts": {key: len(value) for key, value in grouped.items()}, "archive_reason": ARCHIVE_REASON})
+                return {"phase": phase, "status": "success", "target_count": len(manifest.get("targets", []))}
             finally:
                 await cur.execute("SELECT RELEASE_LOCK('binhu-current-flow-cleanup')")
     except Exception:
@@ -347,10 +327,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("phase", choices=("measure", "backup-check", "prepare", "apply", "verify"))
     parser.add_argument("run_id")
     parser.add_argument("business_date")
-    parser.add_argument("--parser-type", default=PARSER_TYPE)
     args = parser.parse_args(argv)
-    if args.parser_type != PARSER_TYPE or not SAFE_RUN.fullmatch(args.run_id):
-        print("invalid cleanup scope", file=sys.stderr)
+    if not SAFE_RUN.fullmatch(args.run_id):
+        print("invalid run id", file=sys.stderr)
         return 64
     try:
         target_date = date.fromisoformat(args.business_date)

@@ -2944,14 +2944,43 @@ export interface CommunityArea {
 export interface DepartmentOption {
   id: number
   name: string
-  type: 'community' | 'internal'
+  type: 'community' | 'unit' | 'internal'
   community_name: string | null
+  parent_id?: number | null
+  area_id?: number | null
   is_active: boolean
+  member_count?: number
+  child_count?: number
 }
 
 export async function getDepartments(): Promise<DepartmentOption[]> {
   const { data } = await api.get('/grid-members/departments')
   return data.data
+}
+
+export async function createDepartment(payload: {
+  name: string
+  department_type: 'unit'
+  parent_id?: number | null
+  area_id?: number | null
+}): Promise<void> {
+  await api.post('/grid-members/departments', payload)
+}
+
+export async function updateDepartment(id: number, payload: {
+  name?: string
+  parent_id?: number | null
+  area_id?: number | null
+}): Promise<void> {
+  await api.patch(`/grid-members/departments/${id}`, payload)
+}
+
+export async function updateDepartmentStatus(id: number, isActive: boolean): Promise<void> {
+  await api.patch(`/grid-members/departments/${id}/status`, { is_active: isActive })
+}
+
+export async function deleteDepartment(id: number): Promise<void> {
+  await api.delete(`/grid-members/departments/${id}`)
 }
 
 export interface AccountOption {
@@ -3012,7 +3041,7 @@ export async function listGridMembers(params: {
   keyword?: string
   community?: string
   position?: string
-  category?: 'flow_work' | 'internal_business' | 'police_leadership'
+  category?: 'flow_work' | 'internal_business' | 'police_leadership' | 'other'
   page?: number
   page_size?: number
 }): Promise<{

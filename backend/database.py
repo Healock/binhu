@@ -192,21 +192,35 @@ async def ensure_permission_schema(cur) -> None:
         CREATE TABLE IF NOT EXISTS _departments (
             id INT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(200) NOT NULL UNIQUE,
+            -- community marks a community-level department only; never use it as unit ownership.
             department_type VARCHAR(20) NOT NULL,
             community_id INT DEFAULT NULL,
+            parent_id INT DEFAULT NULL,
+            area_id INT DEFAULT NULL,
             is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_department_community (community_id),
+            INDEX idx_department_parent_active (parent_id, is_active),
+            INDEX idx_department_area (area_id),
             INDEX idx_department_type_active (department_type, is_active)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
-    await cur.execute(
-        "INSERT IGNORE INTO _departments "
-        "(name, department_type, community_id) "
-        "VALUES ('内勤', 'internal', NULL)"
+    await _ensure_column(cur, "_departments", "parent_id", "INT DEFAULT NULL AFTER community_id")
+    await _ensure_column(cur, "_departments", "area_id", "INT DEFAULT NULL AFTER parent_id")
+    await _ensure_index(
+        cur,
+        "_departments",
+        "idx_department_parent_active",
+        "INDEX idx_department_parent_active (parent_id, is_active)",
+    )
+    await _ensure_index(
+        cur,
+        "_departments",
+        "idx_department_area",
+        "INDEX idx_department_area (area_id)",
     )
     await cur.execute("""
         INSERT INTO _departments (name, department_type, community_id)
@@ -472,15 +486,6 @@ async def ensure_permission_schema(cur) -> None:
         "idx_grid_department",
         "INDEX idx_grid_department (department_id)",
     )
-    await cur.execute("""
-        UPDATE _grid_members AS member
-        JOIN _departments AS department
-          ON department.name='内勤' AND department.department_type='internal'
-        SET member.department_id=department.id,
-            member.community=''
-        WHERE member.position IN ('片长', '中队长', '基础管控', '所队领导')
-          AND (member.department_id IS NULL OR member.department_id<>department.id)
-    """)
     await cur.execute("""
         UPDATE _grid_members AS member
         JOIN _departments AS department

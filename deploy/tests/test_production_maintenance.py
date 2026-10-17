@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class ProductionMaintenanceContractTests(unittest.TestCase):
+    def test_workflow_has_registered_operations_and_four_phases(self) -> None:
+        workflow = (ROOT / ".github/workflows/production-maintenance.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("environment: production", workflow)
+        self.assertIn("options: [measure, backup, apply, verify]", workflow)
+        self.assertIn("internal-department-retirement", workflow)
+        self.assertIn("photo-sheet-retirement", workflow)
+        self.assertIn("confirm-remove-internal", workflow)
+        self.assertIn("confirm-empty-photo-tables", workflow)
+        self.assertNotIn('"root@$DEPLOY_HOST"', workflow)
+        self.assertIn('"binhu-deploy@$DEPLOY_HOST"', workflow)
+
+    def test_gateway_has_no_date_or_arbitrary_command_escape(self) -> None:
+        gateway = (ROOT / "deploy/binhu-deploy-gateway").read_text(encoding="utf-8")
+        self.assertIn("production-maintenance", gateway)
+        self.assertIn("internal-department-retirement|photo-sheet-retirement", gateway)
+        self.assertIn("measure|backup|apply|verify", gateway)
+        maintenance_block = gateway.split(
+            "if [[ \"${command_parts[0]:-}\" == \"production-maintenance\" ]]",
+            1,
+        )[1].split("# 生产当前任务维护", 1)[0]
+        self.assertNotRegex(maintenance_block, re.compile(r"2026-09-14"))
+        self.assertIn("confirm-remove-internal", gateway)
+        self.assertIn("confirm-empty-photo-tables", gateway)
+
+    def test_root_contract_requires_evidence_and_backup_before_apply(self) -> None:
+        script = (ROOT / "deploy/binhu-maintenance").read_text(encoding="utf-8")
+        self.assertIn("/run/lock/binhu-maintenance.lock", script)
+        self.assertIn("backup manifest is missing; run backup first", script)
+        self.assertIn("measure count mismatch", script)
+        self.assertIn("--backup-manifest", script)
+        self.assertIn("--confirm-remove-internal", script)
+        self.assertIn("--confirm-empty-photo-tables", script)
+
+    def test_installer_requires_and_installs_root_maintenance_contract(self) -> None:
+        installer = (ROOT / "deploy/install-server-deployer.sh").read_text(encoding="utf-8")
+        self.assertIn('"$script_dir/binhu-maintenance"', installer)
+        self.assertIn("/usr/local/sbin/binhu-maintenance", installer)
+
+
+if __name__ == "__main__":
+    unittest.main()
