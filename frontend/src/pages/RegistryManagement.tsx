@@ -147,6 +147,7 @@ export default function RegistryManagement() {
   const [communities, setCommunities] = useState<Array<{ id: number; name: string }>>([])
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [compactActionsOpen, setCompactActionsOpen] = useState(false)
   const [error, setError] = useState('')
   const [keyword, setKeyword] = useState('')
   const [keywordFlush, setKeywordFlush] = useState(0)
@@ -1194,8 +1195,10 @@ export default function RegistryManagement() {
   const compactPropertyActions = <div className="registry-mobile-actions">
     <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
     <Dropdown
+      open={compactActionsOpen}
+      onOpenChange={setCompactActionsOpen}
       trigger={['click']}
-      dropdownRender={() => <div className="registry-mobile-actions-menu">{toolbarActionItems}</div>}
+      dropdownRender={() => <div className="registry-mobile-actions-menu" onClick={() => setCompactActionsOpen(false)}>{toolbarActionItems}</div>}
     >
       <Button icon={<EllipsisOutlined />}>更多</Button>
     </Dropdown>
