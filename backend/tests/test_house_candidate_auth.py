@@ -21,7 +21,7 @@ def _token(private_key, **overrides):
     payload = {
         "iss": house_candidate.ISSUER,
         "aud": house_candidate.AUDIENCE,
-        "sub": "device:test-device",
+        "sub": "build:" + "a" * 64,
         "scope": house_candidate.SCOPE,
         "comm": ["320584999001"],
         "iat": now,

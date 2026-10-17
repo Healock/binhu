@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import logging
 import re
 import time
 import uuid
@@ -12,7 +14,7 @@ from typing import Any
 import redis.asyncio as redis
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
-from fastapi import APIRouter, Body, Header, HTTPException, Response
+from fastapi import APIRouter, Body, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 
 from config import settings
@@ -24,8 +26,9 @@ ISSUER = "zwzz-gateway"
 AUDIENCE = "binhu-house-candidate"
 SCOPE = "house:search:read"
 KID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
-DEVICE_PATTERN = re.compile(r"device:[A-Za-z0-9._:-]{1,120}")
+BUILD_PATTERN = re.compile(r"build:[0-9a-f]{64}")
 CODE_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,40}")
+log = logging.getLogger("binhu.house-candidate")
 
 _LIMIT_SCRIPT = """
 local replay = redis.call('SET', KEYS[1], '1', 'EX', ARGV[1], 'NX')
@@ -34,9 +37,7 @@ local device_second = redis.call('INCR', KEYS[2])
 if device_second == 1 then redis.call('EXPIRE', KEYS[2], 2) end
 local device_day = redis.call('INCR', KEYS[3])
 if device_day == 1 then redis.call('EXPIRE', KEYS[3], 90000) end
-local global_second = redis.call('INCR', KEYS[4])
-if global_second == 1 then redis.call('EXPIRE', KEYS[4], 2) end
-if device_second > 5 or device_day > 500 or global_second > 50 then return 2 end
+if device_second > 5 or device_day > 3000 then return 2 end
 return 0
 """
 
@@ -127,7 +128,7 @@ def _verify_bearer(authorization: str | None) -> dict[str, Any]:
             raise InvalidBearer
     except (ValueError, AttributeError) as exc:
         raise InvalidBearer from exc
-    if not isinstance(claims.get("sub"), str) or not DEVICE_PATTERN.fullmatch(claims["sub"]):
+    if not isinstance(claims.get("sub"), str) or not BUILD_PATTERN.fullmatch(claims["sub"]):
         raise InvalidBearer
     if not isinstance(claims.get("comm"), list) or not claims["comm"]:
         raise InvalidBearer
@@ -136,17 +137,16 @@ def _verify_bearer(authorization: str | None) -> dict[str, Any]:
     return claims
 
 
-async def _enforce_replay_and_limits(claims: dict[str, Any]) -> None:
+async def _enforce_replay_and_limits(claims: dict[str, Any], source_ip: str) -> None:
     client = redis.from_url(settings.REDIS_URL, decode_responses=True)
     now = int(time.time())
     ttl = max(1, int(claims["exp"]) - now)
-    device = claims["sub"].split(":", 1)[1]
+    ip_key = hashlib.sha256(source_ip.encode("utf-8", "replace")).hexdigest()
     day = time.strftime("%Y%m%d", time.gmtime(now))
     keys = [
         f"binhu:house-candidate:jti:{claims['jti']}",
-        f"binhu:house-candidate:device-second:{device}:{now}",
-        f"binhu:house-candidate:device-day:{device}:{day}",
-        f"binhu:house-candidate:global-second:{now}",
+        f"binhu:house-candidate:ip-second:{ip_key}:{now}",
+        f"binhu:house-candidate:ip-day:{ip_key}:{day}",
     ]
     error: Exception | None = None
     try:
@@ -197,6 +197,7 @@ async def _resolve_community_id(code: str) -> int:
 
 @router.post("/search")
 async def search_house_candidates(
+    request: Request,
     response: Response,
     payload: dict[str, Any] = Body(...),
     authorization: str | None = Header(default=None),
@@ -217,7 +218,9 @@ async def search_house_candidates(
         raise HTTPException(403, detail={"code": "INSUFFICIENT_SCOPE"})
     if body.community not in claims["comm"]:
         raise HTTPException(403, detail={"code": "COMMUNITY_NOT_AUTHORIZED"})
-    await _enforce_replay_and_limits(claims)
+    source_ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+    source_ip = source_ip.strip()[:64] or "unknown"
+    await _enforce_replay_and_limits(claims, source_ip)
     community_id = await _resolve_community_id(body.community)
 
     try:
@@ -265,5 +268,10 @@ async def search_house_candidates(
         }
         for row in rows[:body.limit]
     ]
+    build = claims["sub"].split(":", 1)[1]
+    log.info(
+        "house_candidate result=ok jti=%s build=%s keyword=%s returned=%d total=%d ip=%s",
+        claims["jti"], build, body.keyword, len(items), total, source_ip,
+    )
     response.headers["Cache-Control"] = "no-store"
     return {"items": items, "total": total, "truncated": truncated}
