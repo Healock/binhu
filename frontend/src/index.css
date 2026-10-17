@@ -9036,3 +9036,8 @@ html[data-theme='dark'] .fullscreen-notice__panel { box-shadow: 0 24px 70px rgb(
 }
 .mobile-task-field-save-state > span { overflow: hidden; text-overflow: ellipsis; }
 .mobile-task-field-save-state .ant-btn { flex-shrink: 0; }
+
+.member-department-cascader { width: 100%; min-width: 0; }
+.member-department-cascader-popup { max-width: calc(100vw - 32px); }
+.member-department-cascader-popup .ant-cascader-menus { max-width: calc(100vw - 32px); overflow-x: auto; }
+.member-department-cascader-popup .ant-cascader-menu { flex-shrink: 0; max-height: min(300px, 50vh); }
