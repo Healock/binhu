@@ -105,6 +105,15 @@ def test_pending_source_issue_prevents_not_required_classification():
     assert summary["certificate_status"] == "multiple_or_conflict"
 
 
+def test_unsigned_notice_without_renter_is_normal_unsigned_state():
+    summary = certificate_status_summary(
+        housing_type="个人出租", certificate_count=1, signed_status="否",
+        actual_renter_name="", sign_type="",
+    )
+    assert summary["certificate_status"] == "not_uploaded"
+    assert summary["certificate_status_label"] == "未签订"
+
+
 def test_existing_notice_is_updated_when_content_or_legacy_reference_changes():
     existing = (7, "房东责任告知书只读接口:12", 9, "old-hash", {})
 

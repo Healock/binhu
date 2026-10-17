@@ -32,11 +32,11 @@ jobs:
       - name: Seed fictional fixtures and verify query smoke path
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
           KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
-          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}
         run: |
@@ -67,9 +67,9 @@ jobs:
       - name: Run 75 users with independent background polling and streams
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
-          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}
           APP_ENVIRONMENT: staging

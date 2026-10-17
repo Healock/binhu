@@ -115,6 +115,11 @@ async def require_photo_batch_access(user: dict = Depends(get_current_user)) -> 
     return user
 
 
+async def reject_retired_photo_business() -> None:
+    """Keep legacy URLs explicit after the photo workflow retirement."""
+    raise HTTPException(410, "照片调取业务已下线，停止服务")
+
+
 async def _photo_matches(cur, identity_hmac: str, sha256: str) -> tuple[list[tuple], bool]:
     await cur.execute(
         "SELECT order_row.id, order_row.ticket_no, order_row.requester_user_id, "
@@ -721,7 +726,7 @@ def _photo_request_row(row: tuple, now: datetime) -> dict:
     }
 
 
-@router.post("/photo-requests/pending/search")
+@router.post("/photo-requests/pending/search", dependencies=[Depends(reject_retired_photo_business)])
 async def list_pending_photo_requests(
     data: PhotoRequestSearchPayload,
     user: dict = Depends(require_photo_batch_access),
@@ -760,7 +765,7 @@ async def list_pending_photo_requests(
     }
 
 
-@router.post("/photo-requests/pending/export")
+@router.post("/photo-requests/pending/export", dependencies=[Depends(reject_retired_photo_business)])
 async def export_pending_photo_requests(
     data: PhotoRequestFilterPayload,
     request: Request,
@@ -831,7 +836,7 @@ async def export_pending_photo_requests(
     )
 
 
-@router.post("/photo-requests/batch-claim")
+@router.post("/photo-requests/batch-claim", dependencies=[Depends(reject_retired_photo_business)])
 async def batch_claim_photo_requests(
     data: PhotoRequestBatchClaimPayload,
     request: Request,
@@ -1472,7 +1477,7 @@ async def delete_attachment(
     return {"message": "附件已删除，元数据和删除记录已保留"}
 
 
-@router.post("/photo-imports/preview")
+@router.post("/photo-imports/preview", dependencies=[Depends(reject_retired_photo_business)])
 async def preview_photo_import(
     request: Request,
     file: UploadFile = File(...),
@@ -1722,21 +1727,6 @@ async def _complete_photo_import_ticket(
         "WHERE work_order_id=%s AND deleted_at IS NULL",
         (ticket_id,),
     )
-    await cur.execute(
-        "SELECT detail.external_origin,map.physical_row FROM photo_request_details detail "
-        "LEFT JOIN photo_sheet_rows map ON map.work_order_id=detail.work_order_id "
-        "WHERE detail.work_order_id=%s",
-        (ticket_id,),
-    )
-    external = await cur.fetchone()
-    if external and external[0] in {"platform_task", "tencent"}:
-        if external[0] == "platform_task" or external[1] is not None:
-            await enqueue_outbox(cur, ticket_id, "mark_completed")
-        else:
-            await cur.execute(
-                "UPDATE photo_request_details SET external_sync_status='paused' WHERE work_order_id=%s",
-                (ticket_id,),
-            )
     await workflow_notification(
         cur,
         user_ids=[int(requester_user_id)] if requester_user_id is not None else [],
@@ -1748,7 +1738,7 @@ async def _complete_photo_import_ticket(
     return True
 
 
-@router.get("/photo-imports")
+@router.get("/photo-imports", dependencies=[Depends(reject_retired_photo_business)])
 async def list_photo_imports(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -1770,7 +1760,7 @@ async def list_photo_imports(
     return {"data": data, "total": total, "page": page, "page_size": page_size}
 
 
-@router.get("/photo-imports/{batch_id}/items")
+@router.get("/photo-imports/{batch_id}/items", dependencies=[Depends(reject_retired_photo_business)])
 async def list_photo_import_items(
     batch_id: int,
     user: dict = Depends(require_photo_batch_access),
@@ -1782,7 +1772,7 @@ async def list_photo_import_items(
     return {"data": payload.pop("items"), "batch": payload}
 
 
-@router.get("/photo-imports/{batch_id}")
+@router.get("/photo-imports/{batch_id}", dependencies=[Depends(reject_retired_photo_business)])
 async def get_photo_import(
     batch_id: int,
     user: dict = Depends(require_photo_batch_access),
@@ -1890,7 +1880,7 @@ def _public_photo_reconcile_result(plan: dict, *, repaired_tickets: int = 0) -> 
     } | {"repaired_tickets": repaired_tickets}
 
 
-@router.get("/photo-imports/{batch_id}/reconcile-preview")
+@router.get("/photo-imports/{batch_id}/reconcile-preview", dependencies=[Depends(reject_retired_photo_business)])
 async def preview_photo_import_reconcile(
     batch_id: int,
     user: dict = Depends(require_photo_batch_access),
@@ -1904,7 +1894,7 @@ async def preview_photo_import_reconcile(
         )
 
 
-@router.post("/photo-imports/{batch_id}/reconcile")
+@router.post("/photo-imports/{batch_id}/reconcile", dependencies=[Depends(reject_retired_photo_business)])
 async def reconcile_photo_import(
     batch_id: int,
     data: PhotoImportReconcilePayload,
@@ -1991,7 +1981,7 @@ async def reconcile_photo_import(
     return _public_photo_reconcile_result(plan, repaired_tickets=repaired)
 
 
-@router.post("/photo-imports/{batch_id}/confirm")
+@router.post("/photo-imports/{batch_id}/confirm", dependencies=[Depends(reject_retired_photo_business)])
 async def confirm_photo_import(
     batch_id: int,
     request: Request,

@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 
@@ -64,6 +65,23 @@ def normalize_community(value: Any) -> str:
     return normalize_text(value)
 
 
+def _source_datetime(value: Any) -> datetime | None:
+    """Parse the source update time without rejecting otherwise valid rows."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = normalize_text(value)
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("/", "-").replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
 def household_community_candidates(value: Any) -> list[str]:
     """Return increasingly relaxed community labels for household imports.
 
@@ -103,7 +121,18 @@ def normalize_address(value: Any) -> str:
 
 
 def normalize_housing_type(value: Any) -> str:
-    return normalize_text(value)
+    text = normalize_text(value)
+    return {"个人租赁": "个人出租", "单位租赁": "单位出租"}.get(text, text)
+
+
+def normalize_household_status(value: Any) -> str:
+    text = normalize_text(value)
+    if text in {"已注销", "注销", "是"}:
+        return "已注销"
+    if text in {"未注销", "正常", "有效", "在用", "否"}:
+        return "未注销"
+    # Numeric codes and absent/unrecognized text cannot prove a source status.
+    return ""
 
 
 def issue_problem_details(
@@ -162,22 +191,36 @@ def issue_problem_details(
 
 
 def _certificate_signature(row: dict[str, Any]) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (key, normalize_text(value))
-        for key, value in sorted(row.items())
-        if key not in {"source_row", "_source_row"}
-    )
+    # Compare business content, not upstream IDs or acquisition metadata.
+    from services.registry_certificate_source import certificate_content_hash
+
+    comparable = {**row, "address": normalize_address(row.get("address")),
+                  "community": normalize_community(row.get("community"))}
+    return (("content", certificate_content_hash(comparable)),)
+
+
+def _certificate_updated_at(row: dict[str, Any]) -> datetime | None:
+    # Signature dates and numeric IDs do not identify the newest house state.
+    value = next((row.get(key) for key in ("updateTime", "updatedAt", "updated_at", "update_time")
+                  if row.get(key)), None)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
+    except (TypeError, ValueError):
+        return None
 
 
 def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Classify source responsibility-notice rows before touching house records.
 
-    A physical source row is retained as an independent record.  Rows sharing
-    the same normalized address are held for review, and content differences
-    are additionally reported as conflicts; no de-duplication is performed.
+    Keep physical rows for audit, but identical notices have one current
+    representative. Different content without a reliable upstream version
+    remains a conflict; page order is not evidence of recency.
     """
     materialized: list[dict[str, Any]] = []
-    groups: dict[str, list[int]] = defaultdict(list)
+    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index, raw in enumerate(rows, start=1):
         row = {str(key): value for key, value in raw.items()}
         address = normalize_text(row.get("address") or row.get("dz") or row.get("详细地址"))
@@ -187,18 +230,29 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         row["source_key"] = normalize_address(address)
         materialized.append(row)
         if row["source_key"]:
-            groups[row["source_key"]].append(len(materialized) - 1)
+            groups[(row["community"], row["source_key"])].append(len(materialized) - 1)
 
     issues: list[dict[str, Any]] = []
     blocked: set[int] = set()
+    superseded: set[int] = set()
     duplicate_groups = 0
     conflict_groups = 0
-    for key, indexes in groups.items():
+    for (_community, key), indexes in groups.items():
         if len(indexes) < 2:
             continue
-        duplicate_groups += 1
         signatures = {_certificate_signature(materialized[index]) for index in indexes}
         has_conflict = len(signatures) > 1
+        if not has_conflict:
+            superseded.update(indexes[1:])
+            continue
+        versions = {index: _certificate_updated_at(materialized[index]) for index in indexes}
+        if all(value is not None for value in versions.values()):
+            latest = max(versions.values())
+            current = [index for index in indexes if versions[index] == latest]
+            if len({_certificate_signature(materialized[index]) for index in current}) == 1:
+                superseded.update(index for index in indexes if index != current[0])
+                continue
+        duplicate_groups += 1
         if has_conflict:
             conflict_groups += 1
         for index in indexes:
@@ -227,10 +281,11 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
                     "reason": "同一标准化地址的告知书内容不一致，需人工判断",
                 })
 
-    normal_rows = [row for index, row in enumerate(materialized) if index not in blocked]
+    normal_rows = [row for index, row in enumerate(materialized) if index not in blocked | superseded]
     return {
         "rows": materialized,
         "normal_rows": normal_rows,
+        "superseded_count": len(superseded),
         "issues": issues,
         "duplicate_groups": duplicate_groups,
         "conflict_groups": conflict_groups,
@@ -243,28 +298,38 @@ def classify_certificate_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
 def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """分类户号表记录。
 
-    重复地址和空住房类型属于问题数据；包括“借住/其他/其它”在内的非空类型
+    同社区同户号同地址重复和空住房类型属于问题数据；无户号时才按社区及地址核查重复。
+    不同户号允许共享地址；包括“借住/其他/其它”在内的非空类型
     都是可导入的正常记录，并原样保留住房类型。
     """
     materialized = []
-    groups: dict[str, list[int]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str], list[int]] = defaultdict(list)
+    addresses: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index, raw in enumerate(rows, start=1):
         row = {str(key): value for key, value in raw.items()}
         address = normalize_text(row.get("address") or row.get("出租屋地址") or row.get("详细地址"))
         key = normalize_address(address)
         row["address"] = address
         row["community"] = normalize_community(row.get("community") or row.get("社区名称"))
-        row["housing_type"] = normalize_housing_type(row.get("housing_type") or row.get("住房类型"))
+        raw_type = normalize_text(row.get("housing_type") or row.get("住房类型"))
+        row["housing_type"] = normalize_housing_type(raw_type)
+        if row["housing_type"] != raw_type:
+            row["source_housing_type"] = raw_type
         row["source_row"] = row.get("source_row") or index
         row["source_key"] = key
         materialized.append(row)
         if key:
-            groups[key].append(len(materialized) - 1)
+            addresses[(row["community"], key)].append(len(materialized) - 1)
+            number = normalize_text(row.get("house_no"))
+            # Household numbers may be reused for another address. Only the
+            # same community, number and address identify a duplicate snapshot.
+            groups[(row["community"], "household" if number else "address", number or key,
+                    key if number else "")].append(len(materialized) - 1)
 
     issues: list[dict[str, Any]] = []
     issue_indexes: set[int] = set()
     duplicate_groups = 0
-    for key, indexes in groups.items():
+    for (_, identity_kind, _, _), indexes in groups.items():
         if len(indexes) < 2:
             continue
         duplicate_groups += 1
@@ -272,13 +337,22 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
             issue_indexes.add(item_index)
             issues.append({
                 "issue_type": ISSUE_HOUSEHOLD_DUPLICATE,
-                "entity_key": key,
+                "entity_key": materialized[item_index]["source_key"],
                 "source_ref": str(materialized[item_index].get("source_row") or ""),
                 "payload": {**materialized[item_index], "duplicate_group_size": len(indexes), "is_representative": position == 0},
-                "reason": "同一标准化地址存在多条户号表来源行，需人工确认代表记录",
+                "reason": ("同社区同户号同地址存在多条来源行，需核对来源内容"
+                           if identity_kind == "household" else "缺少户号且同社区同地址存在多条来源行，需核对户号"),
             })
 
     for item_index, row in enumerate(materialized):
+        if (not normalize_text(row.get("house_no")) and item_index not in issue_indexes
+                and len(addresses.get((row["community"], row["source_key"]), ())) > 1):
+            issue_indexes.add(item_index)
+            issues.append({
+                "issue_type": ISSUE_HOUSEHOLD_DUPLICATE, "entity_key": row["source_key"],
+                "source_ref": str(row.get("source_row") or ""), "payload": row,
+                "reason": "缺少户号且同社区同地址存在其他来源行，需核对户号",
+            })
         if not row.get("housing_type"):
             issue_indexes.add(item_index)
             issues.append({
@@ -296,9 +370,79 @@ def classify_household_rows(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "issues": issues,
         "duplicate_groups": duplicate_groups,
         "normal_count": len(normal_rows),
-        "issue_count": len(issues),
+        "issue_count": len(issue_indexes),
         "other_type_count": sum(1 for row in normal_rows if row.get("housing_type") not in {"个人出租", "单位出租", "自购房屋"}),
     }
+
+
+def classify_household_file_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep every source while choosing a timestamp-supported current snapshot."""
+    groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        # A previous preview may have persisted a suppression flag. Recompute it.
+        row.pop("import_skip", None)
+        house_no = normalize_text(row.get("house_no"))
+        address_key = normalize_address(row.get("address"))
+        if house_no and address_key:
+            groups[(normalize_community(row.get("community")), house_no, address_key)].append(row)
+    conflicts = []
+    skipped = set()
+    for grouped in groups.values():
+        if len(grouped) < 2:
+            continue
+        def signature(row):
+            fields = ("community", "police_station", "community_code", "house_no", "landlord",
+                      "address", "housing_type", "residence_type", "resident_count", "household_status")
+            return tuple(
+                (key in row, normalize_household_status(row.get(key)) or normalize_text(row.get(key)))
+                if key == "household_status" else
+                normalize_housing_type(row.get(key)) if key == "housing_type" else
+                normalize_text(row.get(key))
+                for key in fields
+            )
+
+        timestamps = [_source_datetime(row.get("updated_at")) for row in grouped]
+        if all(timestamps) and len(set(timestamps)) == len(timestamps):
+            winner_index = max(range(len(grouped)), key=lambda index: timestamps[index])
+            winner = grouped[winner_index]
+            for index, row in enumerate(grouped):
+                if index == winner_index:
+                    continue
+                row["import_skip"] = "superseded_household_snapshot"
+                row["import_duplicate_of"] = str(winner.get("import_source_ref") or "")
+                skipped.add(id(row))
+        elif len({signature(row) for row in grouped}) == 1:
+            winner = grouped[-1]
+            for row in grouped:
+                if row is winner:
+                    continue
+                row["import_skip"] = "identical_household"
+                row["import_duplicate_of"] = str(winner.get("import_source_ref") or "")
+                skipped.add(id(row))
+        else:
+            conflicts.append(grouped)
+    conflict_ids = {id(row) for grouped in conflicts for row in grouped}
+    result = classify_household_rows(row for row in rows if id(row) not in skipped | conflict_ids)
+    blocked = set()
+    for grouped in conflicts:
+        result["duplicate_groups"] += 1
+        for row in grouped:
+            ref = str(row.get("import_source_ref") or row.get("source_row") or "")
+            blocked.add(ref)
+            result["issues"].append({
+                "issue_type": ISSUE_HOUSEHOLD_DUPLICATE,
+                "entity_key": normalize_address(row.get("address")),
+                "source_ref": ref, "payload": row,
+                "reason": "同社区同户号同地址的重复来源缺少可区分的新旧更新时间，或更新时间相同但内容冲突，需核对来源",
+            })
+    result["rows"].extend(row for row in rows if id(row) in skipped | conflict_ids)
+    result["normal_rows"] = [row for row in result["normal_rows"] if row.get("import_source_ref") not in blocked]
+    result["normal_count"] = len(result["normal_rows"])
+    result["issue_count"] = len({str(item["payload"].get("import_source_ref") or item["source_ref"])
+                                 for item in result["issues"]})
+    result["other_type_count"] = sum(row.get("housing_type") not in {"个人出租", "单位出租", "自购房屋"} for row in result["normal_rows"])
+    result["duplicate_row_count"] = len(skipped)
+    return result
 
 
 def issue_type_label(issue_type: str) -> str:

@@ -29,6 +29,36 @@ SECRET_RE = re.compile(r"^[0-9a-f]{48}$")
 PUBLIC_FILES = frozenset({"compose.json", "init.sql", "redis.conf", "pipeline.sql", "pipeline-job.jar"})
 
 
+class _ImagePrepareError(ValueError):
+    def __init__(self, image_key: str, code: str) -> None:
+        self.image_key = image_key
+        self.code = code
+        super().__init__(code)
+
+
+def _safe_prepare_error_code(error: Exception) -> str:
+    """Map preparation failures to a bounded, non-sensitive diagnostic code."""
+    if isinstance(error, _ImagePrepareError):
+        return error.code
+    message = str(error)
+    known = {
+        "Staging image identity mismatch": "staging_image_identity_mismatch",
+        "independent Staging pipeline credentials required": "staging_credentials_missing",
+        "independent Staging Redis credential required": "staging_redis_credential_invalid",
+        "Staging application environment missing": "staging_application_environment_missing",
+        "Staging snapshot identity invalid": "staging_snapshot_identity_invalid",
+        "Staging run directory already exists": "staging_run_directory_conflict",
+        "fixed Staging root required": "staging_root_invalid",
+        "compiled Staging PipelineJob JAR missing": "staging_pipeline_jar_missing",
+        "staging_image_missing": "staging_image_missing",
+        "staging_docker_daemon_error": "staging_docker_daemon_error",
+        "staging_docker_unavailable": "staging_docker_unavailable",
+        "staging_image_inspect_failed": "staging_image_inspect_failed",
+        "Staging preparation command failed": "staging_preparation_command_failed",
+    }
+    return known.get(message, "staging_prepare_failed")
+
+
 def root_for(run_id: str) -> Path:
     return BASE / run_id
 
@@ -36,7 +66,16 @@ def root_for(run_id: str) -> Path:
 def checked(command: list[str], *, timeout: int = 60) -> str:
     result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
-        raise ValueError("Staging preparation command failed")
+        text = f"{result.stdout}\n{result.stderr}".lower()
+        if "no such image" in text or "image not found" in text or "manifest unknown" in text:
+            code = "staging_image_missing"
+        elif "error response from daemon" in text:
+            code = "staging_docker_daemon_error"
+        elif "cannot connect to the docker daemon" in text:
+            code = "staging_docker_unavailable"
+        else:
+            code = "staging_image_inspect_failed"
+        raise ValueError(code)
     return result.stdout
 
 
@@ -183,9 +222,13 @@ def prepare(run_id: str, images: dict[str, str], *, source: Path, pipeline_jar: 
     if pipeline_jar.is_symlink() or not pipeline_jar.is_file():
         raise ValueError("compiled Staging PipelineJob JAR missing")
     if verify_images:
-        for image in images.values():
-            if checked(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip() != image:
-                raise ValueError("Staging image identity mismatch")
+        for image_key, image in sorted(images.items()):
+            try:
+                actual = checked(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip()
+            except ValueError as error:
+                raise _ImagePrepareError(image_key, str(error)) from None
+            if actual != image:
+                raise _ImagePrepareError(image_key, "staging_image_identity_mismatch")
 
     mysql_password = values.get("STAGING_PIPELINE_MYSQL_PASSWORD", "")
     mysql_root_password = values.get("STAGING_PIPELINE_MYSQL_ROOT_PASSWORD", "")
@@ -257,7 +300,15 @@ def main() -> None:
         print(json.dumps(prepare(args.run_id, images, source=args.source,
                                  pipeline_jar=args.pipeline_jar,
                                  snapshot_id=args.staging_snapshot_id), sort_keys=True))
-    except Exception:
+    except Exception as error:
+        payload = {
+            "environment": "staging", "run_id": args.run_id, "status": "failed",
+            "phase": "prepare", "error_type": type(error).__name__,
+            "error_code": _safe_prepare_error_code(error),
+        }
+        if isinstance(error, _ImagePrepareError):
+            payload["image_key"] = error.image_key
+        print(json.dumps(payload, sort_keys=True))
         raise SystemExit("Staging event-pipeline preparation refused; inspect private evidence") from None
 
 

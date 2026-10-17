@@ -319,7 +319,7 @@ export interface AdminTaskQueueDetailItem {
   diagnosis: string
   recommended_action: string
   can_retry: boolean
-  retry_kind: 'photo_outbox' | null
+  retry_kind: string | null
   updated_at: string | null
 }
 
@@ -966,6 +966,15 @@ export async function exportWorkLog(draftId: number): Promise<Blob> {
 export interface WorkLogDailyDetailPreferences {
   rental_target: number
   self_owned_target: number
+  population_coefficient: number
+}
+
+export interface WorkLogDailyDetailPopulationRow {
+  community_id: number
+  community: string
+  added: number | null
+  cancelled: number | null
+  revision: number
 }
 
 export async function getWorkLogDailyDetailPreferences(): Promise<WorkLogDailyDetailPreferences> {
@@ -973,10 +982,27 @@ export async function getWorkLogDailyDetailPreferences(): Promise<WorkLogDailyDe
   return data
 }
 
+export async function getWorkLogDailyDetailPopulation(
+  businessDate: string,
+): Promise<WorkLogDailyDetailPopulationRow[]> {
+  const { data } = await api.get('/work-logs/daily-detail/population', {
+    params: { business_date: businessDate },
+  })
+  return data.rows
+}
+
+export async function saveWorkLogDailyDetailPopulation(payload: {
+  business_date: string
+  rows: WorkLogDailyDetailPopulationRow[]
+}): Promise<void> {
+  await api.put('/work-logs/daily-detail/population', payload)
+}
+
 export async function exportWorkLogDailyDetail(payload: {
   business_date: string
   rental_target: number
   self_owned_target: number
+  population_coefficient: number
 }): Promise<Blob> {
   const { data } = await api.post(
     '/work-logs/daily-detail/export',
@@ -1560,7 +1586,6 @@ export interface MobileTaskItem {
   needs_review: boolean
   review_stage: Exclude<MobileTaskReviewStage, 'all'> | ''
   review_flow?: MobileTaskReviewFlow | null
-  photo_fetched: boolean
   source_count: number
   conflict: boolean
   pending_sync: boolean
@@ -1758,16 +1783,6 @@ export interface MobileTaskDetailData {
   analysis_mode?: boolean
   dependency_blocked?: boolean
   dependency_message?: string
-  photo_requests: Array<{
-    ticket_id: number
-    ticket_no: string
-    attachments: Array<{
-      file_id: string
-      original_name: string
-      mime_type: string
-      size_bytes: number
-    }>
-  }>
   qmf_preview?: {
     visible: boolean
     enabled: boolean
@@ -2876,6 +2891,8 @@ export interface GridMember {
   department: DepartmentOption | null
   departments: DepartmentOption[]
   community_names: string[]
+  area_id: number | null
+  area_name: string
   account: {
     id: number
     username_masked: string
@@ -2888,6 +2905,7 @@ export interface GridMemberPayload {
   community?: string
   department_id?: number | null
   department_ids?: number[]
+  area_id?: number | null
   position?: string
   phone?: string
   id_card_number?: string | null
@@ -2926,14 +2944,43 @@ export interface CommunityArea {
 export interface DepartmentOption {
   id: number
   name: string
-  type: 'community' | 'internal'
+  type: 'community' | 'unit' | 'internal'
   community_name: string | null
+  parent_id?: number | null
+  area_id?: number | null
   is_active: boolean
+  member_count?: number
+  child_count?: number
 }
 
 export async function getDepartments(): Promise<DepartmentOption[]> {
   const { data } = await api.get('/grid-members/departments')
   return data.data
+}
+
+export async function createDepartment(payload: {
+  name: string
+  department_type: 'unit'
+  parent_id?: number | null
+  area_id?: number | null
+}): Promise<void> {
+  await api.post('/grid-members/departments', payload)
+}
+
+export async function updateDepartment(id: number, payload: {
+  name?: string
+  parent_id?: number | null
+  area_id?: number | null
+}): Promise<void> {
+  await api.patch(`/grid-members/departments/${id}`, payload)
+}
+
+export async function updateDepartmentStatus(id: number, isActive: boolean): Promise<void> {
+  await api.patch(`/grid-members/departments/${id}/status`, { is_active: isActive })
+}
+
+export async function deleteDepartment(id: number): Promise<void> {
+  await api.delete(`/grid-members/departments/${id}`)
 }
 
 export interface AccountOption {
@@ -2994,7 +3041,7 @@ export async function listGridMembers(params: {
   keyword?: string
   community?: string
   position?: string
-  category?: 'flow_work' | 'internal_business' | 'police_leadership'
+  category?: 'flow_work' | 'internal_business' | 'police_leadership' | 'other'
   page?: number
   page_size?: number
 }): Promise<{
@@ -4472,6 +4519,7 @@ export interface RegistryProperty {
   source_ref: string
   normalized_address: string
   status: string
+  household_status: string
   version: number
   updated_at: string | null
   certificate_status: RegistryCertificateStatus
@@ -4695,15 +4743,111 @@ export interface WatchImportResult {
   created_phones?: number
 }
 
+export interface PropertyAnnotationApplyItem {
+  property_id: number
+  small_community_id: number
+  expected_snapshot: string
+  expected_match_snapshot?: string
+  expected_entry_snapshot: string
+  preview_token: string
+}
+
+export interface PropertyAnnotationFilters {
+  keyword?: string
+  community_id?: number
+  housing_category?: RegistryHousingCategory
+  certificate_status?: RegistryCertificateStatus
+  status?: '' | 'active' | 'inactive'
+  household_status?: '' | 'cancelled' | 'not_cancelled' | 'unknown'
+  visit_start_date?: string
+  visit_end_date?: string
+  visit_status?: '' | 'visited' | 'never'
+  star_ratings?: string[]
+  small_community_ids?: number[]
+  address_match_statuses?: string[]
+  sort?: 'id_desc' | 'address_asc' | 'community_asc' | 'updated_desc' | 'visit_desc'
+}
+
+export interface PropertyAnnotationPreview {
+  total: number
+  ready: number
+  blocked: number
+  review: number
+  skipped: number
+  items: Array<{
+    xlsx_row: number
+    property_id: number | null
+    status: 'ready' | 'blocked' | 'review' | 'skipped' | 'applied'
+    address?: string
+    community?: string
+    community_id?: number | null
+    reason: string
+    target_name?: string
+    annotation_reason?: string
+    replaces_manual?: boolean
+    manual_confirm_item?: Pick<PropertyAnnotationApplyItem, 'property_id' | 'expected_snapshot' | 'expected_match_snapshot'>
+    apply_item?: PropertyAnnotationApplyItem
+  }>
+}
+
+export interface PropertyAnnotationExportJob {
+  id: string
+  status: 'queued' | 'running' | 'ready' | 'failed' | 'interrupted' | 'expired'
+  phase: string
+  row_count: number
+  file_size: number
+  error_code: string
+  created_at: string | null
+  finished_at: string | null
+  expires_at: string | null
+}
+
+export interface HouseholdImportFile {
+  key: string
+  file: File
+  housing_type: '' | '个人租赁' | '单位租赁' | '自购房屋' | '借住' | '其他'
+  household_status: '' | 'cancelled' | 'not_cancelled'
+  expected_count?: number
+}
+
 export const registryApi = {
+  async exportPropertyAnnotations(params: PropertyAnnotationFilters) {
+    return (await api.post('/registry/properties/small-community-annotations/export', params, activeRequest)).data as {
+      job_id: string
+      status: 'queued' | 'running'
+      phase: string
+    }
+  },
+  async propertyAnnotationExportStatus(jobId: string): Promise<PropertyAnnotationExportJob> {
+    return (await api.get(`/registry/properties/small-community-annotations/exports/${encodeURIComponent(jobId)}`, activeRequest)).data
+  },
+  async downloadPropertyAnnotationExport(jobId: string): Promise<Blob> {
+    return (await api.get(`/registry/properties/small-community-annotations/exports/${encodeURIComponent(jobId)}/download`, {
+      ...activeRequest, responseType: 'blob', timeout: 300_000,
+    })).data as Blob
+  },
+  async previewPropertyAnnotations(file: File): Promise<PropertyAnnotationPreview> {
+    const form = new FormData()
+    form.append('file', file)
+    return (await api.post('/registry/properties/small-community-annotations/preview', form, {
+      ...activeRequest, timeout: 300_000,
+    })).data
+  },
+  async applyPropertyAnnotations(items: PropertyAnnotationApplyItem[]) {
+    return (await api.post('/registry/properties/small-community-annotations/apply', {
+      confirm: true, items,
+    }, { ...activeRequest, timeout: 300_000 })).data as { message: string; confirmed: number }
+  },
   async properties(params: {
     keyword?: string
     community_id?: number
     housing_category?: RegistryHousingCategory
     certificate_status?: RegistryCertificateStatus
     status?: '' | 'active' | 'inactive'
+    household_status?: '' | 'cancelled' | 'not_cancelled' | 'unknown'
     visit_start_date?: string
     visit_end_date?: string
+    visit_status?: '' | 'visited' | 'never'
     star_ratings?: string[]
     small_community_ids?: number[]
     address_match_statuses?: string[]
@@ -4725,8 +4869,10 @@ export const registryApi = {
     housing_category?: RegistryHousingCategory
     certificate_status?: RegistryCertificateStatus
     status?: '' | 'active' | 'inactive'
+    household_status?: '' | 'cancelled' | 'not_cancelled' | 'unknown'
     visit_start_date?: string
     visit_end_date?: string
+    visit_status?: '' | 'visited' | 'never'
     star_ratings?: string[]
     small_community_ids?: number[]
     address_match_statuses?: string[]
@@ -4747,7 +4893,7 @@ export const registryApi = {
       params: communityId ? { community_id: communityId } : undefined,
     })).data as { data: RegistrySmallCommunityOption[] }
   },
-  async confirmPropertySmallCommunities(items: Array<{ property_id: number; small_community_id: number }>) {
+  async confirmPropertySmallCommunities(items: Array<{ property_id: number; small_community_id: number; expected_snapshot?: string; expected_match_snapshot?: string; expected_entry_snapshot?: string }>) {
     return (await api.post('/registry/properties/small-community-links/confirm', { items }, activeRequest)).data as {
       message: string
       confirmed: number
@@ -4785,6 +4931,16 @@ export const registryApi = {
       issue_count: number; duplicate_groups: number; other_type_count: number
       issue_breakdown?: Record<string, number>
     }
+  },
+  async previewHouseholdFiles(files: HouseholdImportFile[]) {
+    const form = new FormData()
+    for (const item of files) form.append('files', item.file)
+    form.append('file_options', JSON.stringify(files.map(({ housing_type, household_status, expected_count }) => ({ housing_type, household_status, expected_count }))))
+    return (await api.post('/registry/imports/households/files/preview', form, {
+      ...activeRequest,
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300_000,
+    })).data
   },
   async confirmHouseholdImport(batchId: number) {
     return (await api.post(`/registry/imports/households/${batchId}/confirm`, {}, {
@@ -4832,7 +4988,7 @@ export const registryApi = {
   },
   async importIssues(params: {
     keyword?: string
-    status?: '' | 'pending' | 'resolved' | 'dismissed'
+    status?: '' | 'pending' | 'resolved' | 'dismissed' | 'superseded'
     issue_type?: string
     source_type?: '' | 'household' | 'certificate'
     community_id?: number
@@ -5081,66 +5237,6 @@ export interface WorkOrderDetail extends WorkOrderSummary {
   attachments: WorkOrderAttachment[]
 }
 
-export interface PhotoImportItem {
-  safe_name: string
-  person_name: string
-  identity_number: string
-  size_bytes: number
-  sha256: string
-  match_status: 'matched' | 'unmatched' | 'duplicate' | 'conflict' | 'failed'
-  match_reason: string
-  matched_ticket_ids: number[]
-}
-
-export interface PhotoImportBatch {
-  id: number
-  batch_no: string
-  status: 'preview' | 'processing' | 'completed' | 'partial' | 'failed'
-  total_files: number
-  matched_files: number
-  unmatched_files: number
-  conflict_files: number
-  duplicate_files: number
-  failed_files: number
-  error_message: string
-  previewed_at: string | null
-  confirmed_at: string | null
-  created_at: string | null
-  updated_at: string | null
-  items?: PhotoImportItem[]
-}
-
-export interface PhotoImportReconcileResult {
-  batch_id: number
-  batch_no: string
-  eligible_tickets: number
-  attachment_copies: number
-  already_attached: number
-  manual_review_tickets: number
-  missing_source_files: number
-  repaired_tickets: number
-}
-
-export interface PendingPhotoRequest {
-  id: number
-  ticket_no: string
-  title: string
-  requester_user_id: number | null
-  current_queue: string
-  status: string
-  priority: string
-  due_at: string | null
-  version_no: number
-  updated_at: string | null
-  subject_name: string
-  identity_number: string
-  community_name: string
-  source_label: string
-  requester_name: string
-  requested_at: string | null
-  overdue: boolean
-}
-
 export const workflowApi = {
   async types() {
     return (await api.get('/workflow/types', activeRequest)).data as { data: WorkflowType[] }
@@ -5216,65 +5312,6 @@ export const workflowApi = {
     return resolveRuntimeApiUrl(
       `/api/workflow/tickets/${id}/attachments/${encodeURIComponent(fileId)}${inline ? '?inline=true' : ''}`,
     )
-  },
-  async pendingPhotoRequests(payload: {
-    keyword?: string
-    community?: string
-    source_label?: string
-    page?: number
-    page_size?: number
-  } = {}, options: { passive?: boolean } = {}) {
-    return (await api.post(
-      '/workflow/photo-requests/pending/search',
-      payload,
-      options.passive ? passiveRequest : activeRequest,
-    )).data as {
-      data: PendingPhotoRequest[]; total: number; page: number; page_size: number
-    }
-  },
-  async batchClaimPhotoRequests(payload: { ticket_ids?: number[]; claim_all?: boolean }) {
-    return (await api.post('/workflow/photo-requests/batch-claim', payload)).data as {
-      claimed_ids: number[]; skipped_ids: number[]; claimed_count: number
-    }
-  },
-  async exportPendingPhotoRequests(payload: {
-    keyword?: string
-    community?: string
-    source_label?: string
-  } = {}) {
-    return (await api.post('/workflow/photo-requests/pending/export', payload, {
-      ...activeRequest,
-      responseType: 'blob',
-    })).data as Blob
-  },
-  async previewPhotoImport(file: File) {
-    const form = new FormData()
-    form.append('file', file)
-    return (await api.post('/workflow/photo-imports/preview', form, {
-      ...activeRequest,
-      timeout: 300000,
-    })).data as PhotoImportBatch
-  },
-  async confirmPhotoImport(batchId: number) {
-    return (await api.post(`/workflow/photo-imports/${batchId}/confirm`, {}, {
-      ...activeRequest,
-      timeout: 300000,
-    })).data as PhotoImportBatch
-  },
-  async photoImports(page = 1, pageSize = 20) {
-    return (await api.get('/workflow/photo-imports', {
-      ...activeRequest,
-      params: { page, page_size: pageSize },
-    })).data as { data: PhotoImportBatch[]; total: number; page: number; page_size: number }
-  },
-  async photoImport(batchId: number) {
-    return (await api.get(`/workflow/photo-imports/${batchId}`, activeRequest)).data as PhotoImportBatch
-  },
-  async previewPhotoImportReconcile(batchId: number) {
-    return (await api.get(`/workflow/photo-imports/${batchId}/reconcile-preview`, activeRequest)).data as PhotoImportReconcileResult
-  },
-  async reconcilePhotoImport(batchId: number) {
-    return (await api.post(`/workflow/photo-imports/${batchId}/reconcile`, { confirm: true }, activeRequest)).data as PhotoImportReconcileResult
   },
 }
 

@@ -25,6 +25,7 @@ from deploy.environments.event_pipeline.services import kafka_delivery_store
 from deploy.environments.event_pipeline.services.derived_revision_cache import RevisionCache, CacheContractError
 from deploy.environments.event_pipeline import schema_registry
 from deploy.environments.event_pipeline import registry_runtime
+from deploy.environments.event_pipeline import dev_image_source_diagnostic
 from deploy.environments.event_pipeline import checkpoint
 from deploy.environments.event_pipeline import control
 from deploy.environments.event_pipeline import flink_compose
@@ -59,6 +60,33 @@ def event():
 
 
 class FlinkStateContractTests(unittest.TestCase):
+    def test_dev_image_source_diagnostic_redacts_to_fixed_identity(self):
+        payload = {
+            "Image": "sha256:" + "a" * 64,
+            "Config": {"Image": "quay.io/apicurio/apicurio-registry-kafkasql:2.6.5.Final",
+                        "Labels": {"org.opencontainers.image.source": "https://quay.io/apicurio",
+                                   "secret": "must-not-appear"}},
+            "RepoDigests": ["quay.io/apicurio/apicurio-registry-kafkasql@sha256:" + "b" * 64,
+                            "not-a-digest"],
+            "RepoTags": ["quay.io/apicurio/apicurio-registry-kafkasql:2.6.5.Final", "bad tag"],
+        }
+        with patch.object(dev_image_source_diagnostic, "_inspect", return_value=payload):
+            result = dev_image_source_diagnostic.diagnose()
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["image_id"], "sha256:" + "a" * 64)
+        self.assertEqual(len(result["repo_digests"]), 1)
+        self.assertEqual(len(result["repo_tags"]), 1)
+        self.assertEqual(result["image_labels"],
+                         {"org.opencontainers.image.source": "https://quay.io/apicurio"})
+        self.assertNotIn("Config", result)
+
+    def test_dev_image_source_diagnostic_rejects_unbounded_source(self):
+        payload = {"Image": "sha256:" + "a" * 64,
+                   "Config": {"Image": "--format={{.Config.Env}}"}}
+        with patch.object(dev_image_source_diagnostic, "_inspect", return_value=payload):
+            with self.assertRaises(ValueError):
+                dev_image_source_diagnostic.diagnose()
+
     def test_monitor_runtime_failure_detail_exposes_only_type_and_stage(self):
         detail = runtime_failure_detail(PermissionError("password=must-not-leak"), "evidence_directory")
         self.assertEqual(
@@ -1167,9 +1195,13 @@ volumes:
                 validate_event({**event(), **update})
 
     def test_store_run_validation_precedes_database_access(self):
-        for bad in ("production", "dev-", "dev-" + "x" * 65, None):
+        for bad in ("production", "shadow-test", "STG-invalid", "dev-", "dev-" + "x" * 65, None):
             with self.assertRaises(ValueError):
                 MySQLDeliveryStore(None, run_id=bad)
+
+    def test_store_accepts_the_staging_pipeline_identity(self):
+        store = MySQLDeliveryStore(None, run_id="STG-20261003-06")
+        self.assertEqual(store.run_id, "STG-20261003-06")
 
     def test_compose_has_no_host_ports_or_old_storage(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
@@ -1194,8 +1226,14 @@ volumes:
                          "PRIMARY KEY (run_id, task_id, source_id)", "execution.checkpointing.interval",
                          "dev.task.events.v1", "Dev_EventPipeline", "dev_task_metadata",
                          "event_count", "changed_field_count", "CARDINALITY(changed_fields)",
-                         "dev_unique_events", "COUNT(DISTINCT event_id)"):
+                         "dev_unique_events", "COUNT(DISTINCT event_id)",
+                         "MAX(CARDINALITY(changed_fields)) AS changed_field_count",
+                         "GROUP BY schema_version, event_id, event_type, task_id, source_id, revision",
+                         "SUM(changed_field_count)",
+                         "SUM(CASE WHEN event_type='task.created' THEN 1 ELSE 0 END)",
+                         "SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)"):
             self.assertIn(expected, sql)
+        self.assertNotIn("COUNT(DISTINCT CASE WHEN", sql)
         self.assertIn(
             "autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000",
             sql,

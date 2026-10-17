@@ -168,14 +168,17 @@ def normalize_certificate_page(
     rejected = 0
     for raw in page_rows:
         station = _text(raw.get("pcsname") or raw.get("policeStation") or raw.get("派出所"))
+        if not station:
+            raise VisitSourceError("scope_or_schema", "告知书缺少派出所范围字段，停止读取并保留当前快照")
         if not _is_expected_police_station(station):
             rejected += 1
             continue
         address = _text(raw.get("dz") or raw.get("address"))
         community = _text(raw.get("sssq") or raw.get("community"))
         if not address or not community:
-            rejected += 1
-            continue
+            raise VisitSourceError(
+                "scope_or_schema", "本所告知书缺少社区或地址，停止读取并保留当前快照",
+            )
         row = dict(raw)
         row["pcsname"] = settings.VISIT_SOURCE_POLICE_NAME
         row["address"] = address

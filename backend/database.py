@@ -192,21 +192,35 @@ async def ensure_permission_schema(cur) -> None:
         CREATE TABLE IF NOT EXISTS _departments (
             id INT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(200) NOT NULL UNIQUE,
+            -- community marks a community-level department only; never use it as unit ownership.
             department_type VARCHAR(20) NOT NULL,
             community_id INT DEFAULT NULL,
+            parent_id INT DEFAULT NULL,
+            area_id INT DEFAULT NULL,
             is_active TINYINT(1) NOT NULL DEFAULT 1,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_department_community (community_id),
+            INDEX idx_department_parent_active (parent_id, is_active),
+            INDEX idx_department_area (area_id),
             INDEX idx_department_type_active (department_type, is_active)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
     """)
-    await cur.execute(
-        "INSERT IGNORE INTO _departments "
-        "(name, department_type, community_id) "
-        "VALUES ('内勤', 'internal', NULL)"
+    await _ensure_column(cur, "_departments", "parent_id", "INT DEFAULT NULL AFTER community_id")
+    await _ensure_column(cur, "_departments", "area_id", "INT DEFAULT NULL AFTER parent_id")
+    await _ensure_index(
+        cur,
+        "_departments",
+        "idx_department_parent_active",
+        "INDEX idx_department_parent_active (parent_id, is_active)",
+    )
+    await _ensure_index(
+        cur,
+        "_departments",
+        "idx_department_area",
+        "INDEX idx_department_area (area_id)",
     )
     await cur.execute("""
         INSERT INTO _departments (name, department_type, community_id)
@@ -475,15 +489,6 @@ async def ensure_permission_schema(cur) -> None:
     await cur.execute("""
         UPDATE _grid_members AS member
         JOIN _departments AS department
-          ON department.name='内勤' AND department.department_type='internal'
-        SET member.department_id=department.id,
-            member.community=''
-        WHERE member.position IN ('片长', '中队长', '基础管控', '所队领导')
-          AND (member.department_id IS NULL OR member.department_id<>department.id)
-    """)
-    await cur.execute("""
-        UPDATE _grid_members AS member
-        JOIN _departments AS department
           ON department.name=member.community
          AND department.department_type='community'
         SET member.department_id=department.id
@@ -719,6 +724,24 @@ async def ensure_online_editor_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
     """)
     await _ensure_column(cur, "_communities", "area_id", "INT DEFAULT NULL")
+    await _ensure_column(cur, "_grid_members", "area_id", "INT DEFAULT NULL")
+    await _ensure_index(
+        cur,
+        "_grid_members",
+        "idx_grid_area",
+        "INDEX idx_grid_area (area_id)",
+    )
+    await cur.execute(
+        """
+        UPDATE _grid_members AS member
+        JOIN _grid_member_department_links AS link
+          ON link.member_id=member.id AND link.sort_order=0
+        JOIN _departments AS department ON department.id=link.department_id
+        JOIN _communities AS community ON community.id=department.community_id
+        SET member.area_id=community.area_id
+        WHERE member.position='自购房' AND member.area_id IS NULL
+        """
+    )
     await _ensure_column(
         cur,
         "_communities",
@@ -1882,6 +1905,25 @@ async def ensure_work_activity_schema(cur) -> None:
     """)
 
 
+async def ensure_work_log_daily_detail_schema(cur) -> None:
+    """人工流动人口日报数据，按日期和正式社区保存。"""
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS _work_log_daily_detail_population (
+            business_date DATE NOT NULL,
+            community_id INT NOT NULL,
+            added_count INT UNSIGNED DEFAULT NULL,
+            cancelled_count INT UNSIGNED DEFAULT NULL,
+            revision INT UNSIGNED NOT NULL DEFAULT 1,
+            updated_by INT DEFAULT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                 ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (business_date, community_id),
+            INDEX idx_work_log_population_date (business_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+    """)
+
+
 async def ensure_bootstrap_admin(cur) -> bool:
     """Create the first super administrator only from explicit environment values."""
     await cur.execute("SELECT COUNT(*) FROM _users")
@@ -2962,6 +3004,7 @@ class DatabaseManager:
                 await ensure_local_source_schema(cur)
                 await ensure_police_dispatch_schema(cur)
                 await ensure_work_activity_schema(cur)
+                await ensure_work_log_daily_detail_schema(cur)
                 await ensure_qmf_registration_schema(cur)
                 await ensure_qmf_status_scan_schema(cur)
                 await ensure_self_owned_schema(cur)

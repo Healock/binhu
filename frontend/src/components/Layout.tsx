@@ -25,6 +25,7 @@ import OnlinePresenceIndicator from './OnlinePresenceIndicator'
 import RealtimeCoordinator from './RealtimeCoordinator'
 import AdminTaskQueueFloat from './AdminTaskQueueFloat'
 import MyTaskHistoryFloat from './MyTaskHistoryFloat'
+import FloatingActionMenu from './FloatingActionMenu'
 import { AuthenticatedAvatar } from './AuthenticatedImage'
 import { confirmPendingNavigation } from '../utils/navigationGuard'
 import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
@@ -146,7 +147,7 @@ export default function Layout() {
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-700 text-sm font-semibold text-white">滨</span>
           <span className="mobile-app-header__brand-title font-semibold text-slate-800">滨湖智慧平台</span>
         </button>
-        {user && (
+        {mobile && user && (
           <div className="mobile-app-header__actions">
             <OnlinePresenceIndicator />
             <NotificationCenter placement="mobile-header" />
@@ -209,8 +210,10 @@ export default function Layout() {
       </header>
 
       {!mobile && <OnlinePresenceIndicator />}
-      <AdminTaskQueueFloat />
-      <MyTaskHistoryFloat />
+      <FloatingActionMenu>
+        <AdminTaskQueueFloat />
+        <MyTaskHistoryFloat />
+      </FloatingActionMenu>
 
       {sidebarOpen && (
         <button

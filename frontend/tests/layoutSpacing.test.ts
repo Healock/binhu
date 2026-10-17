@@ -17,6 +17,13 @@ function jsxTagName(node: ts.JsxTagNameExpression) {
   return node.getText()
 }
 
+test('待登记自由地址与可选房屋控件由父容器统一提供间距', () => {
+  const source = readFileSync(new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url), 'utf8')
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+  assert.match(source, /className="mobile-task-registration-controls"/)
+  assert.match(styles, /\.mobile-task-registration-controls\s*\{\s*display: grid;\s*gap: 8px;\s*min-width: 0;/)
+})
+
 test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   const workflowSource = readFileSync(
     new URL('../src/pages/WorkflowTickets.tsx', import.meta.url),
@@ -29,8 +36,7 @@ test('列表工具栏和系统设置页面使用明确的间距布局', () => {
   const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
 
   assert.match(workflowSource, /<ListToolbar/)
-  assert.match(workflowSource, /notice={<Alert/)
-  assert.match(workflowSource, /meta={<>/)
+  assert.match(workflowSource, /meta={<span>/)
   assert.match(workflowSource, /workflow-ticket-detail__section/)
   assert.match(styles, /\.workflow-ticket-detail\s*\{[^}]*gap:\s*24px/s)
   assert.match(styles, /\.list-toolbar\s*\{[^}]*gap:\s*12px/s)
@@ -120,7 +126,7 @@ test('详情抽屉和高密度工作台不使用容易贴边的 space-y 分隔',
   assert.match(dispatchSource, /<div className="police-dispatch-panel__preview">/)
   assert.match(operationsSource, /<div className="operations-log-layout">/)
   assert.match(operationsSource, /<div className="operations-center-layout">/)
-  assert.match(registrySource, /<div className="registry-management-layout">/)
+  assert.match(registrySource, /<div ref=\{layoutRef\} className="registry-management-layout">/)
   assert.match(styles, /\.registry-detail,[\s\S]*?\.operations-center-layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*20px/s)
   assert.match(styles, /\.registry-management-layout,[\s\S]*?\.operations-log-layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*16px/s)
   assert.match(styles, /\.police-dispatch-panel__content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*20px[^}]*padding:\s*20px/s)

@@ -1,13 +1,27 @@
 import json
+import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 import zipfile
+import subprocess
 
 from deploy.environments.event_pipeline import (
-    staging_compose, staging_control, staging_deploy, staging_metrics_probe, staging_prepare,
+    staging_backend_network, staging_compose, staging_control, staging_deploy,
+    staging_metrics_probe, staging_network_cleanup, staging_prepare,
+    staging_schema_registry_preload,
 )
+
+
+_GATEWAY_SPEC = importlib.util.spec_from_file_location(
+    "staging_gateway", Path(__file__).parents[1] / "environments" / "event_pipeline" /
+    "binhu-staging-event-pipeline-gateway.py"
+)
+staging_gateway = importlib.util.module_from_spec(_GATEWAY_SPEC)
+assert _GATEWAY_SPEC.loader is not None
+_GATEWAY_SPEC.loader.exec_module(staging_gateway)
 
 
 RUN_ID = "STG-20260920-01"
@@ -18,13 +32,59 @@ def images():
             for index, name in enumerate(sorted(staging_compose.IMAGE_KEYS), start=1)}
 
 
+class StagingGatewayDiagnosticTests(unittest.TestCase):
+    def test_child_payload_accepts_prefixed_json_without_forwarding_text(self):
+        payloads = staging_gateway._child_payloads(
+            'warning {"environment":"staging","run_id":"STG-20260920-01",'
+            '"status":"failed","phase":"prepare","error_type":"ValueError",'
+            '"error_code":"staging_image_identity_mismatch"}', "secret output"
+        )
+        self.assertEqual(payloads[0]["error_code"], "staging_image_identity_mismatch")
+        self.assertNotIn("secret output", json.dumps(payloads))
+
+    def test_child_failure_evidence_contains_only_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            payload = {"error_type": "ValueError", "error_code": "staging_prepare_failed"}
+            with patch.object(staging_gateway, "STATE", state):
+                staging_gateway._record_child_failure(
+                    "STG-20260920-01", "prepare", payload, "sensitive stdout", "sensitive stderr"
+                )
+            evidence = list((state / "evidence" / "STG-20260920-01").glob("*.json"))
+            self.assertEqual(len(evidence), 1)
+            text = evidence[0].read_text(encoding="utf-8")
+            self.assertNotIn("sensitive", text)
+            self.assertIn("stdout_sha256", text)
+            self.assertIn("stderr_sha256", text)
+
+    def test_stream_clients_can_be_loaded_as_locust_top_level_module(self):
+        staging_dir = Path(__file__).parents[2] / "load-tests" / "staging"
+        spec = importlib.util.spec_from_file_location("stream_clients", staging_dir / "stream_clients.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        import sys
+        sys.modules[spec.name] = module
+        with patch("sys.path", [str(staging_dir), *__import__("sys").path]):
+            spec.loader.exec_module(module)
+        self.assertTrue(callable(module.retry_delay))
+
+
 class StagingEventPipelineComposeTests(unittest.TestCase):
+    def test_network_address_pool_exhaustion_signature_is_classified(self):
+        result = subprocess.CompletedProcess(
+            ["docker", "network", "create"], 1, "",
+            "Error response from daemon: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network",
+        )
+        with patch("deploy.environments.event_pipeline.staging_control.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(ValueError, "staging_network_address_pool_exhausted"):
+                staging_control._run(["docker", "network", "create"])
+
     def test_complete_model_is_isolated_and_bounded(self):
         spec = staging_compose.compose(images(), RUN_ID)
         self.assertEqual(spec["name"], "binhu-staging-event-pipeline-stg-20260920-01")
         self.assertTrue(spec["networks"]["internal"]["internal"])
         self.assertEqual(spec["networks"]["backend"], {
-            "external": True, "name": "binhu-staging_internal",
+            "external": True, "name": "binhu-staging-pipeline-backend",
         })
         self.assertEqual(set(spec["services"]), {
             "staging-kafka-1", "staging-kafka-2", "staging-kafka-3", "schema-registry",
@@ -48,6 +108,12 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
         for index, name in enumerate(staging_compose.BROKERS, start=1):
             service = spec["services"][name]
             self.assertEqual(service["environment"]["KAFKA_NODE_ID"], str(index))
+            self.assertEqual(service["environment"]["KAFKA_HEAP_OPTS"], "-Xms256m -Xmx512m")
+            self.assertEqual(service["mem_limit"], "1g")
+            self.assertEqual(service["memswap_limit"], "1280m")
+            self.assertEqual(service["healthcheck"]["timeout"], "15s")
+            self.assertEqual(service["healthcheck"]["start_period"], "120s")
+            self.assertEqual(service["healthcheck"]["retries"], 30)
             self.assertEqual(service["environment"]["KAFKA_AUTO_CREATE_TOPICS_ENABLE"], "false")
             self.assertIn(f"{name}-data:/var/lib/kafka/data", service["volumes"])
             self.assertIn(f"{name}-secrets-tmpfs:/etc/kafka/secrets", service["volumes"])
@@ -55,6 +121,17 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
             for suffix in ("secrets-tmpfs", "config-tmpfs"):
                 volume = spec["volumes"][f"{name}-{suffix}"]
                 self.assertEqual(volume["driver_opts"]["type"], "tmpfs")
+
+    def test_flink_mounts_fixed_staging_connector_dependencies(self):
+        spec = staging_compose.compose(images(), RUN_ID)
+        volumes = spec["services"]["jobmanager"]["volumes"]
+        for name in staging_compose.DEPENDENCIES:
+            self.assertIn(
+                f"{staging_compose.DEPENDENCY_ROOT}/{name}:/opt/flink/lib/{name}:ro",
+                volumes,
+            )
+        self.assertNotIn("development", " ".join(volumes).lower())
+        self.assertNotIn("dev-pipeline", " ".join(volumes).lower())
         self.assertEqual(
             spec["services"]["schema-registry"]["environment"]["REGISTRY_KAFKASQL_TOPIC"],
             "staging.registry.storage.v1",
@@ -62,6 +139,133 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
         self.assertNotIn("dev.task.events", str(spec))
         self.assertNotIn("binhu-development", str(spec))
         self.assertNotIn("binhu-production", str(spec))
+
+    def test_kafka_quorum_wait_returns_only_aggregate_status(self):
+        calls = []
+
+        def checked(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "broker output", "")
+
+        with patch.object(staging_control, "_run", side_effect=checked):
+            result = staging_control._wait_for_kafka_quorum("binhu-staging-event-pipeline-stg-20260920-01")
+        self.assertTrue(result["ready"])
+        self.assertEqual(set(result["brokers"]), set(staging_compose.BROKERS))
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all("kafka-broker-api-versions.sh" in " ".join(command) for command in calls))
+        self.assertNotIn("broker output", json.dumps(result))
+
+    def test_kafka_quorum_wait_classifies_timeout(self):
+        with patch.object(staging_control, "_run", side_effect=ValueError("staging_resource_exhausted")), \
+                patch.object(staging_control.time, "monotonic", side_effect=[0, 181]), \
+                patch.object(staging_control.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "staging_kafka_quorum_timeout"):
+                staging_control._wait_for_kafka_quorum(
+                    "binhu-staging-event-pipeline-stg-20260920-01", timeout=180,
+                )
+
+    def test_kafka_quorum_wait_redacts_probe_timeout(self):
+        with patch.object(staging_control, "_run", side_effect=subprocess.TimeoutExpired("docker", 20)), \
+                patch.object(staging_control.time, "monotonic", side_effect=[0, 181]), \
+                patch.object(staging_control.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "staging_kafka_quorum_timeout"):
+                staging_control._wait_for_kafka_quorum(
+                    "binhu-staging-event-pipeline-stg-20260920-01", timeout=180,
+                )
+
+    def test_service_health_wait_returns_aggregate_status(self):
+        with patch.object(staging_control, "_docker_json", return_value=[{
+            "State": {"Status": "running", "Health": {"Status": "healthy"}},
+        }]):
+            result = staging_control._wait_for_service_healthy(
+                "binhu-staging-event-pipeline-stg-20260920-01", "staging-derived-mysql",
+            )
+        self.assertEqual(result, {
+            "service": "staging-derived-mysql", "status": "healthy", "attempts": 1,
+        })
+
+    def test_service_health_wait_classifies_timeout(self):
+        with patch.object(staging_control, "_docker_json", return_value=[{
+            "State": {"Status": "running", "Health": {"Status": "starting"}},
+        }]), patch.object(staging_control.time, "monotonic", side_effect=[0, 241]), \
+                patch.object(staging_control.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "staging_service_health_timeout"):
+                staging_control._wait_for_service_healthy(
+                    "binhu-staging-event-pipeline-stg-20260920-01", "staging-derived-mysql",
+                    timeout=240,
+                )
+
+    def test_missing_consumer_group_is_allowed_before_first_event(self):
+        with patch.object(staging_control, "_run", side_effect=ValueError("staging_consumer_group_not_created")):
+            self.assertEqual(
+                staging_control._consumer_group(
+                    "binhu-staging-event-pipeline-stg-20260920-01",
+                    "STG-20260920-01-flink",
+                ),
+                ["STG-20260920-01-flink"],
+            )
+
+    def test_empty_consumer_group_report_is_allowed_before_first_event(self):
+        with patch.object(
+                staging_control, "_run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+        ):
+            self.assertEqual(
+                staging_control._consumer_group(
+                    "binhu-staging-event-pipeline-stg-20260920-01",
+                    "STG-20260920-01-flink",
+                ),
+                ["STG-20260920-01-flink"],
+            )
+
+    def test_consumer_group_headers_without_assignment_are_allowed(self):
+        output = (
+            "Consumer group 'STG-20260920-01-flink' has no active members.\n"
+            "GROUP TOPIC PARTITION CURRENT-OFFSET LOG-END-OFFSET LAG\n"
+        )
+        with patch.object(
+                staging_control, "_run",
+                return_value=subprocess.CompletedProcess([], 0, output, ""),
+        ):
+            self.assertEqual(
+                staging_control._consumer_group(
+                    "binhu-staging-event-pipeline-stg-20260920-01",
+                    "STG-20260920-01-flink",
+                ),
+                ["STG-20260920-01-flink"],
+            )
+
+    def test_consumer_group_report_for_other_topic_is_rejected(self):
+        with patch.object(
+                staging_control, "_run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, "GROUP TOPIC\nSTG-20260920-01-flink other.topic 0", "",
+                ),
+        ), self.assertRaisesRegex(ValueError, "no Staging topic assignment"):
+            staging_control._consumer_group(
+                "binhu-staging-event-pipeline-stg-20260920-01",
+                "STG-20260920-01-flink",
+            )
+
+    def test_checkpoint_volume_identity_is_required_before_owner_change(self):
+        from types import SimpleNamespace
+        import stat
+        volume = {
+            "Name": "binhu-staging-event-pipeline-stg-20260920-01_flink-checkpoints",
+            "Labels": {"binhu.environment": "staging", "binhu.run_id": "STG-20260920-01"},
+            "Mountpoint": "/data/docker/volumes/binhu-staging-event-pipeline-stg-20260920-01_flink-checkpoints/_data",
+        }
+        with patch.object(staging_control, "_docker_json", return_value=[volume]), \
+                patch.object(Path, "is_symlink", return_value=False), \
+                patch.object(Path, "stat", return_value=SimpleNamespace(st_mode=stat.S_IFDIR)), \
+                patch.object(staging_control.os, "chown", create=True) as chown:
+            result = staging_control._prepare_checkpoint_volume(
+                Path("/fixed/candidate"), "binhu-staging-event-pipeline-stg-20260920-01",
+                "STG-20260920-01",
+            )
+        self.assertEqual(result["owner_uid"], 9999)
+        self.assertEqual(result["owner_gid"], 9999)
+        chown.assert_called_once()
 
     def test_backend_relay_is_confined_to_staging_backend_network(self):
         spec = staging_compose.compose(images(), RUN_ID)
@@ -153,6 +357,8 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         source = Path(staging_control.__file__).read_text(encoding="utf-8")
         self.assertNotIn("down\", \"-v", source)
         self.assertNotIn("docker volume rm", source)
+        self.assertIn("event_pipeline.delivery_schema_migrate", source)
+        self.assertIn("for attempt in range(6)", source)
         with self.assertRaises(ValueError):
             staging_control._validate_no_cross_environment({"networks": {"x": "binhu-production_internal"}})
 
@@ -197,7 +403,91 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
             )
         command = run.call_args.args[0]
         self.assertNotIn("x" * 32, " ".join(command))
+        self.assertIn("staging-load-admin-01@staging", " ".join(command))
+        self.assertNotIn("staging-load-super_admin-01@staging", " ".join(command))
         self.assertEqual(run.call_args.kwargs["input_text"], "x" * 32 + "\n")
+
+    def test_mysql_probe_accepts_server_without_optional_deadlock_counter(self):
+        output = "\n".join((
+            "Innodb_row_lock_current_waits\t0",
+            "Innodb_row_lock_time_max\t12",
+            "Threads_connected\t8",
+            "Threads_running\t2",
+        ))
+        with patch.object(staging_metrics_probe, "_run", return_value=output):
+            result = staging_metrics_probe._mysql_status("derived-mysql")
+        self.assertEqual(result["Innodb_deadlocks"], 0)
+        self.assertEqual(result["Threads_connected"], 8)
+
+    def test_redis_probe_passes_runtime_password_over_stdin(self):
+        info = "\n".join((
+            "used_memory:10", "maxmemory:100", "evicted_keys:0",
+            "keyspace_hits:5", "keyspace_misses:1",
+        ))
+        password = "r" * 32
+        with patch.dict("os.environ", {"STAGING_PIPELINE_REDIS_PASSWORD": password}, clear=False), \
+                patch.object(staging_metrics_probe, "_run", return_value=info) as run:
+            result = staging_metrics_probe._redis("derived-redis")
+        self.assertEqual(result["oom_error_count"], 0)
+        command = run.call_args.args[0]
+        self.assertNotIn(password, " ".join(command))
+        self.assertEqual(run.call_args.kwargs["input_text"], password + "\n")
+
+    def test_queue_probe_uses_derived_database_and_rejects_online_snapshot(self):
+        with patch.object(staging_metrics_probe, "_run", return_value="0\n") as run:
+            result = staging_metrics_probe._queue(
+                "binhu-staging-event-pipeline-STG-20260920-01-staging-derived-mysql-1",
+                RUN_ID,
+                "Staging_EventPipeline",
+            )
+        self.assertEqual(result, {"pending": 0, "drain_seconds": 0})
+        command = run.call_args.args[0]
+        self.assertIn("staging-derived-mysql-1", " ".join(command))
+        self.assertIn("Staging_EventPipeline", " ".join(command))
+        with self.assertRaisesRegex(RuntimeError, "derived database identity"):
+            staging_metrics_probe._queue("derived-mysql", RUN_ID, "Staging_s" + "d" * 16 + "_OnlineData")
+
+    def test_kafka_probe_accepts_empty_consumer_groups_before_first_event(self):
+        with patch.object(staging_metrics_probe, "_run", return_value=""):
+            self.assertEqual(
+                staging_metrics_probe._kafka("binhu-staging-event-pipeline-STG-20261006-21", RUN_ID),
+                {"lag": 0, "group_count": 2},
+            )
+
+    def test_network_cleanup_keeps_frp_and_attached_networks(self):
+        frp = {
+            "Name": "edge-frp",
+            "Driver": "bridge",
+            "Internal": False,
+            "Labels": {},
+            "Containers": {"abc": {"Name": "frpc"}},
+        }
+        self.assertEqual(staging_network_cleanup._eligible("edge-frp", frp), "attached_containers")
+
+    def test_network_cleanup_only_allows_empty_run_scoped_network(self):
+        empty = {
+            "Name": "binhu-staging-event-pipeline-STG-20261002-27_internal",
+            "Driver": "bridge",
+            "Internal": True,
+            "Labels": {"binhu.environment": "staging"},
+            "Containers": {},
+        }
+        self.assertIsNone(staging_network_cleanup._eligible(empty["Name"], empty))
+        protected = {**empty, "Name": "binhu-staging_internal"}
+        self.assertEqual(staging_network_cleanup._eligible(protected["Name"], protected), "protected_name")
+
+    def test_network_cleanup_allows_empty_unprotected_bridge(self):
+        empty = {
+            "Name": "old-ci-network", "Driver": "bridge", "Internal": False,
+            "Labels": {}, "Containers": {},
+        }
+        self.assertIsNone(staging_network_cleanup._eligible(empty["Name"], empty))
+
+    def test_network_cleanup_does_not_remove_running_or_frp_containers(self):
+        source = Path(staging_network_cleanup.__file__).read_text(encoding="utf-8")
+        self.assertIn('"docker", "ps", "-aq"', source)
+        self.assertIn('"running_container"', source)
+        self.assertIn('"frp_container"', source)
 
 
 class StagingEventPipelineCandidateTests(unittest.TestCase):
@@ -248,6 +538,136 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
         self.assertNotIn("binhu-production", wrapper + gateway + installer)
+        diagnostic = (root / "staging_measure_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn('"error_type"', diagnostic)
+        self.assertIn('"error_code"', diagnostic)
+        self.assertNotIn("backend.env", diagnostic)
+        control = (root / "staging_control.py").read_text(encoding="utf-8")
+        self.assertIn('"phase": phase', control)
+        self.assertIn('"error_type": type(error).__name__', control)
+        self.assertIn('"error_code": error_code', control)
+        self.assertIn('payload.get("status") == "failed"', gateway)
+        self.assertIn('staging_container_conflict', control)
+        self.assertIn('staging_image_missing', control)
+        self.assertIn('staging_network_attachment_failed', control)
+        self.assertIn('staging_container_runtime_failed', control)
+        self.assertIn('staging_resource_exhausted', control)
+        self.assertIn('staging_resource_limit_unsupported', control)
+        self.assertIn('staging_device_driver_missing', control)
+        self.assertIn('_ensure_internal_network', control)
+        self.assertIn('staging_network_address_pool_exhausted', control)
+        self.assertIn('staging_network_firewall_failed', control)
+        installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
+        self.assertIn('staging_apply_diagnostic.py', installer)
+        runtime = (root / "staging_apply_runtime_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn('/srv/binhu-environments/staging-event-pipeline', runtime)
+        self.assertIn('"services"', runtime)
+        self.assertNotIn('stderr', runtime)
+        prepare = (root / "staging_prepare.py").read_text(encoding="utf-8")
+        self.assertIn('"phase": "prepare"', prepare)
+        self.assertIn('staging_image_identity_mismatch', prepare)
+        self.assertIn('"error_code": _safe_prepare_error_code(error)', prepare)
+        self.assertIn('staging_image_inspect_failed', prepare)
+        self.assertIn('staging_docker_unavailable', prepare)
+        self.assertIn('"image_key"', prepare)
+        image_diag = (root / "staging_image_diagnostic.py").read_text(encoding="utf-8")
+        preload = (root / "staging_schema_registry_preload.py").read_text(encoding="utf-8")
+        self.assertIn("APPROVED_IMAGE", preload)
+        self.assertIn("docker", preload)
+        self.assertIn("archive_sha256", preload)
+        self.assertIn("INCOMING_ROOT", preload)
+        self.assertIn("image archive path refused", preload)
+        self.assertIn("preload-schema-registry", (root.parents[2] / ".github/workflows/install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8"))
+        preload_diag = (root / "staging_schema_registry_preload_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn("preload_evidence_missing", preload_diag)
+        self.assertNotIn("stderr", preload_diag)
+        with self.assertRaises(ValueError):
+            staging_schema_registry_preload.preload("STG-20261001-08", "sha256:" + "0" * 64)
+        self.assertIn('"images"', image_diag)
+        self.assertNotIn('stderr', image_diag)
+        apply_diag = (root / "staging_apply_diagnostic.py").read_text(encoding="utf-8")
+        self.assertIn('SAFE_FIELDS', apply_diag)
+        self.assertIn('/srv/binhu-environments/staging-event-pipeline', apply_diag)
+        self.assertIn('docker_server_available', apply_diag)
+        self.assertNotIn('stderr', apply_diag)
+
+    def test_schema_registry_preload_uses_separate_fixed_archive_upload_and_import_phases(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
+        for marker in (
+            "preload_stage=server_archive_prepare",
+            "preload_stage=server_archive_upload",
+            "preload_stage=server_archive_hash_check",
+            "preload_stage=server_preload",
+            "server_archive_metadata=",
+            "schema-registry-image.tar",
+            "chmod 600 -- '$remote_archive'",
+        ):
+            self.assertIn(marker, workflow)
+        self.assertNotIn('cat "$archive" | ssh', workflow)
+
+    def test_schema_registry_preload_classifies_fixed_docker_errors(self):
+        self.assertEqual(
+            staging_schema_registry_preload._docker_error_code(
+                "Error response from daemon: no space left on device"
+            ),
+            "staging_insufficient_disk",
+        )
+        self.assertEqual(
+            staging_schema_registry_preload._docker_error_code(
+                "failed to validate image signature"
+            ),
+            "staging_image_signature_rejected",
+        )
+
+    def test_schema_registry_export_and_preload_digest_contracts_agree(self):
+        workflows = Path(__file__).parents[2] / ".github" / "workflows"
+        approved = staging_schema_registry_preload.APPROVED_IMAGE
+        for filename in ("install-dev-event-pipeline-gateway.yml",
+                         "install-staging-event-pipeline-gateway.yml"):
+            source = (workflows / filename).read_text(encoding="utf-8")
+            schema_ids = re.findall(r"sha256:cac935[0-9a-f]{58}", source)
+            self.assertTrue(schema_ids, filename)
+            self.assertEqual(set(schema_ids), {approved}, filename)
+
+    def test_backend_access_network_is_internal_and_keeps_application_network_untouched(self):
+        self.assertEqual(staging_backend_network.NETWORK, "binhu-staging-pipeline-backend")
+        self.assertEqual(staging_backend_network.APP_NETWORK, "binhu-staging_internal")
+        self.assertEqual(staging_backend_network.LABELS, {
+            "binhu.environment": "staging", "binhu.role": "pipeline-backend-access",
+        })
+        source = Path(staging_backend_network.__file__).read_text(encoding="utf-8")
+        self.assertIn('"--internal"', source)
+        self.assertIn('"docker", "network", "disconnect"', source)
+        self.assertIn("staging_application_network_changed", source)
+        self.assertNotIn("binhu-production", source)
+
+    def test_pipeline_job_failure_diagnostics_use_fixed_codes(self):
+        source = Path(staging_compose.__file__).with_name("PipelineJob.java").read_text(encoding="utf-8")
+        for code in (
+            "flink_multiple_distinct_aggregate_keys",
+            "flink_sql_function_signature_unmatched",
+            "flink_sql_type_mismatch",
+            "flink_sql_identifier_missing",
+            "flink_sql_feature_unsupported",
+            "flink_sql_validation_error_unclassified",
+        ):
+            self.assertIn(code, source)
+        self.assertIn("safeFailureCode(failure)", source)
+        self.assertNotIn('types.append(cause.getMessage())', source)
+
+    def test_network_validation_rejects_foreign_members(self):
+        valid = {
+            "Name": staging_backend_network.NETWORK, "Driver": "bridge", "Internal": True,
+            "Labels": dict(staging_backend_network.LABELS),
+            "Containers": {},
+        }
+        with patch.object(staging_backend_network, "inspect", return_value={
+            "Config": {"Labels": {"binhu.environment": "production"}},
+        }):
+            valid["Containers"] = {"foreign": {"Name": "binhu-production-backend-1"}}
+            with self.assertRaisesRegex(ValueError, "foreign_member"):
+                staging_backend_network.validate_network(valid)
 
     def test_staging_gateway_rejects_reseeding_before_starting_seed_container(self):
         gateway = (

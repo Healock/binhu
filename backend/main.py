@@ -60,6 +60,10 @@ from services.registry_certificate_jobs import (
     recover_interrupted_certificate_source_runs,
     stop_certificate_source_tasks,
 )
+from services.property_annotation_exports import (
+    recover_interrupted_exports,
+    stop_annotation_export_tasks,
+)
 from services.registry_certificate_scheduler import run_registry_certificate_scheduler
 from services.police_dispatch_publish_jobs import (
     recover_interrupted_police_publish_runs,
@@ -112,6 +116,10 @@ async def lifespan(app: FastAPI):
             yield
         return
     await init_db()
+    from services.household_preview_repair import recover_household_previews
+    repaired_household_previews = await recover_household_previews()
+    if repaired_household_previews:
+        print(f"[REGISTRY_HOUSEHOLD] reclassified previews: {repaired_household_previews}")
     from database import db_manager
     async with db_manager.get_pool("online_data").acquire() as mac_conn:
         await load_server_mac(mac_conn)
@@ -138,6 +146,9 @@ async def lifespan(app: FastAPI):
             f"[REGISTRY_CERTIFICATE] 已保留 {interrupted_certificate_runs} 个"
             "服务重启前遗留任务的分页进度"
         )
+    interrupted_annotation_exports = await recover_interrupted_exports()
+    if interrupted_annotation_exports:
+        print(f"[REGISTRY] 已中断 {interrupted_annotation_exports} 个小区标注导出任务")
     interrupted_publish_runs = await recover_interrupted_police_publish_runs()
     if interrupted_publish_runs:
         print(
@@ -216,6 +227,7 @@ async def lifespan(app: FastAPI):
         await stop_txdocs_usage_tasks()
         await stop_backup_tasks()
         await stop_certificate_source_tasks()
+        await stop_annotation_export_tasks()
         await stop_police_publish_tasks()
         await stop_fullchain_archive_tasks()
         await stop_status_scan_tasks()

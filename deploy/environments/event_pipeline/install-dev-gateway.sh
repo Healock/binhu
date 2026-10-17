@@ -10,6 +10,7 @@ command -v useradd >/dev/null && command -v visudo >/dev/null && command -v open
 restricted_shell="/usr/local/bin/binhu-dev-event-pipeline-gateway"
 install -o root -g root -m 0755 binhu-dev-event-pipeline-gateway.py /usr/local/libexec/binhu-dev-event-pipeline-gateway.py
 install -o root -g root -m 0755 observation_control.py /usr/local/libexec/binhu-dev-event-pipeline-observation.py
+install -o root -g root -m 0755 dev_image_source_diagnostic.py /usr/local/libexec/binhu-dev-image-source-diagnostic.py
 install -o root -g root -m 0755 binhu-dev-event-pipeline-gateway "$restricted_shell"
 id binhu-dev-deploy >/dev/null 2>&1 || useradd --create-home --home-dir /home/binhu-dev-deploy --shell "$restricted_shell" binhu-dev-deploy
 # sshd with PAM rejects a locked account before evaluating authorized_keys.

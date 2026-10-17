@@ -15,6 +15,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from fastapi import HTTPException
 
 from routers.work_logs import (
+    DailyDetailExportRequest,
     DraftSave,
     _draft_payload,
     _draft_summary,
@@ -34,8 +35,11 @@ from services.work_log_data import (
 )
 from services.work_log_pdf import _display, build_daily_pdf
 from services.work_log_daily_detail import (
+    _ordered_daily_detail_rows,
+    _summary_by_member,
     build_daily_detail_data,
     build_daily_detail_workbook,
+    normalize_population_coefficient,
     normalize_targets,
 )
 from services.work_log_schema import (
@@ -66,6 +70,9 @@ class CountCursor:
 
     async def fetchone(self):
         return (self.count,)
+
+    async def fetchall(self):
+        return []
 
 
 class CountConnection:
@@ -257,6 +264,12 @@ def draft_payload(values=None):
 
 
 class WorkLogTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        monitor = patch("services.work_log_daily_detail.get_txdocs_business_overlay",
+                        new=AsyncMock(return_value={"available": False}))
+        monitor.start()
+        self.addCleanup(monitor.stop)
+
     def sample_row(self):
         draft = draft_payload()
         return (
@@ -920,20 +933,31 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workbook.sheetnames, ["Sheet1"])
         sheet = workbook["Sheet1"]
         self.assertEqual(filename, "0809滨湖网格工作每日明细.xlsx")
-        self.assertEqual(sheet["B2"].value, "8月9号")
+        self.assertIn("8月9号", sheet["A1"].value)
         self.assertEqual(sheet["A4"].value, 1)
         self.assertEqual(sheet["J4"].value, 8)
         self.assertEqual(sheet["L4"].value, 5)
         self.assertEqual(sheet["M4"].value, 3)
         self.assertIsNone(sheet["F4"].value)
+        self.assertEqual(sheet["F5"].value, "/")
         self.assertIsNone(sheet["N4"].value)
-        self.assertIsNone(sheet["V4"].value)
+        self.assertIsNone(sheet["R4"].value)
         self.assertIn("B4:B5", {str(item) for item in sheet.merged_cells.ranges})
         self.assertIn("C4:C5", {str(item) for item in sheet.merged_cells.ranges})
-        self.assertEqual(sheet.max_row, 67)
-        for row in sheet.iter_rows(min_row=1, max_row=67, min_col=1, max_col=22):
+        self.assertEqual(sheet.max_column, 18)
+        self.assertEqual(sheet.max_row, 52)
+        self.assertEqual(sheet["F2"].value, "流动人口")
+        self.assertEqual(sheet["I2"].value, "入户走访")
+        self.assertEqual(sheet["N2"].value, "指令核查")
+        self.assertEqual(sheet["R2"].value, "备注")
+        self.assertEqual(sheet.print_area, "'Sheet1'!$A$1:$R$51")
+        for row in sheet.iter_rows(min_row=1, max_row=52, min_col=1, max_col=18):
             for cell in row:
-                self.assertIsNone(cell.fill.fill_type)
+                if cell.coordinate == "J4":
+                    self.assertEqual(cell.fill.fill_type, "solid")
+                    self.assertTrue(cell.fill.fgColor.rgb.endswith("D9EAD3"))
+                else:
+                    self.assertIsNone(cell.fill.fill_type)
 
     async def test_daily_detail_uses_role_specific_visits_and_snapshot_tasks(self):
         roster = [
@@ -1013,6 +1037,79 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[1]["visits"], 6)
         self.assertIsNone(result[1]["checked_instructions"])
 
+    async def test_daily_detail_instruction_rows_match_community_before_name_fallback(self):
+        roster = [
+            {
+                "name": "张三",
+                "position": "组员",
+                "group_key": "area:东片",
+                "group_label": "东片",
+                "community": "甲社区",
+                "community_id": 1,
+                "attendance": "是",
+            },
+            {
+                "name": "张三",
+                "position": "组员",
+                "group_key": "area:东片",
+                "group_label": "东片",
+                "community": "乙社区",
+                "community_id": 2,
+                "attendance": "是",
+            },
+        ]
+        online = {
+            "exists": True,
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "张三", "数据总数": 4, "已核查": 1, "已完成": 2, "核查见底率": 0.5},
+                {"社区": "乙社区", "姓名": "张三", "数据总数": 9, "已核查": 3, "已完成": 5, "核查见底率": 0.7},
+            ]},
+        }
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={"inspector": {"data": []}})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(),
+                date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            )
+        self.assertEqual([row["instruction_total"] for row in result], [4, 9])
+        self.assertEqual([row["checked_instructions"] for row in result], [3, 8])
+        self.assertEqual([row["completed_instructions"] for row in result], [2, 5])
+
+    def test_daily_detail_population_coefficient_is_request_parameter(self):
+        self.assertEqual(normalize_population_coefficient(20), 20)
+        self.assertEqual(normalize_population_coefficient(-1), 0)
+        self.assertEqual(normalize_population_coefficient("invalid"), 10)
+        request = DailyDetailExportRequest(
+            business_date=date(2026, 8, 9),
+            rental_target=10,
+            self_owned_target=15,
+            population_coefficient=12,
+        )
+        self.assertEqual(request.population_coefficient, 12)
+        self.assertEqual(
+            DailyDetailExportRequest(
+                business_date=date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            ).population_coefficient,
+            10,
+        )
+        with self.assertRaises(Exception):
+            DailyDetailExportRequest(
+                business_date=date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+                population_coefficient=1000,
+            )
+
     def test_daily_detail_targets_are_bounded(self):
         self.assertEqual(
             normalize_targets({
@@ -1021,6 +1118,336 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
             }),
             {"rental_target": 0, "self_owned_target": 999},
         )
+
+    def test_daily_detail_population_color_and_total_recalculation(self):
+        row = {
+            "group_key": "area:east",
+            "group_label": "东片\n片长甲",
+            "community_id": 8,
+            "community": "正式社区",
+            "name": "组员甲",
+            "position": "组员",
+            "attendance": "是",
+            "population_target": 10,
+            "population_added": 5,
+            "population_cancelled": 0,
+            "visit_target": 10,
+            "visits": 4,
+            "changed": 2,
+            "cancelled": 1,
+            "average_changes": 0.75,
+            "instruction_total": 8,
+            "checked_instructions": 6,
+            "completed_instructions": 2,
+            "bottom_rate": 0.5,
+            "unable_instructions": 2,
+        }
+        content, _ = build_daily_detail_workbook(date(2026, 8, 9), [row])
+        sheet = load_workbook(BytesIO(content), data_only=False).active
+        self.assertEqual(sheet["B4"].value, "东片\n片长甲")
+        self.assertEqual(sheet["C4"].value, "正式社区")
+        self.assertEqual(sheet["F4"].value, 10)
+        self.assertEqual(sheet["G4"].value, 5)
+        self.assertTrue(sheet["G4"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertEqual(sheet["N4"].value, 8)
+        self.assertEqual(sheet["O4"].value, 6)
+        self.assertEqual(sheet["Q4"].value, 0.5)
+        self.assertEqual(sheet["N51"].value, 8)
+        self.assertEqual(sheet["O51"].value, 6)
+        self.assertEqual(sheet["Q51"].value, 0.5)
+        self.assertEqual(sheet["M4"].number_format, "0.00")
+        self.assertEqual(sheet["Q4"].number_format, "0.00%")
+
+    def test_daily_detail_colors_low_visit_count(self):
+        row = {
+            "group_key": "area:east", "group_label": "东片", "community_id": 8,
+            "community": "正式社区", "name": "组员甲", "position": "组员",
+            "attendance": "是", "population_target": 10, "population_added": 0,
+            "population_cancelled": 0, "visit_target": 10, "visits": 5,
+        }
+        content, _ = build_daily_detail_workbook(date(2026, 8, 9), [row])
+        sheet = load_workbook(BytesIO(content), data_only=False).active
+        self.assertTrue(sheet["G4"].fill.fgColor.rgb.endswith("F4CCCC"))
+        self.assertTrue(sheet["H4"].fill.fgColor.rgb.endswith("F4CCCC"))
+        self.assertTrue(sheet["J4"].fill.fgColor.rgb.endswith("FFF2CC"))
+
+    def test_daily_detail_visit_and_instruction_color_boundaries(self):
+        base = {
+            "group_key": "area:east", "group_label": "东片", "community_id": 8,
+            "community": "正式社区", "name": "组员甲", "position": "组员",
+            "attendance": "是", "population_target": 10, "population_added": 0,
+            "population_cancelled": 0, "visit_target": 10, "instruction_total": 10,
+        }
+        cases = [
+            ({"visits": 0, "checked_instructions": 0}, "FFF2CC"),
+            ({"visits": 4, "checked_instructions": 4}, "FFF2CC"),
+            ({"visits": 5, "checked_instructions": 5}, "FFF2CC"),
+            ({"visits": 6, "checked_instructions": 6}, "D9EAD3"),
+            ({"visits": 10, "checked_instructions": 10}, "D9EAD3"),
+            ({"visits": 12, "checked_instructions": 12}, "D9EAD3"),
+            ({"visits": None, "checked_instructions": None}, None),
+            ({"visit_target": 0, "instruction_total": 0,
+              "visits": 0, "checked_instructions": 0}, None),
+            ({"visits": 0, "checked_instructions": 0, "attendance": "否"}, None),
+            ({"visits": 0, "checked_instructions": 0, "position": "管家码",
+              "community_id": None, "community": ""}, None),
+        ]
+        # Exercise row extension and merged community cells, then reopen the XLSX.
+        rows = [{**base, **values} for values, _ in cases] * 7
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), rows)
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertEqual(sheet["F2"].value, "流动人口")
+        self.assertEqual(sheet["I2"].value, "入户走访")
+        self.assertEqual(sheet["N2"].value, "指令核查")
+        for index, row in enumerate(rows, start=4):
+            expected = cases[(index - 4) % len(cases)][1]
+            with self.subTest(row=index):
+                for column in (10, 15):
+                    cell = sheet.cell(index, column)
+                    self.assertEqual(cell.fill.fill_type, "solid" if expected else None)
+                    if expected:
+                        self.assertTrue(cell.fill.fgColor.rgb.endswith(expected))
+                for column in (9, 14, 16, 17):
+                    self.assertIsNone(sheet.cell(index, column).fill.fill_type)
+                if row["attendance"] == "否" or row["position"] == "管家码":
+                    for column in (7, 8):
+                        self.assertIsNone(sheet.cell(index, column).fill.fill_type)
+        for cell in sheet[4 + len(rows)]:
+            self.assertIsNone(cell.fill.fill_type)
+
+    def test_daily_detail_places_self_owned_rows_at_area_end(self):
+        rows = [
+            {"group_key": "area:东片", "position": "自购房", "name": "自购房甲"},
+            {"group_key": "area:东片", "position": "组员", "name": "组员甲"},
+            {"group_key": "area:东片", "position": "组长", "name": "组长甲"},
+        ]
+        ordered = _ordered_daily_detail_rows(rows)
+        self.assertEqual(
+            [row["name"] for row in ordered],
+            ["组员甲", "组长甲", "自购房甲"],
+        )
+
+    def test_daily_detail_instruction_summary_matches_community_and_name(self):
+        by_member, by_name = _summary_by_member({
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "张三", "数据总数": 4},
+                {"社区": "乙社区居委会", "姓名": "张三", "数据总数": 9},
+                {"社区": "甲社区", "姓名": "李四", "数据总数": 2},
+                {"社区": "甲社区居委会", "姓名": "李四", "数据总数": 3},
+            ]},
+        })
+        self.assertEqual(by_member[("甲", "张三")][0]["数据总数"], 4)
+        self.assertEqual(by_member[("乙", "张三")][0]["数据总数"], 9)
+        self.assertEqual(len(by_member[("甲", "李四")]), 2)
+        self.assertEqual(len(by_name["张三"]), 2)
+        self.assertEqual(len(by_name["李四"]), 2)
+
+    async def test_daily_detail_duplicate_same_community_name_is_left_blank(self):
+        roster = [{
+            "name": "李四",
+            "position": "组员",
+            "group_key": "area:东片",
+            "group_label": "东片",
+            "community": "甲社区",
+            "community_id": 1,
+            "attendance": "是",
+        }]
+        online = {
+            "exists": True,
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "李四", "数据总数": 2},
+                {"社区": "甲社区居委会", "姓名": "李四", "数据总数": 3},
+            ]},
+        }
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={"inspector": {"data": []}})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(), date(2026, 8, 9), rental_target=10, self_owned_target=15,
+            )
+        self.assertIsNone(result[0]["instruction_total"])
+
+    async def test_daily_detail_combines_unique_person_tasks_across_communities(self):
+        roster = [{
+            "name": "张三",
+            "position": "组员",
+            "group_key": "area:东片",
+            "group_label": "东片",
+            "community": "甲社区",
+            "community_id": 1,
+            "attendance": "是",
+        }]
+        online = {
+            "exists": True,
+            "inspector": {"data": [
+                {"社区": "甲社区", "姓名": "张三", "数据总数": 4, "未核查": 1, "已核查": 1, "已完成": 2, "无法见底数": 2, "核查见底率": 0.5},
+                {"社区": "乙社区居委会", "姓名": "张三", "数据总数": 9, "未核查": 1, "已核查": 3, "已完成": 5, "无法见底数": 1, "核查见底率": 0.83},
+            ]},
+        }
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={"inspector": {"data": []}})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(), date(2026, 8, 9), rental_target=10, self_owned_target=15,
+            )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["instruction_total"], 13)
+        self.assertEqual(result[0]["checked_instructions"], 11)
+        self.assertEqual(result[0]["completed_instructions"], 7)
+        self.assertEqual(result[0]["bottom_rate"], 0.7)
+
+    def test_daily_detail_workbook_orders_self_owned_at_area_end(self):
+        rows = [
+            {"group_key": "area:东片", "group_label": "东片", "community": "甲", "name": "自购房甲", "position": "自购房", "attendance": "是"},
+            {"group_key": "area:东片", "group_label": "东片", "community": "乙", "name": "组员乙", "position": "组员", "attendance": "是"},
+        ]
+        content, _ = build_daily_detail_workbook(date(2026, 8, 9), rows)
+        sheet = load_workbook(BytesIO(content), data_only=False).active
+        self.assertEqual([sheet[f"D{row}"].value for row in (4, 5)], ["组员乙", "自购房甲"])
+
+    async def test_daily_detail_excludes_leadership_and_keeps_self_owned_under_area(self):
+        rows = [
+            {
+                "group_key": "area:东片",
+                "group_label": "东片\n熊朝良",
+                "community": "自购房",
+                "name": "朱光明",
+                "position": "自购房",
+                "attendance": "是",
+                "visit_target": 15,
+            },
+            {
+                "group_key": "internal:社区民警",
+                "group_label": "社区民警",
+                "community": "长板",
+                "name": "不应导出",
+                "position": "社区民警",
+                "attendance": "是",
+            },
+        ]
+        with patch(
+            "services.work_log_daily_detail._load_roster",
+            new=AsyncMock(return_value=rows),
+        ), patch(
+            "services.work_log_daily_detail.load_population_inputs",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "services.work_log_daily_detail.get_known_personnel_positions",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "services.work_log_daily_detail.get_configured_positions",
+            new=AsyncMock(return_value=["组员"]),
+        ), patch(
+            "services.work_log_daily_detail.get_visit_summary",
+            new=AsyncMock(return_value={"inspector": {"data": []}}),
+        ), patch(
+            "services.work_log_daily_detail.get_summary",
+            new=AsyncMock(return_value={"exists": False}),
+        ):
+            result = await build_daily_detail_data(
+                EmptyConnection(),
+                date(2026, 8, 9),
+                rental_target=10,
+                self_owned_target=15,
+            )
+        self.assertEqual([item["name"] for item in result], ["朱光明"])
+        self.assertEqual(result[0]["group_label"], "东片\n熊朝良")
+        self.assertEqual(result[0]["community"], "自购房")
+
+
+class DailyDetailExternalCountsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_export_combines_local_and_stored_monitor_person_counts(self):
+        from services.report_builders.summary import SUMMARY_INSPECTOR_OUTPUT_COLS
+        roster = [{"name": "组员甲", "position": "组员", "group_key": "area:east",
+                   "group_label": "东片", "community": "社区甲", "attendance": "是"}]
+        online = {"exists": True, "inspector": {"columns": SUMMARY_INSPECTOR_OUTPUT_COLS,
+                  "data": [{"社区": "社区甲", "姓名": "组员甲", "数据总数": 1,
+                            "已核查": 1, "已完成": 0, "无法见底数": 1}]}}
+        external = {"available": True, "communities": {
+            "社区甲": {"assignees": {"组员甲": {"total": 10, "checked": 3,
+                         "completed": 5, "unable_to_verify": 2}}},
+            "社区乙": {"assignees": {"组员甲": {"total": 4, "completed": 2,
+                         "unable_to_verify": 1}}}}}
+        with (
+            patch("services.work_log_daily_detail._load_roster", new=AsyncMock(return_value=roster)),
+            patch("services.work_log_daily_detail.load_population_inputs", new=AsyncMock(return_value=[])),
+            patch("services.work_log_daily_detail.get_known_personnel_positions", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_configured_positions", new=AsyncMock(return_value=["组员"])),
+            patch("services.work_log_daily_detail.get_visit_summary", new=AsyncMock(return_value={})),
+            patch("services.work_log_daily_detail.get_summary", new=AsyncMock(return_value=online)),
+            patch("services.work_log_daily_detail._get_summary_types", new=AsyncMock(return_value=["全链条"])),
+            patch("services.work_log_daily_detail.get_txdocs_business_overlay", new=AsyncMock(return_value=external)) as monitor,
+        ):
+            result = await build_daily_detail_data(EmptyConnection(), date(2026, 10, 14),
+                                                  rental_target=10, self_owned_target=15)
+        monitor.assert_awaited_once_with("2026-10-14", "2026-10-14", ["全链条"], None,
+                                        configured_source_ids=[])
+        self.assertEqual(result[0]["instruction_total"], 15)
+        self.assertEqual(result[0]["checked_instructions"], 11)
+        self.assertEqual(result[0]["completed_instructions"], 7)
+        self.assertEqual(result[0]["unable_instructions"], 4)
+        self.assertAlmostEqual(result[0]["bottom_rate"], 7 / 11)
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), result)
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertAlmostEqual(sheet["Q51"].value, 7 / 11)
+
+    def test_total_ground_rate_is_blank_without_denominator(self):
+        row = {"name": "组员甲", "position": "组员", "group_key": "east", "group_label": "东片",
+               "community": "社区甲", "attendance": "是", "instruction_total": 1,
+               "checked_instructions": 1, "completed_instructions": 0, "bottom_rate": 0}
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), [row])
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertIsNone(sheet["Q51"].value)
+
+
+    def test_stored_monitor_can_supply_report_without_local_snapshot(self):
+        from services.report_external_counts import merge_external_report_counts
+        result = merge_external_report_counts({"exists": False}, {
+            "available": True, "communities": {"社区甲": {
+                "total": 6, "completed": 4, "unable_to_verify": 2,
+                "assignees": {"组员甲": {"total": 6, "completed": 4, "unable_to_verify": 2}}
+            }}}, parser_type="总汇总表")
+        self.assertTrue(result["exists"])
+        self.assertEqual(result["inspector"]["data"][0]["数据总数"], 6)
+        self.assertEqual(result["inspector"]["data"][0]["已完成"], 4)
+
+    def test_no_snapshot_keeps_report_unavailable(self):
+        from services.report_external_counts import merge_external_report_counts
+        result = merge_external_report_counts({"exists": False}, {"available": False},
+                                               parser_type="总汇总表")
+        self.assertFalse(result["exists"])
+
+    def test_zero_completed_does_not_produce_100_percent_ground_rate(self):
+        row = {"name": "组员甲", "position": "组员", "group_key": "east", "group_label": "东片",
+               "community": "社区甲", "attendance": "是", "instruction_total": 1,
+               "checked_instructions": 1, "completed_instructions": 0, "bottom_rate": 0,
+               "unable_instructions": 1}
+        content, _ = build_daily_detail_workbook(date(2026, 10, 14), [row])
+        sheet = load_workbook(BytesIO(content)).active
+        self.assertEqual(sheet["Q51"].value, 0)
+
+
+    async def test_supplied_empty_monitor_targets_do_not_acquire_online_connection(self):
+        from services.txdocs_statistics_monitor import get_txdocs_business_overlay
+        with (
+            patch("services.txdocs_statistics_monitor.monitoring_environment_allowed", return_value=True),
+            patch("services.txdocs_statistics_monitor._configured_monitor_source_ids",
+                  new=AsyncMock(side_effect=AssertionError("must reuse held connection"))) as loader,
+        ):
+            result = await get_txdocs_business_overlay("2026-10-14", "2026-10-14", ["全链条"],
+                                                       None, configured_source_ids=[])
+        loader.assert_not_awaited()
+        self.assertFalse(result["available"])
 
 
 if __name__ == "__main__":

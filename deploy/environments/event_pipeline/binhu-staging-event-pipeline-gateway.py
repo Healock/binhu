@@ -29,6 +29,85 @@ def fail(message: str) -> None:
     raise SystemExit("Staging event-pipeline gateway refused: " + message)
 
 
+def _child_error_code(stdout: str, stderr: str) -> str:
+    """Classify child failure text without exposing command output."""
+    text = f"{stdout}\n{stderr}".lower()
+    markers = (
+        ("modulenotfounderror", "staging_module_import_failed"),
+        ("importerror", "staging_module_import_failed"),
+        ("syntaxerror", "staging_source_syntax_invalid"),
+        ("filenotfounderror", "staging_required_file_missing"),
+        ("permissionerror", "staging_permission_denied"),
+        ("no such image", "staging_image_missing"),
+        ("manifest unknown", "staging_image_missing"),
+        ("credential", "staging_credentials_missing"),
+        ("password", "staging_credentials_invalid"),
+        ("no space left", "staging_insufficient_disk"),
+        ("address pool", "staging_network_address_pool_exhausted"),
+        ("cannot connect to the docker daemon", "staging_docker_unavailable"),
+        ("error response from daemon", "staging_docker_daemon_error"),
+        ("snapshot", "staging_snapshot_invalid"),
+        ("redis", "staging_redis_configuration_invalid"),
+        ("mysql", "staging_mysql_configuration_invalid"),
+        ("backend", "staging_backend_configuration_invalid"),
+        ("isolated", "staging_isolation_configuration_invalid"),
+        ("identity", "staging_identity_invalid"),
+        ("required", "staging_required_configuration_missing"),
+        ("configuration", "staging_configuration_invalid"),
+    )
+    for marker, code in markers:
+        if marker in text:
+            return code
+    return "staging_child_process_failed"
+
+
+def _child_payloads(stdout: str, stderr: str) -> list[dict]:
+    """Extract bounded JSON diagnostics without forwarding child output."""
+    payloads: list[dict] = []
+    for line in (stdout + "\n" + stderr).splitlines():
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            start, end = candidate.find("{"), candidate.rfind("}")
+            if start < 0 or end <= start:
+                continue
+            candidate = candidate[start:end + 1]
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            payloads.append(value)
+    return payloads
+
+
+def _record_child_failure(run_id: str, phase: str, payload: dict,
+                          stdout: str, stderr: str) -> None:
+    """Persist only redacted failure metadata and output hashes."""
+    try:
+        digest = hashlib.sha256((stdout + "\0" + stderr).encode("utf-8", "replace")).hexdigest()
+        evidence = STATE / "evidence" / run_id
+        evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = evidence / f"{phase}-{digest[:16]}.json"
+        if target.exists() or target.is_symlink():
+            return
+        safe = {
+            "environment": "staging", "run_id": run_id, "phase": phase,
+            "status": "failed", "error_type": str(payload.get("error_type", "CalledProcessError")),
+            "error_code": str(payload.get("error_code", "staging_child_process_failed")),
+            "stdout_sha256": hashlib.sha256(stdout.encode("utf-8", "replace")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(stderr.encode("utf-8", "replace")).hexdigest(),
+            "stdout_bytes": len(stdout.encode("utf-8", "replace")),
+            "stderr_bytes": len(stderr.encode("utf-8", "replace")),
+        }
+        if isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
+            safe["image_key"] = payload["image_key"]
+        target.write_text(json.dumps(safe, sort_keys=True) + "\n", encoding="utf-8")
+        target.chmod(0o600)
+    except (OSError, ValueError):
+        # Failure evidence must never hide the original deployment failure.
+        return
+
+
 def read_bundle(size: int, expected: str, destination: Path) -> None:
     if size <= 0 or size > MAX_BYTES or not SHA_RE.fullmatch(expected):
         fail("candidate size or digest invalid")
@@ -123,10 +202,54 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
             args += [f"--{name.replace('_', '-')}-image", manifest["images"][name]]
     else:
         args = [sys.executable, "-m", "event_pipeline.staging_control", module, "--run-id", run_id]
-    result = subprocess.run(
-        args, cwd=source, env=env, check=True, capture_output=True, text=True,
-        timeout=900 if module == "apply" else 300,
-    )
+    try:
+        result = subprocess.run(
+            args, cwd=source, env=env, check=True, capture_output=True, text=True,
+            timeout=900 if module == "apply" else 300,
+        )
+    except subprocess.CalledProcessError as error:
+        if module in {"prepare", "apply"}:
+            # The child emits bounded JSON on stdout, while import/runtime
+            # failures can only reach stderr. Inspect both streams without
+            # forwarding arbitrary command output or credentials.
+            child_stdout = error.stdout or ""
+            child_stderr = error.stderr or ""
+            emitted = False
+            for payload in _child_payloads(child_stdout, child_stderr):
+                if (isinstance(payload, dict)
+                        and payload.get("environment") == "staging"
+                        and payload.get("run_id") == run_id
+                        and payload.get("status") == "failed"
+                        and payload.get("phase") in {
+                            "prepare",
+                            "compose_brokers", "create_topics", "start_schema_dependencies",
+                            "apply_schema_registry", "migrate_delivery_schema",
+                            "start_pipeline_services", "start_flink_job",
+                        }
+                        and isinstance(payload.get("error_code"), str)
+                        and re.fullmatch(r"[A-Za-z0-9_. -]{1,96}", payload["error_code"] or "")):
+                    bounded = {
+                        "environment": "staging", "run_id": run_id,
+                        "status": "failed", "phase": payload["phase"],
+                        "error_type": str(payload.get("error_type", "ChildError")),
+                        "error_code": payload["error_code"],
+                    }
+                    if isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
+                        bounded["image_key"] = payload["image_key"]
+                    _record_child_failure(run_id, module, bounded, child_stdout, child_stderr)
+                    print(json.dumps(bounded, sort_keys=True))
+                    emitted = True
+                    break
+            if not emitted:
+                bounded = {
+                    "environment": "staging", "run_id": run_id,
+                    "status": "failed", "phase": module,
+                    "error_type": type(error).__name__,
+                    "error_code": _child_error_code(child_stdout, child_stderr),
+                }
+                _record_child_failure(run_id, module, bounded, child_stdout, child_stderr)
+                print(json.dumps(bounded, sort_keys=True))
+        raise
     lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
     if not lines:
         fail("fixed control result missing")

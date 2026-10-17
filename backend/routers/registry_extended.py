@@ -9,10 +9,10 @@ from datetime import datetime
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from openpyxl import load_workbook
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from config import settings
 from deps import require_permission
@@ -44,14 +44,17 @@ from services.registry_import import (
     ISSUE_HOUSEHOLD_MISSING_TYPE,
     classify_certificate_rows,
     classify_household_rows,
+    classify_household_file_rows,
     household_community_candidates,
     issue_problem_details,
     normalize_address,
     normalize_community,
+    _source_datetime as _normalize_source_datetime,
     normalize_text,
+    normalize_household_status,
 )
 from services.registry_certificate_source import fetch_certificate_image, fetch_certificate_rows
-from services.registry_certificate_apply import apply_certificate_batch
+from services.registry_certificate_apply import apply_certificate_batch, CertificateSnapshotConflict
 from services.registry_certificate_comparison import load_certificate_comparison
 from services.registry_certificate_status import certificate_status_summary
 from services.registry_visit_history import (
@@ -393,7 +396,7 @@ class RegistryIssueItem(BaseModel):
 
 class RegistryIssueSearch(BaseModel):
     keyword: str = Field(default="", max_length=200)
-    status: Literal["", "pending", "resolved", "dismissed"] = "pending"
+    status: Literal["", "pending", "resolved", "dismissed", "superseded"] = "pending"
     issue_type: str = Field(default="", max_length=60)
     source_type: Literal["", "household", "certificate"] = ""
     community_id: int | None = None
@@ -600,7 +603,7 @@ async def get_property_detail(
         await cur.execute(
             "SELECT id, street, community_id, community_name_snapshot, natural_address, building, room, "
             "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, "
-            "normalized_address, status, current_version, created_at, updated_at "
+            "normalized_address, status, current_version, created_at, updated_at, household_status "
             "FROM registry_properties WHERE id=%s",
             (property_id,),
         )
@@ -648,7 +651,7 @@ async def get_property_detail(
             "SELECT id, source_ref, source_row, community_snapshot, address_snapshot, landlord_name, "
             "landlord_identity_number, actual_renter_name, actual_renter_identity_number, signed_status, sign_type, sign_time, document_ref, created_at "
             ", source_last_seen_at, updated_at FROM registry_property_certificates "
-            "WHERE property_id=%s ORDER BY updated_at DESC, id DESC",
+            "WHERE property_id=%s AND source_missing_since IS NULL ORDER BY updated_at DESC, id DESC",
             (property_id,),
         )
         certificates = await cur.fetchall()
@@ -656,8 +659,16 @@ async def get_property_detail(
             "SELECT COUNT(*),EXISTS(SELECT 1 FROM registry_source_batches "
             "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) "
             "FROM registry_import_issues WHERE source_type='certificate' "
-            "AND status='pending' AND entity_key=%s",
-            (row[13],),
+            "AND status='pending' AND entity_key=%s "
+            "AND (COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.community')),''),"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sssq')))=%s "
+            "OR EXISTS (SELECT 1 FROM OnlineData._community_aliases issue_alias "
+            "WHERE issue_alias.community_id=%s AND issue_alias.alias="
+            "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.community')),''),"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sssq'))))) "
+            "AND batch_id=(SELECT MAX(id) FROM registry_source_batches WHERE source_type='certificate' "
+            "AND status IN ('imported','partially_imported'))",
+            (row[13], row[3], row[2]),
         )
         certificate_issue_row = await cur.fetchone()
         certificate_issue_count = int(certificate_issue_row[0] or 0)
@@ -725,6 +736,7 @@ async def get_property_detail(
         "source_house_no": row[9], "source_updated_at": _iso(row[10]),
         "source_type": row[11], "source_ref": row[12], "normalized_address": row[13], "status": row[14],
         "version": int(row[15]), "created_at": _iso(row[16]), "updated_at": _iso(row[17]),
+        "household_status": str(row[18] or ""),
         "aliases": [
             {"id": int(item[0]), "alias": item[1], "community_id": item[2], "enabled": bool(item[3]),
              "source_type": item[4], "created_at": _iso(item[5])} for item in aliases
@@ -1831,13 +1843,14 @@ def _find_header(headers: list[str], *names: str) -> int | None:
     return None
 
 
-def _parse_household_workbook(content: bytes) -> list[dict]:
+def _parse_household_workbook(content: bytes, *, allow_empty: bool = False) -> list[dict]:
     """读取户号表，按中文表头解析，所有标识字段都先转为文本。"""
     try:
         workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
     except Exception as exc:
         raise HTTPException(422, "户号表不是可读取的 XLSX 文件") from exc
     rows: list[dict] = []
+    has_header = False
     for sheet in workbook.worksheets:
         iterator = iter(sheet.iter_rows(values_only=True))
         header_row = None
@@ -1848,6 +1861,7 @@ def _parse_household_workbook(content: bytes) -> list[dict]:
             type_index = _find_header(headers, "住房类型", "房屋类型", "类型")
             if address_index is not None and type_index is not None:
                 header_row = row_number
+                has_header = True
                 def optional_index(*names: str) -> int:
                     found = _find_header(headers, *names)
                     return found if found is not None else -1
@@ -1862,6 +1876,8 @@ def _parse_household_workbook(content: bytes) -> list[dict]:
                     "residence_type": optional_index("居住处所", "居住场所"),
                     "resident_count": optional_index("居住人数", "人数"),
                     "updated_at": optional_index("更新时间", "更新日期"),
+                    "household_status": next((index for name in ("是否注销", "注销状态", "房屋状态", "房屋登记状态", "状态")
+                                              if (index := _find_header(headers, name)) is not None), -1),
                 }
                 break
             if row_number >= 20:
@@ -1897,7 +1913,9 @@ def _parse_household_workbook(content: bytes) -> list[dict]:
                 "resident_count": cell("resident_count"),
                 "updated_at": parsed_updated_at.isoformat() if parsed_updated_at else normalize_text(updated_at),
             })
-    if not rows:
+            if indexes["household_status"] >= 0:
+                rows[-1]["household_status"] = normalize_text(cell("household_status"))
+    if not rows and not (allow_empty and has_header):
         raise HTTPException(422, "未找到包含出租屋地址和住房类型的户号表表头")
     workbook.close()
     return rows
@@ -1936,6 +1954,8 @@ async def _executemany_chunked(cur, sql: str, values: list[tuple]) -> None:
 
 
 def _household_source_ref(row: dict) -> str:
+    if row.get("import_source_ref"):
+        return str(row["import_source_ref"])[:190]
     sheet = normalize_text(row.get("source_sheet"))
     physical_row = normalize_text(row.get("source_row"))
     return f"{sheet}:{physical_row}"[:190] if sheet else physical_row[:190]
@@ -1943,15 +1963,7 @@ def _household_source_ref(row: dict) -> str:
 
 def _source_datetime(value):
     """Only pass valid datetimes to DATETIME columns; preserve invalid source text in preview payload."""
-    if isinstance(value, datetime):
-        return value
-    text = normalize_text(value)
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("/", "-"))
-    except ValueError:
-        return None
+    return _normalize_source_datetime(value)
 
 
 def _issue_public(
@@ -1990,8 +2002,87 @@ async def preview_household_import(
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(413, "户号表不能超过 50MB")
     rows = _parse_household_workbook(content)
-    classified = classify_household_rows(rows)
+    for row in rows:
+        row["import_source_ref"] = _household_source_ref(row)
+    classified = classify_household_file_rows(rows)
     file_hash = hashlib.sha256(content).hexdigest()
+    return await _preview_household_rows(request, rows, classified, file_hash, file.filename, user, conn)
+
+
+class HouseholdFileOptions(BaseModel):
+    housing_type: Literal["", "个人租赁", "单位租赁", "自购房屋", "借住", "其他"] = ""
+    household_status: Literal["", "cancelled", "not_cancelled"] = ""
+    expected_count: int | None = Field(default=None, ge=0, le=100000)
+
+
+def _household_filter_type(value):
+    return {"个人租赁": "个人出租", "单位租赁": "单位出租", "其它": "其他"}.get(normalize_text(value), normalize_text(value))
+
+
+@router.post("/imports/households/files/preview")
+async def preview_household_files(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    file_options: str = Form(...),
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    if not 1 <= len(files) <= 10:
+        raise HTTPException(422, "每批请选择 1 至 10 份户号表")
+    try:
+        raw_options = json.loads(file_options)
+        if not isinstance(raw_options, list) or len(raw_options) != len(files):
+            raise ValueError()
+        options = [HouseholdFileOptions.model_validate(item) for item in raw_options]
+    except (ValueError, TypeError, ValidationError):
+        raise HTTPException(422, "每份户号表必须提供对应的住房类型和注销状态选项") from None
+    rows, manifest = [], []
+    total_bytes = 0
+    for index, (file, option) in enumerate(zip(files, options), 1):
+        content = await file.read(50 * 1024 * 1024 - total_bytes + 1)
+        total_bytes += len(content)
+        if total_bytes > 50 * 1024 * 1024:
+            raise HTTPException(413, "本批户号表文件总大小不能超过 50MB")
+        if not str(file.filename or "").lower().endswith(".xlsx"):
+            raise HTTPException(422, f"第 {index} 份文件必须为 XLSX")
+        parsed = _parse_household_workbook(content, allow_empty=True)
+        if option.expected_count is not None and len(parsed) != option.expected_count:
+            raise HTTPException(422, f"第 {index} 份文件实际 {len(parsed)} 条，与填写的查询总数 {option.expected_count} 不一致；请检查是否只导出了前 30000 条")
+        if len(rows) + len(parsed) > 100000:
+            raise HTTPException(422, "本批户号表不能超过 100000 条，请拆成不同批次")
+        digest = hashlib.sha256(content).hexdigest()
+        declared_status = {"cancelled": "已注销", "not_cancelled": "未注销"}.get(option.household_status, "")
+        for row in parsed:
+            if option.housing_type and _household_filter_type(row.get("housing_type")) != _household_filter_type(option.housing_type):
+                raise HTTPException(422, f"第 {index} 份文件第 {row['source_row']} 行住房类型与所选筛选条件不一致，请核对文件")
+            raw_status = normalize_text(row.get("household_status"))
+            if declared_status and raw_status and normalize_household_status(raw_status) != declared_status:
+                raise HTTPException(422, f"第 {index} 份文件第 {row['source_row']} 行注销状态与所选筛选条件不一致或无法识别，请核对文件")
+            if declared_status:
+                row["source_household_status"] = raw_status
+                row["household_status"] = declared_status
+            row["source_file"] = normalize_text(file.filename)[:255]
+            row["source_file_sha256"] = digest
+            row["source_filter"] = option.model_dump()
+            row["import_source_ref"] = f"{index}:{digest}:{_household_source_ref(row)}"[:190]
+        rows.extend(parsed)
+        manifest.append({"file_name": normalize_text(file.filename)[:255], "sha256": digest,
+                         **option.model_dump(), "total_count": len(parsed)})
+    # Include declarations in identity; changing a source state creates a new reviewed batch.
+    identity = sorted((item["sha256"], item["housing_type"], item["household_status"]) for item in manifest)
+    file_hash = hashlib.sha256(json.dumps(["household-files-v1", identity], separators=(",", ":")).encode()).hexdigest()
+    classified = classify_household_file_rows(rows)
+    summary = {"files": manifest, "file_count": len(files), "duplicate_row_count": classified["duplicate_row_count"],
+               "unique_household_count": len({(normalize_community(row.get('community')), normalize_text(row.get('house_no'))) for row in rows if normalize_text(row.get('house_no'))}),
+               "missing_household_number_count": sum(not normalize_text(row.get("house_no")) for row in rows),
+               "household_status_counts": {status: sum(normalize_household_status(row.get("household_status")) == value for row in rows if not row.get("import_skip"))
+                                           for status, value in (("cancelled", "已注销"), ("not_cancelled", "未注销"), ("unknown", ""))},
+               "importable_status_counts": {status: sum(normalize_household_status(row.get("household_status")) == value for row in classified["normal_rows"])
+                                            for status, value in (("cancelled", "已注销"), ("not_cancelled", "未注销"), ("unknown", ""))}}
+    return await _preview_household_rows(request, rows, classified, file_hash, f"户号表合并导入（{len(files)}份）", user, conn, summary)
+
+
+async def _preview_household_rows(request, rows, classified, file_hash, file_name, user, conn, summary=None):
     await conn.begin()
     try:
         async with conn.cursor() as cur:
@@ -2002,17 +2093,28 @@ async def preview_household_import(
             existing = await cur.fetchone()
             if existing:
                 batch_id = int(existing[0])
-                await conn.rollback()
+                if any("household_status" in row for row in rows):
+                    await cur.execute(
+                        "SELECT 1 FROM registry_source_records WHERE batch_id=%s AND entity_type='household_property' "
+                        "AND JSON_CONTAINS_PATH(payload_json,'one','$.household_status') LIMIT 1", (batch_id,),
+                    )
+                    if not await cur.fetchone():
+                        raise HTTPException(409, "该文件的旧导入未保存注销状态。请将原户号表另存为新的 XLSX，再重新预览并确认导入；历史记录不能据此推断为未注销。")
+                from services.household_preview_repair import repair_household_preview
+                repaired = await repair_household_preview(cur, batch_id)
+                await conn.commit()
                 return {
                     "batch_id": batch_id, "status": existing[1], "idempotent": True,
                     "total_count": len(rows), "normal_count": classified["normal_count"],
                     "issue_count": classified["issue_count"], "duplicate_groups": classified["duplicate_groups"],
                     "other_type_count": classified["other_type_count"],
+                    **(summary or {}),
+                    **({"pending_issue_count": repaired["issue_count"]} if repaired else {}),
                 }
             await cur.execute(
                 "INSERT INTO registry_source_batches (source_type, file_name, file_sha256, status, imported_count, candidate_count, conflict_count, created_by) "
                 "VALUES ('household',%s,%s,'preview',0,%s,%s,%s)",
-                (normalize_text(file.filename)[:255], file_hash, classified["normal_count"], classified["issue_count"], user["id"]),
+                (normalize_text(file_name)[:255], file_hash, classified["normal_count"], classified["issue_count"], user["id"]),
             )
             batch_id = int(cur.lastrowid)
             await _bulk_insert_source_records(cur, [
@@ -2045,6 +2147,7 @@ async def preview_household_import(
         "total_count": len(rows), "normal_count": classified["normal_count"],
         "issue_count": classified["issue_count"], "duplicate_groups": classified["duplicate_groups"],
         "other_type_count": classified["other_type_count"],
+        **(summary or {}),
         "issue_breakdown": {
             ISSUE_HOUSEHOLD_DUPLICATE: sum(1 for item in classified["issues"] if item["issue_type"] == ISSUE_HOUSEHOLD_DUPLICATE),
             ISSUE_HOUSEHOLD_MISSING_TYPE: sum(1 for item in classified["issues"] if item["issue_type"] == ISSUE_HOUSEHOLD_MISSING_TYPE),
@@ -2075,27 +2178,38 @@ async def confirm_household_import(
 ):
     await conn.begin()
     imported = 0
+    inserted = updated = 0
     try:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT status FROM registry_source_batches WHERE id=%s AND source_type='household' FOR UPDATE", (batch_id,))
+            await cur.execute("SELECT status, imported_count FROM registry_source_batches WHERE id=%s AND source_type='household' FOR UPDATE", (batch_id,))
             batch = await cur.fetchone()
             if not batch:
                 raise HTTPException(404, "户号表导入批次不存在")
             if str(batch[0]) == "imported":
                 await conn.rollback()
                 return {"batch_id": batch_id, "status": "imported", "imported_count": 0, "idempotent": True}
+            previous_imported = int(batch[1])
+            if batch[0] in {"preview", "partially_imported"}:
+                from services.household_preview_repair import repair_household_preview
+                await repair_household_preview(cur, batch_id)
             await cur.execute(
-                "SELECT id, source_ref, payload_json FROM registry_source_records WHERE batch_id=%s AND entity_type='household_property' ORDER BY id",
+                "SELECT id, source_ref, payload_json FROM registry_source_records WHERE batch_id=%s AND entity_type='household_property' AND entity_id IS NULL ORDER BY id",
                 (batch_id,),
             )
             records = await cur.fetchall()
             await cur.execute("SELECT source_ref FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
             blocked_refs = {str(row[0]) for row in await cur.fetchall()}
             import_rows: list[tuple[int, str, dict]] = []
+            superseded_source_refs: dict[str, list[int]] = {}
             for record_id, source_ref, payload_json in records:
                 if str(source_ref) in blocked_refs:
                     continue
                 payload = _json(payload_json, {})
+                if payload.get("import_skip"):
+                    target_ref = normalize_text(payload.get("import_duplicate_of"))
+                    if target_ref:
+                        superseded_source_refs.setdefault(target_ref, []).append(int(record_id))
+                    continue
                 address = normalize_text(payload.get("address"))
                 normalized = normalize_address(address)
                 if not normalized:
@@ -2135,34 +2249,173 @@ async def confirm_household_import(
                 resolved_rows.append((record_id, source_ref, payload, community_id, canonical_name, normalize_address(address)))
             await _bulk_insert_import_issues(cur, unresolved_community_issues)
 
+            # A reused household number may describe a different property over
+            # time. Preserve older addresses as cancelled historical records.
+            address_groups = {}
+            reuse_groups = {}
+            numbered_addresses = {}
+            identity_issues = []
+            for item in resolved_rows:
+                number = normalize_text(item[2].get("house_no"))
+                if number:
+                    reuse_groups.setdefault((item[3], number), []).append(item)
+                    numbered_addresses.setdefault((item[3], item[5]), set()).add(number)
+                address_groups.setdefault((item[3], item[5]), []).append(item)
+            conflicting_refs = set()
+            conflicting_refs.update(item[1] for group in address_groups.values() if len(group) > 1
+                                    for item in group if not normalize_text(item[2].get("house_no")))
+            for group in reuse_groups.values():
+                if len({item[5] for item in group}) < 2:
+                    continue
+                timestamps = [_source_datetime(item[2].get("updated_at")) for item in group]
+                if not all(timestamps) or len(set(timestamps)) != len(timestamps):
+                    conflicting_refs.update(item[1] for item in group)
+                    continue
+                ordered = sorted(zip(timestamps, group), key=lambda value: value[0])
+                for _, historical in ordered[:-1]:
+                    if "household_status" in historical[2]:
+                        historical[2]["source_household_status"] = historical[2]["household_status"]
+                    historical[2]["household_status"] = "已注销"
+            resolved_rows = [item for item in resolved_rows if item[1] not in conflicting_refs]
+            for group in reuse_groups.values():
+                if not any(item[1] in conflicting_refs for item in group):
+                    continue
+                for item in group:
+                    if item[1] in conflicting_refs:
+                        identity_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", item[1], item[5],
+                                                json.dumps(_issue_payload(item[2]), ensure_ascii=False),
+                                                "同社区同户号对应多个地址，但更新时间缺失或相同，无法判断房屋沿革"))
+            await _bulk_insert_import_issues(cur, identity_issues)
+
             # Fetch and lock existing properties in chunks to avoid an N+1 query
             # for the large historical workbook.
-            existing_cache: dict[tuple[str, int | None], tuple] = {}
+            existing_by_id = {}
             for offset in range(0, len(resolved_rows), 500):
                 chunk = resolved_rows[offset:offset + 500]
                 keys = sorted({item[5] for item in chunk if item[5]})
                 if not keys:
                     continue
                 placeholders = ",".join(["%s"] * len(keys))
+                numbers = sorted({normalize_text(item[2].get("house_no")) for item in chunk if normalize_text(item[2].get("house_no"))})
+                number_clause = f" OR source_house_no IN ({','.join(['%s'] * len(numbers))})" if numbers else ""
                 await cur.execute(
-                    "SELECT id, community_id, street, natural_address, building, room, normalized_address "
-                    f"FROM registry_properties WHERE normalized_address IN ({placeholders}) FOR UPDATE",
-                    tuple(keys),
+                    "SELECT id, community_id, street, natural_address, building, room, normalized_address, source_house_no, "
+                    "source_updated_at, housing_type, residence_type, household_status "
+                    f"FROM registry_properties WHERE normalized_address IN ({placeholders}){number_clause} FOR UPDATE",
+                    tuple(keys + numbers),
                 )
                 for existing_row in await cur.fetchall():
-                    existing_cache[(str(existing_row[6]), existing_row[1])] = existing_row
+                    existing_by_id[int(existing_row[0])] = existing_row
+            address_cache, household_cache = {}, {}
+            for existing_row in existing_by_id.values():
+                address_cache.setdefault((str(existing_row[6]), existing_row[1]), []).append(existing_row)
+                number = normalize_text(existing_row[7])
+                if number:
+                    household_cache.setdefault((number, existing_row[1]), []).append(existing_row)
+            newer_property_ids = set()
+            existing_ids = sorted(existing_by_id)
+            for offset in range(0, len(existing_ids), 500):
+                ids = existing_ids[offset:offset + 500]
+                await cur.execute(
+                    "SELECT DISTINCT entity_id FROM registry_source_records WHERE entity_type='household_property' "
+                    f"AND entity_id IN ({','.join(['%s'] * len(ids))}) AND batch_id>%s FOR UPDATE",
+                    (*ids, batch_id),
+                )
+                newer_property_ids.update(int(item[0]) for item in await cur.fetchall())
 
             new_rows: list[tuple[int, str, dict, int | None, str, str]] = []
+            existing_issues = []
             for record_id, source_ref, payload, community_id, canonical_name, normalized in resolved_rows:
                 address = normalize_text(payload.get("address"))
-                existing = existing_cache.get((normalized, community_id))
+                number = normalize_text(payload.get("house_no"))
+                address_matches = address_cache.get((normalized, community_id), [])
+                household_matches = household_cache.get((number, community_id), []) if number else []
+                exact_household_matches = [item for item in household_matches if str(item[6] or "") == normalized]
+                # A numbered source owns its identity; another numbered property
+                # at the same address is a separate household, not an update target.
+                legacy_matches = [item for item in address_matches if not normalize_text(item[7])]
+                if number and len(numbered_addresses.get((community_id, normalized), ())) > 1:
+                    legacy_matches = []
+                fallback_matches = legacy_matches if number else address_matches
+                existing = (
+                    exact_household_matches[0] if len(exact_household_matches) == 1 else
+                    household_matches[0] if len(household_matches) == 1 else
+                    fallback_matches[0] if len(fallback_matches) == 1 else None
+                )
+                reason = ""
+                obsolete_matches = []
+                reused_matches = []
+                if len(exact_household_matches) > 1:
+                    property_times = [item[8] for item in exact_household_matches]
+                    if all(property_times) and len(set(property_times)) == len(property_times):
+                        existing = max(exact_household_matches, key=lambda item: item[8])
+                        obsolete_matches = [item for item in exact_household_matches if int(item[0]) != int(existing[0])]
+                    else:
+                        reason = "户号或地址对应多份现有档案，但档案更新时间缺失或并列，无法安全合并"
+                elif (
+                    not exact_household_matches and not household_matches and len(fallback_matches) > 1
+                ):
+                    reason = "户号或地址对应多份现有档案，请管理员核对档案后重新导入"
+                elif household_matches and not exact_household_matches:
+                    incoming_updated_at = _source_datetime(payload.get("updated_at"))
+                    old_times = [item[8] if len(item) > 8 else None for item in household_matches]
+                    comparable_old_times = [_source_datetime(value) for value in old_times]
+                    if (
+                        incoming_updated_at
+                        and comparable_old_times
+                        and all(value is not None for value in comparable_old_times)
+                        and all(incoming_updated_at > value for value in comparable_old_times)
+                    ):
+                        reused_matches = household_matches
+                        existing = None
+                    else:
+                        reason = "同社区同户号的地址已变化，但更新时间不能证明新地址较新，需核对来源时间"
+                if not reason and any(int(item[0]) in newer_property_ids for item in household_matches):
+                    reason = "该档案已有更新批次的户号表来源，请取得最新文件重新预览，不能用旧批次覆盖"
+                if not reason and existing:
+                    current_source_time = _source_datetime(existing[8]) if len(existing) > 8 else None
+                    incoming_source_time = _source_datetime(payload.get("updated_at"))
+                    if current_source_time and (
+                        incoming_source_time is None or incoming_source_time < current_source_time
+                    ):
+                        reason = "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖"
+                    elif current_source_time and incoming_source_time == current_source_time:
+                        same_snapshot = (
+                            normalize_text(existing[3]) == address
+                            and normalize_text(existing[9]) == normalize_text(payload.get("housing_type"))
+                            and normalize_text(existing[10]) == normalize_text(payload.get("residence_type"))
+                            and normalize_text(existing[11]) == normalize_household_status(payload.get("household_status"))
+                        )
+                        if not same_snapshot:
+                            reason = "现有档案与来源更新时间相同但内容冲突，不能按导入顺序覆盖"
+                if reason:
+                    existing_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", source_ref, normalized,
+                                            json.dumps(_issue_payload(payload), ensure_ascii=False), reason))
+                    continue
+                if obsolete_matches:
+                    await cur.executemany(
+                        "UPDATE registry_properties SET household_status='已注销', "
+                        "current_version=current_version+IF(NOT(household_status <=> '已注销'),1,0), "
+                        "updated_by=%s WHERE id=%s",
+                        [(user["id"], int(item[0])) for item in obsolete_matches],
+                    )
+                if reused_matches:
+                    await cur.executemany(
+                        "UPDATE registry_properties SET household_status='已注销', "
+                        "current_version=current_version+IF(NOT(household_status <=> '已注销'),1,0), "
+                        "updated_by=%s WHERE id=%s",
+                        [(user["id"], int(item[0])) for item in reused_matches],
+                    )
                 if existing:
                     await cur.execute(
                         "UPDATE registry_properties SET community_id=%s, community_name_snapshot=%s, natural_address=%s, "
-                        "housing_type=%s, residence_type=%s, source_house_no=%s, source_updated_at=%s, source_type=%s, source_ref=%s, "
-                        "updated_by=%s WHERE id=%s",
+                        "housing_type=%s, residence_type=%s, source_house_no=%s, source_updated_at=COALESCE(%s,source_updated_at), source_type=%s, source_ref=%s, "
+                        "current_version=current_version+IF(%s IS NOT NULL AND NOT(household_status <=> %s),1,0), "
+                        "household_status=COALESCE(%s,household_status), updated_by=%s WHERE id=%s",
                         (community_id, canonical_name, address, payload.get("housing_type") or "", payload.get("residence_type") or "",
-                         payload.get("house_no") or "", _source_datetime(payload.get("updated_at")), "household", str(source_ref), user["id"], existing[0]),
+                         number or existing[7] or "", _source_datetime(payload.get("updated_at")), "household", str(source_ref),
+                         *([normalize_household_status(payload.get("household_status")) if "household_status" in payload else None] * 3),
+                         user["id"], existing[0]),
                     )
                     property_id = int(existing[0])
                     previous_address = (str(existing[2] or ""), str(existing[3] or ""), str(existing[4] or ""), str(existing[5] or ""))
@@ -2198,15 +2451,26 @@ async def confirm_household_import(
                                 (property_id, address, normalized, str(source_ref), user["id"]),
                             )
                     await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s", (property_id, record_id))
+                    duplicate_ids = superseded_source_refs.get(source_ref, [])
+                    if duplicate_ids:
+                        await _executemany_chunked(
+                            cur,
+                            "UPDATE registry_source_records SET entity_id=%s WHERE id=%s AND entity_id IS NULL",
+                            [(property_id, duplicate_id) for duplicate_id in duplicate_ids],
+                        )
                     imported += 1
+                    updated += 1
                 else:
                     new_rows.append((record_id, source_ref, payload, community_id, canonical_name, normalized))
+            await _bulk_insert_import_issues(cur, existing_issues)
 
+            await cur.execute("SELECT COALESCE(MAX(id),0) FROM registry_properties")
+            before_insert_id = int((await cur.fetchone())[0])
             await _executemany_chunked(
                 cur,
                 "INSERT INTO registry_properties (street, community_id, community_name_snapshot, natural_address, building, room, "
-                "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, created_by, updated_by) "
-                "VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, normalized_address, household_status, created_by, updated_by) "
+                "VALUES ('',%s,%s,%s,'','',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [
                     (
                         community_id,
@@ -2219,6 +2483,7 @@ async def confirm_household_import(
                         "household",
                         str(source_ref),
                         normalized,
+                        normalize_household_status(payload.get("household_status")),
                         user["id"],
                         user["id"],
                     )
@@ -2226,27 +2491,28 @@ async def confirm_household_import(
                 ],
             )
 
-            inserted_cache: dict[tuple[str, int | None], int] = {}
+            inserted_cache: dict[str, list[int]] = {}
             for offset in range(0, len(new_rows), REGISTRY_IMPORT_WRITE_CHUNK):
                 chunk = new_rows[offset:offset + REGISTRY_IMPORT_WRITE_CHUNK]
-                keys = sorted({item[5] for item in chunk if item[5]})
+                keys = sorted({str(item[1]) for item in chunk})
                 if not keys:
                     continue
                 placeholders = ",".join(["%s"] * len(keys))
                 await cur.execute(
-                    "SELECT id, community_id, normalized_address FROM registry_properties "
-                    f"WHERE normalized_address IN ({placeholders}) ORDER BY id",
-                    tuple(keys),
+                    "SELECT id, source_ref FROM registry_properties "
+                    f"WHERE id>%s AND source_type='household' AND source_ref IN ({placeholders}) ORDER BY id",
+                    (before_insert_id, *keys),
                 )
-                for property_id, community_id, normalized in await cur.fetchall():
-                    inserted_cache[(str(normalized), community_id)] = int(property_id)
+                for property_id, source_ref in await cur.fetchall():
+                    inserted_cache.setdefault(str(source_ref), []).append(int(property_id))
 
             address_versions: list[tuple] = []
             source_links: list[tuple] = []
             for record_id, source_ref, payload, community_id, _, normalized in new_rows:
-                property_id = inserted_cache.get((normalized, community_id))
-                if property_id is None:
+                matches = inserted_cache.get(str(source_ref), [])
+                if len(matches) != 1:
                     raise RuntimeError("户号表导入后无法重新定位新建房屋")
+                property_id = matches[0]
                 address_versions.append((
                     property_id,
                     normalize_text(payload.get("address")),
@@ -2255,6 +2521,10 @@ async def confirm_household_import(
                     user["id"],
                 ))
                 source_links.append((property_id, record_id))
+                source_links.extend(
+                    (property_id, duplicate_id)
+                    for duplicate_id in superseded_source_refs.get(source_ref, [])
+                )
             await _executemany_chunked(
                 cur,
                 "INSERT INTO registry_property_address_versions "
@@ -2269,11 +2539,12 @@ async def confirm_household_import(
                 source_links,
             )
             imported += len(new_rows)
+            inserted = len(new_rows)
             await cur.execute("SELECT COUNT(*) FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
             pending_issue_count = int((await cur.fetchone())[0])
             await cur.execute(
                 "UPDATE registry_source_batches SET status=%s, imported_count=%s WHERE id=%s",
-                ("partially_imported" if pending_issue_count else "imported", imported, batch_id),
+                ("partially_imported" if pending_issue_count else "imported", previous_imported + imported, batch_id),
             )
         await conn.commit()
     except Exception:
@@ -2283,6 +2554,9 @@ async def confirm_household_import(
         "batch_id": batch_id,
         "status": "partially_imported" if pending_issue_count else "imported",
         "imported_count": imported,
+        "inserted_count": inserted,
+        "updated_count": updated,
+        "total_imported_count": previous_imported + imported,
         "idempotent": False,
         "pending_issue_count": pending_issue_count,
     }
@@ -2456,11 +2730,14 @@ async def preview_certificate_source(
         source = await fetch_certificate_rows()
     except VisitSourceError as exc:
         raise HTTPException(502, exc.message) from exc
-    result = await preview_certificate_import(
-        RegistryCertificateImport(source_name="房东责任告知书只读接口", rows=source["rows"]),
-        request,
-        user,
-        conn,
+    from services.registry_certificate_jobs import _create_preview_batch
+
+    result = await _create_preview_batch(conn, source["rows"], int(user["id"]))
+    await record_admin_audit(
+        user, "registry.certificate_import.preview", target_type="registry_source_batch",
+        target_name=str(result["batch_id"]),
+        detail={key: result[key] for key in ("total_count", "normal_count", "problem_row_count")},
+        **request_audit_fields(request),
     )
     result["source_record_count"] = source["record_count"]
     result["source_rejected_count"] = source["issue_count"]
@@ -2478,6 +2755,8 @@ async def confirm_certificate_import(
         result = await apply_certificate_batch(conn, batch_id, int(user["id"]))
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except CertificateSnapshotConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     await record_admin_audit(
         user,
         "registry.certificate_import.confirm",
@@ -2506,6 +2785,12 @@ async def _registry_import_issue_search_result(
     if data.status:
         where.append("status=%s")
         params.append(data.status)
+    if data.status == "pending":
+        where.append(
+            "(source_type<>'certificate' OR batch_id=(SELECT MAX(id) FROM registry_source_batches "
+            "WHERE source_type='certificate' AND (certificate_full_snapshot=1 "
+            "OR status IN ('imported','partially_imported'))))"
+        )
     if data.issue_type:
         where.append("issue_type=%s")
         params.append(data.issue_type)
@@ -2520,7 +2805,7 @@ async def _registry_import_issue_search_result(
     community_expr = (
         "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.community')), ''), "
         "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.community_name')), ''), "
-        "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.社区名称')), ''), "
+        "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"社区名称\"')), ''), "
         "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.sssq')))"
     )
     if scoped_communities is not None:
@@ -2535,7 +2820,7 @@ async def _registry_import_issue_search_result(
 
     housing_expr = (
         "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.housing_type')), ''), "
-        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.住房类型')), '')"
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"住房类型\"')), '')"
     )
     if data.housing_category == "rental":
         where.append(f"{housing_expr} IN (%s,%s)")
@@ -2554,18 +2839,18 @@ async def _registry_import_issue_search_result(
         address_expr = (
             "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.address')), ''), "
             "NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.normalized_address')), ''), "
-            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.详细地址')), '')"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"详细地址\"')), '')"
         )
         house_no_expr = (
             "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.house_no')), ''), "
-            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.户号')), '')"
+            "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.\"户号\"')), '')"
         )
         like_value = f"%{keyword}%"
         where.append(
-            f"(source_ref LIKE %s OR entity_key LIKE %s OR reason LIKE %s OR {community_expr} LIKE %s "
+            f"(CAST(id AS CHAR) LIKE %s OR source_ref LIKE %s OR entity_key LIKE %s OR reason LIKE %s OR {community_expr} LIKE %s "
             f"OR {address_expr} LIKE %s OR {house_no_expr} LIKE %s OR {housing_expr} LIKE %s)"
         )
-        params.extend([like_value] * 7)
+        params.extend([like_value] * 8)
 
     clause = " AND ".join(where) if where else "1=1"
     async with conn.cursor() as cur:

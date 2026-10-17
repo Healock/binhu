@@ -13,6 +13,9 @@ from .staging_compose import BROKERS, EVENT_TOPIC
 from .staging_prepare import root_for
 
 
+DERIVED_DATABASE = "Staging_EventPipeline"
+
+
 def _run(command: list[str], *, timeout: int = 30, input_text: str | None = None) -> str:
     result = subprocess.run(
         command, capture_output=True, text=True, timeout=timeout, input=input_text,
@@ -44,10 +47,14 @@ def _mysql_status(container: str) -> dict[str, int]:
             result[name] = int(value)
     required = {
         "Threads_connected", "Threads_running", "Innodb_row_lock_current_waits",
-        "Innodb_row_lock_time_max", "Innodb_deadlocks",
+        "Innodb_row_lock_time_max",
     }
-    if set(result) != required:
+    if not required <= set(result):
         raise RuntimeError("Staging MySQL metrics contract incomplete")
+    # MariaDB and some MySQL-compatible images do not expose the optional
+    # cumulative deadlock counter. Keep a stable report field with an
+    # explicit zero when the server cannot provide it.
+    result.setdefault("Innodb_deadlocks", 0)
     return result
 
 
@@ -59,7 +66,7 @@ def _backend_pool(container: str, run_id: str) -> dict[str, int | float]:
 password=sys.stdin.readline().rstrip("\r\n")
 login=urllib.request.Request(
     "http://127.0.0.1:37125/api/auth/login",
-    data=json.dumps({"username":"staging-load-super_admin-01@staging","password":password,
+    data=json.dumps({"username":"staging-load-admin-01@staging","password":password,
                      "device_type":"staging-metrics","device_id":sys.argv[1].lower()+"-metrics"}).encode(),
     headers={"Content-Type":"application/json"}, method="POST")
 with urllib.request.urlopen(login,timeout=15) as response:
@@ -91,8 +98,8 @@ print(json.dumps({"pool_count":len(pools),"usage_ratio":max(ratios),
 
 
 def _queue(container: str, run_id: str, database: str) -> dict[str, int]:
-    if not re.fullmatch(r"Staging_[A-Za-z0-9_]*OnlineData", database):
-        raise RuntimeError("Staging OnlineData database identity invalid")
+    if database != DERIVED_DATABASE:
+        raise RuntimeError("Staging derived database identity invalid")
     sql = (
         f"SELECT COUNT(*) FROM `{database}`._kafka_event_delivery "
         f"WHERE run_id='{run_id}' AND status NOT IN ('published','discarded')"
@@ -108,10 +115,18 @@ def _queue(container: str, run_id: str, database: str) -> dict[str, int]:
 
 
 def _redis(container: str) -> dict[str, int]:
+    password = (
+        os.environ.get("STAGING_PIPELINE_REDIS_PASSWORD")
+        or os.environ.get("REDIS_PASSWORD", "")
+    )
+    if len(password) < 16:
+        raise RuntimeError("private Staging Redis password missing")
     output = _run([
-        "docker", "exec", container, "sh", "-c",
-        'REDISCLI_AUTH="$REDIS_PASSWORD" exec redis-cli --no-auth-warning INFO all',
-    ])
+        "docker", "exec", "-i", container, "sh", "-c",
+        'read -r REDISCLI_AUTH; export REDISCLI_AUTH; '
+        'exec redis-cli --no-auth-warning INFO all',
+    ], input_text=password + "\n")
+    password = ""
     values: dict[str, int] = {}
     aliases = {
         "used_memory": "used_memory", "maxmemory": "maxmemory",
@@ -136,7 +151,6 @@ def _redis(container: str) -> dict[str, int]:
 def _kafka(project: str, run_id: str) -> dict[str, int]:
     broker = _container(project, BROKERS[0])
     lag = 0
-    rows = 0
     groups = (f"{run_id}-flink", f"{run_id}-python-metadata")
     for group in groups:
         output = _run([
@@ -148,12 +162,10 @@ def _kafka(project: str, run_id: str) -> dict[str, int]:
             parts = line.split()
             if len(parts) >= 6 and parts[1] == EVENT_TOPIC and parts[5].lstrip("-").isdigit():
                 lag += max(0, int(parts[5]))
-                rows += 1
                 group_rows += 1
-        if group_rows == 0:
-            raise RuntimeError("Staging Kafka consumer metrics missing")
-    if rows == 0:
-        raise RuntimeError("Staging Kafka group metrics missing")
+        # A freshly started run has no committed offsets until its first
+        # event is published. Treat that valid bootstrap state as zero lag;
+        # subsequent samples report partition rows after consumers commit.
     return {"lag": lag, "group_count": len(groups)}
 
 
@@ -229,11 +241,7 @@ def sample(run_id: str) -> dict[str, Any]:
     backend_env = Path("/srv/binhu-environments/staging/backend.env")
     if backend_env.is_symlink() or not backend_env.is_file():
         raise RuntimeError("Staging backend environment missing")
-    database = ""
-    for line in backend_env.read_text(encoding="utf-8").splitlines():
-        if line.startswith("MYSQL_ONLINE_DATA_DB="):
-            database = line.split("=", 1)[1]
-            break
+    derived_mysql = _container(project, "staging-derived-mysql")
     pipeline_redis = _container(project, "staging-derived-redis")
     stat = Path(root).stat()
     disk = Path(root).anchor or "/"
@@ -248,7 +256,7 @@ def sample(run_id: str) -> dict[str, Any]:
         "redis": _redis(pipeline_redis),
         "kafka": _kafka(project, run_id),
         "flink": _flink(project, run_id),
-        "derived_queue": _queue(backend, run_id, database),
+        "derived_queue": _queue(derived_mysql, run_id, DERIVED_DATABASE),
         "containers": _containers(project),
         "disk": {"used": usage.used, "total": usage.total},
         # Production is deliberately absent: the isolated Staging gateway may

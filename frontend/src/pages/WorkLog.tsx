@@ -35,10 +35,12 @@ import {
   exportWorkLogDailyDetail,
   getWorkLogDraft,
   getWorkLogDailyDetailPreferences,
+  getWorkLogDailyDetailPopulation,
   getWorkLogMissing,
   getWorkLogSchema,
   refreshWorkLogDraft,
   saveWorkLogDraft,
+  saveWorkLogDailyDetailPopulation,
   takeoverWorkLogDraft,
 } from '../api/client'
 import { PageHeader, Panel } from '../components/ui'
@@ -50,6 +52,7 @@ import type {
   WorkLogField,
   WorkLogSchema,
 } from '../types'
+import type { WorkLogDailyDetailPopulationRow } from '../api/client'
 import {
   deriveWorkLogValues,
   leafWorkLogColumns,
@@ -450,6 +453,11 @@ export default function WorkLog() {
   const [changeSequence, setChangeSequence] = useState(0)
   const [exporting, setExporting] = useState(false)
   const [dailyDetailExporting, setDailyDetailExporting] = useState(false)
+  const [populationRows, setPopulationRows] = useState<WorkLogDailyDetailPopulationRow[]>([])
+  const [populationDirty, setPopulationDirty] = useState(false)
+  const [populationSaving, setPopulationSaving] = useState(false)
+  const [populationConflict, setPopulationConflict] = useState(false)
+  const [populationCoefficient, setPopulationCoefficient] = useState(10)
   const [rentalTarget, setRentalTarget] = useState(10)
   const [selfOwnedTarget, setSelfOwnedTarget] = useState(15)
   const savingRef = useRef(false)
@@ -469,11 +477,54 @@ export default function WorkLog() {
       .then(preferences => {
         setRentalTarget(preferences.rental_target)
         setSelfOwnedTarget(preferences.self_owned_target)
+        setPopulationCoefficient(preferences.population_coefficient)
       })
       .catch(error => message.error(
         errorMessage(error, '读取每日明细目标数失败'),
       ))
   }, [])
+
+  const dailyDetailDateText = dailyDetailDate.format('YYYY-MM-DD')
+  const loadPopulationRows = useCallback(async () => {
+    try {
+      setPopulationRows(await getWorkLogDailyDetailPopulation(dailyDetailDateText))
+      setPopulationDirty(false)
+      setPopulationConflict(false)
+    } catch (error) {
+      message.error(errorMessage(error, '读取社区流动人口数据失败'))
+    }
+  }, [dailyDetailDateText])
+
+  useEffect(() => { void loadPopulationRows() }, [loadPopulationRows])
+
+  const updatePopulationRow = (communityId: number, key: 'added' | 'cancelled', value: number | null) => {
+    setPopulationRows(current => current.map(row => row.community_id === communityId
+      ? { ...row, [key]: value }
+      : row))
+    setPopulationDirty(true)
+    setPopulationConflict(false)
+  }
+
+  const savePopulationRows = async () => {
+    setPopulationSaving(true)
+    try {
+      await saveWorkLogDailyDetailPopulation({
+        business_date: dailyDetailDateText,
+        rows: populationRows,
+      })
+      setPopulationDirty(false)
+      setPopulationConflict(false)
+      await loadPopulationRows()
+      message.success('流动人口新增、注销数据已保存')
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        setPopulationConflict(true)
+      }
+      message.error(errorMessage(error, '保存流动人口数据失败'))
+    } finally {
+      setPopulationSaving(false)
+    }
+  }
 
   const applyDraft = useCallback((next: WorkLogDraft) => {
     setDraft(next)
@@ -677,12 +728,21 @@ export default function WorkLog() {
   }
 
   const exportDailyDetail = async () => {
+    if (populationDirty || populationSaving) {
+      message.warning('请先保存流动人口新增、注销数据，再生成文件')
+      return
+    }
+    if (populationConflict) {
+      message.warning('请先重新加载并解决并发修改，再生成文件')
+      return
+    }
     setDailyDetailExporting(true)
     try {
       const blob = await exportWorkLogDailyDetail({
         business_date: dailyDetailDate.format('YYYY-MM-DD'),
         rental_target: rentalTarget,
         self_owned_target: selfOwnedTarget,
+        population_coefficient: populationCoefficient,
       })
       const saved = await downloadBlob(
         blob,
@@ -723,7 +783,20 @@ export default function WorkLog() {
             <DatePicker
               value={dailyDetailDate}
               allowClear={false}
-              onChange={value => value && setDailyDetailDate(value)}
+              onChange={value => {
+                if (!value) return
+                if (!populationDirty) {
+                  setDailyDetailDate(value)
+                  return
+                }
+                modal.confirm({
+                  title: '放弃未保存的流动人口数据？',
+                  content: '切换日期会丢弃当前页面尚未保存的修改。',
+                  okText: '放弃并切换',
+                  cancelText: '继续编辑',
+                  onOk: () => setDailyDetailDate(value),
+                })
+              }}
             />
           </div>
           <div>
@@ -746,14 +819,88 @@ export default function WorkLog() {
               onChange={value => setSelfOwnedTarget(value ?? 15)}
             />
           </div>
+          <div>
+            <div className="mb-2 text-sm font-medium">流动人口目标系数</div>
+            <InputNumber
+              min={0}
+              max={999}
+              precision={0}
+              value={populationCoefficient}
+              onChange={value => setPopulationCoefficient(value ?? 10)}
+            />
+            <div className="mt-1 text-xs text-slate-500">按当前账号记忆，默认 10</div>
+          </div>
           <Button
             type="primary"
             icon={<FileExcelOutlined />}
             loading={dailyDetailExporting}
+            disabled={populationDirty || populationSaving || populationConflict}
             onClick={exportDailyDetail}
           >
             生成每日明细 XLSX
           </Button>
+        </div>
+        <div className="mt-4 grid gap-3">
+          {populationConflict && (
+            <Alert
+              type="warning"
+              showIcon
+              message="这一天的填报已被其他管理员修改。请重新加载最新数据后再编辑。"
+              action={<Button size="small" onClick={() => void loadPopulationRows()}>重新加载</Button>}
+            />
+          )}
+          <Table<WorkLogDailyDetailPopulationRow>
+            rowKey="community_id"
+            size="small"
+            pagination={false}
+            dataSource={populationRows}
+            scroll={{ x: 520, y: 320 }}
+            columns={[
+              { title: '正式社区', dataIndex: 'community', width: 180 },
+              {
+                title: '新增', width: 150,
+                render: (_value, row) => (
+                  <InputNumber
+                    min={0}
+                    precision={0}
+                    value={row.added}
+                    disabled={populationConflict}
+                    onChange={value => updatePopulationRow(row.community_id, 'added', value)}
+                    className="w-full"
+                  />
+                ),
+              },
+              {
+                title: '注销', width: 150,
+                render: (_value, row) => (
+                  <InputNumber
+                    min={0}
+                    precision={0}
+                    value={row.cancelled}
+                    disabled={populationConflict}
+                    onChange={value => updatePopulationRow(row.community_id, 'cancelled', value)}
+                    className="w-full"
+                  />
+                ),
+              },
+            ]}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="primary"
+              loading={populationSaving}
+              disabled={!populationDirty || populationConflict}
+              onClick={() => void savePopulationRows()}
+            >保存新增、注销数据</Button>
+            <Button
+              icon={<ReloadOutlined />}
+              disabled={populationSaving}
+              onClick={() => void loadPopulationRows()}
+            >重新加载</Button>
+            <span className="text-sm text-slate-500">
+              {populationConflict ? '存在并发修改' : populationSaving ? '保存中' : populationDirty ? '有未保存修改' : '已保存'}
+            </span>
+          </div>
         </div>
       </Panel>
 

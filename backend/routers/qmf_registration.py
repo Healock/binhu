@@ -359,7 +359,6 @@ async def _eligible_platform_task(
         data.row_key,
         user,
         conn,
-        include_photo_requests=False,
     )
     sources = detail.get("sources") or []
     if detail.get("task", {}).get("conflict") or len(sources) != 1:
@@ -837,7 +836,6 @@ async def _append_tencent_marker(
         row_key,
         user,
         conn,
-        include_photo_requests=False,
     )
     sources = detail.get("sources") or []
     source = next(

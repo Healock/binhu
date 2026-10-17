@@ -73,12 +73,14 @@ def test_unmatched_and_non_rental_records_are_pending_review():
     assert result["issue_breakdown"]["non_rental_property"] == 1
 
 
-def test_local_notice_missing_from_complete_source_is_only_reported():
+def test_local_notice_missing_from_complete_source_no_longer_counts_as_current():
     old = _row()
     result = compare_certificate_snapshot(
         [], [_existing(old)], [{"id": 7, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}],
     )
     assert result["missing_from_source"] == 1
+    assert result["status_summary"]["not_required"]["total"] == 1
+    assert result["status_summary"]["normal_signed"]["total"] == 0
 
 
 def test_status_totals_include_existing_rental_properties_without_a_notice():
@@ -86,3 +88,14 @@ def test_status_totals_include_existing_rental_properties_without_a_notice():
         [], [], [{"id": 7, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}],
     )
     assert result["status_summary"]["not_required"]["total"] == 1
+
+
+def test_status_total_counts_unchanged_house_once_and_conflict_is_not_unsigned():
+    row = _row()
+    properties = [{"id": 7, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}]
+    result = compare_certificate_snapshot([row], [_existing(row)], properties)
+    assert result["status_summary"]["normal_signed"]["total"] == 1
+    result = compare_certificate_snapshot([], [_existing(row)], properties,
+                                          conflict_keys={("湖滨路1号", "长板社区")})
+    assert result["status_summary"]["multiple_or_conflict"]["total"] == 1
+    assert result["status_summary"]["not_required"]["total"] == 0

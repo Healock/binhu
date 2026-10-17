@@ -9,6 +9,7 @@ from services.personnel_positions import (
     VISIT_POSITION_CONFIG_KEY,
     serialize_position_config,
     serialize_rental_position_config,
+    serialize_weekend_position_config,
 )
 from services.maintenance import invalidate_maintenance_cache, validate_maintenance_config
 
@@ -18,6 +19,10 @@ router = APIRouter(
     dependencies=[Depends(require_super_admin)],
 )
 
+LEGACY_DAILY_DETAIL_COEFFICIENT_KEY = (
+    "work_log_daily_detail_population_coefficient"
+)
+
 
 @router.get("/config")
 async def get_config(conn=Depends(get_db)):
@@ -25,7 +30,9 @@ async def get_config(conn=Depends(get_db)):
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT config_key, config_value FROM _system_config "
-            "WHERE config_key NOT LIKE 'qmf_%'"
+            "WHERE config_key NOT LIKE 'qmf_%' "
+            "AND config_key <> %s",
+            (LEGACY_DAILY_DETAIL_COEFFICIENT_KEY,),
         )
         rows = await cur.fetchall()
     return {"data": {r[0]: r[1] for r in rows}}
@@ -78,6 +85,8 @@ async def update_config(
                     raise HTTPException(400, "空闲超时时间必须在 5 分钟至 24 小时之间")
             if k == "permission_enforcement_enabled":
                 raise HTTPException(400, "权限启用状态只能通过迁移工具修改")
+            if k == LEGACY_DAILY_DETAIL_COEFFICIENT_KEY:
+                raise HTTPException(400, "流动人口目标系数请在文件生成页面填写")
             if k == "online_writeback_enabled":
                 normalized = str(v).strip().lower()
                 if normalized not in {"0", "1", "true", "false"}:
@@ -88,6 +97,8 @@ async def update_config(
                     v = (
                         serialize_rental_position_config(v)
                         if k == VISIT_POSITION_CONFIG_KEY
+                        else serialize_weekend_position_config(v)
+                        if k == "weekend_duty_positions"
                         else serialize_position_config(v)
                     )
                 except ValueError as exc:

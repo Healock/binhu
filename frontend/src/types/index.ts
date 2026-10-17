@@ -159,13 +159,6 @@ export interface OpsOverview {
       retries: number
     }>
   }
-  photo_sheet_outbox: {
-    pending: number
-    retry: number
-    paused: number
-    max_attempt_count: number
-    error: string | null
-  }
   latest_backup: {
     id: number
     status: string
@@ -408,7 +401,6 @@ export type MobileNavigationItemId =
   | 'work_log'
   | 'police_tasks'
   | 'police_analysis'
-  | 'photo_tasks'
   | 'workflow_tickets'
   | 'registry'
   | 'workflow_config'

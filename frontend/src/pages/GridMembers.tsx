@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -31,11 +31,13 @@ import {
 import dayjs from 'dayjs'
 import { useNavigate } from 'react-router-dom'
 import AppTable from '../components/AppTable'
+import MemberDepartmentCascader from '../components/MemberDepartmentCascader'
 import {
   createGridMember,
   deleteGridMember,
   exportGridMembersUrl,
   getAttendanceScheduleStatus,
+  getCommunityAreas,
   getGridCommunities,
   getDepartments,
   getAttendanceHistory,
@@ -50,6 +52,7 @@ import {
   type AttendanceScheduleStatus,
   type DepartmentOption,
   type AccountOption,
+  type CommunityArea,
 } from '../api/client'
 import {
   PERSONNEL_POSITIONS,
@@ -63,11 +66,15 @@ import {
   isCompleteLeaveDateRange,
   updateLeaveDateRangeFromCalendar,
 } from '../utils/leaveDateRange'
+import {
+  buildDepartmentPathMap,
+  departmentOptionLabel,
+} from '../utils/departmentTree'
 
 export default function GridMembers() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  type PersonnelCategory = 'flow_work' | 'internal_business' | 'police_leadership'
+  type PersonnelCategory = 'flow_work' | 'internal_business' | 'police_leadership' | 'other'
   type CategoryState = {
     rows: GridMember[]
     total: number
@@ -80,9 +87,10 @@ export default function GridMembers() {
     label: string
     description: string
   }> = [
-    { key: 'flow_work', label: '流口工作', description: '组员、组长、自购房、片长' },
+    { key: 'flow_work', label: '流口工作', description: '组员、组长、自购房、片长、管家码' },
     { key: 'internal_business', label: '内勤业务', description: '基础管控、中队长' },
     { key: 'police_leadership', label: '民警与领导', description: '社区民警、所队领导' },
+    { key: 'other', label: '未设置岗位', description: '直属单位人员可不填写岗位' },
   ]
   const emptyCategoryState = (): CategoryState => ({
     rows: [], total: 0, page: 1, loading: false, error: '',
@@ -93,10 +101,13 @@ export default function GridMembers() {
     flow_work: emptyCategoryState(),
     internal_business: emptyCategoryState(),
     police_leadership: emptyCategoryState(),
+    other: emptyCategoryState(),
   })
   const [communities, setCommunities] = useState<GridCommunity[]>([])
   const [departments, setDepartments] = useState<DepartmentOption[]>([])
+  const [areas, setAreas] = useState<CommunityArea[]>([])
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([])
+  const [referenceErrors, setReferenceErrors] = useState<string[]>([])
   const [keyword, setKeyword] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [searchFlush, setSearchFlush] = useState(0)
@@ -118,6 +129,10 @@ export default function GridMembers() {
   const [scheduleStatus, setScheduleStatus] = useState<AttendanceScheduleStatus | null>(null)
   const [scheduleLoading, setScheduleLoading] = useState(false)
   const [scheduleError, setScheduleError] = useState('')
+  const schedulePickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs]>(
+    () => [dayjs(scheduleRange[0]), dayjs(scheduleRange[1])],
+    [scheduleRange[0], scheduleRange[1]],
+  )
   const listRequestId = useRef(0)
   const pageSize = 20
   const canManage = Boolean(user?.permissions.includes('personnel.manage'))
@@ -127,6 +142,7 @@ export default function GridMembers() {
   const canDelete = Boolean(
     user?.permission_groups.some(group => group.code === 'super_admin'),
   )
+  const departmentPaths = useMemo(() => buildDepartmentPathMap(departments), [departments])
 
   const fetch = useCallback(async () => {
     const requestId = ++listRequestId.current
@@ -172,21 +188,34 @@ export default function GridMembers() {
       }
     }))
   }, [keyword, communityFilter, positionFilter, categoryStates.flow_work.page,
-    categoryStates.internal_business.page, categoryStates.police_leadership.page])
+    categoryStates.internal_business.page, categoryStates.police_leadership.page,
+    categoryStates.other.page])
 
   const fetchCommunities = useCallback(async () => {
-    try {
-      const [communityRows, departmentRows, accountRows] = await Promise.all([
-        getGridCommunities(),
-        getDepartments(),
-        canManage ? getUnlinkedAccountOptions() : Promise.resolve([]),
-      ])
-      setCommunities(communityRows)
-      setDepartments(departmentRows)
-      setAccountOptions(accountRows)
-    } catch {
-      // 人员列表仍然可以独立显示。
-    }
+    const requests: [
+      Promise<GridCommunity[]>,
+      Promise<DepartmentOption[]>,
+      Promise<CommunityArea[]>,
+      Promise<AccountOption[]>,
+    ] = [
+      getGridCommunities(),
+      getDepartments(),
+      getCommunityAreas(),
+      canManage ? getUnlinkedAccountOptions() : Promise.resolve([]),
+    ]
+    const results = await Promise.allSettled(requests)
+    const labels = ['社区列表', '部门树', '片区列表', '账号列表']
+    const errors: string[] = []
+    const [communityResult, departmentResult, areaResult, accountResult] = results
+    if (communityResult.status === 'fulfilled') setCommunities(communityResult.value)
+    else errors.push(`${labels[0]}加载失败`)
+    if (departmentResult.status === 'fulfilled') setDepartments(departmentResult.value)
+    else errors.push(`${labels[1]}加载失败`)
+    if (areaResult.status === 'fulfilled') setAreas(areaResult.value)
+    else errors.push(`${labels[2]}加载失败`)
+    if (accountResult.status === 'fulfilled') setAccountOptions(accountResult.value)
+    else errors.push(`${labels[3]}加载失败`)
+    setReferenceErrors(errors)
   }, [canManage])
 
   useEffect(() => { fetch() }, [fetch])
@@ -259,6 +288,7 @@ export default function GridMembers() {
     flow_work: { ...previous.flow_work, page: 1 },
     internal_business: { ...previous.internal_business, page: 1 },
     police_leadership: { ...previous.police_leadership, page: 1 },
+    other: { ...previous.other, page: 1 },
   }))
 
   useEffect(() => {
@@ -283,7 +313,10 @@ export default function GridMembers() {
       key: 'department',
       width: 150,
       responsivePriority: 'standard',
-      render: (_, member) => `${member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门'} · ${member.position}`,
+      render: (_, member) => `${member.position === '自购房'
+        ? (member.area_name || '未分配片区')
+        : (member.departments?.map(item => departmentOptionLabel(item, departmentPaths)).join('、')
+          || member.department?.name || '未分配部门')} · ${member.position || '未设置岗位'}`,
     },
     {
       title: '岗位',
@@ -291,7 +324,7 @@ export default function GridMembers() {
       key: 'position',
       width: 110,
       responsivePriority: 'always',
-      render: value => <Tag color="blue">{value || '组员'}</Tag>,
+      render: value => <Tag color="blue">{value || '未设置岗位'}</Tag>,
     },
     {
       title: '电话',
@@ -429,7 +462,7 @@ export default function GridMembers() {
             </div>
             <DatePicker.RangePicker
               className="hidden w-[300px] md:flex"
-              value={[dayjs(scheduleRange[0]), dayjs(scheduleRange[1])]}
+              value={schedulePickerValue}
               allowClear={false}
               onChange={(_, dateStrings) => {
                 if (dateStrings[0] && dateStrings[1]) {
@@ -524,6 +557,14 @@ export default function GridMembers() {
         meta={<Tag color="blue">共 {total} 人</Tag>}
         actions={<Button onClick={refresh}>刷新</Button>}
       />
+      {referenceErrors.length > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          message="人员编辑所需的基础数据未完整加载"
+          description={`${referenceErrors.join('、')}。人员列表仍可查看，请刷新或联系管理员处理后再编辑。`}
+        />
+      )}
       <section className="app-card">
         {msg && (
           <Alert
@@ -596,6 +637,7 @@ export default function GridMembers() {
                           onEdit={() => setEditing(member)}
                           onLeave={() => setLeaveEditing(member)}
                           onDelete={() => handleDelete(member.id, member.name)}
+                          departmentPaths={departmentPaths}
                           canManage={canManage}
                           canDelete={canDelete}
                           canManageAttendance={canManageAttendance}
@@ -632,7 +674,9 @@ export default function GridMembers() {
         <MemberForm
           member={editing}
           departments={departments}
+          areas={areas}
           accountOptions={accountOptions}
+          referenceErrors={referenceErrors}
           canManageIdentity={canManageIdentity}
           onClose={() => {
             setShowAddForm(false)
@@ -813,6 +857,7 @@ function MemberProfileLink({
 
 function MobileMemberCard({
   member,
+  departmentPaths,
   onViewProfile,
   onEdit,
   onLeave,
@@ -824,6 +869,7 @@ function MobileMemberCard({
   canManageIdentity,
 }: {
   member: GridMember
+  departmentPaths: Map<number, string>
   onViewProfile: () => void
   onEdit: () => void
   onLeave: () => void
@@ -847,11 +893,12 @@ function MobileMemberCard({
           <div className="flex flex-wrap items-center gap-2 text-base">
             <MemberProfileLink member={member} onOpen={onViewProfile} />
             <Tag color="blue" className="m-0">
-              {member.position || '组员'}
+              {member.position || '未设置岗位'}
             </Tag>
           </div>
           <div className="mt-1 truncate text-sm text-slate-500">
-            {member.departments?.map(item => item.name).join('、') || member.department?.name || '未分配部门'}
+            {member.departments?.map(item => departmentOptionLabel(item, departmentPaths)).join('、')
+              || member.department?.name || '未分配部门'}
           </div>
         </div>
         <Tag color={color} className="m-0 shrink-0">
@@ -910,14 +957,18 @@ function MobileMemberCard({
 function MemberForm({
   member,
   departments,
+  areas,
   accountOptions,
+  referenceErrors,
   canManageIdentity,
   onClose,
   onSaved,
 }: {
   member: GridMember | null
   departments: DepartmentOption[]
+  areas: CommunityArea[]
   accountOptions: AccountOption[]
+  referenceErrors: string[]
   canManageIdentity: boolean
   onClose: () => void
   onSaved: () => void
@@ -926,8 +977,9 @@ function MemberForm({
   const [departmentIds, setDepartmentIds] = useState<number[]>(
     member?.department_ids || (member?.department_id ? [member.department_id] : []),
   )
-  const [position, setPosition] = useState<PersonnelPosition>(
-    (member?.position as PersonnelPosition) || '组员',
+  const [areaId, setAreaId] = useState<number | null>(member?.area_id || null)
+  const [position, setPosition] = useState<PersonnelPosition | ''>(
+    member ? (member.position as PersonnelPosition | '') : '组员',
   )
   const [phone, setPhone] = useState(member?.phone || '')
   const [idCardNumber, setIdCardNumber] = useState(member?.id_card_number || '')
@@ -944,10 +996,14 @@ function MemberForm({
   const [password, setPassword] = useState('')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
-  const internalPosition = ['片长', '中队长', '基础管控', '所队领导'].includes(position)
+  const selfOwnedPosition = position === '自购房'
   const multipleCommunities = position === '社区民警'
   const communityPosition = ['组长', '组员', '社区民警'].includes(position)
   const currentAccountId = member?.account?.id || null
+  const departmentLoadFailed = referenceErrors.includes('部门树加载失败')
+  const areaLoadFailed = referenceErrors.includes('片区列表加载失败')
+  const accountLoadFailed = referenceErrors.includes('账号列表加载失败')
+  const areaScopedPosition = position === '片长' || position === '自购房'
 
   useEffect(() => {
     if (!member) return
@@ -976,12 +1032,28 @@ function MemberForm({
       setFormError('姓名不能为空')
       return
     }
+    if (!member && !position) {
+      setFormError('新增人员必须选择岗位；已有直属人员可以在编辑时留空岗位')
+      return
+    }
     if (communityPosition && departmentIds.length === 0) {
       setFormError('该岗位必须选择社区部门')
       return
     }
+    if (areaScopedPosition && !areaId) {
+      setFormError(`${position}岗位必须指定片区`)
+      return
+    }
     if (!multipleCommunities && departmentIds.length > 1) {
-      setFormError('该岗位只能选择一个社区部门')
+      setFormError('该岗位只能选择一个部门')
+      return
+    }
+    if (!member && accountMode === 'existing' && accountLoadFailed) {
+      setFormError('账号列表加载失败，请刷新后重试')
+      return
+    }
+    if (departmentLoadFailed || (areaScopedPosition && areaLoadFailed)) {
+      setFormError('部门或片区列表加载失败，请刷新后重试')
       return
     }
     if (!member && accountMode === 'existing' && !existingUserId) {
@@ -1006,13 +1078,15 @@ function MemberForm({
     try {
       const payload: {
         department_ids: number[]
-        position: PersonnelPosition
+        area_id?: number | null
+        position: string
         phone: string
         notes: string
         id_card_number?: string | null
         account_id?: number
       } = {
         department_ids: departmentIds,
+        ...(areaScopedPosition ? { area_id: areaId } : {}),
         position,
         phone,
         notes,
@@ -1056,12 +1130,19 @@ function MemberForm({
       okText="保存"
       cancelText="取消"
       confirmLoading={saving}
+      okButtonProps={{ disabled: departmentLoadFailed || (areaScopedPosition && areaLoadFailed) || (!member && accountLoadFailed) }}
       maskClosable={!saving}
       width={580}
       onOk={handleSave}
       onCancel={onClose}
     >
       <div className="space-y-4 pt-2">
+        {referenceErrors.length > 0 && <Alert
+          type="error"
+          showIcon
+          message="部分基础数据未加载，相关保存操作已暂停"
+          description={referenceErrors.join('、')}
+        />}
         <div>
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
             姓名
@@ -1076,31 +1157,31 @@ function MemberForm({
           <label className="mb-1.5 block text-sm font-medium text-slate-700">
             所属部门
           </label>
-          {multipleCommunities ? (
+          {selfOwnedPosition ? (
             <Select
-              mode="multiple"
-              value={departmentIds}
-              onChange={setDepartmentIds}
-              placeholder="可选择一个或多个社区"
+              value={areaId || undefined}
+              onChange={value => setAreaId(value || null)}
+              placeholder="请选择所属片区"
               className="w-full"
-              maxTagCount="responsive"
-              options={departments
-                .filter(item => item.type === 'community' && item.is_active)
-                .map(item => ({ value: item.id, label: item.name }))}
+              options={areas.map(area => ({ value: area.id, label: area.name }))}
             />
           ) : (
+            <MemberDepartmentCascader
+              departments={departments}
+              value={departmentIds}
+              onChange={setDepartmentIds}
+              communityPosition={communityPosition}
+              multiple={multipleCommunities}
+              disabled={departmentLoadFailed || saving}
+            />
+          )}
+          {position === '片长' && (
             <Select
-              value={departmentIds[0]}
-              onChange={value => setDepartmentIds(value ? [value] : [])}
-              allowClear={!internalPosition && !communityPosition}
-              placeholder="请选择部门"
-              className="w-full"
-              disabled={internalPosition}
-              options={departments
-                .filter(item => internalPosition
-                  ? item.type === 'internal'
-                  : item.type === 'community' && item.is_active)
-                .map(item => ({ value: item.id, label: item.name }))}
+              value={areaId || undefined}
+              onChange={value => setAreaId(value || null)}
+              placeholder="请选择所属片区"
+              className="mt-2 w-full"
+              options={areas.map(area => ({ value: area.id, label: area.name }))}
             />
           )}
         </div>
@@ -1109,21 +1190,26 @@ function MemberForm({
             岗位
           </label>
           <Select
-            value={position}
-            onChange={(value: PersonnelPosition) => {
-              setPosition(value)
-              const nextIsInternal = ['片长', '中队长', '基础管控', '所队领导'].includes(value)
+            value={position || undefined}
+            allowClear
+            onChange={(value: PersonnelPosition | undefined) => {
+              const nextPosition = value || ''
+              setPosition(nextPosition)
               const currentDepartment = departments.find(item => item.id === departmentIds[0])
-              if (nextIsInternal) {
-                const internalId = departments.find(item => item.type === 'internal')?.id
-                setDepartmentIds(internalId ? [internalId] : [])
-              } else if (currentDepartment?.type === 'internal') {
+              if (nextPosition === '自购房') {
                 setDepartmentIds([])
-              } else if (value !== '社区民警' && departmentIds.length > 1) {
-                setDepartmentIds(departmentIds.slice(0, 1))
+                setAreaId(null)
+              } else {
+                if (currentDepartment?.type === 'internal' && nextPosition) {
+                  setDepartmentIds([])
+                } else if (nextPosition !== '社区民警' && departmentIds.length > 1) {
+                  setDepartmentIds(departmentIds.slice(0, 1))
+                }
+                if (nextPosition !== '片长') setAreaId(null)
               }
             }}
             className="w-full"
+            placeholder="可留空（直属单位人员）"
             options={PERSONNEL_POSITIONS.map(item => ({
               value: item,
               label: item,
@@ -1133,7 +1219,7 @@ function MemberForm({
             <span className="flex items-start gap-1.5 leading-5">
               <InfoCircleOutlined className="mt-0.5 shrink-0" />
               <span>
-                在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他社区岗位只能选择一个，内勤岗位自动归入内勤。
+            在线汇总固定统计有社区部门的组长和组员；社区民警可以同时选择多个社区，其他岗位按行政编成选择单位级部门。直属单位人员可以留空岗位；历史内勤部门仅用于识别和迁移。
               </span>
             </span>
           </p>
@@ -1278,6 +1364,12 @@ function LeaveModal({
     member.leave_end_date || '',
   ])
   const [reason, setReason] = useState(member.leave_reason || '')
+  const leavePickerValue = useMemo<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(
+    () => leaveRange[0] || leaveRange[1]
+      ? [leaveRange[0] ? dayjs(leaveRange[0]) : null, leaveRange[1] ? dayjs(leaveRange[1]) : null]
+      : null,
+    [leaveRange[0], leaveRange[1]],
+  )
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const hasLeave = (
@@ -1416,12 +1508,7 @@ function LeaveModal({
             </div>
             <div className="hidden md:block">
               <DatePicker.RangePicker
-                value={leaveRange[0] || leaveRange[1]
-                  ? [
-                      leaveRange[0] ? dayjs(leaveRange[0]) : null,
-                      leaveRange[1] ? dayjs(leaveRange[1]) : null,
-                    ]
-                  : null}
+                value={leavePickerValue}
                 onCalendarChange={(_, dateStrings, info) => {
                   const nextStart = dateStrings[0] || ''
                   const nextEnd = dateStrings[1] || ''

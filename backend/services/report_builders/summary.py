@@ -181,7 +181,12 @@ async def build_summary(
                     f"FROM `{date_str}_daily_{suffix}`"
                 )
             union_sql = " UNION ALL ".join(union_parts)
-            active_condition = active_member_sql()
+            active_condition = active_member_sql(
+                "member",
+                attendance_history_table=(
+                    "OnlineData._personnel_attendance_history"
+                ),
+            )
             await cur.execute(f"""
                 INSERT INTO {t_summary} (社区, 数据总数, 未核查, 已核查, 已完成, 无法见底数, 网格员人数)
                 SELECT
@@ -224,7 +229,7 @@ async def build_summary(
                     GROUP BY community.name
                 ) AS member_counts
                   ON member_counts.community = report_rows.社区
-            """, (date_str,))
+            """, (date_str, date_str, date_str))
 
             await cur.execute(f"""
                 UPDATE {t_summary} SET

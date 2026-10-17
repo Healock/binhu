@@ -25,10 +25,14 @@ from services.work_activity import (
 from services.work_log_data import build_system_snapshot
 from services.work_log_pdf import build_daily_pdf
 from services.work_log_daily_detail import (
+    DEFAULT_POPULATION_COEFFICIENT,
+    MAX_POPULATION_COEFFICIENT,
     MAX_VISIT_TARGET,
     build_daily_detail_export,
+    load_population_inputs,
     load_target_preferences,
     normalize_targets,
+    save_population_inputs,
     save_target_preferences,
 )
 from services.work_log_schema import (
@@ -66,6 +70,23 @@ class DailyDetailExportRequest(BaseModel):
     business_date: date
     rental_target: int = Field(ge=0, le=MAX_VISIT_TARGET)
     self_owned_target: int = Field(ge=0, le=MAX_VISIT_TARGET)
+    population_coefficient: int = Field(
+        default=DEFAULT_POPULATION_COEFFICIENT,
+        ge=0,
+        le=MAX_POPULATION_COEFFICIENT,
+    )
+
+
+class DailyDetailPopulationRow(BaseModel):
+    community_id: int = Field(gt=0)
+    added: int | None = Field(default=None, ge=0)
+    cancelled: int | None = Field(default=None, ge=0)
+    revision: int = Field(ge=0)
+
+
+class DailyDetailPopulationSave(BaseModel):
+    business_date: date
+    rows: list[DailyDetailPopulationRow]
 
 
 def _json_load(value: Any, default):
@@ -320,7 +341,48 @@ async def daily_detail_preferences(
     user: dict = Depends(require_admin),
     conn=Depends(get_db),
 ):
-    return await load_target_preferences(conn, int(user["id"]))
+    targets = await load_target_preferences(conn, int(user["id"]))
+    return targets
+
+
+@router.get("/daily-detail/population")
+async def daily_detail_population(
+    business_date: date = Query(...),
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    del user
+    return {"rows": await load_population_inputs(conn, business_date)}
+
+
+@router.put("/daily-detail/population")
+async def save_daily_detail_population(
+    data: DailyDetailPopulationSave,
+    request: Request,
+    user: dict = Depends(require_admin),
+    conn=Depends(get_db),
+):
+    try:
+        result = await save_population_inputs(
+            conn,
+            data.business_date,
+            [row.model_dump() for row in data.rows],
+            int(user["id"]),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await record_admin_audit(
+        user,
+        "work_log_detail.population.update",
+        target_type="work_log_daily_detail_population",
+        target_name=data.business_date.isoformat(),
+        detail={"business_date": data.business_date.isoformat(), "community_count": len(data.rows), "row_count": result["count"]},
+        conn=conn,
+        **request_audit_fields(request),
+    )
+    return {"message": "流动人口数据已保存", **result}
 
 
 @router.post("/daily-detail/export")
@@ -334,10 +396,13 @@ async def export_daily_detail(
         "rental_target": data.rental_target,
         "self_owned_target": data.self_owned_target,
     })
+    targets["population_coefficient"] = data.population_coefficient
     content, filename, row_count = await build_daily_detail_export(
         conn,
         data.business_date,
-        **targets,
+        rental_target=targets["rental_target"],
+        self_owned_target=targets["self_owned_target"],
+        population_coefficient=targets["population_coefficient"],
     )
     await save_target_preferences(conn, int(user["id"]), targets)
     await record_admin_audit(
@@ -350,8 +415,10 @@ async def export_daily_detail(
             "row_count": row_count,
             "rental_target": targets["rental_target"],
             "self_owned_target": targets["self_owned_target"],
+            "population_coefficient": targets["population_coefficient"],
             "file_format": "XLSX",
         },
+        conn=conn,
         **request_audit_fields(request),
     )
     return Response(

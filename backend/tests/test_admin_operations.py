@@ -333,8 +333,18 @@ class AuditDisplayTests(unittest.IsolatedAsyncioTestCase):
                     ):
                         target_types.add(str(keyword.value.value))
 
-        self.assertEqual(actions - ACTION_LABELS.keys(), set())
-        self.assertEqual(target_types - TARGET_TYPE_LABELS.keys(), set())
+        retired_prefixes = ("workflow.photo_",)
+        retired_targets = {
+            "photo_sheet",
+            "photo_sheet_conflict",
+            "photo_sheet_outbox",
+            "photo_import_batch",
+        }
+        self.assertEqual(
+            {action for action in actions if not action.startswith(retired_prefixes)} - ACTION_LABELS.keys(),
+            set(),
+        )
+        self.assertEqual(target_types - retired_targets - TARGET_TYPE_LABELS.keys(), set())
 
     def test_current_member_name_is_preferred_over_identifier_username(self):
         self.assertEqual(

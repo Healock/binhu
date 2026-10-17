@@ -2,6 +2,63 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+test('户号表多文件合并预览保留逐文件筛选声明与行数核对，变更后作废旧预览', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const files = readFileSync(new URL('../src/components/HouseholdImportFiles.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(files, /multiple showUploadList/)
+  assert.match(files, /current.length >= 10/)
+  assert.match(files, /expected_count/)
+  assert.match(files, /个人租赁.*单位租赁.*自购房屋.*借住.*其他/)
+  assert.match(client, /form.append\('files', item.file\)/)
+  assert.match(client, /form.append\('file_options'/)
+  assert.match(client, /\/registry\/imports\/households\/files\/preview/)
+  assert.match(page, /setImportFiles\(update\); setImportPreview\(null\)/)
+  assert.match(page, /registryApi.previewHouseholdFiles\(importFiles\)/)
+  assert.match(page, /unique_household_count/)
+  assert.match(page, /household_status_counts/)
+})
+
+test('房屋注销状态独立筛选并与导出保持一致，不再提供启用停用操作', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  assert.match(page, /title: '注销状态', dataIndex: 'household_status'/)
+  assert.match(page, /value: 'cancelled', label: '已注销'/)
+  assert.match(page, /value: 'unknown', label: '未知'/)
+  assert.equal((page.match(/household_status: householdStatus/g) || []).length, 2)
+  assert.doesNotMatch(page, /toggleProperty|setPropertyStatus|房屋已停用|确认启用这套房屋/)
+})
+
+test('房屋小区标注先预览后确认，已有人工确认不会默认勾选', () => {
+  const source = readFileSync(new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url), 'utf8')
+  assert.match(source, /registryApi\.previewPropertyAnnotations/)
+  assert.match(source, /row\.status === 'ready' && !row\.replaces_manual/)
+  assert.match(source, /Modal\.confirm/)
+  assert.match(source, /registryApi\.applyPropertyAnnotations/)
+  assert.match(source, /offset \+= 200/)
+  assert.match(source, /setApplyFailed\(true\)/)
+})
+
+test('小区标注预览弹窗居中并支持按状态筛选', () => {
+  const source = readFileSync(new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url), 'utf8')
+  assert.match(source, /width=\{1100\} centered/)
+  assert.match(source, /aria-label="标注状态筛选"/)
+  assert.match(source, /待人工复核/)
+  assert.match(source, /拒绝应用/)
+  assert.match(source, /跳过/)
+  assert.match(source, /dataSource=\{visibleItems\}/)
+})
+
+test('小区标注导出使用后台任务并在完成后下载，不发送同步导出请求', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(client, /small-community-annotations\/export/)
+  assert.match(client, /small-community-annotations\/exports\/\$\{encodeURIComponent\(jobId\)\}/)
+  assert.match(client, /small-community-annotations\/exports\/\$\{encodeURIComponent\(jobId\)\}\/download/)
+  assert.match(page, /小区标注工作簿正在后台生成/)
+  assert.match(page, /propertyAnnotationExportStatus\(job\.job_id\)/)
+  assert.match(page, /downloadPropertyAnnotationExport\(job\.job_id\)/)
+})
+
 test('户号表与确认接口保留长请求超时，告知书改为后台任务', () => {
   const apiSource = readFileSync(
     new URL('../src/api/client.ts', import.meta.url),
@@ -48,11 +105,29 @@ test('房屋档案和问题核查使用正文搜索并提供完整筛选', () =>
   assert.match(apiSource, /api\.post\('\/registry\/properties\/search', params/)
   assert.match(apiSource, /api\.post\('\/registry\/import\/issues\/search', params/)
   assert.match(pageSource, /搜索地址、户号、幢室或住房类型/)
+  assert.match(pageSource, /搜索问题编号、地址、户号、来源行或错误值/)
   assert.match(pageSource, /全部社区/)
   assert.match(pageSource, /出租房/)
   assert.match(pageSource, /自购房/)
   assert.match(pageSource, /全部住房类型/)
   assert.match(pageSource, /pagination=\{listPagination\}/)
+})
+
+test('问题数据可按问题编号和来源行直接定位，房屋搜索提示保持原有范围', () => {
+  const pageSource = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const issueColumns = pageSource.slice(
+    pageSource.indexOf('const issueColumns'),
+    pageSource.indexOf('const renderSearchInput'),
+  )
+  const propertyToolbar = pageSource.slice(
+    pageSource.indexOf("const toolbarFilters = tab === 'properties'"),
+    pageSource.indexOf(": tab === 'issues'"),
+  )
+
+  assert.match(issueColumns, /title: '问题编号', dataIndex: 'id'/)
+  assert.match(issueColumns, /title: '来源', width: 280/)
+  assert.match(propertyToolbar, /搜索地址、户号、幢室或住房类型/)
+  assert.doesNotMatch(propertyToolbar, /搜索问题编号/)
 })
 
 test('小区管理支持工地宿舍类型，辖区档案按社区提交筛选', () => {
@@ -209,6 +284,34 @@ test('辖区房屋、人员和机构档案按页面当前条件导出', () => {
   assert.match(pageSource, /最近走访/)
 })
 
+test('从未走访筛选对列表和导出一致，并清空互斥日期与星级', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const api = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  const visitFilter = page.split("title: '最近走访日期'")[1].split("title: '星级评定'")[0]
+  const toolbar = page.split('const toolbarFilters =')[1].split('const toolbarNotice')[0]
+  assert.match(visitFilter, /aria-label="走访情况"/)
+  assert.match(visitFilter, /value: '', label: '全部走访情况'/)
+  assert.match(visitFilter, /value: 'never', label: '从未走访'/)
+  assert.doesNotMatch(toolbar, /全部走访情况|从未走访|setVisitStatus/)
+  assert.match(visitFilter, /filteredValue: visitStatus \|\| visitDateRange/)
+  assert.match(visitFilter, /setVisitStatus\(''\)\s*setVisitDateRange\(undefined\)/)
+  assert.match(page, /useResponsiveLayout\(layoutRef\)/)
+  assert.match(page, /key: 'actions', width: responsiveLayout.isCompact \? 112 : 280/)
+  assert.match(page, /value: 'never', label: '从未走访'/)
+  assert.match(page, /if \(value === 'never'\) \{\s*setVisitDateRange\(undefined\)\s*setStarRatings\(\[\]\)/)
+  assert.equal((page.match(/visit_status: visitStatus/g) || []).length, 2)
+  assert.equal((api.match(/visit_status\?: '' \| 'visited' \| 'never'/g) || []).length, 3)
+  assert.equal((page.match(/disabled=\{visitStatus === 'never'\}/g) || []).length, 2)
+  assert.match(page, /setVisitStatus\(''\)/)
+})
+
+test('告知书旧问题可查询已替代历史，未签订不冒充重复冲突', () => {
+  const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  assert.match(page, /value: 'superseded', label: '已被新快照替代'/)
+  assert.match(page, /value: 'not_uploaded', label: '未签订'/)
+  assert.match(page, /旧记录与旧问题只保留历史/)
+})
+
 test('房屋档案显示小区匹配状态、待确认数量和人工确认入口', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
@@ -234,6 +337,19 @@ test('房屋档案显示小区匹配状态、待确认数量和人工确认入�
   assert.match(pageSource, /人工确认小区/)
   assert.match(pageSource, /typeof value !== 'object'/)
   assert.match(styleSource, /registry-small-community-match/)
+})
+
+test('小区标注待复核行只允许携带房屋快照人工确认', () => {
+  const pageSource = readFileSync(
+    new URL('../src/components/PropertyAnnotationImport.tsx', import.meta.url),
+    'utf8',
+  )
+  const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+  assert.match(pageSource, /row\.status === 'review'/)
+  assert.match(pageSource, /manual_confirm_item/)
+  assert.match(pageSource, /expected_snapshot: snapshot\.expected_snapshot/)
+  assert.match(pageSource, /expected_match_snapshot: snapshot\.expected_match_snapshot/)
+  assert.match(apiSource, /manual_confirm_item\?: Pick<PropertyAnnotationApplyItem/)
 })
 
 test('人员标签整合到人员档案并保留独立权限和历史', () => {

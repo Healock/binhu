@@ -1,5 +1,5 @@
 import { clearRecentAnnotations } from '../utils/addressAnnotation'
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import {
   changeOwnPassword,
   getAppBootstrap,
@@ -162,7 +162,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void cacheResidenceConfigIfAllowed(currentUser)
   }
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     await fetchWithAuth(
       '/api/auth/logout',
       { method: 'POST' },
@@ -175,20 +175,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setEnvironment('production')
     setEnvironmentLabel('正式环境')
     setLoadTestRunId('')
-  }
+  }, [])
 
   const updatePreferences = async (preferences: UserPreferences) => {
     const updatedUser = await saveUserPreferences(preferences)
     setUser(updatedUser)
   }
 
-  const refreshUser = async () => {
+  const refreshUser = useCallback(async () => {
     setUser(await getCurrentUser())
-  }
+  }, [])
 
-  const recordActivity = async () => {
+  const recordActivity = useCallback(async () => {
     setUser(await recordSessionActivity())
-  }
+  }, [])
 
   const changePassword = async (currentPassword: string, newPassword: string) => {
     await changeOwnPassword(currentPassword, newPassword)

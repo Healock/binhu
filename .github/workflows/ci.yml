@@ -47,6 +47,9 @@ jobs:
       - name: Run backend tests
         run: python -m unittest discover -s tests
         working-directory: backend
+      - name: Check property annotation workbook and permission contracts
+        run: python -m pytest tests/test_property_annotation_xlsx.py tests/test_household_cancellation_status.py tests/test_household_multi_file_import.py tests/test_household_preview_repair.py tests/test_filtered_xlsx_exports.py tests/test_registry_foundation.py tests/test_registry_visit_history.py tests/test_help_docs.py -q
+        working-directory: backend
 
   hotfix-candidate:
     name: Prebuild backend hotfix candidate
@@ -134,6 +137,25 @@ jobs:
         # Exercise real React editors against fictional, intercepted API responses.
         # Browser binaries are kept outside the dependency lockfile.
         run: npx playwright install --with-deps chromium && npm run test:autosave:browser
+        working-directory: frontend
+      - name: Check pending registration free-address editing
+        run: npm run test:pending-registration:browser
+        working-directory: frontend
+      # Keep pointer capture and touch-drag behavior under real browser coverage.
+      - name: Run floating actions browser regression tests
+        run: npm run test:floating:browser
+        working-directory: frontend
+      - name: Check background request budgets in browser
+        run: npm run test:background:browser
+        working-directory: frontend
+      - name: Check date navigation across session refreshes
+        run: npm run test:date-range:browser
+        working-directory: frontend
+      - name: Check property annotation preview and confirmation in browser
+        run: node tests/propertyAnnotation.browser.mjs
+        working-directory: frontend
+      - name: Check household multi-file import in browser
+        run: node tests/householdImport.browser.mjs
         working-directory: frontend
       - name: Build frontend production bundle
         env:

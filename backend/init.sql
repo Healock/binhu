@@ -105,11 +105,24 @@ INSERT IGNORE INTO _system_config (config_key, config_value) VALUES
     ('maintenance_start_at', ''),
     ('maintenance_end_at', ''),
     ('maintenance_message', '平台正在维护中，请稍后再试');
+CREATE TABLE IF NOT EXISTS _work_log_daily_detail_population (
+    business_date DATE NOT NULL,
+    community_id INT NOT NULL,
+    added_count INT UNSIGNED DEFAULT NULL,
+    cancelled_count INT UNSIGNED DEFAULT NULL,
+    revision INT UNSIGNED NOT NULL DEFAULT 1,
+    updated_by INT DEFAULT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                         ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (business_date, community_id),
+    INDEX idx_work_log_population_date (business_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TABLE IF NOT EXISTS _grid_members (
     id               INT AUTO_INCREMENT PRIMARY KEY,
     name             VARCHAR(100) NOT NULL,
     community        VARCHAR(200) DEFAULT '',
     department_id    INT DEFAULT NULL,
+    area_id          INT DEFAULT NULL,
     position         VARCHAR(20) NOT NULL DEFAULT '组员',
     phone            VARCHAR(50) DEFAULT '',
     notes            VARCHAR(500) DEFAULT '',
@@ -125,7 +138,8 @@ CREATE TABLE IF NOT EXISTS _grid_members (
     UNIQUE KEY uk_name (name),
     UNIQUE KEY uk_grid_id_card (id_card_number),
     INDEX idx_grid_position (position),
-    INDEX idx_grid_department (department_id)
+    INDEX idx_grid_department (department_id),
+    INDEX idx_grid_area (area_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS _personnel_attendance_history (
@@ -1043,13 +1057,18 @@ CREATE TABLE IF NOT EXISTS _police_dispatch_publish_results (
 CREATE TABLE IF NOT EXISTS _departments (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     name            VARCHAR(200) NOT NULL UNIQUE,
+    -- community marks a community-level department only; never use it as unit ownership.
     department_type VARCHAR(20) NOT NULL,
     community_id    INT DEFAULT NULL,
+    parent_id       INT DEFAULT NULL,
+    area_id         INT DEFAULT NULL,
     is_active       TINYINT(1) NOT NULL DEFAULT 1,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_department_community (community_id),
+    INDEX idx_department_parent_active (parent_id, is_active),
+    INDEX idx_department_area (area_id),
     INDEX idx_department_type_active (department_type, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1069,9 +1088,6 @@ INSERT IGNORE INTO _grid_member_department_links
 SELECT id, department_id, 0
 FROM _grid_members
 WHERE department_id IS NOT NULL;
-
-INSERT IGNORE INTO _departments (name, department_type)
-VALUES ('内勤', 'internal');
 
 INSERT IGNORE INTO _departments (name, department_type, community_id)
 SELECT name, 'community', id FROM _communities;

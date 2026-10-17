@@ -210,7 +210,7 @@ test('authenticated UI keeps a persistent shadow marker and environment-bound re
   assert.match(layoutSource, /运行编号：/)
   assert.match(styles, /\.shadow-environment-banner\s*\{/)
   assert.match(realtimeSource, /resolveRuntimeApiUrl\('\/api\/events\/stream'\)/)
-  assert.match(realtimeSource, /\[environment, user\]/)
+  assert.match(realtimeSource, /\[environment, userId\]/)
 })
 
 test('download and attachment helpers stay inside the selected shadow route', () => {

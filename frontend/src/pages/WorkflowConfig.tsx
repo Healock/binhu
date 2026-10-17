@@ -98,8 +98,8 @@ export default function WorkflowConfig() {
       options_text: Array.isArray(field.options) ? field.options.join('\n') : '',
     })),
     steps: [{
-      name: type.code === 'photo_request' ? '基础管控处理' : '审批节点',
-      step_type: type.code === 'photo_request' ? 'handling' : 'approval',
+      name: '审批节点',
+      step_type: 'approval',
       queue: '基础管控',
       claim_required: true,
       due_hours: type.default_due_hours || 24,

@@ -28,6 +28,24 @@ async def ensure_registry_schema(cur) -> None:
     from services.watch_import import CORE_WATCH_CATEGORIES
 
     await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_property_annotation_exports (
+            id CHAR(36) NOT NULL PRIMARY KEY,
+            requested_by BIGINT NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'queued',
+            phase VARCHAR(30) NOT NULL DEFAULT 'queued',
+            row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            file_size BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            error_code VARCHAR(60) NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at DATETIME DEFAULT NULL,
+            finished_at DATETIME DEFAULT NULL,
+            expires_at DATETIME NOT NULL,
+            INDEX idx_registry_annotation_export_owner (requested_by, created_at),
+            INDEX idx_registry_annotation_export_state (status, created_at),
+            INDEX idx_registry_annotation_export_expiry (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_properties (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             street VARCHAR(200) NOT NULL DEFAULT '',
@@ -52,9 +70,12 @@ async def ensure_registry_schema(cur) -> None:
     await _ensure_column(cur, "registry_properties", "housing_type", "VARCHAR(50) NOT NULL DEFAULT '' AFTER room")
     await _ensure_column(cur, "registry_properties", "residence_type", "VARCHAR(100) NOT NULL DEFAULT '' AFTER housing_type")
     await _ensure_column(cur, "registry_properties", "source_house_no", "VARCHAR(100) NOT NULL DEFAULT '' AFTER residence_type")
+    await _ensure_index(cur, "registry_properties", "idx_registry_property_household", "INDEX idx_registry_property_household (source_house_no, community_id)")
     await _ensure_column(cur, "registry_properties", "source_updated_at", "DATETIME DEFAULT NULL AFTER source_house_no")
     await _ensure_column(cur, "registry_properties", "source_type", "VARCHAR(30) NOT NULL DEFAULT 'manual' AFTER source_updated_at")
     await _ensure_column(cur, "registry_properties", "source_ref", "VARCHAR(190) NOT NULL DEFAULT '' AFTER source_type")
+    await _ensure_column(cur, "registry_properties", "household_status", "VARCHAR(50) NOT NULL DEFAULT '' AFTER source_ref")
+    await _ensure_index(cur, "registry_properties", "idx_registry_property_household_status", "INDEX idx_registry_property_household_status (household_status, id)")
     await _ensure_index(cur, "registry_properties", "idx_registry_property_housing_type", "INDEX idx_registry_property_housing_type (housing_type, status)")
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_property_small_community_links (
@@ -303,6 +324,10 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_source_status (status, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur, "registry_source_batches", "certificate_full_snapshot",
+        "TINYINT(1) NOT NULL DEFAULT 0",
+    )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_source_records (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1165,11 +1190,6 @@ async def ensure_workflow_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     await cur.execute("""
-        INSERT IGNORE INTO photo_sheet_sources (
-            source_code, read_enabled, write_enabled, last_sync_status
-        ) VALUES ('photo_request_roster', 0, 0, 'disabled')
-    """)
-    await cur.execute("""
         CREATE TABLE IF NOT EXISTS photo_sheet_batches (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             source_id BIGINT NOT NULL,
@@ -1313,17 +1333,6 @@ async def ensure_workflow_schema(cur) -> None:
             INDEX idx_photo_import_item_identity (identity_hmac, match_status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
-    photo_form_schema = (
-        '{"fields":['
-        '{"name":"subject_type","label":"对象类型","type":"select","required":true,"options":["task","person","other"]},'
-        '{"name":"subject_id","label":"对象编号","type":"text","required":false},'
-        '{"name":"subject_name","label":"对象姓名","type":"text","required":true},'
-        '{"name":"identity_number","label":"身份证号","type":"text","required":true},'
-        '{"name":"request_reason","label":"申请理由","type":"textarea","required":true},'
-        '{"name":"requested_from","label":"开始时间","type":"datetime","required":false},'
-        '{"name":"requested_to","label":"结束时间","type":"datetime","required":false}'
-        ']}'
-    )
     leave_form_schema = (
         '{"fields":['
         '{"name":"leave_type","label":"请假类型","type":"select","required":true,"options":["temporary_leave","sick_leave","annual_leave"]},'
@@ -1332,20 +1341,6 @@ async def ensure_workflow_schema(cur) -> None:
         '{"name":"reason","label":"原因","type":"textarea","required":false},'
         '{"name":"affects_weekend_duty","label":"影响双休日备勤","type":"boolean","required":false}'
         ']}'
-    )
-    # Photo requests are usable out of the box. Leave requests intentionally
-    # remain disabled until a super administrator publishes the local process.
-    await cur.execute(
-        "INSERT IGNORE INTO workflow_types "
-        "(code, name, description, form_schema, default_due_hours, enabled) "
-        "VALUES (%s,%s,%s,%s,%s,1)",
-        (
-            "photo_request",
-            "照片调取申请",
-            "业务人员向基础管控申请调取照片",
-            photo_form_schema,
-            24,
-        ),
     )
     await cur.execute(
         "INSERT IGNORE INTO workflow_types "
@@ -1358,20 +1353,4 @@ async def ensure_workflow_schema(cur) -> None:
             leave_form_schema,
             24,
         ),
-    )
-    await cur.execute(
-        "INSERT IGNORE INTO workflow_type_versions "
-        "(workflow_type_id, version_no, form_schema, status, published_at) "
-        "SELECT id, 1, form_schema, 'published', UTC_TIMESTAMP() "
-        "FROM workflow_types WHERE code=%s",
-        ("photo_request",),
-    )
-    await cur.execute(
-        "INSERT IGNORE INTO workflow_steps "
-        "(workflow_version_id, step_order, step_group, name, step_type, config_json) "
-        "SELECT version.id, 1, 1, '基础管控处理', 'handling', %s "
-        "FROM workflow_type_versions version "
-        "JOIN workflow_types type ON type.id=version.workflow_type_id "
-        "WHERE type.code=%s AND version.version_no=1",
-        ('{"queue":"基础管控","claim_required":true}', "photo_request"),
     )

@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Load one approved Schema Registry image into Staging without starting it."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+APPROVED_IMAGE = "sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4"
+EVIDENCE_ROOT = Path("/var/lib/binhu-staging-event-pipeline/evidence")
+INCOMING_ROOT = Path("/var/lib/binhu-staging-event-pipeline/incoming")
+MAX_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _result(run_id: str, **fields: object) -> dict:
+    return {"environment": "staging", "run_id": run_id, **fields}
+
+
+def _docker_error_code(text: str) -> str:
+    """Classify image-load failures without retaining Docker output."""
+    lowered = text.lower()
+    if "no space left" in lowered:
+        return "staging_insufficient_disk"
+    if "out of memory" in lowered or "cannot allocate memory" in lowered:
+        return "staging_resource_exhausted"
+    if "failed to validate image signature" in lowered or "signature" in lowered:
+        return "staging_image_signature_rejected"
+    if "permission denied" in lowered or "operation not permitted" in lowered:
+        return "staging_docker_permission_denied"
+    if "cannot connect to the docker daemon" in lowered:
+        return "staging_docker_unavailable"
+    if "error response from daemon" in lowered:
+        return "staging_docker_daemon_error"
+    return "schema_registry_preload_failed"
+
+
+def _write_once(path: Path, payload: dict) -> None:
+    if path.exists() or path.is_symlink():
+        raise ValueError("preload evidence already exists")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
+def _fixed_archive_path(run_id: str, archive_path: str | Path) -> Path:
+    expected = INCOMING_ROOT / run_id / "schema-registry-image.tar"
+    candidate = Path(archive_path)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("image archive missing") from error
+    if resolved != expected or candidate.is_symlink() or not candidate.is_file():
+        raise ValueError("image archive path refused")
+    stat = candidate.stat()
+    if stat.st_uid != 0 or stat.st_mode & 0o077:
+        raise ValueError("image archive permissions refused")
+    return candidate
+
+
+def preload(run_id: str, image_id: str, archive_path: str | Path | None = None) -> dict:
+    if not RUN_RE.fullmatch(run_id) or image_id != APPROVED_IMAGE or not DIGEST_RE.fullmatch(image_id):
+        raise ValueError("fixed preload identity required")
+    evidence = EVIDENCE_ROOT / run_id
+    if evidence.exists() or evidence.is_symlink():
+        raise ValueError("preload run already exists")
+    evidence.mkdir(mode=0o700, parents=True)
+    archive = (_fixed_archive_path(run_id, archive_path)
+               if archive_path is not None
+               else evidence / "schema-registry-image.tar.partial")
+    report = evidence / "schema-registry-preload.json"
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        if archive_path is None:
+            with archive.open("xb") as output:
+                while True:
+                    block = sys.stdin.buffer.read(1024 * 1024)
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > MAX_BYTES:
+                        raise ValueError("image archive exceeds fixed limit")
+                    output.write(block)
+                    digest.update(block)
+        else:
+            with archive.open("rb") as input_file:
+                while True:
+                    block = input_file.read(1024 * 1024)
+                    if not block:
+                        break
+                    size += len(block)
+                    if size > MAX_BYTES:
+                        raise ValueError("image archive exceeds fixed limit")
+                    digest.update(block)
+        if size == 0:
+            raise ValueError("image archive is empty")
+        loaded = subprocess.run(
+            ["docker", "load", "--input", str(archive)],
+            capture_output=True, text=True,
+            timeout=900,
+        )
+        if loaded.returncode:
+            raise RuntimeError(_docker_error_code(f"{loaded.stdout}\n{loaded.stderr}"))
+        inspected = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        actual = inspected.stdout.strip() if inspected.returncode == 0 else ""
+        if actual != image_id:
+            raise ValueError("loaded image identity mismatch")
+        payload = _result(
+            run_id,
+            source_environment="development",
+            image_key="schema_registry",
+            expected_image_id=image_id,
+            loaded_image_id=actual,
+            archive_sha256=digest.hexdigest(),
+            archive_size=size,
+            started=False,
+            status="passed",
+        )
+        _write_once(report, payload)
+        return payload
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        message = str(error)
+        payload = _result(run_id, source_environment="development", image_key="schema_registry",
+                          expected_image_id=image_id, status="failed",
+                          error_code=("image_archive_too_large" if "exceeds" in message
+                                      else message if re.fullmatch(r"[a-z0-9_]{1,64}", message)
+                                      else "schema_registry_preload_failed"))
+        try:
+            _write_once(report, payload)
+        except OSError:
+            pass
+        raise
+    finally:
+        archive.unlink(missing_ok=True)
+
+
+def main() -> None:
+    if os.geteuid() != 0 or len(sys.argv) not in (3, 4):
+        raise SystemExit("staging_schema_registry_preload_refused")
+    try:
+        archive_path = sys.argv[3] if len(sys.argv) == 4 else None
+        print(json.dumps(preload(sys.argv[1], sys.argv[2], archive_path), sort_keys=True))
+    except Exception:
+        # The report contains only fixed identity fields and a bounded error code.
+        # Echo it so the controlled workflow can diagnose a failed preload without
+        # exposing docker output, credentials, or archive contents.
+        try:
+            report = EVIDENCE_ROOT / sys.argv[1] / "schema-registry-preload.json"
+            if report.is_file() and not report.is_symlink():
+                print(report.read_text(encoding="utf-8"), file=sys.stderr, end="")
+        except (OSError, UnicodeDecodeError, IndexError):
+            pass
+        raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()

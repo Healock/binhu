@@ -58,6 +58,10 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Flink runtime must have exactly one matching job",
         "Flink consumer group does not match current run",
         "Flink REST request failed",
+        "flink_rest_transport_failed",
+        "flink_rest_timeout",
+        "flink_rest_response_invalid",
+        "flink_rest_invalid_json",
         "Flink JAR upload failed",
         "Flink JAR upload response invalid",
         "Flink JAR upload was not accepted",
@@ -73,7 +77,7 @@ def safe_control_failure_detail(error: Exception) -> str:
     detail = str(error)
     if detail in _SAFE_CONTROL_FAILURES or re.fullmatch(
         r"Flink runtime missing INSERT sink: (?:dev_revisions(?:,dev_task_metadata)?|dev_task_metadata)", detail
-    ):
+    ) or re.fullmatch(r"flink_rest_http_[0-9]{3}", detail):
         return detail
     return type(error).__name__
 

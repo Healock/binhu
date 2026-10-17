@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import date, datetime
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, File, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from services.xlsx_export import XLSX_MEDIA_TYPE, build_xlsx
 from pydantic import BaseModel, Field
 
@@ -30,6 +31,14 @@ from services.registry_visit_history import filter_property_ids_by_visit, load_p
 from services.watch_matching import backfill_assignment_snapshots
 from services.registry_watch_backfill import ensure_watch_person_registry_link
 from services.address_matching import MATCHER_VERSION
+from services.property_annotation_xlsx import (
+    MAX_ROWS, MAX_UPLOAD_BYTES, SNAPSHOT_FIELDS, build_annotation_workbook, parse_annotation_workbook,
+    property_token, entry_token, signature, valid_token, positive_id,
+    property_match_token,
+)
+from services.property_annotation_exports import (
+    create_export_job, get_export_file, get_export_job, set_export_phase,
+)
 
 
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
@@ -81,9 +90,11 @@ class PropertySearch(BaseModel):
         "", "normal_signed", "not_required", "not_uploaded", "renter_needs_correction",
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = ""
-    status: Literal["", "active", "inactive"] = "active"
+    status: Literal["", "active", "inactive"] = ""
+    household_status: Literal["", "cancelled", "not_cancelled", "unknown"] = ""
     visit_start_date: date | None = None
     visit_end_date: date | None = None
+    visit_status: Literal["", "visited", "never"] = ""
     star_ratings: list[StarRating] = Field(default_factory=list, max_length=5)
     small_community_ids: list[int] = Field(default_factory=list, max_length=50)
     address_match_statuses: list[PropertyAddressMatchStatus] = Field(default_factory=list, max_length=10)
@@ -95,10 +106,24 @@ class PropertySearch(BaseModel):
 class PropertySmallCommunityConfirmItem(BaseModel):
     property_id: int = Field(gt=0)
     small_community_id: int = Field(gt=0)
+    expected_snapshot: str | None = Field(default=None, min_length=64, max_length=64)
+    expected_match_snapshot: str | None = Field(default=None, min_length=64, max_length=64)
+    expected_entry_snapshot: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class PropertySmallCommunityConfirm(BaseModel):
     items: list[PropertySmallCommunityConfirmItem] = Field(min_length=1, max_length=200)
+
+
+class PropertyAnnotationApplyItem(PropertySmallCommunityConfirmItem):
+    expected_snapshot: str = Field(min_length=64, max_length=64)
+    expected_entry_snapshot: str = Field(min_length=64, max_length=64)
+    preview_token: str = Field(min_length=64, max_length=64)
+
+
+class PropertyAnnotationApply(BaseModel):
+    confirm: Literal[True]
+    items: list[PropertyAnnotationApplyItem] = Field(min_length=1, max_length=200)
 
 
 class PropertyPersonRoleCreate(BaseModel):
@@ -410,6 +435,7 @@ def _property_payload(row) -> dict:
         "address_match_version": str(row[35] or ""),
         "address_match_confirmed_by": int(row[36]) if row[36] is not None else None,
         "address_match_confirmed_at": row[37].isoformat() if row[37] else None,
+        "household_status": str(row[38] or ""),
     })
     return payload
 
@@ -469,6 +495,11 @@ async def _property_search_result(
     if data.status:
         where.append("property.status=%s")
         params.append(data.status)
+    if data.household_status == "unknown":
+        where.append("COALESCE(property.household_status,'')='' ")
+    elif data.household_status:
+        where.append("property.household_status=%s")
+        params.append("已注销" if data.household_status == "cancelled" else "未注销")
     if data.housing_category == "rental":
         where.append("property.housing_type IN (%s,%s)")
         params.extend(["个人出租", "单位出租"])
@@ -507,7 +538,8 @@ async def _property_search_result(
         )
         params.extend(["个人出租", "单位出租"])
     elif data.certificate_status == "actual_renter_missing":
-        where.append(f"property.housing_type IN (%s,%s) AND {certificate_count}=1 AND NOT ({renter_present})")
+        where.append(f"property.housing_type IN (%s,%s) AND {certificate_count}=1 AND NOT ({renter_present}) "
+                     f"AND ({signed} OR TRIM(COALESCE(certificate.sign_type,''))<>'')")
         params.extend(["个人出租", "单位出租"])
     elif data.certificate_status == "normal_signed":
         where.append(f"{certificate_count}=1 AND {renter_present} AND {signed}")
@@ -520,7 +552,7 @@ async def _property_search_result(
         where.append(
             "property.housing_type IN (%s,%s) AND ("
             f"({certificate_source_ready}=0 AND {certificate_count}=0) OR "
-            f"({certificate_count}=1 AND {certificate_issue_count}=0 AND {renter_present} "
+            f"({certificate_count}=1 AND {certificate_issue_count}=0 "
             f"AND NOT ({signed}) AND TRIM(COALESCE(certificate.sign_type,''))=''))"
         )
         params.extend(["个人出租", "单位出租"])
@@ -555,21 +587,31 @@ async def _property_search_result(
         " LEFT JOIN registry_property_small_community_links property_match "
         "ON property_match.property_id=property.id "
         "LEFT JOIN (SELECT property_id,COUNT(*) certificate_count,MAX(id) latest_id "
-        "FROM registry_property_certificates GROUP BY property_id) certificate_totals "
+        "FROM registry_property_certificates WHERE source_missing_since IS NULL GROUP BY property_id) certificate_totals "
         "ON certificate_totals.property_id=property.id "
         "LEFT JOIN registry_property_certificates certificate "
         "ON certificate.id=certificate_totals.latest_id "
-        "LEFT JOIN (SELECT entity_key,COUNT(*) issue_count "
+        "LEFT JOIN (SELECT entity_key,"
+        "COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.community')),''),"
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.sssq'))) issue_community,COUNT(*) issue_count "
         "FROM registry_import_issues WHERE source_type='certificate' AND status='pending' "
-        "GROUP BY entity_key) certificate_issues "
+        "AND batch_id=(SELECT MAX(id) FROM registry_source_batches WHERE source_type='certificate' "
+        "AND status IN ('imported','partially_imported')) "
+        "GROUP BY entity_key,issue_community) certificate_issues "
         "ON certificate_issues.entity_key=property.normalized_address "
+        "AND (certificate_issues.issue_community=property.community_name_snapshot "
+        "OR EXISTS (SELECT 1 FROM OnlineData._community_aliases issue_alias "
+        "WHERE issue_alias.community_id=property.community_id "
+        "AND issue_alias.alias=certificate_issues.issue_community)) "
         "CROSS JOIN (SELECT EXISTS(SELECT 1 FROM registry_source_batches "
         "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) source_ready) "
         "certificate_source_state"
     )
     # Visit fields live in VisitData. Resolve matching property IDs before
     # pagination so a filter never applies only to the visible page.
-    if data.visit_start_date or data.visit_end_date or data.star_ratings:
+    if data.visit_status == "never" and (data.visit_start_date or data.visit_end_date or data.star_ratings):
+        raise HTTPException(422, "从未走访按全部历史判断，不能同时选择走访日期或星级")
+    if data.visit_status or data.visit_start_date or data.visit_end_date or data.star_ratings:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT property.id,property.community_name_snapshot,property.natural_address,property.normalized_address "
@@ -592,6 +634,7 @@ async def _property_search_result(
                 visit_start_date=data.visit_start_date,
                 visit_end_date=data.visit_end_date,
                 star_ratings=data.star_ratings,
+                visit_status=data.visit_status,
             )
         if not matching_ids:
             return {
@@ -641,7 +684,7 @@ async def _property_search_result(
             "COALESCE(property_match.match_status,'unmatched'),"
             "COALESCE(property_match.match_score,0),property_match.match_method,"
             "property_match.match_reason,property_match.match_evidence,"
-            "property_match.matcher_version,property_match.confirmed_by,property_match.confirmed_at "
+            "property_match.matcher_version,property_match.confirmed_by,property_match.confirmed_at,property.household_status "
             f"FROM registry_properties property{joins}{clause} ORDER BY {order_sql} "
             + ("" if export_all or visit_sort else "LIMIT %s OFFSET %s"),
             tuple(params) if export_all or visit_sort else tuple(params) + (data.page_size, offset),
@@ -679,9 +722,11 @@ async def list_properties(
         "", "normal_signed", "not_required", "not_uploaded", "renter_needs_correction",
         "actual_renter_missing", "multiple_or_conflict", "not_applicable",
     ] = Query(default=""),
-    status: Literal["", "active", "inactive"] = Query(default="active"),
+    status: Literal["", "active", "inactive"] = Query(default=""),
+    household_status: Literal["", "cancelled", "not_cancelled", "unknown"] = Query(default=""),
     visit_start_date: date | None = Query(default=None),
     visit_end_date: date | None = Query(default=None),
+    visit_status: Literal["", "visited", "never"] = Query(default=""),
     star_ratings: list[StarRating] = Query(default=[]),
     small_community_id: list[int] = Query(default=[]),
     address_match_status: list[PropertyAddressMatchStatus] = Query(default=[]),
@@ -697,8 +742,10 @@ async def list_properties(
             housing_category=housing_category,
             certificate_status=certificate_status,
             status=status,
+            household_status=household_status,
             visit_start_date=visit_start_date,
             visit_end_date=visit_end_date,
+            visit_status=visit_status,
             star_ratings=star_ratings,
             small_community_ids=small_community_id,
             address_match_statuses=address_match_status,
@@ -788,39 +835,18 @@ async def confirm_property_small_communities(
         if item.property_id in item_by_property:
             raise HTTPException(422, "同一套房屋不能在一次确认中选择多个小区")
         item_by_property[item.property_id] = item.small_community_id
+    item_models = {item.property_id: item for item in data.items}
     entry_ids = sorted(set(item_by_property.values()))
-    try:
-        pool = db_manager.get_pool("online_data")
-    except ValueError as exc:
-        raise HTTPException(503, "本地小区地址库尚未完成初始化") from exc
-    online_conn = await pool.acquire()
-    try:
-        async with online_conn.cursor() as cur:
-            placeholders = ",".join(["%s"] * len(entry_ids))
-            await cur.execute(
-                "SELECT entry.id,entry.name,entry.community_id,community.name "
-                "FROM _police_address_entries entry "
-                "JOIN _communities community ON community.id=entry.community_id "
-                f"WHERE entry.enabled=1 AND community.is_active=1 AND entry.id IN ({placeholders})",
-                tuple(entry_ids),
-            )
-            entries = {
-                int(row[0]): {
-                    "id": int(row[0]), "name": str(row[1] or ""),
-                    "community_id": int(row[2]), "community_name": str(row[3] or ""),
-                }
-                for row in await cur.fetchall()
-            }
-    finally:
-        pool.release(online_conn)
-    if len(entries) != len(entry_ids):
-        raise HTTPException(409, "所选小区不存在、已停用或尚未设置所属社区")
-
     allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
     property_ids = sorted(item_by_property)
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            # Use the existing RegistryData connection and lock both sides of
+            # the association in this transaction; do not acquire an OnlineData pool slot.
+            entries = {entry["id"]: entry for entry in await _annotation_entries(cur, entry_ids=entry_ids, lock=True)}
+            if len(entries) != len(entry_ids):
+                raise HTTPException(409, "所选小区不存在、已停用或尚未设置所属社区")
             placeholders = ",".join(["%s"] * len(property_ids))
             await cur.execute(
                 "SELECT id,community_id,community_name_snapshot,current_version,status "
@@ -837,12 +863,18 @@ async def confirm_property_small_communities(
             }
             if len(properties) != len(property_ids):
                 raise HTTPException(404, "部分房屋档案不存在")
+            snapshots = await _annotation_properties(cur, property_ids, lock=True)
             rows = []
             for property_id, entry_id in item_by_property.items():
                 property_row = properties[property_id]
                 entry = entries[entry_id]
-                if property_row["status"] != "active":
-                    raise HTTPException(409, f"房屋 {property_id} 已停用，不能确认小区")
+                model = item_models[property_id]
+                if model.expected_snapshot and not valid_token(model.expected_snapshot, property_token(snapshots[property_id], int(user["id"]))):
+                    raise HTTPException(409, f"房屋 {property_id} 的地址、版本或人工确认已变化，请重新导出标注")
+                if model.expected_match_snapshot and not valid_token(model.expected_match_snapshot, property_match_token(snapshots[property_id], int(user["id"]))):
+                    raise HTTPException(409, f"房屋 {property_id} 的小区关联已被其他操作更新，请重新导出标注")
+                if model.expected_entry_snapshot and not valid_token(model.expected_entry_snapshot, entry_token(entry, int(user["id"]))):
+                    raise HTTPException(409, f"小区 {entry_id} 的配置已变化，请重新导出标注")
                 if allowed is not None and property_row["community_id"] not in allowed:
                     raise HTTPException(403, "只能维护有权限社区内的房屋档案")
                 if property_row["community_id"] is None or property_row["community_id"] != entry["community_id"]:
@@ -850,7 +882,7 @@ async def confirm_property_small_communities(
                 rows.append((
                     property_id, entry_id, entry["name"], entry["community_id"],
                     entry["community_name"], MATCHER_VERSION,
-                    int(user["id"]), property_row["version"],
+                    int(user["id"]), property_row["version"] + 1,
                 ))
             await cur.executemany(
                 "INSERT INTO registry_property_small_community_links ("
@@ -868,6 +900,11 @@ async def confirm_property_small_communities(
                 "property_version=VALUES(property_version)",
                 rows,
             )
+            await cur.execute(
+                "UPDATE registry_properties SET current_version=current_version+1,updated_at=UTC_TIMESTAMP() "
+                f"WHERE id IN ({placeholders})",
+                tuple(property_ids),
+            )
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -881,6 +918,219 @@ async def confirm_property_small_communities(
         **request_audit_fields(request),
     )
     return {"message": f"已确认 {len(property_ids)} 套房屋的小区归属", "confirmed": len(property_ids)}
+
+
+async def _annotation_entries(cur, *, entry_ids=None, community_ids=None, lock=False):
+    address_schema = (settings.MYSQL_REGISTRY_DB if settings.REGISTRY_ADDRESS_DOMAIN_ACTIVE
+                      else settings.MYSQL_ONLINE_DATA_DB).replace("`", "")
+    community_schema = (settings.MYSQL_PLATFORM_DB if settings.PLATFORM_DOMAIN_ACTIVE
+                        else settings.MYSQL_ONLINE_DATA_DB).replace("`", "")
+    where = ["entry.enabled=1", "community.is_active=1"]
+    params = []
+    for column, ids in (("entry.id", entry_ids), ("entry.community_id", community_ids)):
+        if ids is not None:
+            if not ids:
+                return []
+            where.append(column + " IN (" + ",".join(["%s"] * len(ids)) + ")")
+            params.extend(ids)
+    await cur.execute(
+        "SELECT entry.id,entry.name,entry.community_id,community.name,"
+        "entry.detail_address,entry.aliases_json,entry.address_type "
+        f"FROM `{address_schema}`._police_address_entries entry "
+        f"JOIN `{community_schema}`._communities community ON community.id=entry.community_id "
+        "WHERE " + " AND ".join(where) + " ORDER BY entry.id" + (" FOR UPDATE" if lock else ""),
+        tuple(params),
+    )
+    result = []
+    for row in await cur.fetchall():
+        aliases = row[5]
+        if isinstance(aliases, (str, bytes)):
+            try:
+                aliases = json.loads(aliases)
+            except (ValueError, TypeError):
+                aliases = []
+        result.append({"id": int(row[0]), "name": str(row[1] or ""),
+                       "community_id": int(row[2]), "community_name": str(row[3] or ""),
+                       "detail_address": str(row[4] or ""),
+                       "aliases": aliases if isinstance(aliases, list) else [],
+                       "address_type": str(row[6] or "community")})
+    return result
+
+
+async def _annotation_properties(cur, ids, *, lock=False):
+    result = {}
+    for offset in range(0, len(ids), 500):
+        batch = sorted(ids[offset:offset + 500])
+        await cur.execute(
+            "SELECT p.id,p.current_version,p.community_id,p.community_name_snapshot,"
+            "p.natural_address,p.normalized_address,p.street,p.building,p.room,p.status,p.updated_at,"
+            "m.small_community_id,COALESCE(m.match_status,'unmatched'),m.confirmed_by,m.confirmed_at,p.household_status "
+            "FROM registry_properties p LEFT JOIN registry_property_small_community_links m ON m.property_id=p.id "
+            "WHERE p.id IN (" + ",".join(["%s"] * len(batch)) + ") ORDER BY p.id" + (" FOR UPDATE" if lock else ""),
+            tuple(batch),
+        )
+        for row in await cur.fetchall():
+            values = [value.isoformat() if isinstance(value, datetime) else value for value in row]
+            result[int(row[0])] = dict(zip(SNAPSHOT_FIELDS, values))
+    return result
+
+
+@router.post("/properties/small-community-annotations/export")
+async def export_property_annotations(
+    data: PropertySearch, request: Request,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)),
+):
+    filters = data.model_copy(deep=True)
+    requested_by = int(user["id"])
+
+    async def runner(_job_id: str) -> tuple[int, bytes]:
+        pool = db_manager.get_pool("registry")
+        async with pool.acquire() as export_conn:
+            result = await _property_search_result(filters, user, export_conn, export_all=True)
+            allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
+            rows = [row for row in result["data"] if allowed is None or row.get("community_id") in allowed]
+            if len(rows) > MAX_ROWS:
+                raise ValueError("当前筛选超过 100000 套房屋")
+            view_allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_VIEW)
+            catalog_scope = (allowed if view_allowed is None else view_allowed if allowed is None
+                             else sorted(set(allowed) & set(view_allowed)))
+            async with export_conn.cursor() as cur:
+                entries = await _annotation_entries(cur, community_ids=catalog_scope)
+        if len(entries) > MAX_ROWS:
+            raise ValueError("可查看的小区超过 100000 个")
+        await set_export_phase(_job_id, "building")
+        output = await asyncio.to_thread(build_annotation_workbook, rows, entries, requested_by)
+        return len(rows), output.getvalue()
+
+    try:
+        job = await create_export_job(requested_by, runner)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    await record_admin_audit(user, "registry.property_annotations.export", target_type="registry_property",
+                             detail={"job_id": job["id"], "sort": data.sort},
+                             **request_audit_fields(request))
+    return {"job_id": job["id"], "status": job["status"], "phase": job["phase"]}
+
+
+@router.get("/properties/small-community-annotations/exports/{job_id}")
+async def property_annotation_export_status(
+    job_id: str,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)),
+):
+    job = await get_export_job(job_id, int(user["id"]))
+    if not job:
+        raise HTTPException(404, "导出任务不存在、已过期或无权访问")
+    return job
+
+
+@router.get("/properties/small-community-annotations/exports/{job_id}/download")
+async def download_property_annotation_export(
+    job_id: str,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)),
+):
+    path = await get_export_file(job_id, int(user["id"]))
+    if not path:
+        raise HTTPException(404, "导出文件不存在、尚未完成或已过期")
+    return FileResponse(
+        path,
+        media_type=XLSX_MEDIA_TYPE,
+        filename=f"房屋小区标注-{datetime.now():%Y%m%d%H%M%S}.xlsx",
+    )
+
+
+@router.post("/properties/small-community-annotations/preview")
+async def preview_property_annotations(
+    request: Request, file: UploadFile = File(...),
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)), conn=Depends(get_registry_db),
+):
+    try:
+        content = await file.read(MAX_UPLOAD_BYTES + 1)
+        rows = await asyncio.to_thread(parse_annotation_workbook, content)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    allowed = await _allowed_community_ids(user, REGISTRY_PROPERTY_MANAGE)
+    ids = []
+    for row in rows:
+        try:
+            ids.append(positive_id(row.get("id")))
+        except ValueError:
+            pass
+    async with conn.cursor() as cur:
+        properties = await _annotation_properties(cur, sorted(set(ids)))
+        community_ids = sorted({int(row["community_id"]) for row in properties.values()
+                                if row.get("community_id") is not None and (allowed is None or row["community_id"] in allowed)})
+        entries = {entry["id"]: entry for entry in await _annotation_entries(cur, community_ids=community_ids)}
+    result = []
+    for row in rows:
+        item = {"xlsx_row": row["xlsx_row"], "status": "blocked", "reason": "", "property_id": None}
+        try:
+            property_id = positive_id(row.get("id"))
+            item["property_id"] = property_id
+            current = properties.get(property_id)
+            if current is None or (allowed is not None and current.get("community_id") not in allowed):
+                raise ValueError("房屋不存在或不在当前账号维护范围内")
+            item.update(address=current.get("natural_address") or current.get("normalized_address") or "",
+                        community=current.get("community_name") or "",
+                        community_id=current.get("community_id"))
+            if row["formula"] or row["duplicate"]:
+                raise ValueError("同一房屋重复或标注行包含公式，请使用唯一的纯文本标注")
+            decision = str(row.get("decision") or "").strip()
+            if decision not in ("", "skip", "review", "match"):
+                raise ValueError("decision 只能为 match、review、skip 或空白")
+            reason = str(row.get("annotation_reason") or "").strip()
+            if decision in ("match", "review") and (not reason or len(reason) > 500):
+                raise ValueError("请填写 1 至 500 字的 annotation_reason 标注依据")
+            if decision != "match":
+                if row.get("annotated_small_community_id"):
+                    raise ValueError("未选择 match 却填写了小区 ID，请检查标注决定")
+                item.update(status="review" if decision == "review" else "skipped",
+                            annotation_reason=reason if decision == "review" else "",
+                            reason="需人工复核" if decision == "review" else "未申请修改")
+                if decision == "review":
+                    item["manual_confirm_item"] = {
+                        "property_id": property_id,
+                        "expected_snapshot": property_token(current, int(user["id"])),
+                        "expected_match_snapshot": property_match_token(current, int(user["id"])),
+                    }
+            else:
+                expected = str(row.get("snapshot_token") or "")
+                if not valid_token(expected, property_token(row, int(user["id"]))) or not valid_token(expected, property_token(current, int(user["id"]))):
+                    raise ValueError("原始列、房屋版本或已有人工确认已变化，或非原导出账号；请重新导出")
+                target_id = positive_id(row.get("annotated_small_community_id"))
+                entry = entries.get(target_id)
+                if entry is None or current.get("community_id") != entry["community_id"]:
+                    raise ValueError("小区不存在、已停用、越权或所属社区与房屋不一致")
+                expected_entry = entry_token(entry, int(user["id"]))
+                payload = {"property_id": property_id, "small_community_id": target_id,
+                           "expected_snapshot": expected,
+                           "expected_match_snapshot": property_match_token(current, int(user["id"])),
+                           "expected_entry_snapshot": expected_entry}
+                already_confirmed = current.get("address_match_status") == "confirmed" and current.get("small_community_id") == target_id
+                item.update(status="skipped" if already_confirmed else "ready", reason="已人工确认同一小区，无需重复提交" if already_confirmed else "可确认", target_name=entry["name"], annotation_reason=reason,
+                            replaces_manual=current.get("address_match_status") == "confirmed" and current.get("small_community_id") != target_id,
+                            apply_item={**payload, "preview_token": signature("preview", payload, int(user["id"]))})
+        except ValueError as exc:
+            item["reason"] = str(exc)
+        result.append(item)
+    counts = {state: sum(item["status"] == state for item in result) for state in ("ready", "blocked", "review", "skipped")}
+    await record_admin_audit(user, "registry.property_annotations.preview", target_type="registry_property",
+                             detail={"rows": len(result), **counts}, **request_audit_fields(request))
+    return {"items": result, "total": len(result), **counts}
+
+
+@router.post("/properties/small-community-annotations/apply")
+async def apply_property_annotations(
+    data: PropertyAnnotationApply, request: Request,
+    user: dict = Depends(require_permission(REGISTRY_PROPERTY_MANAGE)), conn=Depends(get_registry_db),
+):
+    for item in data.items:
+        payload = item.model_dump(exclude={"preview_token"})
+        if not valid_token(item.preview_token, signature("preview", payload, int(user["id"]))):
+            raise HTTPException(422, "预览结果无效或被修改，请重新上传预览")
+    return await confirm_property_small_communities(
+        PropertySmallCommunityConfirm(items=[PropertySmallCommunityConfirmItem(**item.model_dump()) for item in data.items]),
+        request, user, conn,
+    )
 
 
 @router.post("/properties/export")
@@ -897,7 +1147,7 @@ async def export_properties(
         [
             "房屋ID", "社区", "小区", "小区匹配状态", "标准详细地址", "街道", "幢", "室", "户号",
             "住房类型", "居住处所", "最近走访日期", "星级评定", "责任书状态",
-            "房屋状态", "档案版本", "更新时间",
+            "注销状态", "档案版本", "更新时间",
         ],
         [
             [
@@ -908,7 +1158,7 @@ async def export_properties(
                 row.get("source_house_no"), row.get("housing_type"),
                 row.get("residence_type"), row.get("latest_visit_date") or "",
                 row.get("latest_star_rating") or "", row.get("certificate_status_label") or "",
-                row.get("status"), row.get("version"), row.get("updated_at") or "",
+                row.get("household_status") or "未知", row.get("version"), row.get("updated_at") or "",
             ]
             for row in rows
         ],

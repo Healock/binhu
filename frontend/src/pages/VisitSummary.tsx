@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -298,6 +298,11 @@ export default function VisitSummary() {
   const communityRows = (summaryReport?.community.data || []) as VisitSummaryRow[]
   const selectedStartDate = summaryRange?.[0] || ''
   const selectedEndDate = summaryRange?.[1] || ''
+  const pickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs] | null>(
+    () => selectedStartDate && selectedEndDate
+      ? [dayjs(selectedStartDate), dayjs(selectedEndDate)] : null,
+    [selectedStartDate, selectedEndDate],
+  )
   const shownRangeLabel = shownSummaryRange
     ? `${shownSummaryRange[0]} 至 ${shownSummaryRange[1]}`
     : '尚未查询'
@@ -480,9 +485,7 @@ export default function VisitSummary() {
             <DatePicker.RangePicker
               size="large"
               className="w-full"
-              value={summaryRange
-                ? [dayjs(summaryRange[0]), dayjs(summaryRange[1])]
-                : null}
+              value={pickerValue}
               onChange={(_, dateStrings) => {
                 if (dateStrings[0] && dateStrings[1]) {
                   setSummaryRange([dateStrings[0], dateStrings[1]])

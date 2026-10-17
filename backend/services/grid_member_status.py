@@ -94,10 +94,19 @@ def apply_weekend_duty_status(
     return result
 
 
-def active_member_sql(alias: str = "", date_placeholder: str = "%s") -> str:
-    """生成“指定日期实际在岗”的 SQL 条件。"""
+def active_member_sql(
+    alias: str = "",
+    date_placeholder: str = "%s",
+    *,
+    attendance_history_table: str | None = None,
+) -> str:
+    """生成“指定日期实际在岗”的 SQL 条件。
+
+    ``_grid_members`` 中的请假字段只表示当前或最近一次区间。需要回看
+    历史日期时，调用方还应传入出勤历史表，避免“过去请假补录”被漏算。
+    """
     prefix = f"{alias}." if alias else ""
-    return (
+    condition = (
         f"{prefix}status = '在岗' "
         f"AND NOT ("
         f"{prefix}leave_start_date IS NOT NULL "
@@ -105,3 +114,14 @@ def active_member_sql(alias: str = "", date_placeholder: str = "%s") -> str:
         f"AND {date_placeholder} BETWEEN {prefix}leave_start_date AND {prefix}leave_end_date"
         f")"
     )
+    if attendance_history_table:
+        condition += (
+            " AND NOT EXISTS ("
+            f"SELECT 1 FROM {attendance_history_table} AS attendance_history "
+            f"WHERE attendance_history.member_id={prefix}id "
+            "AND attendance_history.is_active=1 "
+            f"AND attendance_history.start_date <= {date_placeholder} "
+            f"AND (attendance_history.end_date IS NULL OR attendance_history.end_date >= {date_placeholder})"
+            ")"
+        )
+    return condition

@@ -1022,20 +1022,10 @@ async def import_online(cur, *, expected_token: str, actor_user_id: int) -> dict
 
 
 async def enqueue_outbox(cur, ticket_id: int, action: str) -> bool:
-    await cur.execute("SELECT id FROM photo_sheet_sources WHERE source_code=%s", (SOURCE_CODE,))
-    source = await cur.fetchone()
-    if not source:
-        return False
-    await cur.execute(
-        "INSERT INTO photo_sheet_outbox (source_id, work_order_id, action) VALUES (%s,%s,%s) "
-        "ON DUPLICATE KEY UPDATE status=IF(status='done','done','pending'), next_attempt_at=NULL",
-        (source[0], ticket_id, action),
-    )
-    await cur.execute(
-        "UPDATE photo_request_details SET external_sync_status='pending' WHERE work_order_id=%s",
-        (ticket_id,),
-    )
-    return True
+    # The legacy write-back queue is permanently retired. Keep this helper
+    # as a compatibility no-op for old migration code, but never touch SQL.
+    del cur, ticket_id, action
+    return False
 
 
 async def _ticket_values(cur, ticket_id: int) -> dict:
@@ -1308,15 +1298,8 @@ async def _process_outbox_once(limit: int = 20, ticket_id: int | None = None) ->
 
 
 async def process_outbox_once(limit: int = 20, ticket_id: int | None = None) -> dict:
-    if local_data_source_enabled():
-        return {
-            "processed": 0,
-            "failed": 0,
-            "paused": 0,
-            "disabled": True,
-        }
-    async with PHOTO_SHEET_OPERATION_LOCK:
-        return await _process_outbox_once(limit, ticket_id=ticket_id)
+    del limit, ticket_id
+    return {"processed": 0, "failed": 0, "paused": 0, "disabled": True, "retired": True}
 
 
 async def _process_outbox_ticket(ticket_id: int) -> None:
@@ -1335,11 +1318,8 @@ async def _process_outbox_ticket(ticket_id: int) -> None:
 
 
 def launch_outbox_processing(ticket_id: int) -> None:
-    if local_data_source_enabled():
-        return
-    task = asyncio.create_task(_process_outbox_ticket(ticket_id))
-    _photo_sheet_background_tasks.add(task)
-    task.add_done_callback(_photo_sheet_background_tasks.discard)
+    del ticket_id
+    return
 
 
 async def stop_photo_sheet_tasks() -> None:
@@ -1378,16 +1358,7 @@ def _clear_daily_full_sync_task(task: asyncio.Task) -> None:
 
 
 def launch_daily_full_sync() -> bool:
-    global _daily_full_sync_task
-    if local_data_source_enabled():
-        return False
-    if _daily_full_sync_task is not None and not _daily_full_sync_task.done():
-        return False
-    task = asyncio.create_task(_run_daily_full_sync())
-    _daily_full_sync_task = task
-    _photo_sheet_background_tasks.add(task)
-    task.add_done_callback(_clear_daily_full_sync_task)
-    return True
+    return False
 
 
 async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = None) -> dict:
@@ -1676,79 +1647,27 @@ async def _sync_online_once(*, full: bool = False, actor_user_id: int | None = N
 
 
 async def sync_online_once(*, full: bool = False, actor_user_id: int | None = None) -> dict:
-    if local_data_source_enabled():
-        return {
-            "created_tickets": 0,
-            "completed_tickets": 0,
-            "revised_count": 0,
-            "superseded_count": 0,
-            "source_missing_count": 0,
-            "disabled": True,
-        }
-    async with PHOTO_SHEET_OPERATION_LOCK:
-        return await _sync_online_once(full=full, actor_user_id=actor_user_id)
+    del full, actor_user_id
+    return {
+        "created_tickets": 0,
+        "completed_tickets": 0,
+        "revised_count": 0,
+        "superseded_count": 0,
+        "source_missing_count": 0,
+        "disabled": True,
+        "retired": True,
+    }
 
 
 async def run_photo_sheet_maintenance_once() -> dict:
-    global _next_full_sync_attempt_at
-    incremental = None
-    try:
-        incremental = await asyncio.wait_for(
-            sync_online_once(full=False),
-            timeout=PHOTO_INCREMENTAL_SYNC_TIMEOUT_SECONDS,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        print(
-            "[PHOTO_SHEET] incremental sync failed: "
-            f"error={type(exc).__name__}"
-        )
-
-    outbox = None
-    try:
-        outbox = await asyncio.wait_for(
-            process_outbox_once(),
-            timeout=PHOTO_OUTBOX_TIMEOUT_SECONDS,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        print(
-            "[PHOTO_SHEET] scheduled outbox failed: "
-            f"error={type(exc).__name__}"
-        )
-
-    business_date = await get_business_date_from_db()
-    pool = db_manager.get_pool("workflow")
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            source = await load_source(cur)
-            do_full = source["last_full_sync_date"] != business_date
-    full_scheduled = False
-    now = datetime.utcnow()
-    if do_full and (
-        _next_full_sync_attempt_at is None or now >= _next_full_sync_attempt_at
-    ):
-        full_scheduled = launch_daily_full_sync()
     return {
-        "outbox": outbox,
-        "sync": incremental,
-        "full_sync_scheduled": full_scheduled,
+        "outbox": {"processed": 0, "failed": 0, "paused": 0, "disabled": True, "retired": True},
+        "sync": {"disabled": True, "retired": True},
+        "full_sync_scheduled": False,
+        "retired": True,
     }
 
 
 async def run_photo_sheet_scheduler() -> None:
     """独立运行照片名单维护，避免第三方超时拖慢工单提醒。"""
-    from services.local_source import local_data_source_enabled
-    if local_data_source_enabled():
-        print("[PHOTO_SHEET] 腾讯调照片名单已下线，跳过外部同步任务")
-        return
-    while True:
-        try:
-            await run_photo_sheet_maintenance_once()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print(f"[PHOTO_SHEET] maintenance failed: {type(exc).__name__}")
-        await asyncio.sleep(PHOTO_SHEET_MAINTENANCE_INTERVAL_SECONDS)
+    return

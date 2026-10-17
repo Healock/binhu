@@ -150,7 +150,10 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             connection.calls[0][1],
             (date(2026, 7, 1), date(2026, 7, 31)),
         )
-        self.assertEqual(connection.calls[-1][1], ("2026-07-31",))
+        self.assertEqual(
+            connection.calls[-1][1],
+            ("2026-07-31", "2026-07-31", "2026-07-31"),
+        )
 
     async def test_empty_range_still_returns_zero_totals(self):
         result = await get_visit_summary(

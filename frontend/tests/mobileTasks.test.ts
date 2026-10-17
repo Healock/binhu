@@ -605,13 +605,25 @@ test('登记房屋闭环只用于六类指令核查业务', () => {
   assert.equal(mobileTaskUsesRegistrationClosure('未知业务'), false)
 })
 
-test('表格行内编辑允许待登记但必须与房屋一次保存', () => {
+test('表格行内编辑允许自由地址，主动关联房屋时一次保存', () => {
   const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
   assert.match(tableSource, /mobileTaskResultOptions\(metadata\.options, registrationResultField\)/)
   assert.match(tableSource, /searchRegistrationProperties\(normalized, task\.community\)/)
   assert.match(tableSource, /registration_property_id: registrationProperty\.id/)
   assert.match(tableSource, /registration_property_version: registrationProperty\.version/)
+  assert.match(tableSource, /registration_pending_address: options.registrationAddress/)
   assert.doesNotMatch(tableSource, /待登记需进入详情/)
+})
+
+test('详情待登记始终使用地址草稿，匹配仅建议且上下文不跨结果提交', () => {
+  const detailSource = readFileSync(new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(detailSource, /registrationPendingAddress|loadRegistrationProperties\(hint\)\.then/)
+  assert.match(detailSource, /pendingRegistration && registrationPropertyId && registrationPropertyVersion/)
+  assert.match(detailSource, /pendingRegistration && !registrationPropertyId/)
+  assert.match(detailSource, /!draftChangedDuringSave && registrationLink\?\.property/)
+  assert.match(detailSource, /可选：关联辖区档案房屋/)
+  assert.match(detailSource, /请填写现住址后自动保存/)
+  assert.doesNotMatch(detailSource, /请选择唯一拟登记房屋后自动保存/)
 })
 
 test('任务列表和详情展示登记比对阶段与复核原因', () => {
@@ -637,6 +649,7 @@ test('任务列表和详情展示登记比对阶段与复核原因', () => {
   assert.match(detailSource, /两个独立扫描周期/)
   assert.match(statusSource, /登记待复核/)
   assert.match(statusSource, /已匹配一次/)
+  assert.match(statusSource, /pending_establishment: \{ label: '待登记未关联房屋'/)
   assert.match(listSource, /登记复核（\$\{facets\.registration_review_count\}）/)
   assert.match(listSource, /registration_review/)
 })
@@ -665,7 +678,7 @@ test('任务详情不再展示调取照片信息', () => {
   assert.doesNotMatch(detailSource, /已调取照片/)
   assert.doesNotMatch(detailSource, /workflowApi\.attachmentUrl\(request\.ticket_id, attachment\.file_id, true\)/)
   assert.doesNotMatch(detailSource, /<DownloadOutlined/)
-  assert.match(clientSource, /photo_requests: Array/)
+  assert.doesNotMatch(clientSource, /photo_requests: Array/)
 })
 
 test('照片完成通知允许已读后继续跳回原任务且拒绝外部路径', () => {
@@ -1112,20 +1125,14 @@ test('模型三备注会进入手机任务编辑字段', () => {
   )
 })
 
-test('任务快捷调照片不再要求填写原因并带入腾讯名单字段', () => {
+test('任务快捷调照片入口明确显示业务已下线', () => {
   const detailSource = readFileSync(
     new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url),
     'utf8',
   )
   assert.equal(detailSource.includes('photoReason'), false)
   assert.equal(detailSource.includes('请说明需要调取照片的原因'), false)
-  assert.match(detailSource, /request_reason:\s*''/)
-  assert.match(detailSource, /community_name:/)
-  assert.match(detailSource, /source_label:\s*data\?\.workflow\.label/)
-  assert.match(detailSource, /对象：/)
-  assert.match(detailSource, /身份证号：/)
-  assert.match(detailSource, /社区：/)
-  assert.match(detailSource, /来源：/)
+  assert.match(detailSource, /照片调取业务已下线，已停止服务/)
 })
 
 test('流口任务筛选使用 POST，关键词不进入 URL，数量卡和更多筛选可用', () => {
@@ -1310,7 +1317,7 @@ test('普通选择字段在手机端关闭搜索，房屋关联仍允许模糊�
   )
   assert.match(detailSource, /const mobile = useMobileViewport\(\)/)
   assert.match(detailSource, /showSearch=\{!mobile\}/)
-  assert.match(detailSource, /placeholder="搜索并选择辖区档案中的唯一房屋"/)
+  assert.match(detailSource, /placeholder="可选：关联辖区档案房屋"/)
   assert.match(detailSource, /onSearch=\{value => void loadRegistrationProperties\(value\)\}/)
 })
 

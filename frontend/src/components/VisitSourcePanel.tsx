@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Alert, Button, DatePicker, Table, Tag } from 'antd'
 import dayjs from 'dayjs'
 import {
@@ -20,6 +20,11 @@ export default function VisitSourcePanel() {
   const canManage = Boolean(user?.permissions.includes('visit.source.manage'))
   const today = dayjs().format('YYYY-MM-DD')
   const [dates, setDates] = useState<[string, string]>([today, today])
+  // RangePicker resets its calendar when the controlled value identity changes.
+  const pickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs]>(
+    () => [dayjs(dates[0]), dayjs(dates[1])],
+    [dates[0], dates[1]],
+  )
   const [preview, setPreview] = useState<VisitSourceRun[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -118,7 +123,7 @@ export default function VisitSourcePanel() {
       description="先只读获取并预览，确认后才替换当前业务日期数据；失败不会覆盖最近成功快照。"
       actions={<Button type="primary" loading={loading} onClick={() => void handlePreview()}>立即获取并预览</Button>}
       controls={<label><span>业务日期范围</span><RangePicker
-        value={[dayjs(dates[0]), dayjs(dates[1])]}
+        value={pickerValue}
         allowClear={false}
         onChange={value => {
           if (value?.[0] && value[1]) setDates([value[0].format('YYYY-MM-DD'), value[1].format('YYYY-MM-DD')])

@@ -247,7 +247,7 @@ class MobileNavigationConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             groups["tasks"],
-            ["police_tasks", "police_analysis", "photo_tasks"],
+            ["police_tasks", "police_analysis"],
         )
 
     def test_strict_validation_rejects_duplicates_and_forbidden_items(self):

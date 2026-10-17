@@ -10,7 +10,7 @@ RENTAL_HOUSING_TYPES = {"个人出租", "单位出租"}
 CERTIFICATE_STATUS_LABELS = {
     "normal_signed": "正常签署",
     "not_required": "无需上传告知书",
-    "not_uploaded": "未上传告知书",
+    "not_uploaded": "未签订",
     "renter_needs_correction": "已签署，需修改实际出租人",
     "actual_renter_missing": "实际出租人未确定",
     "multiple_or_conflict": "告知书来源待核对",
@@ -51,6 +51,8 @@ def certificate_status_summary(
         status = "multiple_or_conflict"
     elif count == 0:
         status = "not_required" if source_ready else "not_uploaded"
+    elif not _is_signed(signed_status) and not _text(sign_type):
+        status = "not_uploaded"
     elif not renter:
         status = "actual_renter_missing"
     elif _is_signed(signed_status):

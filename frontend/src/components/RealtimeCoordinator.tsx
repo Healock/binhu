@@ -7,12 +7,13 @@ const EVENT_NAME = 'binhu:domain-event'
 
 export default function RealtimeCoordinator() {
   const { user, environment } = useAuth()
+  const userId = user?.id
   const sourceRef = useRef<ReturnType<typeof connectResilientEventSource> | null>(null)
   const seenRef = useRef<string[]>([])
   const revisionsRef = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
-    if (!user || typeof window === 'undefined' || typeof EventSource === 'undefined') return undefined
+    if (!userId || typeof window === 'undefined' || typeof EventSource === 'undefined') return undefined
     const seen = seenRef.current
     const streamUrl = resolveRuntimeApiUrl('/api/events/stream')
     let connection: ReturnType<typeof connectResilientEventSource>
@@ -56,7 +57,7 @@ export default function RealtimeCoordinator() {
       window.clearInterval(fallbackTimer)
       sourceRef.current = null
     }
-  }, [environment, user])
+  }, [environment, userId])
 
   return null
 }

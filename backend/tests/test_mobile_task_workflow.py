@@ -37,8 +37,6 @@ from routers.mobile_tasks import (
     get_mobile_task_residence_detail,
     _scope_where,
     _source_in_community,
-    _task_photo_fetched_rows,
-    _task_photo_results,
     _task_filter_options,
     _task_order,
     _task_where,
@@ -186,8 +184,6 @@ class MobileTaskWorkflowTests(unittest.TestCase):
         self.assertEqual(set(result["items"]), {"row-1", "row-2"})
         self.assertTrue(result["items"]["row-1"]["available"])
         self.assertEqual(detail_mock.await_count, 2)
-        for call in detail_mock.await_args_list:
-            self.assertFalse(call.kwargs["include_photo_requests"])
 
     def test_task_summary_keeps_current_and_original_addresses(self):
         workflow = TASK_WORKFLOWS["全链条"]
@@ -843,6 +839,60 @@ class MobileTaskRegistrationUpdateTests(unittest.IsolatedAsyncioTestCase):
     def _data(self, changes):
         return TaskBatchUpdate(changes=changes, expected_revision=7)
 
+    async def test_free_pending_address_saves_without_property_validation(self):
+        for existing in ({}, {"row-key": {
+            "status": "matched_once", "property_id": 23, "source_id": 11,
+        }}):
+            with self.subTest(linked=bool(existing)):
+                changes = {"核查结果": "待登记", "现住址": "任意格式的合成地址"}
+                prepare, callback, _ = _registration_update_hooks(
+                    "全链条", TaskBatchUpdate(
+                        changes=changes, expected_revision=7,
+                        registration_pending_address="  任意格式的合成地址  ",
+                    ), {"id": 7},
+                )
+                cursor = MagicMock()
+                cursor.execute = AsyncMock()
+                cursor.fetchone = AsyncMock(return_value=("synthetic-identity", "合成社区"))
+                with (
+                    patch("routers.mobile_tasks.registration_links_by_rows", AsyncMock(return_value=existing)),
+                    patch("routers.mobile_tasks.validate_registration_property", AsyncMock()) as validate,
+                    patch("routers.mobile_tasks.select_registration_property", AsyncMock()) as select,
+                    patch("routers.mobile_tasks.save_pending_registration_address", AsyncMock()) as save_address,
+                ):
+                    extra = await prepare(
+                        cur=cursor, source={"id": 11, "row_key": "row-key"},
+                        current_values={"核查结果": "待登记" if existing else "无法核实"},
+                        changes=changes,
+                    )
+                    self.assertEqual(extra, {"现住址": "任意格式的合成地址"})
+                    await callback(
+                        cur=cursor, source={"id": 11}, before={}, after=changes,
+                        row_key_before="row-key", row_key_after="row-key", revision=8,
+                    )
+                    save_address.assert_awaited_once()
+                    self.assertEqual(save_address.call_args.kwargs["source_revision"], 8)
+                    validate.assert_not_awaited()
+                    select.assert_not_awaited()
+
+    async def test_free_pending_address_rejects_empty_and_control_characters(self):
+        for address in ("   ", "合成\x00地址"):
+            with self.subTest(address=repr(address)):
+                changes = {"核查结果": "待登记"}
+                prepare, _, _ = _registration_update_hooks(
+                    "全链条", TaskBatchUpdate(
+                        changes=changes, expected_revision=7,
+                        registration_pending_address=address,
+                    ), {"id": 7},
+                )
+                with patch("routers.mobile_tasks.registration_links_by_rows", AsyncMock(return_value={})):
+                    with self.assertRaises(HTTPException) as raised:
+                        await prepare(
+                            cur=MagicMock(), source={"id": 11, "row_key": "row-key"},
+                            current_values={"核查结果": "无法核实"}, changes=changes,
+                        )
+                self.assertEqual(raised.exception.status_code, 422)
+
     async def test_existing_registered_task_can_edit_another_field(self):
         prepare, callback, registration_mode = _registration_update_hooks(
             "全链条",
@@ -1292,7 +1342,6 @@ class MobileTaskResidenceDetailTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result, projected)
-        self.assertFalse(detail_mock.await_args.kwargs["include_photo_requests"])
         self.assertEqual(
             residence_mock.await_args.args[2],
             {"身份证号": "fixture-identity", "社区": "冬梅"},
@@ -1332,118 +1381,6 @@ class MobileTaskResidenceDetailTests(unittest.IsolatedAsyncioTestCase):
                         )
                     self.assertEqual(raised.exception.status_code, 409)
         residence_mock.assert_not_awaited()
-
-
-class PhotoResultCursor:
-    def __init__(self, allowed_ticket_ids=(17,)):
-        self.last_sql = ""
-        self.executed = []
-        self.allowed_ticket_ids = set(allowed_ticket_ids)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return None
-
-    async def execute(self, sql, params=()):
-        self.last_sql = " ".join(str(sql).split())
-        self.params = params
-        self.executed.append((self.last_sql, params))
-
-    async def fetchall(self):
-        if self.last_sql.startswith("SELECT DISTINCT detail.source_row_key"):
-            return [("row-key-1", 17), ("row-key-2", 18)]
-        if self.last_sql.startswith("SELECT order_row.id, order_row.ticket_no"):
-            return [(17, "PHOTO-17"), (18, "PHOTO-18")]
-        if self.last_sql.startswith("SELECT file_id, original_name"):
-            return [("file-17", "照片.jpg", "image/jpeg", 1024)]
-        return []
-
-    async def fetchone(self):
-        if self.last_sql.startswith("SELECT requester_user_id"):
-            ticket_id = int(self.params[0])
-            if ticket_id in self.allowed_ticket_ids:
-                return (5, None, "", "completed", 2)
-            return (6, None, "", "completed", 2)
-        if self.last_sql.startswith("SELECT 1 FROM work_order_events"):
-            return None
-        return None
-
-
-class PhotoResultPool:
-    def __init__(self, cursor):
-        self.connection = MagicMock()
-        self.acquire = MagicMock()
-        connection_context = MagicMock()
-        connection_context.__aenter__ = AsyncMock(return_value=self.connection)
-        connection_context.__aexit__ = AsyncMock(return_value=None)
-        self.acquire.return_value = connection_context
-        cursor_context = MagicMock()
-        cursor_context.__aenter__ = AsyncMock(return_value=cursor)
-        cursor_context.__aexit__ = AsyncMock(return_value=None)
-        self.connection.cursor.return_value = cursor_context
-
-
-class MobileTaskPhotoResultTests(unittest.IsolatedAsyncioTestCase):
-    async def test_batch_photo_status_only_returns_accessible_rows(self):
-        cursor = PhotoResultCursor(allowed_ticket_ids=(17,))
-        pool = PhotoResultPool(cursor)
-        user = {"id": 5, "permissions": ["workflow.attachment.view"]}
-
-        with patch("routers.mobile_tasks.settings.WORKFLOW_FEATURE_ENABLED", True), \
-             patch("routers.mobile_tasks.db_manager.get_pool", return_value=pool):
-            result = await _task_photo_fetched_rows(
-                user,
-                "全链条",
-                ["row-key-1", "row-key-2"],
-            )
-
-        self.assertEqual(result, {"row-key-1"})
-        self.assertIn("detail.source_row_key IN (%s,%s)", cursor.executed[0][0])
-
-    async def test_batch_photo_status_requires_attachment_permission(self):
-        with patch("routers.mobile_tasks.settings.WORKFLOW_FEATURE_ENABLED", True), \
-             patch("routers.mobile_tasks.db_manager.get_pool") as get_pool:
-            result = await _task_photo_fetched_rows(
-                {"id": 5, "permissions": ["online.raw.view"]},
-                "全链条",
-                ["row-key-1"],
-            )
-        self.assertEqual(result, set())
-        get_pool.assert_not_called()
-
-    async def test_only_returns_attachments_from_exact_accessible_task_link(self):
-        cursor = PhotoResultCursor(allowed_ticket_ids=(17,))
-        pool = PhotoResultPool(cursor)
-        user = {"id": 5, "permissions": ["workflow.attachment.view"]}
-
-        with patch("routers.mobile_tasks.settings.WORKFLOW_FEATURE_ENABLED", True), \
-             patch("routers.mobile_tasks.db_manager.get_pool", return_value=pool):
-            result = await _task_photo_results(user, "全链条", "row-key-1")
-
-        self.assertEqual([item["ticket_id"] for item in result], [17])
-        self.assertEqual(result[0]["attachments"][0]["file_id"], "file-17")
-        self.assertEqual(cursor.executed[0][1], ("全链条", "row-key-1"))
-        self.assertTrue(any(
-            "work_order_attachments" in sql for sql, _ in cursor.executed
-        ))
-
-    async def test_workflow_disabled_returns_no_photo_projection(self):
-        with patch("routers.mobile_tasks.settings.WORKFLOW_FEATURE_ENABLED", False):
-            result = await _task_photo_results({"id": 5}, "全链条", "row-key-1")
-        self.assertEqual(result, [])
-
-    async def test_user_without_attachment_permission_gets_no_projection(self):
-        with patch("routers.mobile_tasks.settings.WORKFLOW_FEATURE_ENABLED", True), \
-             patch("routers.mobile_tasks.db_manager.get_pool") as get_pool:
-            result = await _task_photo_results(
-                {"id": 5, "permissions": ["online.raw.view"]},
-                "全链条",
-                "row-key-1",
-            )
-        self.assertEqual(result, [])
-        get_pool.assert_not_called()
 
 
 if __name__ == "__main__":

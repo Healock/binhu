@@ -45,9 +45,26 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("proxy_read_timeout 40s", nginx)
         self.assertNotIn("/var/log/nginx", nginx)
         self.assertNotIn("location /updates", nginx)
-        venue_location = nginx.split("location ^~ /venue/", 1)[1].split("}", 1)[0]
+        venue_match = re.search(r"location \^~ /venue/ \{(.*?)\n\}", nginx, re.DOTALL)
+        self.assertIsNotNone(venue_match)
+        venue_location = venue_match.group(1)
         self.assertNotIn("binhu_venue_public_ip", venue_location)
-        public_location = nginx.split("location ^~ /api/public/ {", 1)[1].split("}", 1)[0]
+        self.assertIn("access_by_lua_block { return }", venue_location)
+        public_venue_route = "location ^~ /api/public/venues/ {"
+        self.assertIn(public_venue_route, nginx)
+        public_venue_match = re.search(
+            r"location \^~ /api/public/venues/ \{(.*?)\n\}", nginx, re.DOTALL
+        )
+        self.assertIsNotNone(public_venue_match)
+        public_venue_location = public_venue_match.group(1)
+        self.assertIn("access_by_lua_block { return }", public_venue_location)
+        self.assertNotIn("limit_req", public_venue_location)
+        self.assertIn("binhu_venue_redacted", public_venue_location)
+        self.assertIn("client_max_body_size 6m", public_venue_location)
+        self.assertLess(nginx.index(public_venue_route), nginx.index("location ^~ /api/public/ {"))
+        public_match = re.search(r"location \^~ /api/public/ \{(.*?)\n\}", nginx, re.DOTALL)
+        self.assertIsNotNone(public_match)
+        public_location = public_match.group(1)
         self.assertNotIn("limit_req", public_location)
         drinking_location = nginx.split("location ^~ /drinking-report/", 1)[1].split("}", 1)[0]
         self.assertIn("binhu_venue_public_ip", drinking_location)
@@ -57,7 +74,7 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("access_log off;", drinking_location)
         public_forms_location = nginx.split("location ^~ /api/public/forms/", 1)[1].split("}", 1)[0]
         self.assertIn("access_log off;", public_forms_location)
-        public_location = nginx.split("location ^~ /api/public/", 1)[1].split("}", 1)[0]
+        public_location = public_match.group(1)
         self.assertIn("client_max_body_size 6m", public_location)
         submission_route = "location = /api/public/submissions {"
         self.assertIn(submission_route, nginx)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -150,6 +150,36 @@ def _page(number, raw_count, rows, rejected, fingerprint, is_last):
 
 
 class RegistryCertificateJobTests(unittest.IsolatedAsyncioTestCase):
+    async def test_complete_previews_have_new_observation_ids_and_canonical_content(self):
+        cursor = AsyncMock()
+        cursor.__aenter__.return_value = cursor
+        conn = AsyncMock()
+        conn.cursor = lambda: cursor
+        source = {"id": 1, "address": "合成测试路1号", "community": "旧测试社区",
+                  "isSign": "否", "source_ref": "stale-ref", "source_content_hash": "stale-hash"}
+        hashes = []
+        for batch_id, signed in ((1, "否"), (2, "是"), (3, "否")):
+            cursor.lastrowid = batch_id
+            cursor.execute.reset_mock()
+            cursor.executemany.reset_mock()
+            with (
+                patch.object(jobs, "_canonical_community", AsyncMock(return_value=(1, "测试社区"))),
+                patch.object(jobs, "load_certificate_comparison", AsyncMock(return_value={})),
+            ):
+                result = await jobs._create_preview_batch(conn, [{**source, "isSign": signed}], 7)
+            self.assertEqual(batch_id, result["batch_id"])
+            self.assertFalse(result["idempotent"])
+            insert = cursor.execute.call_args_list[0]
+            self.assertIn("certificate_full_snapshot", insert.args[0])
+            self.assertIn("%s,1)", insert.args[0])
+            hashes.append(insert.args[1][0])
+            payload = json.loads(cursor.executemany.call_args_list[0].args[1][0][3])
+            self.assertEqual("测试社区", payload["community"])
+            self.assertNotEqual("stale-ref", payload["source_ref"])
+            self.assertNotEqual("stale-hash", payload["source_content_hash"])
+        self.assertEqual(3, len(set(hashes)))
+        self.assertEqual(3, conn.commit.await_count)
+
     async def test_background_run_persists_every_page_and_finishes_preview(self):
         state = {
             "runs": {1: {"status": "pending", "phase": "queued", "requested_by": 7}},

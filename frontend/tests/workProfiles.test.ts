@@ -144,7 +144,7 @@ test('请假日期控件保留可清除的半成品区间', () => {
   assert.match(source, /onCalendarChange=\{\(_, dateStrings, info\) =>/)
   assert.match(source, /updateLeaveDateRangeFromCalendar\(/)
   assert.match(source, /allowClear\s*\n\s*order=\{false\}/)
-  assert.match(source, /value=\{leaveRange\[0\] \|\| leaveRange\[1\]/)
+  assert.match(source, /value=\{leavePickerValue\}/)
   assert.doesNotMatch(source, /setLeaveRange\(null\)/)
 })
 

@@ -959,7 +959,7 @@ export default function SystemSettings() {
                 mode="multiple"
                 value={weekendDutyPositions}
                 onChange={setWeekendDutyPositions}
-                options={PERSONNEL_POSITIONS.map(position => ({
+                options={PERSONNEL_POSITIONS.filter(position => position !== '管家码').map(position => ({
                   value: position,
                   label: position,
                 }))}

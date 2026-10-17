@@ -1,5 +1,6 @@
 export interface ResilientPollerOptions {
   intervalMs: number
+  immediate?: boolean
   maxDelayMs?: number
   failureThreshold?: number
   cooldownMs?: number
@@ -93,7 +94,8 @@ export function createResilientPoller(
     start() {
       if (!stopped) return
       stopped = false
-      void run()
+      if (options.immediate === false) schedule(intervalMs)
+      else void run()
     },
     stop() {
       stopped = true

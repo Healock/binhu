@@ -8,14 +8,18 @@ import type { ReactNode } from 'react'
 import { DownloadOutlined, FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import AppTable from '../components/AppTable'
+import PropertyAnnotationImport from '../components/PropertyAnnotationImport'
+import HouseholdImportFiles from '../components/HouseholdImportFiles'
 import type { ResponsiveColumns } from '../components/responsiveTable'
 import ExternalDataPanel from '../components/ExternalDataPanel'
 import { ListToolbar, PageHeader, Panel } from '../components/ui'
 import useDebouncedValue from '../hooks/useDebouncedValue'
+import { useResponsiveLayout } from '../hooks/useResponsiveLayout'
 import {
   formatUTCTime,
   getGridCommunities,
   registryApi,
+  type HouseholdImportFile,
   type RegistryCertificateSourceRun,
   type RegistryCertificateStatus,
   type RegistryHousingCategory,
@@ -56,7 +60,7 @@ const certificateStatusOptions: Array<{ value: RegistryCertificateStatus; label:
   { value: '', label: '全部责任书状态' },
   { value: 'normal_signed', label: '正常签署' },
   { value: 'not_required', label: '无需上传告知书' },
-  { value: 'not_uploaded', label: '未上传告知书' },
+  { value: 'not_uploaded', label: '未签订' },
   { value: 'renter_needs_correction', label: '出租人待修正' },
   { value: 'actual_renter_missing', label: '实际出租人未确定' },
   { value: 'multiple_or_conflict', label: '告知书来源待核对' },
@@ -98,6 +102,8 @@ function issuePayloadText(row: RegistryImportIssue, ...keys: string[]) {
 }
 
 export default function RegistryManagement() {
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const responsiveLayout = useResponsiveLayout(layoutRef)
   const { user, systemTimezone } = useAuth()
   const [tab, setTab] = useState<TabKey>('properties')
   const [properties, setProperties] = useState<RegistryProperty[]>([])
@@ -113,8 +119,13 @@ export default function RegistryManagement() {
   const [communityId, setCommunityId] = useState<number | undefined>()
   const [housingCategory, setHousingCategory] = useState<RegistryHousingCategory>('')
   const [certificateStatus, setCertificateStatus] = useState<RegistryCertificateStatus>('')
-  const [propertyStatus, setPropertyStatus] = useState<'' | 'active' | 'inactive'>('active')
+  const [householdStatus, setHouseholdStatus] = useState<'' | 'cancelled' | 'not_cancelled' | 'unknown'>('')
   const [visitDateRange, setVisitDateRange] = useState<[string, string] | undefined>()
+  const visitPickerValue = useMemo<[dayjs.Dayjs, dayjs.Dayjs] | null>(
+    () => visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null,
+    [visitDateRange?.[0], visitDateRange?.[1]],
+  )
+  const [visitStatus, setVisitStatus] = useState<'' | 'visited' | 'never'>('')
   const [starRatings, setStarRatings] = useState<string[]>([])
   const [smallCommunityOptions, setSmallCommunityOptions] = useState<RegistrySmallCommunityOption[]>([])
   const [smallCommunityIds, setSmallCommunityIds] = useState<number[]>([])
@@ -127,7 +138,7 @@ export default function RegistryManagement() {
   const [pageSize, setPageSize] = useState(50)
   const [total, setTotal] = useState(0)
   const [matchStatusCounts, setMatchStatusCounts] = useState<Record<string, number>>({})
-  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importFiles, setImportFiles] = useState<HouseholdImportFile[]>([])
   const [importPreview, setImportPreview] = useState<any>(null)
   const [importing, setImporting] = useState(false)
   const [certificateStarting, setCertificateStarting] = useState(false)
@@ -202,9 +213,10 @@ export default function RegistryManagement() {
           community_id: communityId,
           housing_category: housingCategory,
           certificate_status: certificateStatus,
-          status: propertyStatus,
+          household_status: householdStatus,
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
+          visit_status: visitStatus,
           star_ratings: starRatings,
           small_community_ids: smallCommunityIds,
           address_match_statuses: addressMatchStatuses,
@@ -252,7 +264,7 @@ export default function RegistryManagement() {
       if (tab === 'issues') {
         const response = await registryApi.importIssues({
           keyword: debouncedKeyword,
-          status: issueStatus as '' | 'pending' | 'resolved' | 'dismissed',
+          status: issueStatus as '' | 'pending' | 'resolved' | 'dismissed' | 'superseded',
           issue_type: issueType,
           source_type: issueSourceType,
           community_id: communityId,
@@ -285,8 +297,8 @@ export default function RegistryManagement() {
   }, [canViewTags])
   useEffect(() => {
     setPage(1)
-  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, smallCommunityIds, addressMatchStatuses, propertySort])
-  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, propertyStatus, visitDateRange, starRatings, smallCommunityIds, addressMatchStatuses, propertySort, page, pageSize])
+  }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, householdStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort])
+  useEffect(() => { void load() }, [tab, debouncedKeyword, categoryIds, issueType, issueStatus, issueSourceType, communityId, housingCategory, certificateStatus, householdStatus, visitDateRange, visitStatus, starRatings, smallCommunityIds, addressMatchStatuses, propertySort, page, pageSize])
 
   useEffect(() => {
     if (tab !== 'properties') return
@@ -359,7 +371,6 @@ export default function RegistryManagement() {
   const openCreate = (kind: ModalKind) => {
     if (kind !== 'personTag') setSelected(null)
     form.resetFields()
-    if (kind === 'property') form.setFieldsValue({ status: 'active' })
     if (kind === 'person') form.setFieldsValue({ verification_status: 'unverified', is_temporary: false })
     if (kind === 'organization') form.setFieldsValue({ organization_type: 'other' })
     if (kind === 'personTag') form.setFieldsValue({ category_id: undefined, basis: '' })
@@ -496,10 +507,10 @@ export default function RegistryManagement() {
   }
 
   const previewImport = async () => {
-    if (!importFile) return
+    if (!importFiles.length) return
     setImporting(true)
     try {
-      const result = await registryApi.previewHouseholdImport(importFile)
+      const result = await registryApi.previewHouseholdFiles(importFiles)
       setImportPreview({ ...result, source_type: 'household' })
       setTotal(result.total_count)
       message.success(`已完成预览：${result.normal_count} 条可导入，${result.issue_count} 条需核查`)
@@ -554,8 +565,8 @@ export default function RegistryManagement() {
         : await registryApi.confirmHouseholdImport(importPreview.batch_id)
       message.success(certificate
         ? `告知书处理完成：新增 ${result.inserted_count || 0} 条，更新 ${result.updated_count || 0} 条，未变化 ${result.unchanged_count || 0} 条；${result.pending_issue_count || 0} 条进入问题核查`
-        : `已导入 ${result.imported_count} 条房屋档案；问题数据仍保留在核查清单`)
-      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count, comparison: result.comparison || importPreview.comparison })
+        : `本次新增 ${result.inserted_count || 0} 条、更新 ${result.updated_count || 0} 条；${result.pending_issue_count || 0} 条问题记录仍保留在核查清单`)
+      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count, inserted_count: result.inserted_count, updated_count: result.updated_count, pending_issue_count: result.pending_issue_count, comparison: result.comparison || importPreview.comparison })
       await load()
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '户号表导入失败')
@@ -572,12 +583,6 @@ export default function RegistryManagement() {
     message.success('关系已结束，历史记录保留')
     if (detailKind === 'property' && selected) setDetail(await registryApi.property(selected.id))
     if (detailKind === 'organization' && selected) setDetail(await registryApi.organization(selected.id))
-  }
-
-  const toggleProperty = async (row: RegistryProperty) => {
-    await registryApi.changePropertyStatus(row.id, { status: row.status === 'active' ? 'inactive' : 'active', reason: '人工维护' })
-    message.success(row.status === 'active' ? '房屋已停用' : '房屋已启用')
-    await load()
   }
 
   const confirmSuggestedPropertyMatches = async () => {
@@ -625,33 +630,63 @@ export default function RegistryManagement() {
     }
   }
 
-  const exportRegistryRecords = async () => {
+  const exportRegistryRecords = async (annotations = false) => {
     if (!['properties', 'people', 'organizations'].includes(tab)) return
     setExporting(true)
+    let exportMessageKey = ''
     try {
-      const exportName = tab === 'properties' ? '房屋档案' : tab === 'people' ? '人员档案' : '机构档案'
-      const blob = tab === 'properties'
-        ? await registryApi.exportProperties({
+      const exportName = annotations ? '房屋小区标注' : tab === 'properties' ? '房屋档案' : tab === 'people' ? '人员档案' : '机构档案'
+      const filters = {
           keyword: debouncedKeyword,
           community_id: communityId,
           housing_category: housingCategory,
           certificate_status: certificateStatus,
-          status: propertyStatus,
+          household_status: householdStatus,
           visit_start_date: visitDateRange?.[0],
           visit_end_date: visitDateRange?.[1],
+          visit_status: visitStatus,
           star_ratings: starRatings,
           small_community_ids: smallCommunityIds,
           address_match_statuses: addressMatchStatuses,
           sort: propertySort,
-        })
+        }
+      let blob: Blob | null = null
+      if (annotations) {
+        const job = await registryApi.exportPropertyAnnotations(filters)
+        const messageKey = `property-annotation-export-${job.job_id}`
+        exportMessageKey = messageKey
+        message.loading({ content: '小区标注工作簿正在后台生成', key: messageKey, duration: 0 })
+        let completed = false
+        while (!completed) {
+          await new Promise(resolve => window.setTimeout(resolve, 2000))
+          const status = await registryApi.propertyAnnotationExportStatus(job.job_id)
+          if (status.status === 'ready') {
+            blob = await registryApi.downloadPropertyAnnotationExport(job.job_id)
+            message.destroy(messageKey)
+            completed = true
+          } else if (status.status === 'failed' || status.status === 'interrupted' || status.status === 'expired') {
+            throw new Error(status.status === 'interrupted'
+              ? '导出任务因服务重启中断，请重新导出'
+              : status.status === 'expired' ? '导出文件已过期，请重新导出' : '后台生成失败，请缩小筛选范围后重试')
+          } else {
+            message.loading({ content: status.phase === 'building' ? '正在生成 XLSX 文件' : '正在读取筛选结果', key: messageKey, duration: 0 })
+          }
+        }
+      } else {
+        blob = tab === 'properties'
+          ? await registryApi.exportProperties(filters)
         : tab === 'people'
           ? await registryApi.exportPeople({ name: debouncedKeyword, category_ids: categoryIds })
           : await registryApi.exportOrganizations({ keyword: debouncedKeyword })
+      }
+      if (!blob) throw new Error('导出文件未生成，请重试')
       if (await downloadBlob(blob, `${exportName}-${new Date().toISOString().slice(0, 10)}.xlsx`)) {
         message.success('已导出当前筛选结果')
       }
     } catch (reason: any) {
+      if (exportMessageKey) message.destroy(exportMessageKey)
       let detailMessage = reason?.response?.data?.detail
+      if (!detailMessage && reason instanceof Error) detailMessage = reason.message
       if (reason?.response?.data instanceof Blob) {
         try { detailMessage = JSON.parse(await reason.response.data.text())?.detail } catch { detailMessage = '' }
       }
@@ -724,7 +759,7 @@ export default function RegistryManagement() {
       render: (_, row) => (
       <div className="registry-certificate-cell">
         <Tag color={certificateStatusColors[row.certificate_status || 'not_uploaded']}>
-          {row.certificate_status_label || '未上传告知书'}
+          {row.certificate_status_label || '未签订'}
         </Tag>
         {row.certificate_status !== 'not_applicable' && (
           <span>{row.landlord_renter_relation_label || '责任关系待确认'}</span>
@@ -733,15 +768,37 @@ export default function RegistryManagement() {
       ) },
     {
       title: '最近走访日期', key: 'latest_visit_date', width: 150, responsivePriority: 'always',
-      filteredValue: visitDateRange ? ['range'] : null,
+      filteredValue: visitStatus || visitDateRange ? [visitStatus || 'range'] : null,
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
-        <DatePicker.RangePicker className="w-full" value={visitDateRange ? [dayjs(visitDateRange[0]), dayjs(visitDateRange[1])] : null}
-          onChange={(values: [Dayjs | null, Dayjs | null] | null) => {
-            if (!values?.[0] || !values[1]) setVisitDateRange(undefined)
-            else setVisitDateRange([values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')])
-          }} />,
-        () => setVisitDateRange(undefined),
+        <div className="registry-visit-filter grid gap-3">
+          <Select
+            aria-label="走访情况"
+            className="w-full"
+            value={visitStatus}
+            onChange={value => {
+              setVisitStatus(value)
+              if (value === 'never') {
+                setVisitDateRange(undefined)
+                setStarRatings([])
+              }
+            }}
+            options={[
+              { value: '', label: '全部走访情况' },
+              { value: 'visited', label: '有走访记录' },
+              { value: 'never', label: '从未走访' },
+            ]}
+          />
+          <DatePicker.RangePicker disabled={visitStatus === 'never'} className="w-full" value={visitPickerValue}
+            onChange={(values: [Dayjs | null, Dayjs | null] | null) => {
+              if (!values?.[0] || !values[1]) setVisitDateRange(undefined)
+              else setVisitDateRange([values[0].format('YYYY-MM-DD'), values[1].format('YYYY-MM-DD')])
+            }} />
+        </div>,
+        () => {
+          setVisitStatus('')
+          setVisitDateRange(undefined)
+        },
       ),
       render: (_, row) => (
       <div className="registry-visit-cell">
@@ -753,7 +810,7 @@ export default function RegistryManagement() {
       filteredValue: starRatings.length ? starRatings : null,
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
-        <Select mode="multiple" allowClear className="w-full" value={starRatings} maxTagCount="responsive"
+        <Select disabled={visitStatus === 'never'} mode="multiple" allowClear className="w-full" value={starRatings} maxTagCount="responsive"
           placeholder="全部星级评定" options={starRatingOptions.map(value => ({ value, label: value }))}
           onChange={values => setStarRatings(values)} />,
         () => setStarRatings([]),
@@ -763,26 +820,25 @@ export default function RegistryManagement() {
         : '-',
     },
     {
-      title: '状态', dataIndex: 'status', width: 90, responsivePriority: 'always',
-      filteredValue: propertyStatus ? [propertyStatus] : null,
+      title: '注销状态', dataIndex: 'household_status', width: 120, responsivePriority: 'always',
+      filteredValue: householdStatus ? [householdStatus] : null,
       filterIcon: filtered => <FilterFilled style={{ color: filtered ? 'var(--ant-color-primary)' : undefined }} />,
       filterDropdown: filterDropdown(
-        <Select className="w-full" value={propertyStatus || undefined} allowClear placeholder="全部状态"
-          options={[{ value: 'active', label: '启用房屋' }, { value: 'inactive', label: '停用房屋' }]}
-          onChange={value => setPropertyStatus((value || '') as '' | 'active' | 'inactive')} />,
-        () => setPropertyStatus(''),
+        <Select className="w-full" value={householdStatus || undefined} allowClear placeholder="全部注销状态"
+          options={[{ value: 'cancelled', label: '已注销' }, { value: 'not_cancelled', label: '未注销' }, { value: 'unknown', label: '未知' }]}
+          onChange={value => setHouseholdStatus((value || '') as '' | 'cancelled' | 'not_cancelled' | 'unknown')} />,
+        () => setHouseholdStatus(''),
       ),
-      render: value => <Tag color={value === 'active' ? 'green' : 'default'}>{value === 'active' ? '启用' : '停用'}</Tag>,
+      render: value => <Tag color={value === '已注销' ? 'default' : value === '未注销' ? 'green' : 'gold'}>{value || '未知'}</Tag>,
     },
     { title: '版本', dataIndex: 'version', width: 80, responsivePriority: 'wide' },
-    { title: '操作', key: 'actions', width: 280, render: (_, row) => <Space wrap>
+    { title: '操作', key: 'actions', width: responsiveLayout.isCompact ? 112 : 280, render: (_, row) => <Space wrap>
       <Button size="small" onClick={() => openDetail('property', row)}>详情</Button>
       {canManage && <Button size="small" type={row.address_match_status === 'suggested' ? 'primary' : 'default'} onClick={() => {
         setMatchConfirmProperty(row)
         setMatchConfirmEntryId(row.small_community_id || undefined)
       }}>{row.address_match_status === 'confirmed' ? '修正小区' : '确认小区'}</Button>}
       {canManage && <Button size="small" onClick={() => openEdit('property', row)}>编辑</Button>}
-      {canManage && <Popconfirm title={row.status === 'active' ? '确认停用这套房屋？' : '确认启用这套房屋？'} onConfirm={() => void toggleProperty(row)}><Button size="small">{row.status === 'active' ? '停用' : '启用'}</Button></Popconfirm>}
     </Space> },
   ]
   const personColumns: TableColumnsType<RegistryPerson> = [
@@ -814,6 +870,7 @@ export default function RegistryManagement() {
   ]
 
   const issueColumns: TableColumnsType<RegistryImportIssue> = [
+    { title: '问题编号', dataIndex: 'id', width: 100, fixed: 'left' },
     { title: '社区', width: 130, render: (_, row) => issuePayloadText(row, 'community', 'community_name', '社区名称', 'sssq') || '-' },
     { title: '房屋地址', width: 320, ellipsis: true, render: (_, row) => issuePayloadText(row, 'address', 'normalized_address', '详细地址') || row.entity_key || '-' },
     { title: '户号', width: 140, ellipsis: true, render: (_, row) => issuePayloadText(row, 'house_no', '户号') || '-' },
@@ -830,7 +887,7 @@ export default function RegistryManagement() {
       </div>
     ) },
     { title: '为什么有问题', dataIndex: 'reason', width: 300, render: value => <span className="registry-issue-reason">{value || '来源数据不符合自动导入规则'}</span> },
-    { title: '来源', width: 120, render: (_, row) => <div className="registry-issue-source"><Tag>{row.source_type === 'household' ? '户号表' : '告知书'}</Tag><span>{row.source_ref || '-'}</span></div> },
+    { title: '来源', width: 280, render: (_, row) => <div className="registry-issue-source"><Tag>{row.source_type === 'household' ? '户号表' : '告知书'}</Tag><span title={row.source_ref || undefined}>{row.source_ref || '-'}</span></div> },
   ]
 
   const renderSearchInput = (placeholder: string) => <Input
@@ -845,6 +902,9 @@ export default function RegistryManagement() {
 
   const toolbarFilters = tab === 'properties' ? <>
     {renderSearchInput('搜索地址、户号、幢室或住房类型')}
+    <Select value={householdStatus || undefined} allowClear placeholder="全部注销状态" className="w-full md:w-44"
+      options={[{ value: 'cancelled', label: '已注销' }, { value: 'not_cancelled', label: '未注销' }, { value: 'unknown', label: '未知' }]}
+      onChange={value => setHouseholdStatus((value || '') as '' | 'cancelled' | 'not_cancelled' | 'unknown')} />
     <Select
       mode="multiple"
       allowClear
@@ -883,7 +943,7 @@ export default function RegistryManagement() {
       className="w-full md:w-44"
     />
   </> : tab === 'issues' ? <>
-    {renderSearchInput('搜索地址、户号、社区或错误值')}
+    {renderSearchInput('搜索问题编号、地址、户号、来源行或错误值')}
     <Select
       allowClear
       showSearch
@@ -925,6 +985,7 @@ export default function RegistryManagement() {
         { value: 'pending', label: '待处理' },
         { value: 'resolved', label: '已处理' },
         { value: 'dismissed', label: '已忽略' },
+        { value: 'superseded', label: '已被新快照替代' },
         { value: '', label: '全部状态' },
       ]}
       className="w-full md:w-36"
@@ -983,6 +1044,10 @@ export default function RegistryManagement() {
         导出当前结果
       </Button>
     )}
+    {canManage && tab === 'properties' && <>
+      <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportRegistryRecords(true)}>导出小区标注</Button>
+      <PropertyAnnotationImport onChanged={load} />
+    </>}
     {canManage && tab === 'properties' && selectedPropertyIds.length > 0 && (
       <Popconfirm
         title={`确认当前选择的 ${selectedPropertyIds.length} 套房屋？`}
@@ -996,10 +1061,7 @@ export default function RegistryManagement() {
     {canManage && tab === 'people' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('person')}>新增人员</Button>}
     {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
     {canReview && tab === 'imports' && <>
-      <Upload accept=".xlsx" maxCount={1} showUploadList={Boolean(importFile)} beforeUpload={file => { setImportFile(file); setImportPreview(null); return false }} onRemove={() => { setImportFile(null); setImportPreview(null) }}>
-        <Button icon={<UploadOutlined />}>选择户号表</Button>
-      </Upload>
-      <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览户号表</Button>
+      <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFiles.length}>预览户号表</Button>
       {!certificateRunActive && certificateRun?.status !== 'failed' && <Button onClick={() => void startCertificateSource()} loading={certificateStarting}>读取告知书</Button>}
       {certificateRunActive && <Button loading disabled>{certificatePhaseLabel}</Button>}
       {certificateRun?.status === 'failed' && <>
@@ -1012,8 +1074,8 @@ export default function RegistryManagement() {
           <Button loading={certificateStarting}>重新读取</Button>
         </Popconfirm>
       </>}
-      {importPreview?.status === 'preview' && <Button onClick={() => void confirmImport()} loading={importing}>
-        {importPreview.source_type === 'certificate' ? '确认挂载告知书' : '确认导入正常数据'}
+      {(importPreview?.status === 'preview' || (importPreview?.source_type === 'household' && importPreview.status === 'partially_imported')) && <Button onClick={() => void confirmImport()} loading={importing}>
+        {importPreview.source_type === 'certificate' ? '确认挂载告知书' : importPreview.status === 'partially_imported' ? '继续导入正常数据' : '确认导入正常数据'}
       </Button>}
     </>}
   </>
@@ -1032,7 +1094,7 @@ export default function RegistryManagement() {
   } : false
 
   return (
-    <div className="registry-management-layout">
+    <div ref={layoutRef} className="registry-management-layout">
       <PageHeader title="辖区档案" description="长期维护辖区房屋、房东、业主、中介和租房平台关系；业务数据只进入待审核变更。" />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
@@ -1048,8 +1110,9 @@ export default function RegistryManagement() {
             setCategoryIds([])
             setHousingCategory('')
             setCertificateStatus('')
-            setPropertyStatus('active')
+            setHouseholdStatus('')
             setVisitDateRange(undefined)
+            setVisitStatus('')
             setStarRatings([])
             setPropertySort('id_desc')
             setPage(1)
@@ -1116,6 +1179,7 @@ export default function RegistryManagement() {
               </>,
             } : undefined}
           >
+            <HouseholdImportFiles files={importFiles} busy={importing} onChange={update => { setImportFiles(update); setImportPreview(null) }} />
             {certificateRun?.status === 'failed' && <Alert
               type="warning"
               showIcon
@@ -1127,8 +1191,42 @@ export default function RegistryManagement() {
             {importPreview ? <Alert type="success" showIcon message={importPreview.source_type === 'certificate'
               ? `告知书共 ${importPreview.total_count} 条；${comparison?.safe_to_apply ?? importPreview.normal_count} 条可安全挂载；${comparison?.pending_review ?? importPreview.problem_row_count} 条需核查。`
               : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条需核查。`}
-              description={importPreview.status === 'preview' ? '当前仍是预览状态，确认只处理安全记录；来源未再出现不会自动删除，问题记录进入“问题数据核查”。' : `处理状态：${importPreview.status}`} />
+              description={importPreview.status === 'preview'
+                ? importPreview.source_type === 'certificate'
+                  ? '当前仍是预览状态；确认完整告知书快照后，旧记录与旧问题只保留历史，当前状态以本次来源为准。'
+                  : '当前仍是预览状态，确认只处理安全记录，问题记录进入“问题数据核查”。'
+                : importPreview.source_type === 'household' && importPreview.status === 'partially_imported'
+                  ? '本批已完成部分导入，可点击“继续导入正常数据”处理剩余安全记录；已成功导入的记录不会重复写入，问题记录仍保留在“问题数据核查”。'
+                  : importPreview.source_type === 'household' && importPreview.status === 'imported'
+                    ? '本批数据已导入，相同文件不会重复写入。如需更新房屋资料或注销状态，请重新导出最新户号表，预览并确认导入。'
+                    : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
+            {importPreview?.source_type === 'household' && importPreview.file_count && <>
+              <Space wrap>
+                <span>文件：{importPreview.file_count} 份</span>
+                <span>唯一户号：{importPreview.unique_household_count}</span>
+                <span>缺少户号：{importPreview.missing_household_number_count}</span>
+                <span>相同重复行：{importPreview.duplicate_row_count}</span>
+                <span>来源已注销：{importPreview.household_status_counts?.cancelled || 0}</span>
+                <span>来源未注销：{importPreview.household_status_counts?.not_cancelled || 0}</span>
+                <span>来源未知：{importPreview.household_status_counts?.unknown || 0}</span>
+                <span>可导入已注销：{importPreview.importable_status_counts?.cancelled || 0}</span>
+                <span>可导入未注销：{importPreview.importable_status_counts?.not_cancelled || 0}</span>
+                <span>可导入未知：{importPreview.importable_status_counts?.unknown || 0}</span>
+              </Space>
+              {importPreview.status !== 'preview' && <Space wrap>
+                <span>本次新增：{importPreview.inserted_count || 0}</span>
+                <span>本次更新：{importPreview.updated_count || 0}</span>
+                <span>待核查：{importPreview.pending_issue_count || 0}</span>
+              </Space>}
+              <AppTable rowKey={(_, index) => String(index)} pagination={false} scroll={{ x: 700 }} dataSource={importPreview.files} columns={[
+                { title: '文件', dataIndex: 'file_name', width: 260 },
+                { title: '住房类型', dataIndex: 'housing_type', width: 140, render: value => value || '按表内类型' },
+                { title: '注销状态', dataIndex: 'household_status', width: 140, render: value => value === 'cancelled' ? '已注销' : value === 'not_cancelled' ? '未注销' : '按表内状态' },
+                { title: '实际行数', dataIndex: 'total_count', width: 100 },
+                { title: '查询总数', dataIndex: 'expected_count', width: 100, render: value => value ?? '未核对' },
+              ]} />
+            </>}
             {importPreview?.source_type === 'certificate' && comparison && <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded border border-[var(--app-border)] p-3">
                 <div className="mb-2 font-medium">本次变化</div>
@@ -1325,7 +1423,7 @@ export default function RegistryManagement() {
               </div>
               {!['normal_signed', 'not_required', 'not_applicable'].includes(summary.certificate_status) && (
                 <div className="registry-certificate-summary__action">
-                  {summary.certificate_status === 'not_uploaded' && '需要补充房东责任告知书。'}
+                  {summary.certificate_status === 'not_uploaded' && '当前来源尚未签订责任告知书。'}
                   {summary.certificate_status === 'renter_needs_correction' && '告知书已经签署，但实际出租人信息需要修正。'}
                   {summary.certificate_status === 'actual_renter_missing' && '尚未确定实际承担出租管理责任的人。'}
                   {summary.certificate_status === 'multiple_or_conflict' && '告知书来源存在重复、内容冲突或地址匹配问题，需要先完成核对。'}
@@ -1389,7 +1487,8 @@ export default function RegistryManagement() {
               }}>{match.status === 'confirmed' ? '修正小区' : '人工确认小区'}</Button>}
             </section>
           })()}
-          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'small_community_match'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+          {detailKind === 'property' && <Descriptions bordered size="small" column={1} items={[{ key: 'household_status', label: '注销状态（户号表）', children: detail.household_status || '未知' }]} />}
+          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'small_community_match', ...(detailKind === 'property' ? ['status', 'household_status'] : [])].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
           {detailKind === 'person' && canViewTags && <Panel
             title="人员标签"
             extra={canManageTags ? <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openCreate('personTag')}>添加标签</Button> : undefined}

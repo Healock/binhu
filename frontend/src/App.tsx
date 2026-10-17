@@ -29,6 +29,7 @@ import OfflineMode from './pages/OfflineMode'
 import WorkLog from './pages/WorkLog'
 import WorkLogDrafts from './pages/WorkLogDrafts'
 import PermissionGroups from './pages/PermissionGroups'
+import DepartmentManagement from './pages/DepartmentManagement'
 import Profile from './pages/Profile'
 import MobileTaskHome from './pages/MobileTaskHome'
 import MobileTaskDetail from './pages/MobileTaskDetail'
@@ -104,17 +105,6 @@ function MobileTaskHomeEntry() {
 function DesktopSummaryRoute({ children }: { children: ReactNode }) {
   const mobile = useMobileViewport()
   return mobile ? <Navigate to="/" replace /> : <>{children}</>
-}
-
-function PhotoTaskEntry() {
-  const { user } = useAuth()
-  const permissions = new Set(user?.permissions || [])
-  const allowed = Boolean(
-    user?.member?.position === '基础管控'
-    || permissions.has('workflow.ticket.manage')
-    || ['admin', 'super_admin'].includes(user?.role || ''),
-  )
-  return allowed ? <WorkflowTickets mode="photo" /> : <Navigate to="/workflow" replace />
 }
 
 function App() {
@@ -203,10 +193,6 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="workflow.ticket.view" />}>
                 <Route path="/workflow" element={<WorkflowTickets />} />
               </Route>
-              <Route element={<ProtectedRoute requireAnyPermission={['workflow.ticket.handle', 'workflow.ticket.manage']} />}>
-                <Route path="/photo-tasks" element={<PhotoTaskEntry />} />
-              </Route>
-
               {/* 用户管理仅超管 */}
               <Route element={<ProtectedRoute requirePermission="user.manage" />}>
                 <Route path="/users" element={<UserManagement />} />
@@ -214,6 +200,7 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="permission.manage" />}>
                 <Route path="/permission-groups" element={<PermissionGroups />} />
               </Route>
+              <Route path="/department-management" element={<Navigate to="/settings/departments" replace />} />
               <Route element={<ProtectedRoute requirePermission="ops.manage" />}>
                 <Route path="/operations" element={<OperationsCenter />} />
                 <Route path="/settings/operations" element={<Navigate to="/operations" replace />} />
@@ -232,6 +219,9 @@ function App() {
                 </Route>
                 <Route element={<ProtectedRoute requirePermission="workflow.config.manage" />}>
                   <Route path="workflow" element={<WorkflowConfig />} />
+                </Route>
+                <Route element={<ProtectedRoute requirePermission="community.manage" />}>
+                  <Route path="departments" element={<DepartmentManagement />} />
                 </Route>
               </Route>
             </Route>

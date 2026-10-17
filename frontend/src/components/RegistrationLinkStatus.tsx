@@ -2,6 +2,7 @@ import { Tag, Tooltip } from 'antd'
 import type { MobileTaskRegistrationLink } from '../api/client'
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  pending_establishment: { label: '待登记未关联房屋', color: 'default' },
   awaiting_match: { label: '等待登记比对', color: 'blue' },
   matched_once: { label: '已匹配一次', color: 'orange' },
   review_required: { label: '登记待复核', color: 'red' },

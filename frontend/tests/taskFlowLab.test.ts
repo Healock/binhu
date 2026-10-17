@@ -35,7 +35,6 @@ function task(overrides: Record<string, unknown> = {}) {
     state: 'unchecked',
     needs_review: false,
     review_stage: '',
-    photo_fetched: false,
     source_count: 1,
     conflict: false,
     pending_sync: false,
@@ -112,12 +111,12 @@ test('任务流聚合现有待办、被动刷新并跳转原任务详情', () =>
   assert.match(source, /data: \{ system: true, label: '等待研判' \}/)
   assert.match(source, /selectable: false/)
   assert.match(source, /deletable: false/)
-  assert.match(source, /workflowApi\.pendingPhotoRequests/)
+  assert.doesNotMatch(source, /workflowApi\.pendingPhotoRequests/)
   assert.match(source, /getPoliceDispatchWorkbench/)
   assert.match(source, /下发数据审核/)
   assert.match(source, /下发数据研判/)
   assert.match(source, /下发数据发布/)
-  assert.match(source, /\/photo-tasks\?ticket=/)
+  assert.doesNotMatch(source, /\/photo-tasks\?ticket=/)
   assert.match(source, /AUTO_REFRESH_MS = 30_000/)
   assert.match(source, /refreshTasks\(true\)/)
   assert.match(source, /encodeURIComponent\(task\.parser_type\)/)

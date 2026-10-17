@@ -60,6 +60,7 @@ def compare_certificate_snapshot(
     property_rows: Iterable[dict[str, Any]],
     *,
     pending_issue_count: int = 0,
+    conflict_keys: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Compare one complete source snapshot with the current local notices.
 
@@ -68,10 +69,17 @@ def compare_certificate_snapshot(
     """
     incoming = list(incoming_rows)
     existing = list(existing_rows)
+    property_rows = list(property_rows)
     properties = {
         (normalize_address(row.get("normalized_address") or row.get("address") or ""),
          normalize_community(row.get("community_name") or row.get("community") or "")): row
         for row in property_rows
+    }
+    properties_by_id = {int(row["id"]): row for row in property_rows}
+    conflicted_ids = {
+        int(prop["id"])
+        for pair, prop in properties.items()
+        if pair in (conflict_keys or set())
     }
     existing_by_ref: dict[str, dict[str, Any]] = {}
     existing_by_derived: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -144,20 +152,20 @@ def compare_certificate_snapshot(
     )
     for property_id in property_ids:
         old = old_by_property.get(property_id, [])
-        new = predicted_by_property.get(property_id, old)
-        prop = next((row for row in property_rows if int(row.get("id") or 0) == property_id), {})
+        new = predicted_by_property.get(property_id, [])
+        prop = properties_by_id.get(property_id, {})
         housing_type = str(prop.get("housing_type") or (old[0].get("housing_type") if old else ""))
         old_status = _status(old[0], housing_type=housing_type, count=len(old)) if old else str(
             certificate_status_summary(housing_type=housing_type, certificate_count=0, source_ready=True)["certificate_status"]
         )
-        if len(new) > 1:
+        if property_id in conflicted_ids or len(new) > 1:
             new_status = "multiple_or_conflict"
         elif new:
             new_status = _status(new[0], housing_type=housing_type)
         else:
-            new_status = old_status
-        if old and old_status in status_summary:
-            status_summary[old_status]["total"] -= 1
+            new_status = str(certificate_status_summary(
+                housing_type=housing_type, certificate_count=0, source_ready=True,
+            )["certificate_status"])
         if new_status in status_summary:
             status_summary[new_status]["total"] += 1
         if old_status != new_status:
@@ -185,7 +193,8 @@ def compare_certificate_snapshot(
 
 async def load_certificate_comparison(conn, rows: Iterable[dict[str, Any]], classified: dict[str, Any]) -> dict[str, Any]:
     """Load only the local keys needed for a preview comparison."""
-    incoming = list(classified.get("normal_rows") or rows)
+    rows = list(rows)
+    incoming = list(classified["normal_rows"] if "normal_rows" in classified else rows)
     properties: list[dict[str, Any]] = []
     async with conn.cursor() as cur:
         await cur.execute(
@@ -207,7 +216,7 @@ async def load_certificate_comparison(conn, rows: Iterable[dict[str, Any]], clas
         await cur.execute(
             "SELECT property_id,source_ref,source_content_hash,actual_renter_name,"
             "actual_renter_identity_number,landlord_name,signed_status,sign_type,payload_json "
-            "FROM registry_property_certificates WHERE source_type='certificate'"
+            "FROM registry_property_certificates WHERE source_type='certificate' AND source_missing_since IS NULL"
         )
         existing = []
         for row in await cur.fetchall():
@@ -237,7 +246,15 @@ async def load_certificate_comparison(conn, rows: Iterable[dict[str, Any]], clas
         "content_conflict": int(classified.get("conflict_groups") or 0),
         "property_not_found": 0, "non_rental_property": 0, "community_unresolved": 0,
     }
-    result = compare_certificate_snapshot(incoming, existing, properties, pending_issue_count=int(classified.get("problem_row_count") or 0))
+    conflict_keys = {
+        (normalize_address(issue["payload"].get("address")), normalize_community(issue["payload"].get("community")))
+        for issue in classified.get("issues", [])
+    }
+    result = compare_certificate_snapshot(
+        incoming, existing, properties,
+        pending_issue_count=int(classified.get("problem_row_count") or 0),
+        conflict_keys=conflict_keys,
+    )
     result["incoming_total"] = len(list(rows))
     result["issue_breakdown"]["duplicate"] = issue_breakdown["duplicate"]
     result["issue_breakdown"]["content_conflict"] = issue_breakdown["content_conflict"]

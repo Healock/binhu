@@ -2,27 +2,59 @@ name: Install Staging event-pipeline gateway
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: Install or verify/apply the isolated Staging pipeline backend network
+        required: true
+        default: install
+        type: choice
+        options: [install, cleanup-unused-networks, measure, apply, diagnose, diagnose-runtime, diagnose-apply, diagnose-images, diagnose-preload, preload-schema-registry]
+      run_id:
+        description: Existing STG run for the read-only measure diagnostic
+        required: false
+        default: ''
+        type: string
+      image_manifest:
+        description: JSON object with the six approved Staging image digests for read-only diagnostics
+        required: false
+        default: ''
+        type: string
+      schema_registry_image:
+        description: Fixed approved Schema Registry image digest
+        required: false
+        default: sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4
+        type: string
+      dev_export_run_id:
+        description: GitHub run ID of the Dev fixed-image export
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   install:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The approved Schema Registry archive is ~428 MB; upload it as a fixed
+    # server-side file before docker load so transport and import have separate
+    # bounded phases and can be diagnosed independently.
+    timeout-minutes: 180
     environment: staging
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
       - name: Install only the Staging gateway
+        if: inputs.action == 'install'
         shell: bash
         env:
-          HOST: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_HOST }}
-          PORT: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_PORT }}
-          ADMIN_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_ADMIN_SSH_KEY }}
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
           PUBLIC_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_DEPLOY_PUBLIC_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
         run: |
           set -Eeuo pipefail
           [[ -n "$HOST" && "$PORT" =~ ^[0-9]+$ && -n "$ADMIN_KEY" && -n "$PUBLIC_KEY" && -n "$KNOWN_HOSTS" ]]
@@ -34,8 +66,244 @@ jobs:
           scp -P "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" \
             deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway \
             deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway.py \
+            deploy/environments/event_pipeline/staging_backend_network.py \
+            deploy/environments/event_pipeline/staging_measure_diagnostic.py \
+            deploy/environments/event_pipeline/staging_apply_runtime_diagnostic.py \
+            deploy/environments/event_pipeline/staging_apply_diagnostic.py \
+            deploy/environments/event_pipeline/staging_image_diagnostic.py \
+            deploy/environments/event_pipeline/staging_schema_registry_preload_diagnostic.py \
+            deploy/environments/event_pipeline/staging_schema_registry_preload.py \
+            deploy/environments/event_pipeline/staging_network_cleanup.py \
             deploy/environments/event_pipeline/install-staging-gateway.sh \
             "$RUNNER_TEMP/staging-ssh/deploy-key.pub" "root@$HOST:/tmp/"
           ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
-            'cd /tmp && ./install-staging-gateway.sh /tmp/deploy-key.pub'
+            'cd /tmp && /usr/bin/bash /tmp/install-staging-gateway.sh /tmp/deploy-key.pub'
+      - name: Remove only unused Staging event-pipeline networks
+        if: inputs.action == 'cleanup-unused-networks'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh"
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" \
+            "root@$HOST" /usr/bin/python3 /usr/local/libexec/binhu-staging-network-cleanup.py
           rm -f "$RUNNER_TEMP/staging-ssh/"*
+      - name: Provision missing Staging pipeline credentials
+        if: inputs.action == 'install'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            "LOAD_PASSWORD=$(printf '%q' "$LOAD_PASSWORD") /bin/bash -s" <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+          load_password=${LOAD_PASSWORD:?}
+          config=/etc/binhu-staging-event-pipeline.conf
+          if [[ -e "$config" ]]; then
+            [[ -f "$config" && ! -L "$config" && "$(stat -c %a "$config")" == 600 ]]
+            exit 0
+          fi
+          backend=/srv/binhu-environments/staging/backend.env
+          [[ -f "$backend" && ! -L "$backend" ]]
+          redis_url=$(awk -F= '$1=="REDIS_URL" {print substr($0,index($0,"=")+1); exit}' "$backend")
+          mysql_password=$(awk -F= '$1=="MYSQL_PASSWORD" {print substr($0,index($0,"=")+1); exit}' "$backend")
+          [[ "$redis_url" == redis://* && ${#mysql_password} -ge 32 ]]
+          [[ ${#load_password} -ge 16 && "$load_password" != *$'\n'* && "$load_password" != *$'\r'* ]]
+          tmp=$(mktemp /etc/.binhu-staging-event-pipeline.conf.XXXXXX)
+          trap 'rm -f "$tmp"' EXIT
+          umask 077
+          printf 'STAGING_PIPELINE_MYSQL_PASSWORD=%s\nSTAGING_PIPELINE_MYSQL_ROOT_PASSWORD=%s\nSTAGING_PIPELINE_REDIS_PASSWORD=%s\nSTAGING_BACKEND_MYSQL_PASSWORD=%s\nSTAGING_BACKEND_REDIS_URL=%s\nSTAGING_LOAD_TEST_PASSWORD=%s\n' \
+            "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" \
+            "$mysql_password" "$redis_url" "$load_password" > "$tmp"
+          chmod 600 "$tmp"
+          mv -f "$tmp" "$config"
+          trap - EXIT
+          chmod 600 "$config"
+          REMOTE_SCRIPT
+      - name: Record fixed Staging pipeline configuration digest
+        if: inputs.action == 'install'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            'test -f /etc/binhu-staging-event-pipeline.conf && test ! -L /etc/binhu-staging-event-pipeline.conf && sha256sum /etc/binhu-staging-event-pipeline.conf | awk '\''{print "configuration_sha256=" $1}'\'''
+          rm -f "$RUNNER_TEMP/staging-ssh/"*
+      - name: Verify or apply isolated Staging pipeline backend network
+        if: inputs.action == 'measure' || inputs.action == 'apply'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$ACTION" =~ ^(measure|apply)$ ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh"
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            "/usr/bin/python3 /usr/local/libexec/binhu-staging-backend-network.py $ACTION"
+          rm -f "$RUNNER_TEMP/staging-ssh/"*
+      - name: Run fixed read-only measure diagnostic
+        if: inputs.action == 'diagnose' || inputs.action == 'diagnose-runtime' || inputs.action == 'diagnose-apply' || inputs.action == 'diagnose-images' || inputs.action == 'diagnose-preload'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          RUN_ID: ${{ inputs.run_id }}
+          ACTION: ${{ inputs.action }}
+          IMAGE_MANIFEST: ${{ inputs.image_manifest }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh"
+          printf '%s\n' "$ADMIN_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          if [[ "$ACTION" == diagnose ]]; then
+            script=/usr/local/libexec/binhu-staging-measure-diagnostic.py
+          elif [[ "$ACTION" == diagnose-images ]]; then
+            script=/usr/local/libexec/binhu-staging-image-diagnostic.py
+            [[ -n "$IMAGE_MANIFEST" ]]
+            printf '%s' "$IMAGE_MANIFEST" | ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+              "/usr/bin/python3 $script $RUN_ID"
+            rm -f "$RUNNER_TEMP/staging-ssh/"*
+            exit 0
+          elif [[ "$ACTION" == diagnose-apply ]]; then
+            script=/usr/local/libexec/binhu-staging-apply-diagnostic.py
+          elif [[ "$ACTION" == diagnose-preload ]]; then
+            script=/usr/local/libexec/binhu-staging-schema-registry-preload-diagnostic.py
+          else
+            script=/usr/local/libexec/binhu-staging-apply-runtime-diagnostic.py
+          fi
+          ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "root@$HOST" \
+            "/usr/bin/python3 $script $RUN_ID"
+          rm -f "$RUNNER_TEMP/staging-ssh/"*
+      - name: Download fixed Dev Schema Registry artifact
+        if: inputs.action == 'preload-schema-registry'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v7.0.0
+        with:
+          name: dev-schema-registry-${{ inputs.dev_export_run_id }}
+          path: ${{ runner.temp }}/dev-schema-registry
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.dev_export_run_id }}
+      - name: Preload fixed Schema Registry image from Dev
+        if: inputs.action == 'preload-schema-registry'
+        shell: bash
+        env:
+          STAGING_HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          STAGING_PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          STAGING_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
+          STAGING_KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          RUN_ID: ${{ inputs.run_id }}
+          IMAGE_ID: ${{ inputs.schema_registry_image }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]]
+          [[ "$IMAGE_ID" == 'sha256:cac9355ce4daf5fd4c027c1f213577c2af41dc7c3bcd10cd9f1807a53531a2b4' ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-preload-ssh" "$RUNNER_TEMP/dev-schema-registry"
+          printf '%s\n' "$STAGING_KEY" > "$RUNNER_TEMP/staging-preload-ssh/key"
+          printf '%s\n' "$STAGING_KNOWN_HOSTS" > "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-preload-ssh/key" "$RUNNER_TEMP/staging-preload-ssh/known_hosts"
+          manifest="$RUNNER_TEMP/dev-schema-registry/manifest.json"
+          archive="$RUNNER_TEMP/dev-schema-registry/schema-registry-image.tar"
+          echo 'preload_stage=artifact_files_check'
+          [[ -f "$manifest" && -f "$archive" ]]
+          echo 'preload_stage=manifest_check'
+          manifest_source=$(jq -r '.source_environment // "missing"' "$manifest")
+          manifest_image=$(jq -r '.image_id // "missing"' "$manifest" | tr -d '[:space:]')
+          manifest_status=$(jq -r '.status // "missing"' "$manifest")
+          manifest_size_type=$(jq -r '.archive_size | type' "$manifest")
+          IMAGE_ID=$(printf '%s' "$IMAGE_ID" | tr -d '[:space:]')
+          echo "manifest_source=$manifest_source"
+          echo "manifest_image=$manifest_image"
+          echo "manifest_status=$manifest_status"
+          echo "manifest_archive_size_type=$manifest_size_type"
+          echo "manifest_image_len=${#manifest_image}"
+          echo "image_id_len=${#IMAGE_ID}"
+          echo "manifest_image_sha=$(printf '%s' "$manifest_image" | sha256sum | awk '{print $1}')"
+          echo "image_id_sha=$(printf '%s' "$IMAGE_ID" | sha256sum | awk '{print $1}')"
+          mismatch_index=-1
+          for ((i=0; i<${#manifest_image}; i++)); do
+            if [[ "${manifest_image:i:1}" != "${IMAGE_ID:i:1}" ]]; then mismatch_index=$i; break; fi
+          done
+          echo "image_id_mismatch_index=$mismatch_index"
+          [[ "$manifest_source" == development ]] || { echo 'manifest_error=source_environment'; exit 1; }
+          [[ "$manifest_image" == "$IMAGE_ID" ]] || { echo 'manifest_error=image_id'; exit 1; }
+          [[ "$manifest_status" == passed ]] || { echo 'manifest_error=status'; exit 1; }
+          [[ "$manifest_size_type" == number ]] || { echo 'manifest_error=archive_size_type'; exit 1; }
+          echo 'preload_stage=archive_hash_check'
+          archive_sha=$(sha256sum "$archive" | awk '{print $1}')
+          [[ "$archive_sha" == "$(jq -r .archive_sha256 "$manifest")" ]]
+          remote_dir="/var/lib/binhu-staging-event-pipeline/incoming/$RUN_ID"
+          remote_archive="$remote_dir/schema-registry-image.tar"
+          cleanup_remote() {
+            ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+              -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+              "root@$STAGING_HOST" "rm -f -- '$remote_archive'" >/dev/null 2>&1 || true
+          }
+          trap cleanup_remote EXIT
+          echo 'preload_stage=server_archive_prepare'
+          ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" "install -d -m 700 -- '$remote_dir' && rm -f -- '$remote_archive'"
+          echo 'preload_stage=server_archive_upload'
+          scp -P "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "$archive" "root@$STAGING_HOST:$remote_archive"
+          ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" "chmod 600 -- '$remote_archive'"
+          echo 'preload_stage=server_archive_hash_check'
+          remote_sha=$(ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" "stat -c '%a %u %F' -- '$remote_archive' && sha256sum -- '$remote_archive'" )
+          echo "server_archive_metadata=$(printf '%s' "$remote_sha" | head -n 1)"
+          remote_hash=$(printf '%s' "$remote_sha" | tail -n 1 | awk '{print $1}')
+          [[ "$remote_hash" == "$(jq -r .archive_sha256 "$manifest")" ]]
+          echo 'preload_stage=server_preload'
+          ssh -p "$STAGING_PORT" -i "$RUNNER_TEMP/staging-preload-ssh/key" \
+            -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-preload-ssh/known_hosts" \
+            "root@$STAGING_HOST" \
+            "/usr/bin/python3 /usr/local/libexec/binhu-staging-schema-registry-preload.py '$RUN_ID' '$IMAGE_ID' '$remote_archive'"
+          echo 'preload_stage=server_preload_complete'
+          trap - EXIT
+          cleanup_remote
+          rm -f "$RUNNER_TEMP/staging-preload-ssh/"*
+          rm -rf "$RUNNER_TEMP/dev-schema-registry"
