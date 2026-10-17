@@ -932,7 +932,7 @@ class WorkLogTests(unittest.IsolatedAsyncioTestCase):
         workbook = load_workbook(BytesIO(content), data_only=False)
         self.assertEqual(workbook.sheetnames, ["Sheet1"])
         sheet = workbook["Sheet1"]
-        self.assertEqual(filename, "0809滨湖网格工作每日明细.xlsx")
+        self.assertEqual(filename, "滨湖网格工作每日明细-20260809.xlsx")
         self.assertIn("8月9号", sheet["A1"].value)
         self.assertEqual(sheet["A4"].value, 1)
         self.assertEqual(sheet["J4"].value, 8)

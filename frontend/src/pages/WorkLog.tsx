@@ -746,7 +746,7 @@ export default function WorkLog() {
       })
       const saved = await downloadBlob(
         blob,
-        `${dailyDetailDate.format('MMDD')}滨湖网格工作每日明细.xlsx`,
+        `滨湖网格工作每日明细-${dailyDetailDate.format('YYYYMMDD')}.xlsx`,
       )
       if (saved) message.success('工作每日明细 XLSX 已生成，目标数已保存')
     } catch (error) {
