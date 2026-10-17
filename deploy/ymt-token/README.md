@@ -4,6 +4,13 @@ This is an isolated FastAPI service for `47.100.44.36`. It signs five-minute
 Ed25519 tokens and has no Binhu imports, database connection, upstream proxy,
 or CORS configuration.
 
+The issuer defaults to `kid=zwzz-2026-02` and issuance disabled. Provision the
+key locally on 47, distribute only its public key, configure the Binhu verifier
+and community scope, then explicitly set `YMT_TOKEN_ISSUANCE_ENABLED=true`
+in the systemd service. While disabled, token requests return
+`503 SIGNING_UNAVAILABLE`; health still checks the signing key. Use
+`YMT_TOKEN_KID` for subsequent key rotations.
+
 Install the service under `/opt/ymt-token`, create the `ymt-token` system user,
 and install the unit as `/etc/systemd/system/ymt-token.service`. The private
 key and build allowlist are operator-managed files with mode `0600`:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -30,7 +31,8 @@ from pydantic import BaseModel, ConfigDict
 PRIVATE_KEY_PATH = Path("/etc/ymt/signing-private.pem")
 BUILDS_PATH = Path("/etc/ymt/builds.json")
 RATE_DB_PATH = Path("/var/log/ymt-token/rate.sqlite3")
-KID = "zwzz-2026-01"
+KID = os.environ.get("YMT_TOKEN_KID", "zwzz-2026-02")
+ISSUANCE_ENABLED = os.environ.get("YMT_TOKEN_ISSUANCE_ENABLED", "false").lower() == "true"
 ISSUER = "zwzz-gateway"
 AUDIENCE = "binhu-house-candidate"
 SCOPE = "house:search:read"
@@ -152,6 +154,8 @@ async def health():
 
 @app.post("/ymt/token")
 async def issue_token(request: Request, body: TokenRequest):
+    if not ISSUANCE_ENABLED:
+        return _response(503, "SIGNING_UNAVAILABLE", "signing not enabled")
     ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
     ip = ip[:64]
     try:

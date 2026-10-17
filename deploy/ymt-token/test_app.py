@@ -14,6 +14,14 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolated_rate_store(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "RATE_DB_PATH", tmp_path / "rate.sqlite3")
+    monkeypatch.setattr(app, "ISSUANCE_ENABLED", True)
+
+
+def test_signing_can_stay_disabled_with_key_provisioned(monkeypatch):
+    monkeypatch.setattr(app, "ISSUANCE_ENABLED", False)
+    response = TestClient(app.app).post("/ymt/token", json={"build": "a" * 64})
+    assert response.status_code == 503
+    assert response.json()["code"] == "SIGNING_UNAVAILABLE"
 
 
 def test_ip_and_global_quotas_persist(monkeypatch):
