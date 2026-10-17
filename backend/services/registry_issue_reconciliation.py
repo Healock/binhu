@@ -16,6 +16,7 @@ from services.registry_import import (
     _source_datetime as source_datetime,
 )
 from services.registry_property_identity import current_household_snapshot, property_snapshot
+from services.registry_property_canonical import load_property_identity_graph
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def _payload(value: Any) -> dict[str, Any]:
 async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
                                 payload: dict[str, Any], community_id: int,
                                 community_name: str, reviewer_id: int | None,
-                                apply: bool = True) -> bool:
+                                apply: bool = True, identity_graph=None) -> bool:
     """Link one newly-resolvable source row using the import identity rules."""
     address = normalize_text(payload.get("address"))
     normalized = normalize_address(address)
@@ -111,6 +112,9 @@ async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
     if not normalized or not housing_type:
         return False
 
+    if identity_graph is None:
+        identity_graph = await load_property_identity_graph(cur)
+
     await cur.execute(
         "SELECT id, community_id, street, natural_address, building, room, "
         "normalized_address, source_house_no, source_updated_at, housing_type, residence_type, household_status FROM registry_properties "
@@ -118,7 +122,28 @@ async def _reconcile_source_row(cur, *, batch_id: int, source_ref: str,
         "FOR UPDATE",
         (community_id, normalized, house_no, house_no),
     )
-    existing = await cur.fetchall()
+    raw_existing = await cur.fetchall()
+    existing_by_id = {}
+    redirected_targets = set()
+    for row in raw_existing:
+        raw_id = int(row[0])
+        canonical_id = identity_graph.resolve(raw_id).canonical_id
+        projected = (canonical_id, *row[1:])
+        if canonical_id not in existing_by_id or raw_id == canonical_id:
+            existing_by_id[canonical_id] = projected
+        if raw_id != canonical_id:
+            redirected_targets.add(canonical_id)
+    if redirected_targets:
+        placeholders = ",".join(["%s"] * len(redirected_targets))
+        await cur.execute(
+            "SELECT id, community_id, street, natural_address, building, room, normalized_address, "
+            "source_house_no, source_updated_at, housing_type, residence_type, household_status "
+            f"FROM registry_properties WHERE id IN ({placeholders}) FOR UPDATE",
+            tuple(sorted(redirected_targets)),
+        )
+        for row in await cur.fetchall():
+            existing_by_id[int(row[0])] = row
+    existing = list(existing_by_id.values())
     address_matches = [row for row in existing if str(row[6] or "") == normalized]
     household_matches = [row for row in existing if house_no and str(row[7] or "") == house_no]
     if len(household_matches) > 1 or (not household_matches and len(address_matches) > 1):
@@ -270,6 +295,7 @@ async def reconcile_household_community_issues(
                     item[1].add(normalized)
         await conn.begin()
         async with conn.cursor() as cur:
+            identity_graph = await load_property_identity_graph(cur)
             await cur.execute(
                 "SELECT id, batch_id, source_ref, payload_json FROM registry_import_issues "
                 "WHERE status='pending' AND source_type='household' "
@@ -296,6 +322,7 @@ async def reconcile_household_community_issues(
                     cur, batch_id=int(batch_id), source_ref=str(source_ref),
                     payload=source_payload, community_id=match[0],
                     community_name=match[1], reviewer_id=reviewed_by,
+                    identity_graph=identity_graph,
                 ):
                     continue
                 await cur.execute(

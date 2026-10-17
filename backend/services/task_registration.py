@@ -14,6 +14,7 @@ from typing import Any
 
 from config import settings
 from services.registry_import import normalize_address
+from services.registry_property_canonical import load_property_identity_graph
 from services.task_workflow import TASK_WORKFLOWS
 
 
@@ -342,6 +343,10 @@ async def validate_registration_property(
     task_community: str,
 ) -> dict[str, Any]:
     registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+    identity_graph = await load_property_identity_graph(cur, schema=registry)
+    resolution = identity_graph.resolve(property_id)
+    if resolution.redirected:
+        raise ValueError("所选房屋身份已更新，请重新选择现行房屋档案")
     await cur.execute(
         f"""
         SELECT id,community_id,community_name_snapshot,natural_address,building,room,
@@ -854,6 +859,9 @@ async def enqueue_automatic_registration_confirmation(
             if str(link[6] or "").strip() != str(row[7] or "").strip():
                 raise ValueError("任务所属社区已变化")
             registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+            identity_graph = await load_property_identity_graph(cur, schema=registry)
+            if identity_graph.resolve(int(link[3])).redirected:
+                raise ValueError("关联房屋身份已更新")
             await cur.execute(
                 f"SELECT status,current_version FROM `{registry}`.registry_properties WHERE id=%s",
                 (int(link[3]),),
@@ -949,6 +957,9 @@ async def enqueue_automatic_registration_confirmation(
         if str(link[6] or "").strip() != str(row[13] or "").strip():
             raise ValueError("任务所属社区已变化")
         registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+        identity_graph = await load_property_identity_graph(cur, schema=registry)
+        if identity_graph.resolve(int(link[3])).redirected:
+            raise ValueError("关联房屋身份已更新")
         await cur.execute(
             f"SELECT status,current_version FROM `{registry}`.registry_properties WHERE id=%s",
             (int(link[3]),),

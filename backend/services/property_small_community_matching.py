@@ -11,6 +11,7 @@ from collections import Counter
 from typing import Any
 
 from services.address_matching import RuleMatcher
+from services.registry_property_canonical import load_property_identity_graph
 
 
 STATUS_PRIORITY = {
@@ -119,6 +120,16 @@ async def load_registry_properties(cur) -> list[dict[str, Any]]:
             "history_addresses": [], "aliases": [],
         }
         for row in await cur.fetchall()
+    }
+    # A historical property can retain its source and address records after a
+    # reviewed identity mapping is created.  Matching must only update the
+    # current archive; reprocessing the retired row would recreate a second
+    # small-community association and make later imports ambiguous.
+    identity_graph = await load_property_identity_graph(cur)
+    properties = {
+        property_id: property_row
+        for property_id, property_row in properties.items()
+        if identity_graph.resolve(property_id).canonical_id == property_id
     }
     if not properties:
         return []

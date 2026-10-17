@@ -58,6 +58,8 @@ class Cursor:
                          if issue["batch"] == params[0] and issue["status"] == "pending"]
         elif "FROM OnlineData._communities" in sql:
             self.result = (1, "测试社区")
+        elif sql.startswith("SELECT old_property_id,canonical_property_id,community_id,version"):
+            self.rows = []
         elif sql.startswith("SELECT id,community_id,normalized_address"):
             self.rows = [(7, 1, "合成测试路1号", self.conn.housing_type)]
         elif sql.startswith("SELECT id,source_ref,property_id"):

@@ -28,6 +28,7 @@ from services.permissions import (
 from services.registry_security import hmac_digest, normalize_identity, normalize_phone
 from services.registry_certificate_status import certificate_status_summary
 from services.registry_visit_history import filter_property_ids_by_visit, load_property_visit_summaries
+from services.registry_property_canonical import require_current_property_ids, load_property_identity_graph
 from services.watch_matching import backfill_assignment_snapshots
 from services.registry_watch_backfill import ensure_watch_person_registry_link
 from services.address_matching import MATCHER_VERSION
@@ -456,8 +457,14 @@ async def _property_search_result(
     if allowed is not None and data.community_id is not None and data.community_id not in allowed:
         raise HTTPException(403, "无权查看该社区档案")
 
+    async with conn.cursor() as identity_cur:
+        identity_graph = await load_property_identity_graph(identity_cur)
+    identity_predicate, identity_params = identity_graph.current_predicate("property")
+
     where: list[str] = []
     params: list[object] = []
+    where.append(identity_predicate)
+    params.extend(identity_params)
     if allowed is not None:
         if not allowed:
             return {
@@ -574,20 +581,50 @@ async def _property_search_result(
             "WHERE entry.id=property_match.small_community_id AND entry.enabled=1 "
             "AND CAST(entry.aliases_json AS CHAR) LIKE %s) "
             "OR EXISTS (SELECT 1 FROM registry_address_aliases alias "
-            "WHERE alias.property_id=property.id AND alias.enabled=1 AND alias.alias LIKE %s))"
+            "WHERE alias.property_id=property.id AND alias.enabled=1 AND alias.alias LIKE %s) "
+            "OR EXISTS (SELECT 1 FROM registry_properties historical "
+            "JOIN registry_property_identity_mappings identity_map "
+            "ON identity_map.old_property_id=historical.id AND identity_map.status='active' "
+            "WHERE identity_map.canonical_property_id=property.id AND "
+            "CONCAT_WS(' ',historical.community_name_snapshot,historical.natural_address,"
+            "historical.normalized_address,historical.source_house_no,historical.building,"
+            "historical.room,historical.housing_type,historical.residence_type) LIKE %s) "
+            "OR EXISTS (SELECT 1 FROM registry_address_aliases historical_alias "
+            "JOIN registry_property_identity_mappings identity_map "
+            "ON identity_map.old_property_id=historical_alias.property_id AND identity_map.status='active' "
+            "WHERE identity_map.canonical_property_id=property.id AND historical_alias.enabled=1 "
+            "AND historical_alias.alias LIKE %s) "
+            "OR EXISTS (SELECT 1 FROM registry_property_address_versions historical_version "
+            "JOIN registry_property_identity_mappings identity_map "
+            "ON identity_map.old_property_id=historical_version.property_id AND identity_map.status='active' "
+            "WHERE identity_map.canonical_property_id=property.id AND "
+            "(historical_version.natural_address LIKE %s OR historical_version.normalized_address LIKE %s)))"
         )
-        # Nine direct property fields precede the small-community alias
-        # lookup and the registry alias lookup in the predicate above.
-        # Keep the parameter count exactly aligned with the placeholders;
+        # Nine direct property fields precede the small-community alias,
+        # registry alias, and historical identity searches. Keep the parameter
+        # count exactly aligned with the placeholders;
         # aiomysql otherwise raises ``not all arguments converted``.
-        params.extend([like_value] * 9 + [alias_like, like_value])
+        params.extend([like_value] * 9 + [alias_like, like_value, like_value, like_value,
+                                           like_value, like_value])
 
     clause = " WHERE " + " AND ".join(where) if where else ""
     joins = (
         " LEFT JOIN registry_property_small_community_links property_match "
         "ON property_match.property_id=property.id "
-        "LEFT JOIN (SELECT property_id,COUNT(*) certificate_count,MAX(id) latest_id "
-        "FROM registry_property_certificates WHERE source_missing_since IS NULL GROUP BY property_id) certificate_totals "
+        "LEFT JOIN (SELECT canonical_property_id property_id,COUNT(*) certificate_count,"
+        "MAX(CASE WHEN latest_rank=1 THEN id END) latest_id FROM ("
+        "SELECT distinct_sources.*,ROW_NUMBER() OVER (PARTITION BY canonical_property_id "
+        "ORDER BY updated_at DESC,id DESC) latest_rank FROM ("
+        "SELECT family_rows.*,ROW_NUMBER() OVER (PARTITION BY canonical_property_id,source_type,source_identity "
+        "ORDER BY is_current DESC,updated_at DESC,id DESC) source_rank FROM ("
+        "SELECT certificate.id,COALESCE(identity_map.canonical_property_id,certificate.property_id) canonical_property_id,"
+        "certificate.source_type,COALESCE(NULLIF(certificate.source_ref,''),CONCAT('id:',certificate.id)) source_identity,"
+        "certificate.updated_at,(certificate.property_id=COALESCE(identity_map.canonical_property_id,certificate.property_id)) is_current "
+        "FROM registry_property_certificates certificate "
+        "LEFT JOIN registry_property_identity_mappings identity_map "
+        "ON identity_map.old_property_id=certificate.property_id AND identity_map.status='active' "
+        "WHERE certificate.source_missing_since IS NULL) family_rows) ranked_sources "
+        "WHERE source_rank=1) distinct_sources GROUP BY canonical_property_id) certificate_totals "
         "ON certificate_totals.property_id=property.id "
         "LEFT JOIN registry_property_certificates certificate "
         "ON certificate.id=certificate_totals.latest_id "
@@ -845,6 +882,7 @@ async def confirm_property_small_communities(
         async with conn.cursor() as cur:
             # Use the existing RegistryData connection and lock both sides of
             # the association in this transaction; do not acquire an OnlineData pool slot.
+            await require_current_property_ids(cur, property_ids)
             entries = {entry["id"]: entry for entry in await _annotation_entries(cur, entry_ids=entry_ids, lock=True)}
             if len(entries) != len(entry_ids):
                 raise HTTPException(409, "所选小区不存在、已停用或尚未设置所属社区")
@@ -1057,6 +1095,7 @@ async def preview_property_annotations(
         except ValueError:
             pass
     async with conn.cursor() as cur:
+        identity_graph = await load_property_identity_graph(cur)
         properties = await _annotation_properties(cur, sorted(set(ids)))
         community_ids = sorted({int(row["community_id"]) for row in properties.values()
                                 if row.get("community_id") is not None and (allowed is None or row["community_id"] in allowed)})
@@ -1070,6 +1109,8 @@ async def preview_property_annotations(
             current = properties.get(property_id)
             if current is None or (allowed is not None and current.get("community_id") not in allowed):
                 raise ValueError("房屋不存在或不在当前账号维护范围内")
+            if identity_graph.resolve(property_id).redirected:
+                raise ValueError("房屋身份已更新，请重新导出现行房屋后标注")
             item.update(address=current.get("natural_address") or current.get("normalized_address") or "",
                         community=current.get("community_name") or "",
                         community_id=current.get("community_id"))
@@ -1257,6 +1298,7 @@ async def attach_property_person(
     try:
         async with conn.cursor() as cur:
             from routers.registry_extended import _ensure_relation_interval_available
+            await require_current_property_ids(cur, [property_id])
             await cur.execute("SELECT community_id FROM registry_properties WHERE id=%s FOR UPDATE", (property_id,))
             property_row = await cur.fetchone()
             if not property_row:

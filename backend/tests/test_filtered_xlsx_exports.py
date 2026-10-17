@@ -159,6 +159,8 @@ class _PropertySortCursor:
         return (2,)
 
     async def fetchall(self):
+        if self.sql_calls[-1].startswith("SELECT old_property_id,canonical_property_id,community_id,version"):
+            return []
         if self.mode != "rows":
             return []
         return [

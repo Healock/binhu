@@ -13,6 +13,7 @@ from services.registry_certificate_source import (
     legacy_certificate_source_ref,
 )
 from services.registry_certificate_comparison import load_certificate_comparison
+from services.registry_property_canonical import load_property_identity_graph
 from services.registry_import import (
     ISSUE_CERTIFICATE_NON_RENTAL,
     classify_certificate_rows,
@@ -239,6 +240,7 @@ async def _apply_certificate_batch(
                 })
 
             property_cache: dict[tuple[str, int | None], tuple[int, str]] = {}
+            identity_graph = await load_property_identity_graph(cur)
             keys = sorted({str(item["normalized"]) for item in candidates})
             for offset in range(0, len(keys), WRITE_CHUNK):
                 chunk = keys[offset:offset + WRITE_CHUNK]
@@ -250,9 +252,12 @@ async def _apply_certificate_batch(
                     tuple(chunk),
                 )
                 for property_id, community_id, normalized, housing_type in await cur.fetchall():
-                    property_cache[(str(normalized), community_id)] = (
-                        int(property_id), str(housing_type or "")
-                    )
+                    raw_id = int(property_id)
+                    canonical_id = identity_graph.resolve(raw_id).canonical_id
+                    key = (str(normalized), community_id)
+                    current = property_cache.get(key)
+                    if current is None or raw_id == canonical_id:
+                        property_cache[key] = (canonical_id, str(housing_type or ""))
 
             await cur.execute(
                 "SELECT id,source_ref,property_id,source_content_hash,payload_json "
