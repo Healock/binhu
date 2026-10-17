@@ -8,6 +8,22 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 
 import app
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_rate_store(monkeypatch, tmp_path):
+    monkeypatch.setattr(app, "RATE_DB_PATH", tmp_path / "rate.sqlite3")
+
+
+def test_ip_and_global_quotas_persist(monkeypatch):
+    monkeypatch.setattr(app, "IP_RATE_LIMIT", 2)
+    monkeypatch.setattr(app, "GLOBAL_DAILY_LIMIT", 3)
+    assert app._take_rate("192.0.2.1")
+    assert app._take_rate("192.0.2.1")
+    assert not app._take_rate("192.0.2.1")
+    assert app._take_rate("192.0.2.2")
+    assert not app._take_rate("192.0.2.3")
 
 
 def test_issue_token_for_enabled_build_without_real_secret_files(monkeypatch):
@@ -39,6 +55,7 @@ def test_unknown_or_disabled_build_is_forbidden(monkeypatch, tmp_path):
     response = TestClient(app.app).post("/ymt/token", json={"build": build})
     assert response.status_code == 403
     assert response.json()["code"] == "BUILD_NOT_ALLOWED"
+    assert TestClient(app.app).post("/ymt/token", json={"build": "c" * 64}).status_code == 403
 
 
 def test_unknown_method_and_invalid_body_are_safe():
@@ -49,3 +66,4 @@ def test_unknown_method_and_invalid_body_are_safe():
     assert response.json()["code"] == "INVALID_REQUEST"
     assert response.headers["cache-control"] == "no-store"
     assert client.post("/ymt/token", json={"device": "6C92BF9B9A98", "secret": "x"}).status_code == 400
+    assert client.post("/ymt/token", json={"build": "A" * 64}).status_code == 400

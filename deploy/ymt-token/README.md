@@ -15,7 +15,20 @@ key and build allowlist are operator-managed files with mode `0600`:
 The build must be listed and enabled in `builds.json`; otherwise the service
 returns `403 BUILD_NOT_ALLOWED`. Issued tokens use `sub=build:<hash>`.
 The service limits each source IP to 60 requests per minute and the whole
-service to 20,000 requests per UTC day.
+service to 20,000 requests per rolling 24 hours. Quotas persist across restarts
+in `/var/log/ymt-token/rate.sqlite3`; this directory must be writable by the
+service user. A quota-store failure rejects issuance with 503.
+
+Example `builds.json` (replace the example hash and community code):
+
+```json
+{"builds":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":{"version":"3.42.0","comm":["TEST_COMMUNITY"],"enabled":true}}}
+```
+
+The top-level hash-to-entry mapping is also accepted. Replace the file
+atomically to update allowed builds without restarting. Disabling a build stops
+new issuance immediately; already-issued tokens expire after five minutes
+(plus the verifier's existing clock tolerance).
 
 The Nginx locations in `nginx-location.conf` must be added inside the existing
 HTTPS server block through the approved gateway. The existing exact-match

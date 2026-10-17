@@ -271,7 +271,7 @@ async def search_house_candidates(
     build = claims["sub"].split(":", 1)[1]
     log.info(
         "house_candidate result=ok jti=%s build=%s keyword=%s returned=%d total=%d ip=%s",
-        claims["jti"], build, body.keyword, len(items), total, source_ip,
+        claims["jti"], build, json.dumps(body.keyword, ensure_ascii=True), len(items), total, source_ip,
     )
     response.headers["Cache-Control"] = "no-store"
     return {"items": items, "total": total, "truncated": truncated}
