@@ -475,7 +475,7 @@ async def run_certificate_source_run(run_id: int) -> None:
                     "SET current_page=%s,fetched_count=%s,accepted_count=%s,rejected_count=%s,summary_json=%s "
                     "WHERE id=%s",
                     (page_no, next_fetched, next_accepted, next_rejected, json.dumps({"progress": {
-                        "incoming_total": next_accepted,
+                        "incoming_total": next_fetched,
                         "scope_accepted": next_accepted,
                         "scope_rejected": next_rejected,
                         "status_counts": progress_status,
@@ -534,6 +534,12 @@ async def run_certificate_source_run(run_id: int) -> None:
         if trigger_source == "scheduled":
             applied = await apply_certificate_batch(conn, int(result["batch_id"]), None)
             result = {**result, "application": applied, "status": applied["status"]}
+        result["progress"] = {
+            "incoming_total": fetched_count,
+            "scope_accepted": accepted_count,
+            "scope_rejected": rejected_count,
+            "status_counts": progress_status,
+        }
         async with conn.cursor() as cur:
             await cur.execute(
                 "DELETE FROM registry_certificate_source_pages WHERE run_id=%s",

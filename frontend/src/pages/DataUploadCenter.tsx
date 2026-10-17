@@ -43,6 +43,8 @@ export default function DataUploadCenter() {
   const canManageQmfSource = Boolean(user?.permissions.includes('sync.trigger'))
   const canManageCertificates = Boolean(user?.permissions.includes('registry.import.manage'))
   const canManageResidence = user?.role === 'super_admin'
+    || user?.permission_groups?.some(group => group.code === 'super_admin')
+    || user?.permission_group?.code === 'super_admin'
   const canUseUploadCenter = canManagePoliceDispatch || canManageQmfSource || canManageCertificates || canManageResidence
   const [qmfRun, setQmfRun] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
   const [qmfLoading, setQmfLoading] = useState(false)
@@ -188,44 +190,8 @@ export default function DataUploadCenter() {
               {certificateRun?.preview?.progress?.status_counts && <div className="mt-1 text-xs">状态：{Object.entries(certificateRun.preview.progress.status_counts).map(([key, value]) => `${key} ${value}`).join(' · ')}</div>}
             </div>}
             {canManageResidence && <div className="rounded-lg border border-[var(--app-border)] p-3"><div className="flex items-center justify-between gap-2"><strong>居住证平台</strong><Button size="small" type="primary" onClick={() => void handleResidenceRead()} disabled={Boolean(residenceRun && ['queued', 'running'].includes(residenceRun.status))}>读取</Button></div><div className="mt-2 text-xs text-[var(--app-text-secondary)]">{residenceRun?.message || '尚未读取'}</div>{residenceRun?.progress !== null && residenceRun && <Progress percent={residenceRun.progress || 0} size="small" />}</div>}
-            {canManageQmfSource && <div className="rounded-lg border border-[var(--app-border)] p-3"><div className="flex items-center justify-between gap-2"><strong>全民防平台</strong><Button size="small" type="primary" loading={qmfLoading} onClick={() => void handleQmfSync()} disabled={Boolean(qmfRun && ['queued', 'running'].includes(qmfRun.status))}>读取</Button></div><div className="mt-2 text-xs text-[var(--app-text-secondary)]">{qmfRun?.message || '尚未读取'}</div>{qmfRun?.progress !== null && qmfRun && <Progress percent={qmfRun.progress || 0} size="small" />}</div>}
+            {canManageQmfSource && <div className="rounded-lg border border-[var(--app-border)] p-3"><div className="flex items-center justify-between gap-2"><strong>全民防平台</strong><Button size="small" type="primary" loading={qmfLoading} onClick={() => void handleQmfSync()} disabled={Boolean(qmfRun && ['queued', 'running'].includes(qmfRun.status))}>读取</Button></div><div className="mt-2 text-xs text-[var(--app-text-secondary)]">{qmfRun?.message || '尚未读取'}</div>{qmfRun?.progress !== null && qmfRun && <Progress percent={qmfRun.progress || 0} size="small" status={qmfRun.status === 'failed' ? 'exception' : qmfRun.status === 'success' || qmfRun.status === 'warning' ? 'success' : 'active'} />}{qmfRun?.created_at && <div className="mt-2 text-xs text-[var(--app-text-secondary)]">最近任务：{qmfRun.status === 'success' ? '已完成' : qmfRun.status === 'warning' ? '完成但有提醒' : qmfRun.status === 'failed' ? '失败' : qmfRun.status === 'running' ? '处理中' : '排队中'} · {formatUTCTime(qmfRun.created_at, systemTimezone)}</div>}{qmfRun?.error_message && <Alert className="mt-2" type="error" showIcon message={qmfRun.error_message} />}{qmfRun?.result && <div className="mt-2 flex flex-wrap gap-3 text-xs text-[var(--app-text-secondary)]"><span>读取 {qmfRun.result.record_count ?? 0} 条</span><span>有效 {qmfRun.result.valid_count ?? 0} 条</span><span>社区未匹配 {qmfRun.result.unresolved_count ?? 0} 条</span><span>来源问题 {qmfRun.result.issue_count ?? 0} 条</span></div>}</div>}
           </div>
-        </Panel>
-      )}
-
-      {canManageQmfSource && (
-        <Panel
-          title="全民防只读扫描"
-          description="从全民防只读获取疑似未注销模型三的未核查任务；已在平台完成的任务会保留，交由每日反馈核对后归档。"
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <Button type="primary" loading={qmfLoading} onClick={() => void handleQmfSync()}>
-              获取未核查任务
-            </Button>
-            {qmfRun && (
-              <span className="text-sm text-[var(--app-text-secondary)]">
-                最近任务：{qmfRun.status === 'success' ? '已完成' : qmfRun.status === 'warning' ? '完成但有提醒' : qmfRun.status === 'failed' ? '失败' : qmfRun.status === 'running' ? '处理中' : '排队中'}
-              </span>
-            )}
-          </div>
-          {qmfRun && (
-            <div className="mt-3 rounded-lg border border-[var(--app-border)] p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                <span>{qmfRun.message || '全民防只读扫描任务'}</span>
-                {qmfRun.created_at && <span className="text-[var(--app-text-secondary)]">{formatUTCTime(qmfRun.created_at, systemTimezone)}</span>}
-              </div>
-              {qmfRun.progress !== null && <Progress percent={qmfRun.progress} size="small" status={qmfRun.status === 'failed' ? 'exception' : qmfRun.status === 'success' || qmfRun.status === 'warning' ? 'success' : 'active'} />}
-              {qmfRun.error_message && <Alert className="mt-2" type="error" showIcon message={qmfRun.error_message} />}
-              {qmfRun.result && (
-                <div className="mt-2 flex flex-wrap gap-3 text-xs text-[var(--app-text-secondary)]">
-                  <span>读取 {qmfRun.result.record_count ?? 0} 条</span>
-                  <span>有效 {qmfRun.result.valid_count ?? 0} 条</span>
-                  <span>社区未匹配 {qmfRun.result.unresolved_count ?? 0} 条</span>
-                  <span>来源问题 {qmfRun.result.issue_count ?? 0} 条</span>
-                </div>
-              )}
-            </div>
-          )}
         </Panel>
       )}
 

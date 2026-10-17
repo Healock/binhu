@@ -72,7 +72,7 @@ class RegistryCertificateSourceTests(unittest.IsolatedAsyncioTestCase):
             patch("services.registry_certificate_source.settings.VISIT_SOURCE_AUTHORIZATION", "token"),
         ):
             self.assertEqual(3, await fetch_certificate_page_count())
-        self.assertEqual(1, MetadataClient.last_request[1]["pageSize"])
+        self.assertEqual(200, MetadataClient.last_request[1]["pageSize"])
 
     def test_image_reference_is_restricted_to_source_relative_jpeg_or_png(self):
         self.assertEqual(

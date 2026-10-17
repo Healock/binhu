@@ -42,7 +42,8 @@ class _Cursor:
             if len(params) == 5:
                 page, fetched, accepted, rejected, run_id = params
             elif len(params) == 6:
-                page, fetched, accepted, rejected, _summary_json, run_id = params
+                page, fetched, accepted, rejected, summary_json, run_id = params
+                self.state["runs"][int(run_id)]["summary"] = json.loads(summary_json)
             else:
                 page, fetched, accepted, rejected, run_id = (*params,)
             self.state["runs"][int(run_id)].update(
@@ -54,6 +55,11 @@ class _Cursor:
             self.rowcount = 1
             return
         if normalized.startswith("UPDATE registry_certificate_source_runs SET summary_json"):
+            self.rowcount = 1
+            return
+        if normalized.startswith("UPDATE registry_certificate_source_runs SET total_pages"):
+            total_pages, run_id = params
+            self.state["runs"][int(run_id)]["total_pages"] = int(total_pages)
             self.rowcount = 1
             return
         if normalized.startswith("INSERT INTO registry_certificate_source_pages"):
@@ -205,6 +211,7 @@ class RegistryCertificateJobTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(jobs.db_manager, "get_pool", return_value=pool),
+            patch.object(jobs, "fetch_certificate_page_count", AsyncMock(return_value=2)),
             patch.object(jobs, "iter_certificate_pages", pages),
             patch.object(jobs, "_create_preview_batch", preview),
         ):
@@ -214,6 +221,12 @@ class RegistryCertificateJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(201, state["runs"][1]["fetched_count"])
         self.assertEqual(2, state["runs"][1]["accepted_count"])
         self.assertEqual(199, state["runs"][1]["rejected_count"])
+        self.assertEqual({
+            "incoming_total": 201,
+            "scope_accepted": 2,
+            "scope_rejected": 199,
+            "status_counts": {"unsigned": 2, "renter_missing": 2},
+        }, state["runs"][1]["summary"]["progress"])
         self.assertEqual([(1, 1), (1, 2)], state["inserted_pages"])
         self.assertEqual({}, state["pages"])
         self.assertEqual([1, 2], [row["source_row"] for row in captured["rows"]])
@@ -237,6 +250,7 @@ class RegistryCertificateJobTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(jobs.db_manager, "get_pool", return_value=pool),
+            patch.object(jobs, "fetch_certificate_page_count", AsyncMock(return_value=2)),
             patch.object(jobs, "iter_certificate_pages", pages),
             patch.object(jobs, "_create_preview_batch", preview),
         ):
@@ -261,6 +275,7 @@ class RegistryCertificateJobTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(jobs.db_manager, "get_pool", return_value=pool),
+            patch.object(jobs, "fetch_certificate_page_count", AsyncMock(return_value=1)),
             patch.object(jobs, "iter_certificate_pages", pages),
         ):
             await jobs.run_certificate_source_run(3)

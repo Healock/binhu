@@ -112,7 +112,11 @@ async def fetch_certificate_page_count() -> int | None:
         try:
             response = await client.get(
                 CERTIFICATE_ENDPOINT,
-                params={"deptCode": settings.VISIT_SOURCE_POLICE_CODE, "pageNum": 1, "pageSize": 1},
+                params={
+                    "deptCode": settings.VISIT_SOURCE_POLICE_CODE,
+                    "pageNum": 1,
+                    "pageSize": CERTIFICATE_PAGE_SIZE,
+                },
             )
             response.raise_for_status()
             return _certificate_total_pages(response.json())
