@@ -4557,6 +4557,23 @@ export interface RegistryProperty {
   address_match_version: string
   address_match_confirmed_by: number | null
   address_match_confirmed_at: string | null
+  identity?: {
+    requested_id: number
+    canonical_id: number
+    redirected: boolean
+    mapping_version: number
+    path: number[]
+    historical_ids: Array<{
+      old_property_id: number
+      canonical_property_id: number
+      community_id: number
+      mapping_version: number
+      mapped_at: string | null
+      source_house_no: string
+      household_status: string
+      source_count: number
+    }>
+  }
 }
 
 export interface RegistrySmallCommunityOption {

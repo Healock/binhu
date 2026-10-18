@@ -20,6 +20,7 @@ from services.registry_issue_reconciliation import (
     unique_community_matches,
 )
 from services.registry_import import ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED, normalize_community
+from services.registry_property_canonical import load_property_identity_graph
 
 
 async def close_connection(conn) -> None:
@@ -74,6 +75,7 @@ async def run_reconciliation(*, apply: bool) -> dict:
             labels_by_community = await load_label_map(platform_cur)
         await platform_conn.rollback()
         async with registry_conn.cursor() as registry_cur:
+            identity_graph = await load_property_identity_graph(registry_cur)
             await registry_cur.execute(
                 "SELECT id, batch_id, source_ref, payload_json FROM registry_import_issues "
                 "WHERE status='pending' AND source_type='household' AND issue_type=%s",
@@ -105,6 +107,7 @@ async def run_reconciliation(*, apply: bool) -> dict:
                         community_name=match[1],
                         reviewer_id=None,
                         apply=apply,
+                        identity_graph=identity_graph,
                     )
                     if not linked:
                         continue

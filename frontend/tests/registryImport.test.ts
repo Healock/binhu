@@ -114,6 +114,18 @@ test('房屋档案和问题核查使用正文搜索并提供完整筛选', () =>
   assert.match(pageSource, /pagination=\{listPagination\}/)
 })
 
+test('现行房屋详情提供可折叠的历史户号沿革', () => {
+  const pageSource = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
+
+  assert.match(pageSource, /Collapse/)
+  assert.match(pageSource, /detail\.identity\?\.historical_ids/)
+  assert.match(pageSource, /历史户号（\$\{detail\.identity\.historical_ids\.length\}）/)
+  assert.match(pageSource, /归并时间/)
+  assert.match(apiSource, /canonical_id: number/)
+  assert.match(apiSource, /historical_ids: Array</)
+})
+
 test('问题数据可按问题编号和来源行直接定位，房屋搜索提示保持原有范围', () => {
   const pageSource = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
   const issueColumns = pageSource.slice(

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, Button, DatePicker, Descriptions, Drawer, Dropdown, Form, Image, Input, Modal, Pagination, Popconfirm,
+  Alert, Button, Collapse, DatePicker, Descriptions, Drawer, Dropdown, Form, Image, Input, Modal, Pagination, Popconfirm,
   Select, Space, Spin, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
@@ -1113,7 +1113,7 @@ export default function RegistryManagement() {
             <Tag color={row.household_status === '已注销' ? 'default' : row.household_status === '未注销' ? 'green' : 'gold'}>{row.household_status || '未知'}</Tag>
           </span>
           <span className="registry-mobile-property-row__meta">
-            <span>{row.latest_visit_date ? `最近走访 ${row.latest_visit_date}` : '暂无走访'}</span>
+            <span>{row.latest_visit_date ? `最近走访 ${row.latest_visit_date}` : registryVisitText(row)}</span>
             {row.latest_star_rating && <span>{row.latest_star_rating}</span>}
           </span>
         </button>
@@ -1638,6 +1638,22 @@ export default function RegistryManagement() {
             </section>
           })()}
           {detailKind === 'property' && <Descriptions bordered size="small" column={1} items={[{ key: 'household_status', label: '注销状态（户号表）', children: detail.household_status || '未知' }]} />}
+          {detailKind === 'property' && detail.identity?.historical_ids?.length > 0 && (
+            <Collapse
+              items={[{
+                key: 'history',
+                label: `历史户号（${detail.identity.historical_ids.length}）`,
+                children: <Space direction="vertical" size="small" className="w-full">
+                  {detail.identity.historical_ids.map((item: any) => (
+                    <span key={`${item.old_property_id}-${item.mapping_version}`}>
+                      历史档案 {item.old_property_id}，户号 {item.source_house_no || '未知'}，状态 {item.household_status}，
+                      来源 {item.source_count} 条，归并时间 {item.mapped_at ? formatUTCTime(item.mapped_at, systemTimezone) : '未知'}
+                    </span>
+                  ))}
+                </Space>,
+              }]}
+            />
+          )}
           <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'visit_association_status', 'small_community_match', ...(detailKind === 'property' ? ['status', 'household_status'] : [])].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
           {detailKind === 'person' && canViewTags && <Panel
             title="人员标签"

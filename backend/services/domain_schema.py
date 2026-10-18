@@ -66,6 +66,54 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_property_address (normalized_address(255), status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    # The identity graph is intentionally separate from registry_merge_history,
+    # which is reserved for person merges. Schema initialization is idempotent;
+    # this PR has no mapping writer and never creates real mapping rows.
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_property_identity_mappings (
+            old_property_id BIGINT NOT NULL PRIMARY KEY,
+            canonical_property_id BIGINT NOT NULL,
+            community_id BIGINT NOT NULL,
+            status VARCHAR(16) NOT NULL DEFAULT 'active',
+            version INT UNSIGNED NOT NULL DEFAULT 1,
+            maintenance_run_id VARCHAR(80) NOT NULL,
+            created_by BIGINT DEFAULT NULL,
+            updated_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_registry_identity_status_old (status, old_property_id),
+            INDEX idx_registry_identity_canonical (canonical_property_id, status),
+            INDEX idx_registry_identity_community (community_id, status),
+            CONSTRAINT chk_registry_identity_not_self
+                CHECK (old_property_id <> canonical_property_id),
+            CONSTRAINT chk_registry_identity_positive
+                CHECK (old_property_id > 0 AND canonical_property_id > 0 AND community_id > 0 AND version > 0),
+            CONSTRAINT chk_registry_identity_status
+                CHECK (status IN ('active','revoked'))
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_property_identity_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            old_property_id BIGINT NOT NULL,
+            canonical_property_id BIGINT NOT NULL,
+            community_id BIGINT NOT NULL,
+            event_type VARCHAR(24) NOT NULL,
+            mapping_version INT UNSIGNED NOT NULL,
+            maintenance_run_id VARCHAR(80) NOT NULL,
+            reason_code VARCHAR(60) NOT NULL DEFAULT '',
+            actor_user_id BIGINT DEFAULT NULL,
+            occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_registry_identity_event_old (old_property_id, occurred_at),
+            INDEX idx_registry_identity_event_run (maintenance_run_id, occurred_at),
+            INDEX idx_registry_identity_event_canonical (canonical_property_id, occurred_at),
+            CONSTRAINT chk_registry_identity_event_not_self
+                CHECK (old_property_id <> canonical_property_id),
+            CONSTRAINT chk_registry_identity_event_positive
+                CHECK (old_property_id > 0 AND canonical_property_id > 0 AND community_id > 0 AND mapping_version > 0)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
     # 来源导入字段采用幂等补列，兼容 0.20.0 以前已经创建的房屋档案库。
     await _ensure_column(cur, "registry_properties", "housing_type", "VARCHAR(50) NOT NULL DEFAULT '' AFTER room")
     await _ensure_column(cur, "registry_properties", "residence_type", "VARCHAR(100) NOT NULL DEFAULT '' AFTER housing_type")

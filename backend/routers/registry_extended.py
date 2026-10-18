@@ -63,6 +63,7 @@ from services.registry_visit_history import (
     load_property_visit_summaries,
 )
 from services.registry_property_identity import current_household_snapshot, property_snapshot
+from services.registry_property_canonical import load_property_identity_graph
 from services.registry_certificate_jobs import (
     create_certificate_source_run,
     get_certificate_source_run,
@@ -122,7 +123,16 @@ def _iso(value) -> str | None:
     return value.isoformat() + ("Z" if isinstance(value, datetime) else "") if value else None
 
 
-async def _property_scope(cur, property_id: int, user: dict, permission: str):
+async def _property_scope(cur, property_id: int, user: dict, permission: str, *, identity_graph=None):
+    if identity_graph is None:
+        identity_graph = await load_property_identity_graph(cur)
+    resolution = identity_graph.resolve(property_id)
+    if permission != REGISTRY_PROPERTY_VIEW and resolution.redirected:
+        raise HTTPException(409, {
+            "code": "stale_property_identity",
+            "message": "房屋身份已更新，请刷新后重新选择现行房屋再重试",
+        })
+    property_id = resolution.canonical_id
     await cur.execute(
         "SELECT community_id FROM registry_properties WHERE id=%s",
         (property_id,),
@@ -600,7 +610,13 @@ async def get_property_detail(
     conn=Depends(get_registry_db),
 ):
     async with conn.cursor() as cur:
-        await _property_scope(cur, property_id, user, REGISTRY_PROPERTY_VIEW)
+        identity_graph = await load_property_identity_graph(cur)
+        resolution = identity_graph.resolve(property_id)
+        await _property_scope(cur, resolution.canonical_id, user, REGISTRY_PROPERTY_VIEW,
+                              identity_graph=identity_graph)
+        property_id = resolution.canonical_id
+        family_ids = sorted(identity_graph.family([property_id]))
+        certificate_property_ids = family_ids or [property_id]
         await cur.execute(
             "SELECT id, street, community_id, community_name_snapshot, natural_address, building, room, "
             "housing_type, residence_type, source_house_no, source_updated_at, source_type, source_ref, "
@@ -609,6 +625,8 @@ async def get_property_detail(
             (property_id,),
         )
         row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "房屋档案不存在")
         await cur.execute(
             "SELECT id, alias, community_id, enabled, source_type, created_at "
             "FROM registry_address_aliases WHERE property_id=%s ORDER BY enabled DESC, id DESC",
@@ -651,11 +669,29 @@ async def get_property_detail(
         await cur.execute(
             "SELECT id, source_ref, source_row, community_snapshot, address_snapshot, landlord_name, "
             "landlord_identity_number, actual_renter_name, actual_renter_identity_number, signed_status, sign_type, sign_time, document_ref, created_at "
-            ", source_last_seen_at, updated_at FROM registry_property_certificates "
-            "WHERE property_id=%s AND source_missing_since IS NULL ORDER BY updated_at DESC, id DESC",
-            (property_id,),
+            ", source_last_seen_at, updated_at, property_id,source_type FROM registry_property_certificates "
+            f"WHERE property_id IN ({','.join(['%s'] * len(certificate_property_ids))}) "
+            "AND source_missing_since IS NULL ORDER BY updated_at DESC, id DESC",
+            tuple(certificate_property_ids),
         )
-        certificates = await cur.fetchall()
+        certificate_rows = await cur.fetchall()
+        # During the staged rollout, eligible mappings may leave a certificate
+        # physically attached to its historical property until the separate
+        # maintenance PR migrates it. Project that read-only reference here and
+        # de-duplicate source rows if an interrupted migration left both sides.
+        certificates_by_ref = {}
+        for certificate in certificate_rows:
+            source_key = (str(certificate[17] or ""), str(certificate[1] or f"id:{certificate[0]}"))
+            current = certificates_by_ref.get(source_key)
+            if current is None or (
+                int(certificate[16]) == property_id and int(current[16]) != property_id
+            ):
+                certificates_by_ref[source_key] = certificate
+        certificates = sorted(
+            certificates_by_ref.values(),
+            key=lambda item: (item[15] or item[14], int(item[0])),
+            reverse=True,
+        )
         await cur.execute(
             "SELECT COUNT(*),EXISTS(SELECT 1 FROM registry_source_batches "
             "WHERE source_type='certificate' AND status IN ('imported','partially_imported')) "
@@ -731,6 +767,32 @@ async def get_property_detail(
             cur,
             [visit_property],
         ))[int(row[0])]
+    async with conn.cursor() as identity_cur:
+        historical_ids = sorted(set(family_ids) - {property_id})
+        if historical_ids:
+            await identity_cur.execute(
+                "SELECT mapping.old_property_id,mapping.canonical_property_id,mapping.community_id,"
+                "mapping.version,mapping.created_at,property.source_house_no,property.household_status,"
+                "(SELECT COUNT(*) FROM registry_source_records source_record "
+                "WHERE source_record.entity_id=mapping.old_property_id "
+                "AND source_record.entity_type='household_property') "
+                "FROM registry_property_identity_mappings mapping "
+                "JOIN registry_properties property ON property.id=mapping.old_property_id "
+                "WHERE mapping.status='active' "
+                f"AND mapping.old_property_id IN ({','.join(['%s'] * len(historical_ids))}) "
+                "ORDER BY mapping.old_property_id",
+                tuple(historical_ids),
+            )
+            identity_rows = await identity_cur.fetchall()
+        else:
+            identity_rows = []
+        historical_ids = [
+            {"old_property_id": int(item[0]), "canonical_property_id": int(item[1]),
+             "community_id": int(item[2]), "mapping_version": int(item[3]),
+             "mapped_at": _iso(item[4]), "source_house_no": str(item[5] or ""),
+             "household_status": str(item[6] or "未知"), "source_count": int(item[7] or 0)}
+            for item in identity_rows
+        ]
     return {
         "id": int(row[0]), "street": row[1], "community_id": row[2],
         "community_name": row[3], "natural_address": row[4], "building": row[5],
@@ -782,6 +844,13 @@ async def get_property_detail(
         ],
         "certificate_summary": certificate_summary,
         "certificates": certificate_items,
+        "identity": {
+            "requested_id": int(resolution.requested_id),
+            "canonical_id": int(resolution.canonical_id),
+            "redirected": resolution.redirected,
+            "path": list(resolution.path),
+            "historical_ids": historical_ids,
+        },
         **visit_summary,
     }
 
@@ -796,7 +865,11 @@ async def get_property_visit_history(
 ):
     """读取一套房屋的历史走访和已关联星级，不复制跨库业务数据。"""
     async with conn.cursor() as cur:
-        await _property_scope(cur, property_id, user, REGISTRY_PROPERTY_VIEW)
+        identity_graph = await load_property_identity_graph(cur)
+        resolution = identity_graph.resolve(property_id)
+        await _property_scope(cur, resolution.canonical_id, user, REGISTRY_PROPERTY_VIEW,
+                              identity_graph=identity_graph)
+        property_id = resolution.canonical_id
         await cur.execute(
             "SELECT id,community_name_snapshot,natural_address,normalized_address,community_id "
             "FROM registry_properties WHERE id=%s",
@@ -806,7 +879,7 @@ async def get_property_visit_history(
         if not row:
             raise HTTPException(404, "房屋档案不存在")
         variants = await load_property_address_variants(cur, [property_id])
-        return await load_property_visit_history(
+        result = await load_property_visit_history(
             cur,
             {
                 "id": int(row[0]),
@@ -819,6 +892,11 @@ async def get_property_visit_history(
             page=page,
             page_size=page_size,
         )
+        result["identity"] = {"requested_id": int(resolution.requested_id),
+                               "canonical_id": int(resolution.canonical_id),
+                               "redirected": resolution.redirected,
+                               "path": list(resolution.path)}
+        return result
 
 
 @router.get("/properties/{property_id}/certificates/{certificate_id}/image")
@@ -830,11 +908,15 @@ async def get_property_certificate_image(
     conn=Depends(get_registry_db),
 ):
     async with conn.cursor() as cur:
-        await _property_scope(cur, property_id, user, REGISTRY_IMPORT_MANAGE)
+        identity_graph = await load_property_identity_graph(cur)
+        property_id = identity_graph.resolve(property_id).canonical_id
+        await _property_scope(cur, property_id, user, REGISTRY_IMPORT_MANAGE,
+                              identity_graph=identity_graph)
+        family_ids = sorted(identity_graph.family([property_id]))
         await cur.execute(
             "SELECT document_ref FROM registry_property_certificates "
-            "WHERE id=%s AND property_id=%s",
-            (certificate_id, property_id),
+            f"WHERE id=%s AND property_id IN ({','.join(['%s'] * len(family_ids))})",
+            (certificate_id, *family_ids),
         )
         row = await cur.fetchone()
     if not row:
@@ -2192,6 +2274,11 @@ async def confirm_household_import(
                 await conn.rollback()
                 return {"batch_id": batch_id, "status": "imported", "imported_count": 0, "idempotent": True}
             previous_imported = int(batch[1])
+            # Active identity mappings are read-only in this PR.  Importing a
+            # later household snapshot must still target the current archive,
+            # otherwise a historical household number can recreate a second
+            # visible property.
+            identity_graph = await load_property_identity_graph(cur)
             if batch[0] in {"preview", "partially_imported"}:
                 from services.household_preview_repair import repair_household_preview
                 await repair_household_preview(cur, batch_id)
@@ -2311,6 +2398,7 @@ async def confirm_household_import(
             # Fetch and lock existing properties in chunks to avoid an N+1 query
             # for the large historical workbook.
             existing_by_id = {}
+            existing_raw_ids: set[int] = set()
             for offset in range(0, len(resolved_rows), 500):
                 chunk = resolved_rows[offset:offset + 500]
                 keys = sorted({item[5] for item in chunk if item[5]})
@@ -2326,7 +2414,30 @@ async def confirm_household_import(
                     tuple(keys + numbers),
                 )
                 for existing_row in await cur.fetchall():
-                    existing_by_id[int(existing_row[0])] = existing_row
+                    raw_id = int(existing_row[0])
+                    existing_raw_ids.add(raw_id)
+                    canonical_id = identity_graph.resolve(raw_id).canonical_id
+                    projected_row = (canonical_id, *existing_row[1:])
+                    current = existing_by_id.get(canonical_id)
+                    # If both sides match the same import key, prefer the
+                    # actual current row over its historical counterpart.
+                    if current is None or raw_id == canonical_id:
+                        existing_by_id[canonical_id] = projected_row
+            canonical_targets = {
+                identity_graph.resolve(identifier).canonical_id
+                for identifier in existing_raw_ids
+                if identity_graph.resolve(identifier).redirected
+            }
+            if canonical_targets:
+                placeholders = ",".join(["%s"] * len(canonical_targets))
+                await cur.execute(
+                    "SELECT id, community_id, street, natural_address, building, room, normalized_address, source_house_no, "
+                    "source_updated_at, housing_type, residence_type, household_status "
+                    f"FROM registry_properties WHERE id IN ({placeholders}) FOR UPDATE",
+                    tuple(sorted(canonical_targets)),
+                )
+                for current_row in await cur.fetchall():
+                    existing_by_id[int(current_row[0])] = current_row
             address_cache, household_cache = {}, {}
             for existing_row in existing_by_id.values():
                 address_cache.setdefault((str(existing_row[6]), existing_row[1]), []).append(existing_row)
@@ -2334,7 +2445,10 @@ async def confirm_household_import(
                 if number:
                     household_cache.setdefault((number, existing_row[1]), []).append(existing_row)
             newer_property_ids = set()
-            existing_ids = sorted(existing_by_id)
+            # Source records can still point at the historical ID.  Include
+            # both sides when checking for a newer batch, otherwise a current
+            # record would be missed and an older import could overwrite it.
+            existing_ids = sorted(existing_raw_ids | canonical_targets)
             for offset in range(0, len(existing_ids), 500):
                 ids = existing_ids[offset:offset + 500]
                 await cur.execute(
@@ -2342,7 +2456,10 @@ async def confirm_household_import(
                     f"AND entity_id IN ({','.join(['%s'] * len(ids))}) AND batch_id>%s FOR UPDATE",
                     (*ids, batch_id),
                 )
-                newer_property_ids.update(int(item[0]) for item in await cur.fetchall())
+                newer_property_ids.update(
+                    identity_graph.resolve(int(item[0])).canonical_id
+                    for item in await cur.fetchall()
+                )
 
             new_rows: list[tuple[int, str, dict, int | None, str, str]] = []
             existing_issues = []
