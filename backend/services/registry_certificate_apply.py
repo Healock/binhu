@@ -261,7 +261,7 @@ async def _apply_certificate_batch(
                         property_cache[key] = (canonical_id, str(housing_type or ""))
 
             await cur.execute(
-                "SELECT id,source_ref,property_id,source_content_hash,payload_json "
+                "SELECT id,source_ref,property_id,source_content_hash,payload_json,source_missing_since "
                 "FROM registry_property_certificates WHERE source_type='certificate' FOR UPDATE"
             )
             existing_rows = list(await cur.fetchall())
@@ -287,6 +287,7 @@ async def _apply_certificate_batch(
             source_links: list[tuple] = []
             non_rental_issues: list[tuple] = []
             identity_conflict_issues: list[tuple] = []
+            restore_missing_state: list[tuple] = []
             claimed_existing_ids: set[int] = set()
             eligible_record_ids: set[int] = set()
 
@@ -319,6 +320,11 @@ async def _apply_certificate_batch(
                 if existing and identity_graph.resolve(int(existing[2])).canonical_id != int(property_id):
                     identity_conflict = True
                 if identity_conflict:
+                    # A full-snapshot pre-pass marks every existing certificate
+                    # as missing. Preserve the pre-batch state for conflicted
+                    # identities without claiming that this source was seen.
+                    for row in existing_matches.values():
+                        restore_missing_state.append((row[5], int(row[0])))
                     identity_conflict_issues.append((
                         batch_id,
                         ISSUE_CERTIFICATE_CONTENT_CONFLICT,
@@ -381,6 +387,12 @@ async def _apply_certificate_batch(
                     "(batch_id,issue_type,source_type,source_ref,entity_key,payload_json,reason) "
                     "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                     [*non_rental_issues, *identity_conflict_issues],
+                )
+            if restore_missing_state:
+                await _executemany(
+                    cur,
+                    "UPDATE registry_property_certificates SET source_missing_since=%s WHERE id=%s",
+                    restore_missing_state,
                 )
             if updates:
                 await _executemany(

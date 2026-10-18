@@ -65,10 +65,13 @@ class Cursor:
         elif sql.startswith("SELECT id,community_id,normalized_address"):
             self.rows = [(7, 1, "合成测试路1号", self.conn.housing_type)]
         elif sql.startswith("SELECT id,source_ref,property_id"):
-            self.rows = [(i, item["ref"], item.get("property_id", 7), item["hash"], item["payload"])
+            self.rows = [(i, item["ref"], item.get("property_id", 7), item["hash"], item["payload"],
+                          item.get("missing_since"))
                          for i, item in state["certificates"].items()]
         elif sql.startswith("UPDATE registry_property_certificates SET source_missing_since"):
             for item in state["certificates"].values():
+                if item.get("missing_since") is None:
+                    item["missing_since"] = "snapshot-time"
                 item["missing"] = True
         elif sql.startswith("SELECT id,source_ref FROM registry_property_certificates"):
             self.rows = [(i, item["ref"]) for i, item in state["certificates"].items()
@@ -90,13 +93,20 @@ class Cursor:
         if "INSERT INTO registry_import_issues" in sql:
             for values in rows:
                 state["issues"].append({"batch": values[0], "status": "pending", "ref": values[2]})
+        elif "UPDATE registry_property_certificates SET source_missing_since=%s WHERE id=%s" in sql:
+            if self.conn.fail_restore_missing:
+                raise RuntimeError("synthetic missing-state restore failure")
+            for missing_since, certificate_id in rows:
+                state["certificates"][certificate_id]["missing_since"] = missing_since
+                state["certificates"][certificate_id]["missing"] = missing_since is not None
         elif "INSERT INTO registry_property_certificates" in sql:
             if self.conn.fail_write:
                 raise RuntimeError("synthetic write failure")
             for values in rows:
                 key = max(state["certificates"], default=0) + 1
                 state["certificates"][key] = {"ref": values[1], "hash": values[2],
-                                               "payload": json.loads(values[14]), "missing": False}
+                                               "payload": json.loads(values[14]), "missing": False,
+                                               "missing_since": None}
         elif "UPDATE registry_property_certificates SET property_id" in sql:
             if self.conn.fail_write:
                 raise RuntimeError("synthetic write failure")
@@ -130,6 +140,7 @@ class Connection:
         self.calls = []
         self.lock_result = 1
         self.fail_write = False
+        self.fail_restore_missing = False
         self.housing_type = "个人出租"
         self.identity_mappings = list(identity_mappings)
         self.identity_properties = list(identity_properties)
@@ -194,7 +205,38 @@ class CertificateApplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, result["updated_count"])
         self.assertEqual(1, result["pending_issue_count"])
         self.assertEqual(9, conn.state["certificates"][10]["property_id"])
+        self.assertFalse(conn.state["certificates"][10]["missing"])
+        self.assertIsNone(conn.state["certificates"][10]["missing_since"])
         self.assertEqual([], conn.state.get("links", []))
+
+    async def test_identity_conflict_preserves_preexisting_missing_state(self):
+        conn = Connection(
+            [notice(source_id=999, signed="是", sjczrxm="冲突责任人")],
+            existing_property_id=9,
+            identity_mappings=[(9, 11, 1, 1)],
+            identity_properties=[(9, 1, "合成测试路1号"), (11, 1, "合成测试路1号"), (10, 1, "合成测试路1号")],
+        )
+        conn.state["certificates"][10]["missing"] = True
+        conn.state["certificates"][10]["missing_since"] = "prior-missing-time"
+        result = await self.apply(conn)
+        self.assertEqual(1, result["pending_issue_count"])
+        self.assertTrue(conn.state["certificates"][10]["missing"])
+        self.assertEqual("prior-missing-time", conn.state["certificates"][10]["missing_since"])
+
+    async def test_identity_conflict_missing_state_restore_failure_rolls_back_batch(self):
+        conn = Connection(
+            [notice(source_id=999, signed="是", sjczrxm="冲突责任人")],
+            existing_property_id=9,
+            identity_mappings=[(9, 11, 1, 1)],
+            identity_properties=[(9, 1, "合成测试路1号"), (11, 1, "合成测试路1号"), (10, 1, "合成测试路1号")],
+        )
+        before = copy.deepcopy(conn.state)
+        conn.fail_restore_missing = True
+        with self.assertRaises(RuntimeError):
+            await self.apply(conn)
+        self.assertEqual(before, conn.state)
+        self.assertTrue(conn.released)
+        self.assertFalse(conn.committed)
 
     async def test_identical_source_duplicates_have_one_current_notice(self):
         conn = Connection([notice(), notice(source_id=2)])
