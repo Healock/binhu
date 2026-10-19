@@ -9,6 +9,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.registry_identity_evidence import (
+    _json_numeric_reference_pattern,
     discover_reference_inventory,
     scan_certificate_source_references,
     scan_opaque_json_reference_markers,
@@ -180,7 +181,7 @@ async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_na
             self.params = params
 
         async def fetchone(self):
-            return (1 if self.params[0] == "7" else 0,)
+            return (1 if "7" in self.params[0] else 0,)
 
     cursor = JsonCursor()
     findings = await scan_opaque_json_reference_markers(cursor, [{
@@ -190,10 +191,20 @@ async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_na
     assert all(set(item) == {"property_id", "schema", "table", "column", "count", "key_pattern"} for item in findings)
     assert all(
         "COUNT(*)" in sql and "MAX_EXECUTION_TIME(5000)" in sql
-        and "JSON_CONTAINS" in sql and "JSON_SEARCH" in sql
+        and "REGEXP_LIKE" in sql and "JSON_SEARCH" in sql
         for sql, _ in cursor.calls
     )
-    assert [params[0] for _, params in cursor.calls] == ["7", "8"]
+    assert [params[1] for _, params in cursor.calls] == ["7", "8"]
+
+
+def test_json_numeric_pattern_matches_nested_objects_and_arrays_only_at_value_boundary():
+    import re
+
+    pattern = _json_numeric_reference_pattern(123)
+    assert re.search(pattern, '{"nested":{"property_id":123}}')
+    assert re.search(pattern, '{"items":[1,{"id":123},4]}')
+    assert not re.search(pattern, '{"id":1234}')
+    assert not re.search(pattern, '{"text":"x123y"}')
 
 
 @pytest.mark.asyncio

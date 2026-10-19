@@ -3,6 +3,7 @@
 from collections import defaultdict
 from hashlib import sha256
 import json
+import re
 
 
 HISTORICAL_REFERENCE_TABLES = {
@@ -38,6 +39,12 @@ WORK_ORDER_OBJECT_TYPES = {
 
 def _quote(identifier: str) -> str:
     return "`" + str(identifier).replace("`", "``") + "`"
+
+
+def _json_numeric_reference_pattern(property_id: int) -> str:
+    """Match an exact numeric JSON value after an object/array delimiter."""
+    value = re.escape(str(int(property_id)))
+    return rf"(^|[\[\{{,:])\s*{value}(\s*[,\]\}}]|$)"
 
 
 async def discover_reference_inventory(cur, schemas: list[str], registry_schema: str) -> tuple[list[dict], list[dict], list[dict]]:
@@ -299,22 +306,23 @@ async def scan_opaque_json_reference_markers(
 ) -> list[dict]:
     """Find exact candidate IDs anywhere in JSON documents.
 
-    The scan deliberately does not infer field names. JSON_CONTAINS searches
-    nested objects and arrays for both numeric and string representations of
-    each candidate ID. A match is a blocker; payloads and row identifiers are
-    never returned or logged.
+    The scan deliberately does not infer field names. A bounded regular
+    expression matches numeric JSON values in nested objects/arrays, while
+    JSON_SEARCH recursively matches string values. A match is a blocker;
+    payloads and row identifiers are never returned or logged.
     """
     findings = []
     for item in opaque_json:
         schema, table, column = (str(item[key]) for key in ("schema", "table", "column"))
         for property_id in sorted(set(int(value) for value in property_ids)):
+            numeric_pattern = _json_numeric_reference_pattern(property_id)
             await cur.execute(
                 "SELECT /*+ MAX_EXECUTION_TIME(5000) */ COUNT(*) "
                 f"FROM {_quote(schema)}.{_quote(table)} "
                 f"WHERE {_quote(column)} IS NOT NULL "
-                f"AND (JSON_CONTAINS({_quote(column)},CAST(%s AS JSON),'$') "
+                f"AND (REGEXP_LIKE(CAST({_quote(column)} AS CHAR),%s,'c') "
                 f"OR JSON_SEARCH({_quote(column)},'one',%s,NULL,'$') IS NOT NULL)",
-                (str(property_id), str(property_id)),
+                (numeric_pattern, str(property_id)),
             )
             row = await cur.fetchone()
             count = int(row[0] or 0) if row else 0
@@ -324,7 +332,7 @@ async def scan_opaque_json_reference_markers(
                 "table": table,
                 "column": column,
                 "count": count,
-                "key_pattern": "all_json_scalar_values",
+                "key_pattern": "nested_numeric_or_string_scalar",
             })
     return findings
 
