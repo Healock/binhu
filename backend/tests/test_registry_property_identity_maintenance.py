@@ -272,6 +272,7 @@ async def test_reference_summary_fails_closed_for_unparsed_json_column_without_e
         result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
     assert result["disposition"] == "blocked"
     assert result["opaque_json_unreviewed_column_count"] == 1
+    assert result["reference_inventory_complete"] is False
 
 
 @pytest.mark.asyncio

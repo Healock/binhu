@@ -241,7 +241,7 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
         "opaque_json_scan": opaque_matches,
         "unknown_polymorphic_type_count": len(warnings),
         "unknown_polymorphic_types": warnings,
-        "reference_inventory_complete": not warnings,
+        "reference_inventory_complete": not warnings and not opaque_json,
         "opaque_json_matches": [item for item in opaque_matches if int(item["count"]) > 0],
         "references": sorted(references, key=lambda item: (
             int(item["property_id"]), item["schema"], item["table"], item["column"], item["kind"],
