@@ -174,15 +174,17 @@ async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_na
     class JsonCursor:
         def __init__(self):
             self.calls = []
+            self.rows = [
+                ({"nested": {"property_id": 7}},),
+                ({"items": ["8", {"value": 9}]},),
+            ]
 
         async def execute(self, sql, params=()):
             self.calls.append((sql, params))
 
-        async def fetchall(self):
-            return [
-                ({"nested": {"property_id": 7}},),
-                ({"items": ["8", {"value": 9}]},),
-            ]
+        async def fetchmany(self, size):
+            rows, self.rows = self.rows, []
+            return rows
 
     cursor = JsonCursor()
     findings = await scan_opaque_json_reference_markers(cursor, [{
@@ -200,7 +202,10 @@ async def test_opaque_json_parse_failure_blocks_every_candidate_without_echoing_
         async def execute(self, sql, params=()):
             self.sql = sql
 
-        async def fetchall(self):
+        async def fetchmany(self, size):
+            if getattr(self, "done", False):
+                return []
+            self.done = True
             return [("not-json",)]
 
     findings = await scan_opaque_json_reference_markers(

@@ -34,6 +34,7 @@ WORK_ORDER_OBJECT_TYPES = {
     "property_certificate",
     "house",
 }
+JSON_SCAN_BATCH_SIZE = 200
 
 
 def _quote(identifier: str) -> str:
@@ -331,15 +332,21 @@ async def scan_opaque_json_reference_markers(
         )
         counts = {property_id: 0 for property_id in candidates}
         parse_failed = False
-        for row in await cur.fetchall():
-            value = row[0] if isinstance(row, (tuple, list)) else row
-            try:
-                parsed = json.loads(value) if isinstance(value, (str, bytes, bytearray)) else value
-                for property_id in candidates:
-                    if _json_contains_property_scalar(parsed, property_id):
-                        counts[property_id] += 1
-            except (TypeError, ValueError, UnicodeError, json.JSONDecodeError):
-                parse_failed = True
+        while True:
+            rows = await cur.fetchmany(JSON_SCAN_BATCH_SIZE)
+            if not rows:
+                break
+            for row in rows:
+                value = row[0] if isinstance(row, (tuple, list)) else row
+                try:
+                    parsed = json.loads(value) if isinstance(value, (str, bytes, bytearray)) else value
+                    for property_id in candidates:
+                        if _json_contains_property_scalar(parsed, property_id):
+                            counts[property_id] += 1
+                except (TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+                    parse_failed = True
+                    break
+            if parse_failed:
                 break
         if parse_failed:
             counts = {property_id: 1 for property_id in candidates}
