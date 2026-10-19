@@ -41,23 +41,60 @@ def test_issue_token_for_enabled_build_without_real_secret_files(monkeypatch):
         root = Path(directory)
         (root / "key.pem").write_bytes(key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
         (root / "builds.json").write_text(json.dumps({"builds": {build: {
-            "version": "3.42.0", "comm": ["320584999001"], "enabled": True,
+            "version": "3.42.0",
+            "comm": ["320584999001"],
+            "communities": [{"code": "320584999001", "name": "冬梅"}],
+            "enabled": True,
         }}}))
         monkeypatch.setattr(app, "PRIVATE_KEY_PATH", root / "key.pem")
         monkeypatch.setattr(app, "BUILDS_PATH", root / "builds.json")
         response = TestClient(app.app).post("/ymt/token", json={"build": build})
     assert response.status_code == 200
-    assert set(response.json()) == {"token", "exp", "comm", "kid"}
+    assert set(response.json()) == {"token", "exp", "comm", "communities", "kid"}
+    assert response.json()["comm"] == ["320584999001"]
+    assert response.json()["communities"] == [{"code": "320584999001", "name": "冬梅"}]
     assert response.headers["cache-control"] == "no-store"
     claims = json.loads(base64.urlsafe_b64decode(response.json()["token"].split(".")[1] + "=="))
     assert claims["sub"] == "build:" + build
+    assert claims["comm"] == response.json()["comm"]
+
+
+@pytest.mark.parametrize(
+    "communities",
+    [
+        [],
+        [{"code": "320584999002", "name": "邻里"}],
+        [
+            {"code": "320584999001", "name": "冬梅"},
+            {"code": "320584999001", "name": "冬梅社区"},
+        ],
+        [{"code": "320584999001", "name": " "}],
+        [{"code": "320584999001", "name": "冬梅", "extra": "ignored?"}],
+    ],
+)
+def test_invalid_community_mapping_fails_closed(monkeypatch, tmp_path, communities):
+    build = "d" * 64
+    path = tmp_path / "builds.json"
+    path.write_text(json.dumps({"builds": {build: {
+        "version": "3.43.1",
+        "comm": ["320584999001"],
+        "communities": communities,
+        "enabled": True,
+    }}}))
+    monkeypatch.setattr(app, "BUILDS_PATH", path)
+    response = TestClient(app.app).post("/ymt/token", json={"build": build})
+    assert response.status_code == 500
+    assert response.json()["code"] == "SIGNING_UNAVAILABLE"
 
 
 def test_unknown_or_disabled_build_is_forbidden(monkeypatch, tmp_path):
     build = "b" * 64
     path = tmp_path / "builds.json"
     path.write_text(json.dumps({"builds": {build: {
-        "version": "3.42.0", "comm": ["320584999001"], "enabled": False,
+        "version": "3.42.0",
+        "comm": ["320584999001"],
+        "communities": [{"code": "320584999001", "name": "冬梅"}],
+        "enabled": False,
     }}}))
     monkeypatch.setattr(app, "BUILDS_PATH", path)
     response = TestClient(app.app).post("/ymt/token", json={"build": build})

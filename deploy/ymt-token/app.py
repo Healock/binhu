@@ -72,11 +72,40 @@ def _load_builds() -> dict[str, dict[str, Any]]:
                 raise ValueError("invalid build entry")
             version = item.get("version")
             communities = item.get("comm")
-            if not isinstance(version, str) or not version.strip() or not isinstance(communities, list):
+            community_names = item.get("communities", [])
+            if (
+                not isinstance(version, str)
+                or not version.strip()
+                or not isinstance(communities, list)
+                or not isinstance(community_names, list)
+            ):
                 raise ValueError("invalid build entry")
             if any(not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", code) for code in communities):
                 raise ValueError("invalid community entry")
-            result[build] = {"version": version.strip(), "comm": [code.strip() for code in communities], "enabled": item.get("enabled") is True}
+            normalized_communities = [code.strip() for code in communities]
+            if len(set(normalized_communities)) != len(normalized_communities):
+                raise ValueError("duplicate community code")
+            normalized_names: list[dict[str, str]] = []
+            for community in community_names:
+                if (
+                    not isinstance(community, dict)
+                    or set(community) != {"code", "name"}
+                    or not isinstance(community.get("code"), str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", community["code"])
+                    or not isinstance(community.get("name"), str)
+                    or not community["name"].strip()
+                ):
+                    raise ValueError("invalid community mapping")
+                normalized_names.append({"code": community["code"].strip(), "name": community["name"].strip()})
+            mapped_codes = [community["code"] for community in normalized_names]
+            if len(set(mapped_codes)) != len(mapped_codes) or set(mapped_codes) != set(normalized_communities):
+                raise ValueError("community mapping must match authorized communities")
+            result[build] = {
+                "version": version.strip(),
+                "comm": normalized_communities,
+                "communities": normalized_names,
+                "enabled": item.get("enabled") is True,
+            }
         return result
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, AttributeError, TypeError) as exc:
         raise RuntimeError("build allowlist unavailable") from exc
@@ -185,4 +214,14 @@ async def issue_token(request: Request, body: TokenRequest):
         log.error("token result=500 build=%s ip=%s", build, ip)
         return _response(500, "SIGNING_UNAVAILABLE", "signing unavailable")
     log.info("token result=ok build=%s version=%s ip=%s", build, entry["version"], ip)
-    return JSONResponse(status_code=200, content={"token": token, "exp": exp, "comm": entry["comm"], "kid": KID}, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        status_code=200,
+        content={
+            "token": token,
+            "exp": exp,
+            "comm": entry["comm"],
+            "communities": entry["communities"],
+            "kid": KID,
+        },
+        headers={"Cache-Control": "no-store"},
+    )

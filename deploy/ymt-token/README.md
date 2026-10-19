@@ -16,7 +16,7 @@ and install the unit as `/etc/systemd/system/ymt-token.service`. The private
 key and build allowlist are operator-managed files with mode `0600`:
 
 - `/etc/ymt/signing-private.pem` (PKCS#8 Ed25519 private key)
-- `/etc/ymt/builds.json` (build SHA-256 keys, version, `comm`, and `enabled`)
+- `/etc/ymt/builds.json` (build SHA-256 keys, version, `comm`, `communities`, and `enabled`)
 
 `POST /ymt/token` accepts only `{ "build": "<64 lowercase hex characters>" }`.
 The build must be listed and enabled in `builds.json`; otherwise the service
@@ -26,11 +26,18 @@ service to 20,000 requests per rolling 24 hours. Quotas persist across restarts
 in `/var/log/ymt-token/rate.sqlite3`; this directory must be writable by the
 service user. A quota-store failure rejects issuance with 503.
 
-Example `builds.json` (replace the example hash and community code):
+Example `builds.json` (replace the example hash, community code, and name):
 
 ```json
-{"builds":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":{"version":"3.42.0","comm":["TEST_COMMUNITY"],"enabled":true}}}
+{"builds":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":{"version":"3.42.0","comm":["TEST_COMMUNITY"],"communities":[{"code":"TEST_COMMUNITY","name":"示例社区"}],"enabled":true}}}
 ```
+
+For each build, `communities` must map every `comm` code to exactly one
+non-empty display name. Duplicate codes, missing mappings, and mappings outside
+the token's authorized `comm` list fail closed. The response returns this list
+as `communities`; the signed JWT continues to contain only authorized codes in
+`comm`. Existing non-empty community entries must be updated with their names
+when this version is deployed.
 
 The top-level hash-to-entry mapping is also accepted. Replace the file
 atomically to update allowed builds without restarting. Disabling a build stops
