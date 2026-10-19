@@ -19,7 +19,6 @@ import {
   formatUTCTime,
   getGridCommunities,
   registryApi,
-  type HouseholdImportFile,
   type RegistryCertificateSourceRun,
   type RegistryCertificateStatus,
   type RegistryHousingCategory,
@@ -140,7 +139,7 @@ export default function RegistryManagement() {
   const [propertyFiltersOpen, setPropertyFiltersOpen] = useState(false)
   const [total, setTotal] = useState(0)
   const [matchStatusCounts, setMatchStatusCounts] = useState<Record<string, number>>({})
-  const [importFiles, setImportFiles] = useState<HouseholdImportFile[]>([])
+  const [importFile, setImportFile] = useState<File | null>(null)
   const [importPreview, setImportPreview] = useState<any>(null)
   const [importing, setImporting] = useState(false)
   const [certificateStarting, setCertificateStarting] = useState(false)
@@ -510,10 +509,10 @@ export default function RegistryManagement() {
   }
 
   const previewImport = async () => {
-    if (!importFiles.length) return
+    if (!importFile) return
     setImporting(true)
     try {
-      const result = await registryApi.previewHouseholdFiles(importFiles)
+      const result = await registryApi.previewHouseholdImport(importFile)
       setImportPreview({ ...result, source_type: 'household' })
       setTotal(result.total_count)
       message.success(`已完成预览：${result.normal_count} 条可导入，${result.issue_count} 条需核查`)
@@ -1169,7 +1168,7 @@ export default function RegistryManagement() {
     {canManage && tab === 'people' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('person')}>新增人员</Button>}
     {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
     {canReview && tab === 'imports' && <>
-      <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFiles.length}>预览户号表</Button>
+      <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览户号表</Button>
       {!certificateRunActive && certificateRun?.status !== 'failed' && <Button onClick={() => void startCertificateSource()} loading={certificateStarting}>读取告知书</Button>}
       {certificateRunActive && <Button loading disabled>{certificatePhaseLabel}</Button>}
       {certificateRun?.status === 'failed' && <>
@@ -1313,7 +1312,7 @@ export default function RegistryManagement() {
                 format={value => `${value}%（第 ${certificateRun.current_page}/${certificateRun.total_pages} 页）`}
               />
             )}
-            <HouseholdImportFiles files={importFiles} busy={importing} onChange={update => { setImportFiles(update); setImportPreview(null) }} />
+            <HouseholdImportFiles file={importFile} busy={importing} onChange={file => { setImportFile(file); setImportPreview(null) }} />
             {certificateRun?.status === 'failed' && <Alert
               type="warning"
               showIcon
@@ -1337,7 +1336,7 @@ export default function RegistryManagement() {
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
             {importPreview?.source_type === 'household' && importPreview.file_count && <>
               <Space wrap>
-                <span>文件：{importPreview.file_count} 份</span>
+                <span>标准文件：{importPreview.files?.[0]?.file_name || importFile?.name || '户号表'}</span>
                 <span>唯一户号：{importPreview.unique_household_count}</span>
                 <span>缺少户号：{importPreview.missing_household_number_count}</span>
                 <span>相同重复行：{importPreview.duplicate_row_count}</span>
@@ -1353,13 +1352,6 @@ export default function RegistryManagement() {
                 <span>本次更新：{importPreview.updated_count || 0}</span>
                 <span>待核查：{importPreview.pending_issue_count || 0}</span>
               </Space>}
-              <AppTable rowKey={(_, index) => String(index)} pagination={false} scroll={{ x: 700 }} dataSource={importPreview.files} columns={[
-                { title: '文件', dataIndex: 'file_name', width: 260 },
-                { title: '住房类型', dataIndex: 'housing_type', width: 140, render: value => value || '按表内类型' },
-                { title: '注销状态', dataIndex: 'household_status', width: 140, render: value => value === 'cancelled' ? '已注销' : value === 'not_cancelled' ? '未注销' : '按表内状态' },
-                { title: '实际行数', dataIndex: 'total_count', width: 100 },
-                { title: '查询总数', dataIndex: 'expected_count', width: 100, render: value => value ?? '未核对' },
-              ]} />
             </>}
             {importPreview?.source_type === 'certificate' && comparison && <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded border border-[var(--app-border)] p-3">

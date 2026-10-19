@@ -49,6 +49,33 @@ def test_missing_status_is_distinct_from_explicit_blank_and_unknown_codes():
     assert normalize_household_status("正常") == "未注销"
 
 
+def test_standard_household_workbook_keeps_reference_columns():
+    book = Workbook()
+    book.active.append([
+        "注销状态", "分局名称", "街道名称", "派出所名称", "社区名称", "社区代码", "房屋编号",
+        "居住间数", "出租屋地址", "出租屋地址补充", "人数", "出租人姓名", "出租面积", "住房类型",
+        "居住处所", "是否群租", "备注", "更新时间",
+    ])
+    book.active.append([
+        "未注销", "滨湖分局", "东街道", "滨湖派出所", "合成社区", "C001", "H001", 2,
+        "合成路1号", "1幢101室", 3, "合成出租人", 80.5, "个人租赁", "居民住宅", "否",
+        "来源备注", "18:05:32",
+    ])
+    result = BytesIO()
+    book.save(result)
+    row = extended._parse_household_workbook(result.getvalue())[0]
+    assert row["community_code"] == "C001"
+    assert row["house_no"] == "H001"
+    assert row["landlord"] == "合成出租人"
+    assert row["address_supplement"] == "1幢101室"
+    assert row["room_count"] == 2
+    assert row["rental_area"] == 80.5
+    assert row["group_rental"] == "否"
+    assert row["notes"] == "来源备注"
+    assert row["household_status"] == "未注销"
+    assert row["updated_at"] == "18:05:32"
+
+
 class Connection:
     def __init__(self, payload=None, existing=True):
         self.calls = []

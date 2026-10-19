@@ -37,7 +37,7 @@ try {
         permissions: ['registry.property.view', 'registry.import.manage'], permission_groups: [], preferences: { theme_mode: dark ? 'dark' : 'light' } } })
       if (url.pathname === '/api/registry/imports/certificates/source-runs/latest') return send({ data: certificate
         ? { id: 1, status: 'completed', batch_id: 7, preview, fetched_count: 3, accepted_count: 3 } : null })
-      if (url.pathname === '/api/registry/imports/households/files/preview') return send(preview)
+      if (url.pathname.endsWith('/households/preview')) return send(preview)
       if (/\/registry\/imports\/(households|certificates)\/7\/confirm$/.test(url.pathname)) {
         confirmations.push({ path: url.pathname, method: route.request().method() })
         if (status === 'partially_imported' && confirmations.length === 1) return send({ detail: '合成确认失败，请重试' }, 500)
@@ -58,7 +58,7 @@ try {
       if (!certificate) await page.getByText('本批数据已导入，相同文件不会重复写入。', { exact: false }).waitFor()
     } else {
       const label = certificate ? '确认挂载告知书' : status === 'preview' ? '确认导入正常数据' : '继续导入正常数据'
-      const button = page.getByRole('button', { name: label, exact: true })
+      const button = page.locator('button').filter({ hasText: label }).first()
       await button.waitFor()
       await button.scrollIntoViewIfNeeded()
       const bounds = await button.boundingBox()

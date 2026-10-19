@@ -1951,15 +1951,22 @@ def _parse_household_workbook(content: bytes, *, allow_empty: bool = False) -> l
                     found = _find_header(headers, *names)
                     return found if found is not None else -1
                 indexes = {
+                    "division": optional_index("分局名称", "分局"),
+                    "street_name": optional_index("街道名称", "街道"),
                     "community": optional_index("社区名称", "社区", "所属社区"),
                     "police_station": optional_index("派出所名称", "派出所"),
                     "community_code": optional_index("社区代码", "社区编号"),
                     "house_no": optional_index("居住房屋编号", "房屋编号", "户号"),
-                    "landlord": optional_index("房主", "房东"),
+                    "landlord": optional_index("房主", "房东", "出租人姓名"),
                     "address": address_index,
+                    "address_supplement": optional_index("出租屋地址补充", "地址补充"),
+                    "room_count": optional_index("居住间数", "居住室数"),
                     "housing_type": type_index,
                     "residence_type": optional_index("居住处所", "居住场所"),
                     "resident_count": optional_index("居住人数", "人数"),
+                    "rental_area": optional_index("出租面积", "租赁面积"),
+                    "group_rental": optional_index("是否群租", "群租"),
+                    "notes": optional_index("备注", "说明"),
                     "updated_at": optional_index("更新时间", "更新日期"),
                     "household_status": next((index for name in ("是否注销", "注销状态", "房屋状态", "房屋登记状态", "状态")
                                               if (index := _find_header(headers, name)) is not None), -1),
@@ -1987,15 +1994,22 @@ def _parse_household_workbook(content: bytes, *, allow_empty: bool = False) -> l
             rows.append({
                 "source_sheet": sheet.title,
                 "source_row": physical_row,
+                "division": cell("division"),
+                "street_name": cell("street_name"),
                 "community": cell("community"),
                 "police_station": cell("police_station"),
                 "community_code": cell("community_code"),
                 "house_no": cell("house_no"),
                 "landlord": cell("landlord"),
                 "address": cell("address"),
+                "address_supplement": cell("address_supplement"),
+                "room_count": cell("room_count"),
                 "housing_type": cell("housing_type"),
                 "residence_type": cell("residence_type"),
                 "resident_count": cell("resident_count"),
+                "rental_area": cell("rental_area"),
+                "group_rental": cell("group_rental"),
+                "notes": cell("notes"),
                 "updated_at": parsed_updated_at.isoformat() if parsed_updated_at else normalize_text(updated_at),
             })
             if indexes["household_status"] >= 0:
@@ -2086,12 +2100,46 @@ async def preview_household_import(
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(413, "户号表不能超过 50MB")
+    if not str(file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(422, "户号表必须为 XLSX 文件")
     rows = _parse_household_workbook(content)
+    if len(rows) > 100000:
+        raise HTTPException(422, "户号表不能超过 100000 条，请拆成不同批次")
+    digest = hashlib.sha256(content).hexdigest()
     for row in rows:
+        row["source_file"] = normalize_text(file.filename)[:255]
+        row["source_file_sha256"] = digest
         row["import_source_ref"] = _household_source_ref(row)
     classified = classify_household_file_rows(rows)
-    file_hash = hashlib.sha256(content).hexdigest()
-    return await _preview_household_rows(request, rows, classified, file_hash, file.filename, user, conn)
+    summary = {
+        "files": [{
+            "file_name": normalize_text(file.filename)[:255],
+            "sha256": digest,
+            "total_count": len(rows),
+            "housing_type": "",
+            "household_status": "",
+            "expected_count": None,
+        }],
+        "file_count": 1,
+        "unique_household_count": len({
+            (normalize_community(row.get("community")), normalize_text(row.get("house_no")))
+            for row in rows if normalize_text(row.get("house_no"))
+        }),
+        "missing_household_number_count": sum(not normalize_text(row.get("house_no")) for row in rows),
+        "duplicate_row_count": classified.get("duplicate_row_count", 0),
+        "household_status_counts": {
+            status: sum(
+                normalize_household_status(row.get("household_status")) == value
+                for row in rows if not row.get("import_skip")
+            )
+            for status, value in (("cancelled", "已注销"), ("not_cancelled", "未注销"), ("unknown", ""))
+        },
+        "importable_status_counts": {
+            status: sum(normalize_household_status(row.get("household_status")) == value for row in classified["normal_rows"])
+            for status, value in (("cancelled", "已注销"), ("not_cancelled", "未注销"), ("unknown", ""))
+        },
+    }
+    return await _preview_household_rows(request, rows, classified, digest, file.filename, user, conn, summary)
 
 
 class HouseholdFileOptions(BaseModel):

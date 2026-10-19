@@ -4827,12 +4827,23 @@ export interface PropertyAnnotationExportJob {
   expires_at: string | null
 }
 
-export interface HouseholdImportFile {
-  key: string
-  file: File
-  housing_type: '' | '个人租赁' | '单位租赁' | '自购房屋' | '借住' | '其他'
-  household_status: '' | 'cancelled' | 'not_cancelled'
-  expected_count?: number
+export interface HouseholdImportPreview {
+  batch_id: number
+  status: string
+  idempotent: boolean
+  total_count: number
+  normal_count: number
+  issue_count: number
+  duplicate_groups: number
+  other_type_count: number
+  file_count: number
+  files: Array<{ file_name: string; sha256: string; total_count: number }>
+  unique_household_count: number
+  missing_household_number_count: number
+  duplicate_row_count: number
+  household_status_counts?: Record<'cancelled' | 'not_cancelled' | 'unknown', number>
+  importable_status_counts?: Record<'cancelled' | 'not_cancelled' | 'unknown', number>
+  issue_breakdown?: Record<string, number>
 }
 
 export const registryApi = {
@@ -4951,21 +4962,7 @@ export const registryApi = {
       ...activeRequest,
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 300_000,
-    })).data as {
-      batch_id: number; status: string; idempotent: boolean; total_count: number; normal_count: number
-      issue_count: number; duplicate_groups: number; other_type_count: number
-      issue_breakdown?: Record<string, number>
-    }
-  },
-  async previewHouseholdFiles(files: HouseholdImportFile[]) {
-    const form = new FormData()
-    for (const item of files) form.append('files', item.file)
-    form.append('file_options', JSON.stringify(files.map(({ housing_type, household_status, expected_count }) => ({ housing_type, household_status, expected_count }))))
-    return (await api.post('/registry/imports/households/files/preview', form, {
-      ...activeRequest,
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 300_000,
-    })).data
+    })).data as HouseholdImportPreview
   },
   async confirmHouseholdImport(batchId: number) {
     return (await api.post(`/registry/imports/households/${batchId}/confirm`, {}, {
