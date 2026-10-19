@@ -3,19 +3,19 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { registryVisitText } from '../src/utils/registryVisit.ts'
 
-test('户号表多文件合并预览保留逐文件筛选声明与行数核对，变更后作废旧预览', () => {
+test('户号表导入只选择一份标准文件并直接读取表内字段', () => {
   const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
-  const files = readFileSync(new URL('../src/components/HouseholdImportFiles.tsx', import.meta.url), 'utf8')
+  const component = readFileSync(new URL('../src/components/HouseholdImportFiles.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
-  assert.match(files, /multiple showUploadList/)
-  assert.match(files, /current.length >= 10/)
-  assert.match(files, /expected_count/)
-  assert.match(files, /个人租赁.*单位租赁.*自购房屋.*借住.*其他/)
-  assert.match(client, /form.append\('files', item.file\)/)
-  assert.match(client, /form.append\('file_options'/)
-  assert.match(client, /\/registry\/imports\/households\/files\/preview/)
-  assert.match(page, /setImportFiles\(update\); setImportPreview\(null\)/)
-  assert.match(page, /registryApi.previewHouseholdFiles\(importFiles\)/)
+  assert.doesNotMatch(component, /multiple/)
+  assert.match(component, /file: File \| null/)
+  assert.match(component, /选择标准户号表/)
+  assert.match(client, /form.append\('file', file\)/)
+  assert.match(client, /\/registry\/imports\/households\/preview/)
+  assert.doesNotMatch(client, /file_options/)
+  assert.doesNotMatch(client, /households\/files\/preview/)
+  assert.match(page, /setImportFile\(file\); setImportPreview\(null\)/)
+  assert.match(page, /registryApi.previewHouseholdImport\(importFile\)/)
   assert.match(page, /unique_household_count/)
   assert.match(page, /household_status_counts/)
 })

@@ -14,8 +14,8 @@ try {
     const previews = []
     const confirms = []
     page.on('pageerror', error => errors.push(error.message))
-    await page.addInitScript(dark => {
-      localStorage.setItem('binhu-theme-mode', dark ? 'dark' : 'light')
+    await page.addInitScript(darkMode => {
+      localStorage.setItem('binhu-theme-mode', darkMode ? 'dark' : 'light')
       window.EventSource = class extends EventTarget { close() {} }
     }, dark)
     await page.route('**/*', async route => {
@@ -23,21 +23,20 @@ try {
       if (url.origin !== origin) return route.abort()
       if (!url.pathname.startsWith('/api/')) return route.continue()
       const send = body => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
-      if (url.pathname === '/api/app/bootstrap') return send({ environment: 'production', timezone: 'Asia/Shanghai', server_version: '0.30.28' })
+      if (url.pathname === '/api/app/bootstrap') return send({ environment: 'production', timezone: 'Asia/Shanghai', server_version: '0.31.0' })
       if (url.pathname === '/api/auth/me' || url.pathname === '/api/auth/activity') return send({ user: {
         id: 7, username: 'synthetic-admin', display_name: '合成测试账号', role: 'user',
         permissions: ['registry.property.view', 'registry.property.manage', 'registry.import.manage'],
         preferences: { theme_mode: dark ? 'dark' : 'light' },
       } })
       if (url.pathname.endsWith('/certificates/source-runs/latest')) return send({ data: null })
-      if (url.pathname.endsWith('/households/files/preview')) {
+      if (url.pathname.endsWith('/households/preview')) {
         previews.push(route.request().postDataBuffer().toString('utf8'))
-        return send({ batch_id: 123, status: 'preview', total_count: 10, normal_count: 10, issue_count: 0, file_count: 10,
+        return send({ batch_id: 123, status: 'preview', total_count: 10, normal_count: 10, issue_count: 0, file_count: 1,
           duplicate_row_count: 0, unique_household_count: 10, missing_household_number_count: 0,
           household_status_counts: { cancelled: 5, not_cancelled: 5, unknown: 0 },
           importable_status_counts: { cancelled: 5, not_cancelled: 5, unknown: 0 },
-          files: Array.from({ length: 10 }, (_, i) => ({ file_name: `synthetic-${i + 1}.xlsx`, sha256: String(i).padStart(64, '0'), total_count: 1,
-            housing_type: '', household_status: '', expected_count: i === 0 ? 1 : null })) })
+          files: [{ file_name: '居住房屋全量_标准.xlsx', sha256: '0'.repeat(64), total_count: 10 }] })
       }
       if (url.pathname.endsWith('/households/123/confirm')) {
         confirms.push(url.pathname)
@@ -48,38 +47,29 @@ try {
     await page.goto(`${origin}/registry`, { waitUntil: 'domcontentloaded', timeout: 60000 })
     await page.getByRole('tab', { name: '数据导入', exact: true }).click()
     await page.setViewportSize({ width, height })
-    await page.locator('input[type=file]').setInputFiles(Array.from({ length: 10 }, (_, i) => ({
-      name: `synthetic-${i + 1}.xlsx`, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from(`synthetic-${i}`),
-    })))
-    const firstState = page.getByRole('combobox', { name: 'synthetic-1.xlsx注销状态', exact: true })
-    await firstState.click()
-    await page.locator('.ant-select-item-option').filter({ hasText: /^已注销（是）$/ }).click()
-    await page.getByRole('spinbutton', { name: 'synthetic-1.xlsx查询总数', exact: true }).fill('1')
+    await page.locator('input[type=file]').setInputFiles({
+      name: '居住房屋全量_标准.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      buffer: Buffer.from('synthetic-standard-workbook'),
+    })
     await page.getByRole('button', { name: '预览户号表', exact: true }).click()
     await page.getByText('唯一户号：10', { exact: true }).waitFor()
     assert.equal(previews.length, 1)
-    assert.ok(previews[0].includes('"household_status":"cancelled"'))
-    assert.ok(previews[0].includes('"expected_count":1'))
-    assert.equal((previews[0].match(/name="files"/g) || []).length, 10)
+    assert.ok(previews[0].includes('name="file"'))
+    assert.ok(previews[0].includes('居住房屋全量_标准.xlsx'))
+    assert.equal((previews[0].match(/name="files"/g) || []).length, 0)
+    assert.equal((previews[0].match(/file_options/g) || []).length, 0)
     assert.equal(confirms.length, 0, 'preview must not confirm')
     mkdirSync('artifacts/household-import', { recursive: true })
     await page.screenshot({ path: `artifacts/household-import/${width}-${dark ? 'dark' : 'light'}.png`, fullPage: true })
-    await firstState.click()
-    await page.locator('.ant-select-item-option').filter({ hasText: /^未注销（否）$/ }).click()
-    if (errors.length) throw new Error(`Browser errors: ${errors.join('; ')}`)
-    assert.equal(await page.getByRole('button', { name: '确认导入正常数据', exact: true }).count(), 0, 'declaration change invalidates preview')
-    await page.getByRole('button', { name: /预览户号表$/ }).click()
-    await page.getByText('唯一户号：10', { exact: true }).waitFor()
-    assert.equal(previews.length, 2)
-    assert.ok(previews[1].includes('"household_status":"not_cancelled"'))
     await page.getByRole('button', { name: '确认导入正常数据', exact: true }).click()
     await page.getByText('本批数据已导入，相同文件不会重复写入。', { exact: false }).waitFor()
     await page.getByText('本次新增：10', { exact: true }).waitFor()
-    assert.equal(confirms.length, 1, 'all files confirm in a single batch')
+    assert.equal(confirms.length, 1, 'single file confirm uses one batch')
     assert.deepEqual(errors, [])
     await page.close()
   }
-  console.log('Household multi-file declarations, multipart request, preview invalidation and one-batch confirmation passed')
+  console.log('Standard single-file household import, multipart request and confirmation passed')
 } finally {
   await browser.close()
   await server.close()

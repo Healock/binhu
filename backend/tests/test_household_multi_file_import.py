@@ -50,6 +50,58 @@ async def test_ten_type_state_groups_are_one_batch_with_provenance(capture):
 
 
 @pytest.mark.asyncio
+async def test_single_standard_file_preview_uses_table_values_and_summary(capture):
+    await extended.preview_household_import(None, upload("standard.xlsx", kind="个人租赁", status="未注销"), {"id": 7}, None)
+    _, rows, classified, _, _, _, _, summary = capture.call_args.args
+    assert summary["file_count"] == 1
+    assert summary["files"][0]["file_name"] == "standard.xlsx"
+    assert summary["household_status_counts"] == {"cancelled": 0, "not_cancelled": 1, "unknown": 0}
+    assert classified["normal_count"] == 1
+    assert rows[0]["source_file"] == "standard.xlsx"
+    assert len(rows[0]["source_file_sha256"]) == 64
+    assert rows[0]["household_status"] == "未注销"
+
+
+@pytest.mark.asyncio
+async def test_single_household_preview_rejects_non_xlsx(capture):
+    with pytest.raises(HTTPException) as error:
+        await extended.preview_household_import(None, upload("standard.xls"), {"id": 7}, None)
+    assert error.value.status_code == 422
+    capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_single_household_preview_bounds_upload_read_before_rejecting(monkeypatch, capture):
+    class ReadSpy(BytesIO):
+        requested_size = None
+
+        def read(self, size=-1):
+            self.requested_size = size
+            return b"x" * size
+
+    monkeypatch.setattr(extended, "HOUSEHOLD_IMPORT_MAX_BYTES", 8)
+    monkeypatch.setattr(extended, "_parse_household_workbook", lambda *_args, **_kwargs: pytest.fail("oversized file must not be parsed"))
+    source = ReadSpy()
+    file = UploadFile(filename="standard.xlsx", file=source)
+
+    with pytest.raises(HTTPException) as error:
+        await extended.preview_household_import(None, file, {"id": 7}, object())
+
+    assert error.value.status_code == 413
+    assert source.requested_size == 9
+    capture.assert_not_awaited()
+
+
+def test_household_parser_stops_when_row_limit_is_exceeded():
+    with pytest.raises(HTTPException) as error:
+        extended._parse_household_workbook(
+            upload("standard.xlsx", number="H1").file.getvalue(),
+            max_rows=0,
+        )
+    assert error.value.status_code == 422
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field,option", [("housing_type", "借住"), ("household_status", "not_cancelled"), ("expected_count", 30001)])
 async def test_mislabeled_or_truncated_file_is_rejected_before_database(capture, field, option):
     with pytest.raises(HTTPException) as error:
