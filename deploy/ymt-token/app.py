@@ -1,22 +1,21 @@
 """Minimal Ed25519 token issuer for the YMT browser extension.
 
 This service deliberately has no Binhu imports, database access, proxying, or
-CORS. Secrets are read from root-owned files on each request so device
-disablement takes effect without a restart.
+CORS. The build allowlist is read from a root-owned file on each request so
+version disablement takes effect without a restart.
 """
 
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import json
 import logging
+import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -30,27 +29,28 @@ from pydantic import BaseModel, ConfigDict
 
 
 PRIVATE_KEY_PATH = Path("/etc/ymt/signing-private.pem")
-DEVICES_PATH = Path("/etc/ymt/devices.json")
-KID = "zwzz-2026-01"
+BUILDS_PATH = Path("/etc/ymt/builds.json")
+RATE_DB_PATH = Path("/var/log/ymt-token/rate.sqlite3")
+KID = os.environ.get("YMT_TOKEN_KID", "zwzz-2026-02")
+ISSUANCE_ENABLED = os.environ.get("YMT_TOKEN_ISSUANCE_ENABLED", "false").lower() == "true"
 ISSUER = "zwzz-gateway"
 AUDIENCE = "binhu-house-candidate"
 SCOPE = "house:search:read"
-DEVICE_RE = re.compile(r"^[0-9A-F]{12}$")
-SECRET_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-RATE_LIMIT = 30
-RATE_WINDOW_SECONDS = 60.0
+BUILD_RE = re.compile(r"^[0-9a-f]{64}$")
+IP_RATE_LIMIT = 60
+IP_RATE_WINDOW_SECONDS = 60.0
+GLOBAL_DAILY_LIMIT = 20000
+GLOBAL_DAY_SECONDS = 86400.0
 
 log = logging.getLogger("ymt-token")
 _rate_lock = threading.Lock()
-_rate_events: dict[str, deque[float]] = defaultdict(deque)
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
 class TokenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    device: str
-    secret: str
+    build: str
 
 
 def _response(status: int, code: str, message: str, headers: dict[str, str] | None = None):
@@ -60,31 +60,26 @@ def _response(status: int, code: str, message: str, headers: dict[str, str] | No
     return JSONResponse(status_code=status, content={"code": code, "message": message}, headers=merged)
 
 
-def _normalize_device(value: str) -> str:
-    return re.sub(r"[:\-]", "", str(value or "")).strip().upper()
-
-
-def _load_devices() -> dict[str, dict[str, Any]]:
+def _load_builds() -> dict[str, dict[str, Any]]:
     try:
-        data = json.loads(DEVICES_PATH.read_text(encoding="utf-8"))
-        devices = data.get("devices") if isinstance(data, dict) else None
-        if not isinstance(devices, dict):
-            raise ValueError("devices must be an object")
+        data = json.loads(BUILDS_PATH.read_text(encoding="utf-8"))
+        builds = data.get("builds", data) if isinstance(data, dict) else None
+        if not isinstance(builds, dict):
+            raise ValueError("builds must be an object")
         result: dict[str, dict[str, Any]] = {}
-        for raw_device, item in devices.items():
-            device = _normalize_device(raw_device)
-            if not DEVICE_RE.fullmatch(device) or not isinstance(item, dict):
-                raise ValueError("invalid device entry")
-            digest = str(item.get("secret_sha256") or "").lower()
+        for build, item in builds.items():
+            if not isinstance(build, str) or not BUILD_RE.fullmatch(build) or not isinstance(item, dict):
+                raise ValueError("invalid build entry")
+            version = item.get("version")
             communities = item.get("comm")
-            if not re.fullmatch(r"[0-9a-f]{64}", digest) or not isinstance(communities, list):
-                raise ValueError("invalid device credential entry")
-            if any(not isinstance(code, str) or not code.strip() for code in communities):
+            if not isinstance(version, str) or not version.strip() or not isinstance(communities, list):
+                raise ValueError("invalid build entry")
+            if any(not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", code) for code in communities):
                 raise ValueError("invalid community entry")
-            result[device] = {"secret_sha256": digest, "comm": [code.strip() for code in communities], "enabled": item.get("enabled") is True}
+            result[build] = {"version": version.strip(), "comm": [code.strip() for code in communities], "enabled": item.get("enabled") is True}
         return result
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, AttributeError, TypeError) as exc:
-        raise RuntimeError("device allowlist unavailable") from exc
+        raise RuntimeError("build allowlist unavailable") from exc
 
 
 def _load_private_key() -> Ed25519PrivateKey:
@@ -102,12 +97,12 @@ def _b64(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
-def _jwt(private_key: Ed25519PrivateKey, device: str, communities: list[str]) -> tuple[str, int]:
+def _jwt(private_key: Ed25519PrivateKey, build: str, communities: list[str]) -> tuple[str, int]:
     issued = int(time.time())
     payload = {
         "iss": ISSUER,
         "aud": AUDIENCE,
-        "sub": f"device:{device}",
+        "sub": f"build:{build}",
         "scope": SCOPE,
         "comm": communities,
         "iat": issued,
@@ -119,23 +114,21 @@ def _jwt(private_key: Ed25519PrivateKey, device: str, communities: list[str]) ->
     return f"{encoded}.{_b64(private_key.sign(encoded.encode('ascii')))}", issued + 300
 
 
-def _take_rate(device: str) -> bool:
-    now = time.monotonic()
+def _take_rate(ip: str) -> bool:
+    now = time.time()
     with _rate_lock:
-        events = _rate_events[device]
-        cutoff = now - RATE_WINDOW_SECONDS
-        while events and events[0] <= cutoff:
-            events.popleft()
-        if len(events) >= RATE_LIMIT:
-            return False
-        events.append(now)
-        if len(_rate_events) > 2048:
-            for key, queued in list(_rate_events.items()):
-                while queued and queued[0] <= cutoff:
-                    queued.popleft()
-                if not queued:
-                    del _rate_events[key]
-        return True
+        with sqlite3.connect(RATE_DB_PATH, timeout=2) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS rate_events (ip TEXT NOT NULL, at REAL NOT NULL)")
+            conn.execute("CREATE INDEX IF NOT EXISTS rate_ip_time ON rate_events (ip, at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS rate_time ON rate_events (at)")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM rate_events WHERE at <= ?", (now - GLOBAL_DAY_SECONDS,))
+            ip_count = conn.execute("SELECT COUNT(*) FROM rate_events WHERE ip=? AND at>?", (ip, now - IP_RATE_WINDOW_SECONDS)).fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM rate_events").fetchone()[0]
+            if ip_count >= IP_RATE_LIMIT or total >= GLOBAL_DAILY_LIMIT:
+                return False
+            conn.execute("INSERT INTO rate_events (ip, at) VALUES (?, ?)", (ip, now))
+            return True
 
 
 @app.exception_handler(RequestValidationError)
@@ -161,39 +154,35 @@ async def health():
 
 @app.post("/ymt/token")
 async def issue_token(request: Request, body: TokenRequest):
-    ip = request.headers.get("x-real-ip", "unknown")[:64]
-    device = _normalize_device(body.device)
-    if not DEVICE_RE.fullmatch(device) or not SECRET_RE.fullmatch(body.secret):
-        log.info("token result=400 device=%s ip=%s", device or "invalid", ip)
+    if not ISSUANCE_ENABLED:
+        return _response(503, "SIGNING_UNAVAILABLE", "signing not enabled")
+    ip = request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+    ip = ip[:64]
+    try:
+        allowed = _take_rate(ip)
+    except (sqlite3.Error, OSError):
+        return _response(503, "SIGNING_UNAVAILABLE", "rate limiter unavailable")
+    if not allowed:
+        return _response(429, "RATE_LIMITED", "rate limited", {"Retry-After": "60"})
+    build = body.build
+    if not BUILD_RE.fullmatch(build):
+        log.info("token result=400 ip=%s", ip)
         return _response(400, "INVALID_REQUEST", "invalid request")
     try:
-        decoded_secret = base64.urlsafe_b64decode(body.secret + "=")
-    except (ValueError, TypeError):
-        decoded_secret = b""
-    if len(decoded_secret) != 32:
-        return _response(400, "INVALID_REQUEST", "invalid request")
-    try:
-        devices = _load_devices()
+        builds = _load_builds()
     except RuntimeError:
-        log.error("token result=500 device=%s ip=%s", device, ip)
+        log.error("token result=500 build=%s ip=%s", build, ip)
         return _response(500, "SIGNING_UNAVAILABLE", "signing unavailable")
-    entry = devices.get(device)
-    digest = hashlib.sha256(decoded_secret).hexdigest()
-    if not entry or not hmac.compare_digest(digest, entry["secret_sha256"]):
-        log.info("token result=401 device=%s ip=%s", device, ip)
-        return _response(401, "UNAUTHORIZED_DEVICE", "unauthorized device")
-    if not entry["enabled"]:
-        log.info("token result=403 device=%s ip=%s", device, ip)
-        return _response(403, "DEVICE_DISABLED", "device disabled")
+    entry = builds.get(build)
+    if not entry or not entry["enabled"]:
+        log.info("token result=403 build=%s ip=%s", build, ip)
+        return _response(403, "BUILD_NOT_ALLOWED", "build not allowed")
     if not entry["comm"]:
         return _response(503, "NO_COMMUNITY", "no community")
-    if not _take_rate(device):
-        log.info("token result=429 device=%s ip=%s", device, ip)
-        return _response(429, "RATE_LIMITED", "rate limited", {"Retry-After": "5"})
     try:
-        token, exp = _jwt(_load_private_key(), device, entry["comm"])
+        token, exp = _jwt(_load_private_key(), build, entry["comm"])
     except RuntimeError:
-        log.error("token result=500 device=%s ip=%s", device, ip)
+        log.error("token result=500 build=%s ip=%s", build, ip)
         return _response(500, "SIGNING_UNAVAILABLE", "signing unavailable")
-    log.info("token result=ok device=%s ip=%s", device, ip)
+    log.info("token result=ok build=%s version=%s ip=%s", build, entry["version"], ip)
     return JSONResponse(status_code=200, content={"token": token, "exp": exp, "comm": entry["comm"], "kid": KID}, headers={"Cache-Control": "no-store"})

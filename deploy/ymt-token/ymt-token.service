@@ -10,12 +10,16 @@ WorkingDirectory=/opt/ymt-token
 ExecStart=/opt/ymt-token/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 48728 --workers 1
 Restart=on-failure
 RestartSec=3
+UMask=0077
+Environment=YMT_TOKEN_KID=zwzz-2026-02
+Environment=YMT_TOKEN_ISSUANCE_ENABLED=false
+Environment=PYTHONDONTWRITEBYTECODE=1
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/log/ymt-token
-ReadOnlyPaths=/etc/ymt/signing-private.pem /etc/ymt/devices.json
+ReadOnlyPaths=/etc/ymt/signing-private.pem /etc/ymt/builds.json
 
 [Install]
 WantedBy=multi-user.target
