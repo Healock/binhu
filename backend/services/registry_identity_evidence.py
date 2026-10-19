@@ -3,6 +3,7 @@
 from collections import defaultdict
 from hashlib import sha256
 import json
+import math
 
 
 HISTORICAL_REFERENCE_TABLES = {
@@ -15,6 +16,11 @@ POLYMORPHIC_REFERENCE_TABLES = {
     "registry_source_records": ("household_property", "property"),
     "registry_change_candidates": ("property",),
 }
+IDENTITY_MAINTENANCE_AUDIT_TABLES = {
+    "registry_property_identity_mappings",
+    "registry_property_identity_events",
+    "registry_property_identity_reference_events",
+}
 KNOWN_ENTITY_TYPES = {
     "household_property",
     "property_certificate",
@@ -22,10 +28,35 @@ KNOWN_ENTITY_TYPES = {
     "person",
     "organization",
 }
+WORK_ORDER_OBJECT_TYPES = {
+    "property",
+    "household_property",
+    "registry_property",
+    "property_certificate",
+    "house",
+}
+JSON_SCAN_BATCH_SIZE = 200
 
 
 def _quote(identifier: str) -> str:
     return "`" + str(identifier).replace("`", "``") + "`"
+
+
+def _json_contains_property_scalar(value, property_id: int) -> bool:
+    """Recursively match exact numeric or string property-id scalars."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, int):
+        return value == int(property_id)
+    if isinstance(value, float):
+        return math.isfinite(value) and value.is_integer() and int(value) == int(property_id)
+    if isinstance(value, str):
+        return value == str(int(property_id))
+    if isinstance(value, list):
+        return any(_json_contains_property_scalar(item, property_id) for item in value)
+    if isinstance(value, dict):
+        return any(_json_contains_property_scalar(item, property_id) for item in value.values())
+    return False
 
 
 async def discover_reference_inventory(cur, schemas: list[str], registry_schema: str) -> tuple[list[dict], list[dict], list[dict]]:
@@ -59,13 +90,31 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
     inventory = []
     opaque_json = []
     polymorphic_warnings = []
+    work_order_link_tables = set()
     for schema, table, column, data_type in columns:
         schema, table, column = str(schema), str(table), str(column)
+        # The identity graph and its audit rows describe the resolver itself;
+        # they are not business references that should block a later measure.
+        if schema == registry_schema and table in IDENTITY_MAINTENANCE_AUDIT_TABLES:
+            continue
         table_primary_keys = primary_keys.get((schema, table), [])
         key = (schema, table, column)
         lower = column.lower()
         entity_types = POLYMORPHIC_REFERENCE_TABLES.get(table) if schema == registry_schema else None
         is_poly = bool(entity_types)
+        if table == "work_order_links" and column in {"object_id", "object_type"}:
+            work_order_link_tables.add((schema, table))
+        if table == "work_order_links" and column == "object_id":
+            inventory.append({
+                "schema": schema,
+                "table": table,
+                "column": column,
+                "primary_keys": list(table_primary_keys),
+                "kind": "work_order_link",
+                "entity_type": None,
+                "reference_type_column": "object_type",
+            })
+            continue
         is_reference = (
             lower == "property_id"
             or lower == "registration_property_id"
@@ -109,6 +158,36 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
                     "count": int(count),
                     "warning": "unknown_entity_type_blocks_review",
                 })
+    for schema, table in sorted(work_order_link_tables):
+        columns_for_table = {
+            item[2] for item in columns
+            if str(item[0]) == schema and str(item[1]) == table
+        }
+        if not {"object_id", "object_type"}.issubset(columns_for_table):
+            polymorphic_warnings.append({
+                "schema": schema,
+                "table": table,
+                "column": "object_id",
+                "entity_type": "",
+                "count": 0,
+                "warning": "work_order_link_schema_incomplete_blocks_review",
+            })
+            continue
+        await cur.execute(
+            f"SELECT object_type,COUNT(*) FROM {_quote(schema)}.{_quote(table)} "
+            "WHERE object_type IS NOT NULL GROUP BY object_type"
+        )
+        for object_type, count in await cur.fetchall():
+            normalized = str(object_type or "").strip().lower()
+            if normalized not in WORK_ORDER_OBJECT_TYPES:
+                polymorphic_warnings.append({
+                    "schema": schema,
+                    "table": table,
+                    "column": "object_type",
+                    "entity_type": str(object_type or ""),
+                    "count": int(count),
+                    "warning": "unknown_work_order_object_type_blocks_review",
+                })
     polymorphic_warnings.sort(key=lambda item: (item["schema"], item["table"], item.get("entity_type", "")))
     return inventory, opaque_json, polymorphic_warnings
 
@@ -118,6 +197,26 @@ async def scan_references(cur, inventory: list[dict], property_ids: list[int], *
         return []
     grouped = defaultdict(lambda: {"count": 0, "keys": []})
     for item in inventory:
+        if item.get("kind") == "work_order_link":
+            type_column = item["reference_type_column"]
+            for start in range(0, len(property_ids), chunk_size):
+                chunk = property_ids[start:start + chunk_size]
+                value_placeholders = ",".join(["%s"] * len(chunk))
+                selected = [item["column"], type_column, *item["primary_keys"]]
+                sql = "SELECT " + ",".join(_quote(name) for name in selected)
+                sql += f" FROM {_quote(item['schema'])}.{_quote(item['table'])}"
+                sql += f" WHERE {_quote(item['column'])} IN ({value_placeholders})"
+                await cur.execute(sql, tuple(str(value) for value in chunk))
+                for row in await cur.fetchall():
+                    try:
+                        property_id = int(row[0])
+                    except (TypeError, ValueError):
+                        continue
+                    object_type = str(row[1] or "")
+                    key = (property_id, item["schema"], item["table"], item["column"], item["kind"], object_type)
+                    grouped[key]["count"] += 1
+                    grouped[key]["keys"].append(tuple(str(value) for value in row[2:]))
+            continue
         if not item["primary_keys"]:
             # Count unkeyed references without exposing row contents; their presence blocks later review.
             for start in range(0, len(property_ids), chunk_size):
@@ -210,6 +309,59 @@ async def scan_certificate_source_references(
                 "count": len(keys),
                 "record_key_sha256": sha256(canonical.encode("utf-8")).hexdigest(),
                 "stable_record_keys": True,
+            })
+    return findings
+
+
+async def scan_opaque_json_reference_markers(
+    cur, opaque_json: list[dict], property_ids: list[int]
+) -> list[dict]:
+    """Find exact candidate IDs anywhere in JSON documents.
+
+    The scan deliberately does not infer field names. JSON values are parsed
+    recursively in memory so numeric and string scalars are distinguished from
+    surrounding text. A match is a blocker; payloads and row identifiers are
+    never returned or logged. A malformed value blocks all candidate IDs for
+    that column rather than being treated as empty.
+    """
+    findings = []
+    for item in opaque_json:
+        schema, table, column = (str(item[key]) for key in ("schema", "table", "column"))
+        candidates = sorted(set(int(value) for value in property_ids))
+        await cur.execute(
+            "SELECT /*+ MAX_EXECUTION_TIME(5000) */ "
+            f"{_quote(column)} FROM {_quote(schema)}.{_quote(table)} "
+            f"WHERE {_quote(column)} IS NOT NULL"
+        )
+        counts = {property_id: 0 for property_id in candidates}
+        parse_failed = False
+        while True:
+            rows = await cur.fetchmany(JSON_SCAN_BATCH_SIZE)
+            if not rows:
+                break
+            for row in rows:
+                value = row[0] if isinstance(row, (tuple, list)) else row
+                try:
+                    parsed = json.loads(value) if isinstance(value, (str, bytes, bytearray)) else value
+                    for property_id in candidates:
+                        if _json_contains_property_scalar(parsed, property_id):
+                            counts[property_id] += 1
+                except (TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+                    parse_failed = True
+                    break
+            if parse_failed:
+                break
+        if parse_failed:
+            counts = {property_id: 1 for property_id in candidates}
+        for property_id in candidates:
+            count = counts[property_id]
+            findings.append({
+                "property_id": property_id,
+                "schema": schema,
+                "table": table,
+                "column": column,
+                "count": count,
+                "key_pattern": "parsed_nested_numeric_or_string_scalar" if not parse_failed else "json_parse_failed",
             })
     return findings
 

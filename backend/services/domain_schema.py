@@ -67,8 +67,8 @@ async def ensure_registry_schema(cur) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     # The identity graph is intentionally separate from registry_merge_history,
-    # which is reserved for person merges. Schema initialization is idempotent;
-    # this PR has no mapping writer and never creates real mapping rows.
+    # which is reserved for person merges. Mapping writes are restricted to the
+    # fixed, one-shot production maintenance command.
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_property_identity_mappings (
             old_property_id BIGINT NOT NULL PRIMARY KEY,
@@ -77,6 +77,13 @@ async def ensure_registry_schema(cur) -> None:
             status VARCHAR(16) NOT NULL DEFAULT 'active',
             version INT UNSIGNED NOT NULL DEFAULT 1,
             maintenance_run_id VARCHAR(80) NOT NULL,
+            migration_measurement_hash CHAR(64) NOT NULL DEFAULT '',
+            post_apply_measurement_hash CHAR(64) NOT NULL DEFAULT '',
+            post_rollback_measurement_hash CHAR(64) NOT NULL DEFAULT '',
+            candidate_class VARCHAR(40) NOT NULL DEFAULT '',
+            maintenance_actor VARCHAR(100) NOT NULL DEFAULT '',
+            active_canonical_property_id BIGINT
+                GENERATED ALWAYS AS (IF(status='active', canonical_property_id, NULL)) STORED,
             created_by BIGINT DEFAULT NULL,
             updated_by BIGINT DEFAULT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -85,6 +92,7 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_identity_status_old (status, old_property_id),
             INDEX idx_registry_identity_canonical (canonical_property_id, status),
             INDEX idx_registry_identity_community (community_id, status),
+            UNIQUE KEY uq_registry_identity_active_canonical (active_canonical_property_id),
             CONSTRAINT chk_registry_identity_not_self
                 CHECK (old_property_id <> canonical_property_id),
             CONSTRAINT chk_registry_identity_positive
@@ -93,6 +101,35 @@ async def ensure_registry_schema(cur) -> None:
                 CHECK (status IN ('active','revoked'))
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await _ensure_column(
+        cur, "registry_property_identity_mappings", "migration_measurement_hash",
+        "CHAR(64) NOT NULL DEFAULT '' AFTER maintenance_run_id",
+    )
+    await _ensure_column(
+        cur, "registry_property_identity_mappings", "post_apply_measurement_hash",
+        "CHAR(64) NOT NULL DEFAULT '' AFTER migration_measurement_hash",
+    )
+    await _ensure_column(
+        cur, "registry_property_identity_mappings", "post_rollback_measurement_hash",
+        "CHAR(64) NOT NULL DEFAULT '' AFTER post_apply_measurement_hash",
+    )
+    await _ensure_column(
+        cur, "registry_property_identity_mappings", "candidate_class",
+        "VARCHAR(40) NOT NULL DEFAULT '' AFTER post_rollback_measurement_hash",
+    )
+    await _ensure_column(
+        cur, "registry_property_identity_mappings", "maintenance_actor",
+        "VARCHAR(100) NOT NULL DEFAULT '' AFTER candidate_class",
+    )
+    await _ensure_column(
+        cur, "registry_property_identity_mappings", "active_canonical_property_id",
+        "BIGINT GENERATED ALWAYS AS (IF(status='active', canonical_property_id, NULL)) STORED "
+        "AFTER maintenance_actor",
+    )
+    await _ensure_index(
+        cur, "registry_property_identity_mappings", "uq_registry_identity_active_canonical",
+        "UNIQUE INDEX uq_registry_identity_active_canonical (active_canonical_property_id)",
+    )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_property_identity_events (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -102,6 +139,7 @@ async def ensure_registry_schema(cur) -> None:
             event_type VARCHAR(24) NOT NULL,
             mapping_version INT UNSIGNED NOT NULL,
             maintenance_run_id VARCHAR(80) NOT NULL,
+            maintenance_actor VARCHAR(100) NOT NULL DEFAULT '',
             reason_code VARCHAR(60) NOT NULL DEFAULT '',
             actor_user_id BIGINT DEFAULT NULL,
             occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -112,6 +150,32 @@ async def ensure_registry_schema(cur) -> None:
                 CHECK (old_property_id <> canonical_property_id),
             CONSTRAINT chk_registry_identity_event_positive
                 CHECK (old_property_id > 0 AND canonical_property_id > 0 AND community_id > 0 AND mapping_version > 0)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await _ensure_column(
+        cur, "registry_property_identity_events", "maintenance_actor",
+        "VARCHAR(100) NOT NULL DEFAULT '' AFTER maintenance_run_id",
+    )
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS registry_property_identity_reference_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            maintenance_run_id VARCHAR(80) NOT NULL,
+            old_property_id BIGINT NOT NULL,
+            canonical_property_id BIGINT NOT NULL,
+            table_name VARCHAR(64) NOT NULL,
+            column_name VARCHAR(64) NOT NULL,
+            record_id BIGINT UNSIGNED NOT NULL,
+            record_hash CHAR(64) NOT NULL,
+            occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_registry_identity_reference_run_record (
+                maintenance_run_id, table_name, column_name, record_id
+            ),
+            INDEX idx_registry_identity_reference_old (old_property_id, occurred_at),
+            INDEX idx_registry_identity_reference_canonical (canonical_property_id, occurred_at),
+            CONSTRAINT chk_registry_identity_reference_not_self
+                CHECK (old_property_id <> canonical_property_id),
+            CONSTRAINT chk_registry_identity_reference_positive
+                CHECK (old_property_id > 0 AND canonical_property_id > 0 AND record_id > 0)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
     # 来源导入字段采用幂等补列，兼容 0.20.0 以前已经创建的房屋档案库。

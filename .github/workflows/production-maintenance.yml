@@ -11,27 +11,42 @@ on:
         options:
           - internal-department-retirement
           - photo-sheet-retirement
+          - registry-property-identity
       phase:
         description: Maintenance phase
         required: true
         type: choice
-        options: [measure, backup, apply, verify]
+        options: [measure, backup, apply, verify, rollback]
       run_id:
         description: Immutable evidence run id
         required: true
         type: string
       expected_count:
-        description: Count confirmed from measure (apply only)
+        description: Count confirmed from measure (retirement operations only)
+        required: false
+        type: string
+      old_property_id:
+        description: Old property id (registry identity operation only)
+        required: false
+        type: string
+      canonical_property_id:
+        description: Current property id (registry identity operation only)
+        required: false
+        type: string
+      measurement_hash:
+        description: Exact measurement hash from the latest evidence (apply or rollback)
         required: false
         type: string
       confirmation:
-        description: Explicit destructive-action confirmation (apply only)
+        description: Explicit confirmation for destructive apply or rollback
         required: false
         type: choice
         options:
           - none
           - confirm-remove-internal
           - confirm-empty-photo-tables
+          - confirm-registry-property-identity
+          - confirm-registry-property-identity-rollback
         default: none
 
 permissions:
@@ -66,21 +81,58 @@ jobs:
           PHASE: ${{ inputs.phase }}
           RUN_ID: ${{ inputs.run_id }}
           EXPECTED_COUNT: ${{ inputs.expected_count }}
+          OLD_PROPERTY_ID: ${{ inputs.old_property_id }}
+          CANONICAL_PROPERTY_ID: ${{ inputs.canonical_property_id }}
+          MEASUREMENT_HASH: ${{ inputs.measurement_hash }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          INITIATED_BY: ${{ github.actor }}
         run: |
           set -Eeuo pipefail
-          [[ "$OPERATION" =~ ^(internal-department-retirement|photo-sheet-retirement)$ ]]
-          [[ "$PHASE" =~ ^(measure|backup|apply|verify)$ ]]
+          [[ "$OPERATION" =~ ^(internal-department-retirement|photo-sheet-retirement|registry-property-identity)$ ]]
+          [[ "$PHASE" =~ ^(measure|backup|apply|verify|rollback)$ ]]
           [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]]
-          if [[ "$PHASE" == apply ]]; then
-            [[ "$EXPECTED_COUNT" =~ ^[0-9]+$ ]]
-            if [[ "$OPERATION" == internal-department-retirement ]]; then
-              [[ "$CONFIRMATION" == confirm-remove-internal ]]
-            else
-              [[ "$CONFIRMATION" == confirm-empty-photo-tables ]]
-            fi
+          if [[ "$OPERATION" == registry-property-identity ]]; then
+            [[ -z "$EXPECTED_COUNT" ]]
+            [[ "$INITIATED_BY" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]]
+            valid_property_id() {
+              [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]] &&
+                python3 -c 'import sys; sys.exit(0 if int(sys.argv[1]) <= 9223372036854775807 else 1)' "$1"
+            }
+            case "$PHASE" in
+              measure|verify)
+                valid_property_id "$OLD_PROPERTY_ID"
+                valid_property_id "$CANONICAL_PROPERTY_ID"
+                [[ -z "$MEASUREMENT_HASH" && "$CONFIRMATION" == none ]]
+                ;;
+              backup)
+                [[ -z "$OLD_PROPERTY_ID" && -z "$CANONICAL_PROPERTY_ID" && -z "$MEASUREMENT_HASH" && "$CONFIRMATION" == none ]]
+                ;;
+              apply)
+                valid_property_id "$OLD_PROPERTY_ID"
+                valid_property_id "$CANONICAL_PROPERTY_ID"
+                [[ "$MEASUREMENT_HASH" =~ ^[0-9a-f]{64}$ ]]
+                [[ "$CONFIRMATION" == confirm-registry-property-identity ]]
+                ;;
+              rollback)
+                valid_property_id "$OLD_PROPERTY_ID"
+                valid_property_id "$CANONICAL_PROPERTY_ID"
+                [[ "$MEASUREMENT_HASH" =~ ^[0-9a-f]{64}$ ]]
+                [[ "$CONFIRMATION" == confirm-registry-property-identity-rollback ]]
+                ;;
+            esac
           else
-            [[ -z "$EXPECTED_COUNT" && "$CONFIRMATION" == none ]]
+            [[ "$PHASE" != rollback ]]
+            [[ -z "$OLD_PROPERTY_ID" && -z "$CANONICAL_PROPERTY_ID" && -z "$MEASUREMENT_HASH" ]]
+            if [[ "$PHASE" == apply ]]; then
+              [[ "$EXPECTED_COUNT" =~ ^[0-9]+$ ]]
+              if [[ "$OPERATION" == internal-department-retirement ]]; then
+                [[ "$CONFIRMATION" == confirm-remove-internal ]]
+              else
+                [[ "$CONFIRMATION" == confirm-empty-photo-tables ]]
+              fi
+            else
+              [[ -z "$EXPECTED_COUNT" && "$CONFIRMATION" == none ]]
+            fi
           fi
       - name: Run fixed production maintenance gateway
         shell: bash
@@ -91,11 +143,21 @@ jobs:
           PHASE: ${{ inputs.phase }}
           RUN_ID: ${{ inputs.run_id }}
           EXPECTED_COUNT: ${{ inputs.expected_count }}
+          OLD_PROPERTY_ID: ${{ inputs.old_property_id }}
+          CANONICAL_PROPERTY_ID: ${{ inputs.canonical_property_id }}
+          MEASUREMENT_HASH: ${{ inputs.measurement_hash }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          INITIATED_BY: ${{ github.actor }}
         run: |
           set -Eeuo pipefail
           command=(production-maintenance "$OPERATION" "$PHASE" "$RUN_ID")
-          if [[ "$PHASE" == apply ]]; then
+          if [[ "$OPERATION" == registry-property-identity ]]; then
+            case "$PHASE" in
+              measure|verify) command+=("$OLD_PROPERTY_ID" "$CANONICAL_PROPERTY_ID" "$INITIATED_BY") ;;
+              backup) command+=("$INITIATED_BY") ;;
+              apply|rollback) command+=("$OLD_PROPERTY_ID" "$CANONICAL_PROPERTY_ID" "$MEASUREMENT_HASH" "$CONFIRMATION" "$INITIATED_BY") ;;
+            esac
+          elif [[ "$PHASE" == apply ]]; then
             command+=("$EXPECTED_COUNT" "$CONFIRMATION")
           fi
           ssh -F /dev/null \

@@ -9,8 +9,10 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.registry_identity_evidence import (
+    _json_contains_property_scalar,
     discover_reference_inventory,
     scan_certificate_source_references,
+    scan_opaque_json_reference_markers,
     scan_references,
     seal_artifact,
     verify_artifact,
@@ -38,6 +40,9 @@ class Cursor:
                 ("RegistryData", "registry_source_records", "entity_type", "varchar"),
                 ("RegistryData", "registry_change_candidates", "entity_id", "bigint"),
                 ("RegistryData", "registry_change_candidates", "entity_type", "varchar"),
+                ("RegistryData", "registry_property_identity_mappings", "old_property_id", "bigint"),
+                ("RegistryData", "registry_property_identity_events", "canonical_property_id", "bigint"),
+                ("RegistryData", "registry_property_identity_reference_events", "old_property_id", "bigint"),
                 ("OnlineData", "task_links", "registration_property_id", "bigint"),
                 ("OnlineData", "people", "property_manager_id", "bigint"),
             ]
@@ -85,6 +90,38 @@ async def test_inventory_covers_direct_and_typed_polymorphic_references():
         ("RegistryData", "registry_change_candidates", "entity_id", "polymorphic", "property"),
     }
     assert not any(item["column"] == "property_manager_id" for item in inventory)
+    assert not any("identity_" in item["table"] for item in inventory)
+
+
+@pytest.mark.asyncio
+async def test_work_order_links_are_scanned_as_typed_property_references_and_unknown_types_block():
+    class WorkOrderCursor(Cursor):
+        async def fetchall(self):
+            if self.sql.startswith("SELECT c.TABLE_SCHEMA"):
+                return (await super().fetchall()) + [
+                    ("WorkflowData", "work_order_links", "id", "bigint"),
+                    ("WorkflowData", "work_order_links", "object_id", "varchar"),
+                    ("WorkflowData", "work_order_links", "object_type", "varchar"),
+                ]
+            if "CONSTRAINT_NAME='PRIMARY'" in self.sql:
+                return (await super().fetchall()) + [("WorkflowData", "work_order_links", "id")]
+            if self.sql.startswith("SELECT object_type,COUNT(*)"):
+                return [("property", 1), ("future_object", 1)]
+            if "FROM `WorkflowData`.`work_order_links`" in self.sql:
+                return [("7", "property", 901)]
+            return await super().fetchall()
+
+    cursor = WorkOrderCursor()
+    inventory, _, warnings = await discover_reference_inventory(
+        cursor, ["RegistryData", "WorkflowData"], "RegistryData"
+    )
+    work_order = [item for item in inventory if item["kind"] == "work_order_link"]
+    assert work_order and work_order[0]["reference_type_column"] == "object_type"
+    assert any(item["warning"] == "unknown_work_order_object_type_blocks_review" for item in warnings)
+    findings = await scan_references(cursor, work_order, [7])
+    assert findings[0]["property_id"] == 7
+    assert findings[0]["entity_type"] == "property"
+    assert findings[0]["kind"] == "work_order_link"
 
 
 @pytest.mark.asyncio
@@ -130,6 +167,62 @@ async def test_reference_scan_adds_discriminator_and_only_returns_digests():
     source_params = next(params for sql, params in cursor.calls
                          if "registry_source_records`" in sql and "`entity_type`=%s" in sql)
     assert source_params[-1] == "household_property"
+
+
+@pytest.mark.asyncio
+async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_names():
+    class JsonCursor:
+        def __init__(self):
+            self.calls = []
+            self.rows = [
+                ({"nested": {"property_id": 7}},),
+                ({"items": ["8", {"value": 9}]},),
+            ]
+
+        async def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+
+        async def fetchmany(self, size):
+            rows, self.rows = self.rows, []
+            return rows
+
+    cursor = JsonCursor()
+    findings = await scan_opaque_json_reference_markers(cursor, [{
+        "schema": "RegistryData", "table": "registry_source_records", "column": "payload_json",
+    }], [7, 8])
+    assert [item["count"] for item in findings] == [1, 1]
+    assert all(set(item) == {"property_id", "schema", "table", "column", "count", "key_pattern"} for item in findings)
+    assert all("MAX_EXECUTION_TIME(5000)" in sql and "`payload_json`" in sql for sql, _ in cursor.calls)
+    assert all(params == () for _, params in cursor.calls)
+
+
+@pytest.mark.asyncio
+async def test_opaque_json_parse_failure_blocks_every_candidate_without_echoing_payload():
+    class InvalidJsonCursor:
+        async def execute(self, sql, params=()):
+            self.sql = sql
+
+        async def fetchmany(self, size):
+            if getattr(self, "done", False):
+                return []
+            self.done = True
+            return [("not-json",)]
+
+    findings = await scan_opaque_json_reference_markers(
+        InvalidJsonCursor(), [{"schema": "RegistryData", "table": "opaque", "column": "payload_json"}], [7, 8]
+    )
+    assert [item["count"] for item in findings] == [1, 1]
+    assert all(item["key_pattern"] == "json_parse_failed" for item in findings)
+    assert all("not-json" not in json.dumps(item) for item in findings)
+
+
+def test_json_scalar_parser_distinguishes_nested_values_from_surrounding_text():
+    assert _json_contains_property_scalar({"nested": {"property_id": 123}}, 123)
+    assert _json_contains_property_scalar({"items": [1, {"id": "123"}]}, 123)
+    assert _json_contains_property_scalar({"id": 123.0}, 123)
+    assert not _json_contains_property_scalar({"id": 123.5}, 123)
+    assert not _json_contains_property_scalar({"id": 1234}, 123)
+    assert not _json_contains_property_scalar({"text": "text ,123]"}, 123)
 
 
 @pytest.mark.asyncio
