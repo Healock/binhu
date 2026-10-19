@@ -1673,7 +1673,7 @@ python -m migrations.registry_property_identity_evidence --environment productio
 python -m migrations.registry_property_identity_evidence --environment production --property-id <房屋ID>
 ```
 
-该证据命令只读取八库的一致性快照，枚举直接房屋引用、已知 `entity_id` 多态引用和稳定记录键摘要；告知书来源记录通过告知书记录 ID 反查房屋，不把两种 ID 混用。不会输出 JSON 载荷正文。未知 `entity_type`、跨社区同址和无法解释的引用都会阻断后续申请。
+该证据命令只读取八库的一致性快照，枚举直接房屋引用、已知 `entity_id` 多态引用、`WorkflowData.work_order_links` 对象引用和稳定记录键摘要；告知书来源记录通过告知书记录 ID 反查房屋，不把两种 ID 混用。不会输出 JSON 载荷正文。未知 `entity_type`、未知工作订单对象类型、跨社区同址和无法解释的引用都会阻断后续申请。
 
 生产单组流程固定为：
 
@@ -1684,9 +1684,9 @@ production-maintenance registry-property-identity apply <run-id> <old-id> <canon
 production-maintenance registry-property-identity verify <run-id> <old-id> <canonical-id>
 ```
 
-`measure` 只输出密钥化地址 HMAC 摘要、内部 ID、引用计数、字段名、状态和校验摘要，不输出可被字典枚举的裸地址哈希。查询有固定 30 秒执行上限、元数据锁最多等待 2 秒、InnoDB 行锁最多等待 5 秒；预算超限即失败关闭。可执行候选仅限“无活动引用”或“告知书独占引用”两类；引用扫描覆盖八库的直接引用、已知多态引用、JSON 中以房屋 ID 命名的值以及人工小区关联。发现未识别的多态类型或旧房屋引用时会阻断。告知书例外要求旧房屋恰有一条告知书及唯一来源记录，现行房屋没有告知书，且旧房屋没有其他活动引用和小区匹配关系。
+`measure` 只输出密钥化地址 HMAC 摘要、内部 ID、引用计数、字段名、状态和校验摘要，不输出可被字典枚举的裸地址哈希。查询有固定 30 秒执行上限、元数据锁最多等待 2 秒、InnoDB 行锁最多等待 5 秒；预算超限即失败关闭。可执行候选仅限“无活动引用”或“告知书独占引用”两类；引用扫描覆盖八库的直接引用、已知多态引用、工作订单对象引用、JSON 中以房屋 ID 命名的值以及人工小区关联。所有未有完整解析器的 JSON 列都按未审查引用阻断，不能因为正则没有命中就放行。发现未识别的多态类型或旧房屋引用时会阻断。告知书例外要求旧房屋恰有一条告知书及唯一来源记录，现行房屋没有告知书，且旧房屋没有其他活动引用和小区匹配关系。
 
-`backup` 只备份 `RegistryData`，维护脚本验证 gzip 和 SHA-256，并把不可变清单放在 root-only 证据目录；相同 run id 的测量和备份证据不能覆盖。Production maintenance 工作流自动记录触发者标识到测量/备份证据、映射和事件，不接受调用者自填身份。`apply` 必须使用同一 run id、测量摘要和已校验的备份清单。应用或回滚期间，固定脚本会停止生产 Backend 容器，再使用已部署 Backend 镜像启动无端口的一次性 Compose 容器执行迁移；命令后会启动 Backend 并等待容器恢复运行，失败时保留错误并要求人工恢复。此时业务 API 会短暂不可用，应安排维护窗口。数据库映射、事件和告知书 `property_id` 更新都在同一 `RegistryData` MySQL 事务内提交；其他来源记录和地址历史保持原样。
+`backup` 只备份 `RegistryData`，维护脚本验证 gzip、SHA-256、mysqldump 数据库范围及 `registry_properties` 表标记，并把不可变清单放在 root-only 证据目录。仓库没有安全的生产原地恢复环境，因此清单中的恢复合同明确为 `approved_manual_only`：本地/CI 不执行真实恢复，正式恢复仍须使用独立审批的备份演练流程。相同 run id 的测量和备份证据不能覆盖。Production maintenance 工作流自动记录触发者标识到测量/备份证据、映射和事件，不接受调用者自填身份。`apply` 必须使用同一 run id、测量摘要和已校验的备份清单。应用或回滚期间，固定脚本会停止生产 Backend 容器，再使用已部署 Backend 镜像启动无端口的一次性 Compose 容器执行迁移；命令后会启动 Backend 并等待 `/api/health` 就绪，失败时保留错误并要求人工恢复。此时业务 API 会短暂不可用，应安排维护窗口。数据库映射、事件和告知书 `property_id` 更新都在同一 `RegistryData` MySQL 事务内提交；其他来源记录和地址历史保持原样。
 
 归并成功后使用上述 `verify`。若需回滚，先取得同一 run id 下最新成功的活动态 verify 摘要，再运行：
 
@@ -1695,9 +1695,11 @@ production-maintenance registry-property-identity rollback <run-id> <old-id> <ca
 production-maintenance registry-property-identity verify <run-id> <old-id> <canonical-id>
 ```
 
-回滚会重新测量当前引用、映射版本和告知书内容摘要。若归并后状态有变化、出现新引用或告知书内容变化，回滚会停止并要求人工恢复；不会用整库备份覆盖新业务数据。相同 run id 的已提交 apply 和 rollback 可幂等重试。
+回滚会重新测量当前引用、映射版本和告知书内容摘要。若归并后状态有变化、出现新引用或告知书内容变化，回滚会停止并要求人工恢复；不会用整库备份覆盖新业务数据。映射表的旧房屋 ID 是主键，回滚后的 `revoked` 映射按一次性维护合同永久保留，不能用同一旧 ID 再次 apply；如需重新归并，必须重新测量并由维护人员创建新的受控身份方案。相同 run id 的已提交 apply 和 rollback 可幂等重试。
 
 命令显式校验环境及八库范围，并拒绝任意 SQL、表名、脚本路径和批量 ID。发现人员、机构、任务、跨域引用、历史人工小区确认、未知多态类型或旧 ID JSON 引用时均不允许执行。此 PR 仅支持一个房屋对；不会应用先前测量中的 1,034 个候选批次。生产写入须等本 PR 合并并部署、数据库结构初始化、生产只读测量、备份校验和单组验收授权全部完成后另行执行。
+
+身份映射表以旧房屋 ID 为主键，并以生成列唯一约束 active 现行房屋 ID；应用层同时校验正式社区一致、现行 ID 不能作为另一条旧 ID、不能形成环路。撤销映射保留历史但不重新激活，避免重复 apply 或并发 apply 产生不确定的 resolver 结果。
 
 本 PR 不自动消除重复档案，不生成真实映射，也不执行生产 apply。真实 MySQL 和驱动未在本地验证；维护命令、备份清单和实际生产容器行为仍需在正式维护窗口前核对。全量候选重算、批量归并以及 1,034 组候选范围不属于本次命令。
 

@@ -93,6 +93,37 @@ async def test_inventory_covers_direct_and_typed_polymorphic_references():
 
 
 @pytest.mark.asyncio
+async def test_work_order_links_are_scanned_as_typed_property_references_and_unknown_types_block():
+    class WorkOrderCursor(Cursor):
+        async def fetchall(self):
+            if self.sql.startswith("SELECT c.TABLE_SCHEMA"):
+                return (await super().fetchall()) + [
+                    ("WorkflowData", "work_order_links", "id", "bigint"),
+                    ("WorkflowData", "work_order_links", "object_id", "varchar"),
+                    ("WorkflowData", "work_order_links", "object_type", "varchar"),
+                ]
+            if "CONSTRAINT_NAME='PRIMARY'" in self.sql:
+                return (await super().fetchall()) + [("WorkflowData", "work_order_links", "id")]
+            if self.sql.startswith("SELECT object_type,COUNT(*)"):
+                return [("property", 1), ("future_object", 1)]
+            if "FROM `WorkflowData`.`work_order_links`" in self.sql:
+                return [("7", "property", 901)]
+            return await super().fetchall()
+
+    cursor = WorkOrderCursor()
+    inventory, _, warnings = await discover_reference_inventory(
+        cursor, ["RegistryData", "WorkflowData"], "RegistryData"
+    )
+    work_order = [item for item in inventory if item["kind"] == "work_order_link"]
+    assert work_order and work_order[0]["reference_type_column"] == "object_type"
+    assert any(item["warning"] == "unknown_work_order_object_type_blocks_review" for item in warnings)
+    findings = await scan_references(cursor, work_order, [7])
+    assert findings[0]["property_id"] == 7
+    assert findings[0]["entity_type"] == "property"
+    assert findings[0]["kind"] == "work_order_link"
+
+
+@pytest.mark.asyncio
 async def test_unknown_entity_type_is_an_explicit_blocking_warning():
     cursor = Cursor(unknown_entity_type=True)
     _, _, warnings = await discover_reference_inventory(

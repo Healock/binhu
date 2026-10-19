@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gzip
 import hashlib
 import hmac
 import json
@@ -47,6 +48,7 @@ REQUIRED_MAPPING_COLUMNS = {
     "old_property_id", "canonical_property_id", "community_id", "status", "version",
     "maintenance_run_id", "migration_measurement_hash", "post_apply_measurement_hash",
     "post_rollback_measurement_hash", "candidate_class", "maintenance_actor",
+    "active_canonical_property_id",
 }
 REQUIRED_EVENT_COLUMNS = {
     "maintenance_run_id", "maintenance_actor", "event_type", "mapping_version", "reason_code",
@@ -130,6 +132,24 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _verify_dump_contract(path: Path, database: str) -> None:
+    """Validate a bounded mysqldump header without executing restore SQL."""
+    try:
+        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
+            sample = stream.read(8 * 1024 * 1024)
+    except (OSError, EOFError) as exc:
+        raise IdentityMaintenanceError("registry_backup_sql_invalid") from exc
+    quoted_database = re.escape(database)
+    if not sample.strip() or "-- MySQL dump" not in sample:
+        raise IdentityMaintenanceError("registry_backup_sql_invalid")
+    if not re.search(rf"CREATE DATABASE(?: IF NOT EXISTS)?[^;]*`{quoted_database}`", sample, re.I):
+        raise IdentityMaintenanceError("registry_backup_database_scope_unproven")
+    if not re.search(rf"\bUSE\s+`{quoted_database}`\s*;", sample, re.I):
+        raise IdentityMaintenanceError("registry_backup_database_scope_unproven")
+    if not re.search(r"CREATE TABLE[^;]*`registry_properties`", sample, re.I):
+        raise IdentityMaintenanceError("registry_backup_required_table_missing")
+
+
 async def _candidate_rows(cur, old_id: int, canonical_id: int, *, for_update: bool = False) -> list[tuple]:
     lock_clause = " FOR UPDATE" if for_update else ""
     await cur.execute(
@@ -189,7 +209,11 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
     opaque_old_reference_count = sum(
         int(item["count"]) for item in opaque_matches if int(item["property_id"]) == old_id
     )
-    if blocking_old or old_link_blocked or opaque_old_reference_count or warnings:
+    # JSON columns are intentionally opaque.  Until a complete parser exists
+    # for a column, no identity migration may assume that it contains no
+    # property reference, even when the bounded marker scan found no exact ID.
+    opaque_json_unreviewed_count = len(opaque_json)
+    if blocking_old or old_link_blocked or opaque_json_unreviewed_count or warnings:
         disposition = "blocked"
     elif old_certificates:
         disposition = "certificate_only_exception_candidate"
@@ -213,6 +237,7 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
         "opaque_json_scanned_count": len(opaque_matches),
         "opaque_json_reference_count": opaque_reference_count,
         "opaque_json_old_reference_count": opaque_old_reference_count,
+        "opaque_json_unreviewed_column_count": opaque_json_unreviewed_count,
         "opaque_json_scan": opaque_matches,
         "unknown_polymorphic_type_count": len(warnings),
         "unknown_polymorphic_types": warnings,
@@ -298,8 +323,17 @@ def _verify_manifest(path: str, *, run_id: str) -> dict[str, Any]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise IdentityMaintenanceError("backup_manifest_invalid") from exc
-    if manifest.get("operation") != "registry-property-identity" or manifest.get("run_id") != run_id:
+    if manifest.get("schema") != 1 or manifest.get("operation") != "registry-property-identity" or manifest.get("run_id") != run_id:
         raise IdentityMaintenanceError("backup_manifest_scope_mismatch")
+    if manifest.get("database_scope") != [settings.MYSQL_REGISTRY_DB]:
+        raise IdentityMaintenanceError("backup_manifest_scope_mismatch")
+    dump_contract = manifest.get("dump_contract") or {}
+    if dump_contract != {
+        "format": "mysqldump-gzip",
+        "content_check": "bounded_header_v1",
+        "restore_procedure": "approved_manual_only",
+    }:
+        raise IdentityMaintenanceError("backup_manifest_contract_mismatch")
     databases = manifest.get("databases") or []
     if not isinstance(databases, list) or len(databases) != 1:
         raise IdentityMaintenanceError("registry_backup_missing")
@@ -320,6 +354,7 @@ def _verify_manifest(path: str, *, run_id: str) -> dict[str, Any]:
         raise IdentityMaintenanceError("registry_backup_checksum_mismatch")
     if _file_sha256(backup_path) != entry["sha256"]:
         raise IdentityMaintenanceError("registry_backup_checksum_mismatch")
+    _verify_dump_contract(backup_path, settings.MYSQL_REGISTRY_DB)
     return manifest
 
 
@@ -440,6 +475,8 @@ async def run_apply(*, run_id: str, old_property_id: int, canonical_property_id:
             )
             mapping = await cur.fetchone()
             if mapping:
+                if str(mapping[3]) == "revoked":
+                    raise IdentityMaintenanceError("identity_mapping_revoked_not_reusable")
                 if (
                     int(mapping[1]) == canonical_property_id and str(mapping[3]) == "active"
                     and str(mapping[4]) == run_id and str(mapping[6]) == measurement_hash

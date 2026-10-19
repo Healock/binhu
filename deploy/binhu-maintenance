@@ -136,6 +136,18 @@ PY
 
 compose=(docker compose --project-directory "$BINHU_PROJECT_DIR" -f "$BINHU_PROJECT_DIR/docker-compose.yml" -p "$BINHU_COMPOSE_PROJECT_NAME")
 backend_stopped=0
+wait_for_backend_ready() {
+  local attempt=0
+  while (( attempt < 30 )); do
+    if curl --fail --silent --show-error --max-time 5 \
+      http://127.0.0.1:37125/api/health >/dev/null 2>>"$log_file"; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+  return 1
+}
 restore_backend() {
   if [[ "$backend_stopped" == 1 ]]; then
     "${compose[@]}" start backend >>"$log_file" 2>&1 || return 1
@@ -143,6 +155,7 @@ restore_backend() {
     while (( attempt < 30 )); do
       backend_running="$(docker inspect --format '{{.State.Running}}' binhu-backend 2>/dev/null || true)"
       if [[ "$backend_running" == true ]]; then
+        wait_for_backend_ready || return 1
         backend_stopped=0
         return 0
       fi
@@ -195,6 +208,24 @@ backup_database() {
     | gzip -c >"$destination"
   [[ -s "$destination" ]] || fail "empty backup: $database"
   gzip -t "$destination" || fail "invalid backup gzip: $database"
+  python3 - "$destination" "$database" <<'PY'
+import gzip
+import re
+import sys
+
+path, database = sys.argv[1:]
+with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
+    sample = stream.read(8 * 1024 * 1024)
+quoted = re.escape(database)
+if "-- MySQL dump" not in sample:
+    raise SystemExit("backup is not a mysqldump export")
+if not re.search(rf"CREATE DATABASE(?: IF NOT EXISTS)?[^;]*`{quoted}`", sample, re.I):
+    raise SystemExit("backup database scope is not proven")
+if not re.search(rf"\bUSE\s+`{quoted}`\s*;", sample, re.I):
+    raise SystemExit("backup USE database marker is missing")
+if database.endswith("RegistryData") and not re.search(r"CREATE TABLE[^;]*`registry_properties`", sample, re.I):
+    raise SystemExit("backup registry_properties table marker is missing")
+PY
   sha256sum "$destination" >"$destination.sha256"
 }
 
@@ -221,6 +252,12 @@ for path in sorted(root.glob("*.tar.gz")):
 manifest = {
     "schema": 1, "operation": sys.argv[2], "run_id": sys.argv[3],
     "created_at": datetime.now(timezone.utc).isoformat(), "databases": entries,
+    "database_scope": sorted(entry["database"] for entry in entries if "database" in entry),
+    "dump_contract": {
+        "format": "mysqldump-gzip",
+        "content_check": "bounded_header_v1",
+        "restore_procedure": "approved_manual_only",
+    },
 }
 if sys.argv[4]:
     manifest["initiated_by"] = sys.argv[4]

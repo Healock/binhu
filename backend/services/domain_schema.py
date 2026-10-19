@@ -82,6 +82,8 @@ async def ensure_registry_schema(cur) -> None:
             post_rollback_measurement_hash CHAR(64) NOT NULL DEFAULT '',
             candidate_class VARCHAR(40) NOT NULL DEFAULT '',
             maintenance_actor VARCHAR(100) NOT NULL DEFAULT '',
+            active_canonical_property_id BIGINT
+                GENERATED ALWAYS AS (IF(status='active', canonical_property_id, NULL)) STORED,
             created_by BIGINT DEFAULT NULL,
             updated_by BIGINT DEFAULT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -90,6 +92,7 @@ async def ensure_registry_schema(cur) -> None:
             INDEX idx_registry_identity_status_old (status, old_property_id),
             INDEX idx_registry_identity_canonical (canonical_property_id, status),
             INDEX idx_registry_identity_community (community_id, status),
+            UNIQUE KEY uq_registry_identity_active_canonical (active_canonical_property_id),
             CONSTRAINT chk_registry_identity_not_self
                 CHECK (old_property_id <> canonical_property_id),
             CONSTRAINT chk_registry_identity_positive
@@ -117,6 +120,15 @@ async def ensure_registry_schema(cur) -> None:
     await _ensure_column(
         cur, "registry_property_identity_mappings", "maintenance_actor",
         "VARCHAR(100) NOT NULL DEFAULT '' AFTER candidate_class",
+    )
+    await _ensure_column(
+        cur, "registry_property_identity_mappings", "active_canonical_property_id",
+        "BIGINT GENERATED ALWAYS AS (IF(status='active', canonical_property_id, NULL)) STORED "
+        "AFTER maintenance_actor",
+    )
+    await _ensure_index(
+        cur, "registry_property_identity_mappings", "uq_registry_identity_active_canonical",
+        "UNIQUE INDEX uq_registry_identity_active_canonical (active_canonical_property_id)",
     )
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_property_identity_events (

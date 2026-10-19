@@ -27,6 +27,13 @@ KNOWN_ENTITY_TYPES = {
     "person",
     "organization",
 }
+WORK_ORDER_OBJECT_TYPES = {
+    "property",
+    "household_property",
+    "registry_property",
+    "property_certificate",
+    "house",
+}
 
 
 def _quote(identifier: str) -> str:
@@ -64,6 +71,7 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
     inventory = []
     opaque_json = []
     polymorphic_warnings = []
+    work_order_link_tables = set()
     for schema, table, column, data_type in columns:
         schema, table, column = str(schema), str(table), str(column)
         # The identity graph and its audit rows describe the resolver itself;
@@ -75,6 +83,19 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
         lower = column.lower()
         entity_types = POLYMORPHIC_REFERENCE_TABLES.get(table) if schema == registry_schema else None
         is_poly = bool(entity_types)
+        if table == "work_order_links" and column in {"object_id", "object_type"}:
+            work_order_link_tables.add((schema, table))
+        if table == "work_order_links" and column == "object_id":
+            inventory.append({
+                "schema": schema,
+                "table": table,
+                "column": column,
+                "primary_keys": list(table_primary_keys),
+                "kind": "work_order_link",
+                "entity_type": None,
+                "reference_type_column": "object_type",
+            })
+            continue
         is_reference = (
             lower == "property_id"
             or lower == "registration_property_id"
@@ -118,6 +139,36 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
                     "count": int(count),
                     "warning": "unknown_entity_type_blocks_review",
                 })
+    for schema, table in sorted(work_order_link_tables):
+        columns_for_table = {
+            item[2] for item in columns
+            if str(item[0]) == schema and str(item[1]) == table
+        }
+        if not {"object_id", "object_type"}.issubset(columns_for_table):
+            polymorphic_warnings.append({
+                "schema": schema,
+                "table": table,
+                "column": "object_id",
+                "entity_type": "",
+                "count": 0,
+                "warning": "work_order_link_schema_incomplete_blocks_review",
+            })
+            continue
+        await cur.execute(
+            f"SELECT object_type,COUNT(*) FROM {_quote(schema)}.{_quote(table)} "
+            "WHERE object_type IS NOT NULL GROUP BY object_type"
+        )
+        for object_type, count in await cur.fetchall():
+            normalized = str(object_type or "").strip().lower()
+            if normalized not in WORK_ORDER_OBJECT_TYPES:
+                polymorphic_warnings.append({
+                    "schema": schema,
+                    "table": table,
+                    "column": "object_type",
+                    "entity_type": str(object_type or ""),
+                    "count": int(count),
+                    "warning": "unknown_work_order_object_type_blocks_review",
+                })
     polymorphic_warnings.sort(key=lambda item: (item["schema"], item["table"], item.get("entity_type", "")))
     return inventory, opaque_json, polymorphic_warnings
 
@@ -127,6 +178,26 @@ async def scan_references(cur, inventory: list[dict], property_ids: list[int], *
         return []
     grouped = defaultdict(lambda: {"count": 0, "keys": []})
     for item in inventory:
+        if item.get("kind") == "work_order_link":
+            type_column = item["reference_type_column"]
+            for start in range(0, len(property_ids), chunk_size):
+                chunk = property_ids[start:start + chunk_size]
+                value_placeholders = ",".join(["%s"] * len(chunk))
+                selected = [item["column"], type_column, *item["primary_keys"]]
+                sql = "SELECT " + ",".join(_quote(name) for name in selected)
+                sql += f" FROM {_quote(item['schema'])}.{_quote(item['table'])}"
+                sql += f" WHERE {_quote(item['column'])} IN ({value_placeholders})"
+                await cur.execute(sql, tuple(str(value) for value in chunk))
+                for row in await cur.fetchall():
+                    try:
+                        property_id = int(row[0])
+                    except (TypeError, ValueError):
+                        continue
+                    object_type = str(row[1] or "")
+                    key = (property_id, item["schema"], item["table"], item["column"], item["kind"], object_type)
+                    grouped[key]["count"] += 1
+                    grouped[key]["keys"].append(tuple(str(value) for value in row[2:]))
+            continue
         if not item["primary_keys"]:
             # Count unkeyed references without exposing row contents; their presence blocks later review.
             for start in range(0, len(property_ids), chunk_size):

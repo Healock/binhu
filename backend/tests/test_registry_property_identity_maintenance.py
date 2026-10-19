@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import json
 import os
@@ -141,11 +142,23 @@ def test_backup_manifest_is_bound_to_run_database_and_sha256(tmp_path):
     backup_root = tmp_path / "automated"
     backup_root.mkdir()
     artifact = backup_root / "RegistryData.sql.gz"
-    artifact.write_bytes(b"synthetic compressed backup bytes")
+    artifact.write_bytes(gzip.compress(
+        b"-- MySQL dump 10.13\n"
+        b"CREATE DATABASE /*!32312 IF NOT EXISTS*/ `RegistryData`;\n"
+        b"USE `RegistryData`;\n"
+        b"CREATE TABLE `registry_properties` (\n"
+    ))
     manifest = backup_root / "backup-manifest.json"
     manifest.write_text(json.dumps({
+        "schema": 1,
         "operation": "registry-property-identity",
         "run_id": RUN_ID,
+        "database_scope": ["RegistryData"],
+        "dump_contract": {
+            "format": "mysqldump-gzip",
+            "content_check": "bounded_header_v1",
+            "restore_procedure": "approved_manual_only",
+        },
         "databases": [{
             "database": "RegistryData",
             "filename": artifact.name,
@@ -157,6 +170,36 @@ def test_backup_manifest_is_bound_to_run_database_and_sha256(tmp_path):
         assert maintenance._verify_manifest(str(manifest), run_id=RUN_ID)["run_id"] == RUN_ID
         artifact.write_bytes(b"changed backup")
         with pytest.raises(maintenance.IdentityMaintenanceError, match="backup_checksum_mismatch"):
+            maintenance._verify_manifest(str(manifest), run_id=RUN_ID)
+
+
+def test_backup_manifest_rejects_valid_gzip_with_wrong_sql_scope(tmp_path):
+    backup_root = tmp_path / "automated"
+    backup_root.mkdir()
+    artifact = backup_root / "RegistryData.sql.gz"
+    artifact.write_bytes(gzip.compress(
+        b"-- MySQL dump 10.13\nUSE `OnlineData`;\nCREATE TABLE `registry_properties` (\n"
+    ))
+    manifest = backup_root / "backup-manifest.json"
+    manifest.write_text(json.dumps({
+        "schema": 1,
+        "operation": "registry-property-identity",
+        "run_id": RUN_ID,
+        "database_scope": ["RegistryData"],
+        "dump_contract": {
+            "format": "mysqldump-gzip",
+            "content_check": "bounded_header_v1",
+            "restore_procedure": "approved_manual_only",
+        },
+        "databases": [{
+            "database": "RegistryData",
+            "filename": artifact.name,
+            "size_bytes": artifact.stat().st_size,
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        }],
+    }), encoding="utf-8")
+    with patch.object(maintenance, "BACKUP_ROOT", backup_root):
+        with pytest.raises(maintenance.IdentityMaintenanceError, match="backup_database_scope_unproven"):
             maintenance._verify_manifest(str(manifest), run_id=RUN_ID)
 
 
@@ -212,6 +255,23 @@ async def test_reference_summary_blocks_direct_and_unresolved_json_references():
         result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
     assert result["disposition"] == "blocked"
     assert result["opaque_json_old_reference_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reference_summary_fails_closed_for_unparsed_json_column_without_exact_marker():
+    cursor = Cursor()
+    with (
+        patch.object(maintenance, "database_scope", return_value=["RegistryData", "OnlineData"]),
+        patch.object(maintenance, "discover_reference_inventory", AsyncMock(return_value=(
+            [], [{"schema": "RegistryData", "table": "opaque", "column": "payload"}], []
+        ))),
+        patch.object(maintenance, "scan_references", AsyncMock(return_value=[])),
+        patch.object(maintenance, "scan_certificate_source_references", AsyncMock(return_value=[])),
+        patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[])),
+    ):
+        result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
+    assert result["disposition"] == "blocked"
+    assert result["opaque_json_unreviewed_column_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -348,6 +408,33 @@ async def test_repeat_apply_is_idempotent_only_when_post_apply_hash_matches():
             actor=ACTOR,
         )
     assert result["idempotent"] is True
+    conn.commit.assert_not_awaited()
+    conn.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rollback_revoked_mapping_is_a_permanent_one_shot_guard():
+    cursor = Cursor(mapping=(
+        OLD_ID, CANONICAL_ID, 8, "revoked", RUN_ID, 2, MEASURE_HASH,
+        POST_HASH, "no_references_candidate", ACTOR,
+    ))
+    conn = Connection(cursor)
+    with (
+        patch.object(maintenance, "validate_database_scope"),
+        patch.object(maintenance, "_verify_manifest", return_value={"run_id": RUN_ID}),
+        patch.object(maintenance, "open_connection", AsyncMock(return_value=conn)),
+        patch.object(maintenance, "close_connection", AsyncMock()),
+        patch.object(maintenance, "_check_scope", AsyncMock()),
+        patch.object(maintenance, "_require_maintenance_schema", AsyncMock()),
+        patch.object(maintenance, "_lock", AsyncMock()),
+        patch.object(maintenance, "_unlock", AsyncMock()),
+    ):
+        with pytest.raises(maintenance.IdentityMaintenanceError, match="identity_mapping_revoked_not_reusable"):
+            await maintenance.run_apply(
+                run_id=RUN_ID, old_property_id=OLD_ID, canonical_property_id=CANONICAL_ID,
+                measurement_hash=MEASURE_HASH, backup_manifest="manifest", confirmation=maintenance.CONFIRM_APPLY,
+                actor=ACTOR,
+            )
     conn.commit.assert_not_awaited()
     conn.rollback.assert_awaited_once()
 
