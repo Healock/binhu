@@ -25,7 +25,6 @@ from migrations.registry_issue_reconciliation import close_connection, open_conn
 from services.registry_identity_evidence import (
     discover_reference_inventory,
     scan_certificate_source_references,
-    scan_opaque_json_reference_markers,
     scan_references,
     seal_artifact,
 )
@@ -187,9 +186,6 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
     references.extend(await scan_certificate_source_references(
         cur, registry_schema=settings.MYSQL_REGISTRY_DB, property_ids=[old_id, canonical_id],
     ))
-    opaque_matches = await scan_opaque_json_reference_markers(
-        cur, opaque_json, [old_id, canonical_id],
-    )
     old_refs = [item for item in references if int(item["property_id"]) == old_id]
     current_refs = [item for item in references if int(item["property_id"]) == canonical_id]
     old_certificates = [item for item in old_refs if item["table"] == "registry_property_certificates" and item["kind"] == "direct"]
@@ -205,15 +201,12 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
     links = list(await cur.fetchall())
     old_links = [row for row in links if int(row[0]) == old_id]
     old_link_blocked = bool(old_links)
-    opaque_reference_count = sum(int(item["count"]) for item in opaque_matches)
-    opaque_old_reference_count = sum(
-        int(item["count"]) for item in opaque_matches if int(item["property_id"]) == old_id
-    )
-    # Every JSON column is scanned recursively for both numeric and string
-    # representations of the candidate IDs.  Only an exact old-ID match is a
-    # migration blocker; the scan never attempts to rewrite JSON payloads.
-    opaque_json_unreviewed_count = 0
-    if blocking_old or old_link_blocked or opaque_old_reference_count or warnings:
+    # JSON payloads are intentionally outside this one-shot command's write
+    # contract.  Only explicit, structured property references are eligible
+    # for migration; JSON columns remain visible in the evidence inventory so
+    # a future dedicated migration can review them without guessing.
+    opaque_json_unreviewed_count = len(opaque_json)
+    if blocking_old or old_link_blocked or warnings:
         disposition = "blocked"
     elif old_certificates:
         disposition = "certificate_only_exception_candidate"
@@ -234,15 +227,15 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
         "blocking_reference_count": len(blocking_old),
         "old_small_community_link_count": len(old_links),
         "opaque_json_column_count": len(opaque_json),
-        "opaque_json_scanned_count": len(opaque_matches),
-        "opaque_json_reference_count": opaque_reference_count,
-        "opaque_json_old_reference_count": opaque_old_reference_count,
+        "opaque_json_scanned_count": 0,
+        "opaque_json_reference_count": 0,
+        "opaque_json_old_reference_count": 0,
         "opaque_json_unreviewed_column_count": opaque_json_unreviewed_count,
-        "opaque_json_scan": opaque_matches,
+        "opaque_json_scan": [],
         "unknown_polymorphic_type_count": len(warnings),
         "unknown_polymorphic_types": warnings,
         "reference_inventory_complete": not warnings,
-        "opaque_json_matches": [item for item in opaque_matches if int(item["count"]) > 0],
+        "opaque_json_matches": [],
         "references": sorted(references, key=lambda item: (
             int(item["property_id"]), item["schema"], item["table"], item["column"], item["kind"],
         )),

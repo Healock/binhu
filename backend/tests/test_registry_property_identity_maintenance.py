@@ -219,7 +219,6 @@ async def test_reference_summary_allows_only_exact_certificate_exception():
         patch.object(maintenance, "discover_reference_inventory", AsyncMock(return_value=([], [], []))),
         patch.object(maintenance, "scan_references", AsyncMock(return_value=[old_certificate])),
         patch.object(maintenance, "scan_certificate_source_references", AsyncMock(return_value=[old_source])),
-        patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[])),
     ):
         result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
     assert result["disposition"] == "certificate_only_exception_candidate"
@@ -229,7 +228,7 @@ async def test_reference_summary_allows_only_exact_certificate_exception():
 
 
 @pytest.mark.asyncio
-async def test_reference_summary_blocks_direct_and_unresolved_json_references():
+async def test_reference_summary_blocks_direct_but_leaves_json_for_future_review():
     cursor = Cursor()
     direct = {
         "property_id": OLD_ID, "schema": "OnlineData", "table": "_task_registration_links",
@@ -240,7 +239,6 @@ async def test_reference_summary_blocks_direct_and_unresolved_json_references():
         patch.object(maintenance, "discover_reference_inventory", AsyncMock(return_value=([], [], []))),
         patch.object(maintenance, "scan_references", AsyncMock(return_value=[direct])),
         patch.object(maintenance, "scan_certificate_source_references", AsyncMock(return_value=[])),
-        patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[])),
     ):
         assert (await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID))["disposition"] == "blocked"
     with (
@@ -248,17 +246,15 @@ async def test_reference_summary_blocks_direct_and_unresolved_json_references():
         patch.object(maintenance, "discover_reference_inventory", AsyncMock(return_value=([], [{"schema": "RegistryData", "table": "opaque", "column": "payload"}], []))),
         patch.object(maintenance, "scan_references", AsyncMock(return_value=[])),
         patch.object(maintenance, "scan_certificate_source_references", AsyncMock(return_value=[])),
-        patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[{
-            "property_id": OLD_ID, "schema": "RegistryData", "table": "opaque", "column": "payload", "count": 1,
-        }])),
     ):
         result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
-    assert result["disposition"] == "blocked"
-    assert result["opaque_json_old_reference_count"] == 1
+    assert result["disposition"] == "no_references_candidate"
+    assert result["opaque_json_old_reference_count"] == 0
+    assert result["opaque_json_unreviewed_column_count"] == 1
 
 
 @pytest.mark.asyncio
-async def test_reference_summary_allows_json_column_without_exact_candidate_id():
+async def test_reference_summary_reports_json_columns_without_scanning_payloads():
     cursor = Cursor()
     with (
         patch.object(maintenance, "database_scope", return_value=["RegistryData", "OnlineData"]),
@@ -267,11 +263,11 @@ async def test_reference_summary_allows_json_column_without_exact_candidate_id()
         ))),
         patch.object(maintenance, "scan_references", AsyncMock(return_value=[])),
         patch.object(maintenance, "scan_certificate_source_references", AsyncMock(return_value=[])),
-        patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[])),
     ):
         result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
     assert result["disposition"] == "no_references_candidate"
-    assert result["opaque_json_unreviewed_column_count"] == 0
+    assert result["opaque_json_unreviewed_column_count"] == 1
+    assert result["opaque_json_scanned_count"] == 0
     assert result["reference_inventory_complete"] is True
 
 
@@ -291,7 +287,6 @@ async def test_reference_summary_blocks_known_work_order_property_reference():
             "count": 1,
         }])),
         patch.object(maintenance, "scan_certificate_source_references", AsyncMock(return_value=[])),
-        patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[])),
     ):
         result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
     assert result["disposition"] == "blocked"
