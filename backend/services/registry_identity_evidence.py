@@ -3,6 +3,7 @@
 from collections import defaultdict
 from hashlib import sha256
 import json
+import math
 
 
 HISTORICAL_REFERENCE_TABLES = {
@@ -47,6 +48,8 @@ def _json_contains_property_scalar(value, property_id: int) -> bool:
         return False
     if isinstance(value, int):
         return value == int(property_id)
+    if isinstance(value, float):
+        return math.isfinite(value) and value.is_integer() and int(value) == int(property_id)
     if isinstance(value, str):
         return value == str(int(property_id))
     if isinstance(value, list):

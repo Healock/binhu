@@ -219,6 +219,8 @@ async def test_opaque_json_parse_failure_blocks_every_candidate_without_echoing_
 def test_json_scalar_parser_distinguishes_nested_values_from_surrounding_text():
     assert _json_contains_property_scalar({"nested": {"property_id": 123}}, 123)
     assert _json_contains_property_scalar({"items": [1, {"id": "123"}]}, 123)
+    assert _json_contains_property_scalar({"id": 123.0}, 123)
+    assert not _json_contains_property_scalar({"id": 123.5}, 123)
     assert not _json_contains_property_scalar({"id": 1234}, 123)
     assert not _json_contains_property_scalar({"text": "text ,123]"}, 123)
 
