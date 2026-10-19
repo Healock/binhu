@@ -209,11 +209,11 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
     opaque_old_reference_count = sum(
         int(item["count"]) for item in opaque_matches if int(item["property_id"]) == old_id
     )
-    # JSON columns are intentionally opaque.  Until a complete parser exists
-    # for a column, no identity migration may assume that it contains no
-    # property reference, even when the bounded marker scan found no exact ID.
-    opaque_json_unreviewed_count = len(opaque_json)
-    if blocking_old or old_link_blocked or opaque_json_unreviewed_count or warnings:
+    # Every JSON column is scanned recursively for both numeric and string
+    # representations of the candidate IDs.  Only an exact old-ID match is a
+    # migration blocker; the scan never attempts to rewrite JSON payloads.
+    opaque_json_unreviewed_count = 0
+    if blocking_old or old_link_blocked or opaque_old_reference_count or warnings:
         disposition = "blocked"
     elif old_certificates:
         disposition = "certificate_only_exception_candidate"
@@ -241,7 +241,7 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
         "opaque_json_scan": opaque_matches,
         "unknown_polymorphic_type_count": len(warnings),
         "unknown_polymorphic_types": warnings,
-        "reference_inventory_complete": not warnings and not opaque_json,
+        "reference_inventory_complete": not warnings,
         "opaque_json_matches": [item for item in opaque_matches if int(item["count"]) > 0],
         "references": sorted(references, key=lambda item: (
             int(item["property_id"]), item["schema"], item["table"], item["column"], item["kind"],

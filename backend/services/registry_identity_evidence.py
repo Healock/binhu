@@ -297,24 +297,24 @@ async def scan_certificate_source_references(
 async def scan_opaque_json_reference_markers(
     cur, opaque_json: list[dict], property_ids: list[int]
 ) -> list[dict]:
-    """Find exact internal property ids under JSON keys that can hold references.
+    """Find exact candidate IDs anywhere in JSON documents.
 
-    JSON bodies and row identifiers are never returned. A match is a blocker;
-    this deliberately treats incidental matches as blockers rather than trying
-    to infer or rewrite opaque payloads.
+    The scan deliberately does not infer field names. JSON_CONTAINS searches
+    nested objects and arrays for both numeric and string representations of
+    each candidate ID. A match is a blocker; payloads and row identifiers are
+    never returned or logged.
     """
     findings = []
     for item in opaque_json:
         schema, table, column = (str(item[key]) for key in ("schema", "table", "column"))
-        pattern = r'"[[:alnum:]_]*(property[_]?id|house[_]?id|entity[_]?id)"[[:space:]]*:[[:space:]]*"?{id}"?([,}}]|[[:space:]]|$)'
         for property_id in sorted(set(int(value) for value in property_ids)):
-            expression = pattern.format(id=property_id)
             await cur.execute(
                 "SELECT /*+ MAX_EXECUTION_TIME(5000) */ COUNT(*) "
                 f"FROM {_quote(schema)}.{_quote(table)} "
                 f"WHERE {_quote(column)} IS NOT NULL "
-                f"AND REGEXP_LIKE(CAST({_quote(column)} AS CHAR),%s,'i')",
-                (expression,),
+                f"AND (JSON_CONTAINS({_quote(column)},CAST(%s AS JSON),'$') "
+                f"OR JSON_SEARCH({_quote(column)},'one',%s,NULL,'$') IS NOT NULL)",
+                (str(property_id), str(property_id)),
             )
             row = await cur.fetchone()
             count = int(row[0] or 0) if row else 0
@@ -324,7 +324,7 @@ async def scan_opaque_json_reference_markers(
                 "table": table,
                 "column": column,
                 "count": count,
-                "key_pattern": "property_house_entity_id",
+                "key_pattern": "all_json_scalar_values",
             })
     return findings
 

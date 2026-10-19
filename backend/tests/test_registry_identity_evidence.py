@@ -180,7 +180,7 @@ async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_na
             self.params = params
 
         async def fetchone(self):
-            return (1 if "property[_]?id" in self.params[0] and "7" in self.params[0] else 0,)
+            return (1 if self.params[0] == "7" else 0,)
 
     cursor = JsonCursor()
     findings = await scan_opaque_json_reference_markers(cursor, [{
@@ -188,8 +188,12 @@ async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_na
     }], [7, 8])
     assert [item["count"] for item in findings] == [1, 0]
     assert all(set(item) == {"property_id", "schema", "table", "column", "count", "key_pattern"} for item in findings)
-    assert all("COUNT(*)" in sql and "MAX_EXECUTION_TIME(5000)" in sql for sql, _ in cursor.calls)
-    assert ["7" in params[0] for _, params in cursor.calls] == [True, False]
+    assert all(
+        "COUNT(*)" in sql and "MAX_EXECUTION_TIME(5000)" in sql
+        and "JSON_CONTAINS" in sql and "JSON_SEARCH" in sql
+        for sql, _ in cursor.calls
+    )
+    assert [params[0] for _, params in cursor.calls] == ["7", "8"]
 
 
 @pytest.mark.asyncio

@@ -258,7 +258,7 @@ async def test_reference_summary_blocks_direct_and_unresolved_json_references():
 
 
 @pytest.mark.asyncio
-async def test_reference_summary_fails_closed_for_unparsed_json_column_without_exact_marker():
+async def test_reference_summary_allows_json_column_without_exact_candidate_id():
     cursor = Cursor()
     with (
         patch.object(maintenance, "database_scope", return_value=["RegistryData", "OnlineData"]),
@@ -270,9 +270,9 @@ async def test_reference_summary_fails_closed_for_unparsed_json_column_without_e
         patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[])),
     ):
         result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
-    assert result["disposition"] == "blocked"
-    assert result["opaque_json_unreviewed_column_count"] == 1
-    assert result["reference_inventory_complete"] is False
+    assert result["disposition"] == "no_references_candidate"
+    assert result["opaque_json_unreviewed_column_count"] == 0
+    assert result["reference_inventory_complete"] is True
 
 
 @pytest.mark.asyncio
