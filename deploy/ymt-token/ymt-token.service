@@ -19,7 +19,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/log/ymt-token
-ReadOnlyPaths=/etc/ymt/signing-private.pem /etc/ymt/builds.json
+ReadOnlyPaths=/etc/ymt/signing-private.pem /etc/ymt/builds.json /etc/ymt/release-public.pem /etc/ymt/release-policy.json /var/www/ymt/release.json /var/www/ymt/ymt-latest.js
 
 [Install]
 WantedBy=multi-user.target
