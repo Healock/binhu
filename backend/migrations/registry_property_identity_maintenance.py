@@ -196,7 +196,7 @@ async def _reference_summary(cur, old_id: int, canonical_id: int) -> dict[str, A
     old_certificate_sources = [item for item in old_refs if item["kind"] == "certificate_source_reference"]
     current_certificates = [item for item in current_refs if item["table"] == "registry_property_certificates" and item["kind"] == "direct"]
     current_certificate_sources = [item for item in current_refs if item["kind"] == "certificate_source_reference"]
-    blocking_old = [item for item in old_refs if item not in old_certificates and item["kind"] in {"direct", "polymorphic"}]
+    blocking_old = [item for item in old_refs if item not in old_certificates and item["kind"] in {"direct", "polymorphic", "work_order_link"}]
     await cur.execute(
         "SELECT property_id,small_community_id,match_status,confirmed_by,confirmed_at "
         "FROM registry_property_small_community_links WHERE property_id IN (%s,%s)",

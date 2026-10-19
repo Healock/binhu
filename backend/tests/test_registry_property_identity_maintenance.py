@@ -276,6 +276,29 @@ async def test_reference_summary_fails_closed_for_unparsed_json_column_without_e
 
 
 @pytest.mark.asyncio
+async def test_reference_summary_blocks_known_work_order_property_reference():
+    cursor = Cursor()
+    with (
+        patch.object(maintenance, "database_scope", return_value=["RegistryData", "WorkflowData"]),
+        patch.object(maintenance, "discover_reference_inventory", AsyncMock(return_value=([], [], []))),
+        patch.object(maintenance, "scan_references", AsyncMock(return_value=[{
+            "property_id": OLD_ID,
+            "schema": "WorkflowData",
+            "table": "work_order_links",
+            "column": "object_id",
+            "kind": "work_order_link",
+            "entity_type": "property",
+            "count": 1,
+        }])),
+        patch.object(maintenance, "scan_certificate_source_references", AsyncMock(return_value=[])),
+        patch.object(maintenance, "scan_opaque_json_reference_markers", AsyncMock(return_value=[])),
+    ):
+        result = await maintenance._reference_summary(cursor, OLD_ID, CANONICAL_ID)
+    assert result["disposition"] == "blocked"
+    assert result["blocking_reference_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_measurement_hash_covers_natural_address_without_emitting_it():
     def property_row(property_id, natural_address):
         return (
