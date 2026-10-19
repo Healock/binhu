@@ -3,7 +3,6 @@
 from collections import defaultdict
 from hashlib import sha256
 import json
-import re
 
 
 HISTORICAL_REFERENCE_TABLES = {
@@ -41,10 +40,19 @@ def _quote(identifier: str) -> str:
     return "`" + str(identifier).replace("`", "``") + "`"
 
 
-def _json_numeric_reference_pattern(property_id: int) -> str:
-    """Match an exact numeric JSON value after an object/array delimiter."""
-    value = re.escape(str(int(property_id)))
-    return rf"(^|[\[\{{,:])\s*{value}(\s*[,\]\}}]|$)"
+def _json_contains_property_scalar(value, property_id: int) -> bool:
+    """Recursively match exact numeric or string property-id scalars."""
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, int):
+        return value == int(property_id)
+    if isinstance(value, str):
+        return value == str(int(property_id))
+    if isinstance(value, list):
+        return any(_json_contains_property_scalar(item, property_id) for item in value)
+    if isinstance(value, dict):
+        return any(_json_contains_property_scalar(item, property_id) for item in value.values())
+    return False
 
 
 async def discover_reference_inventory(cur, schemas: list[str], registry_schema: str) -> tuple[list[dict], list[dict], list[dict]]:
@@ -306,33 +314,44 @@ async def scan_opaque_json_reference_markers(
 ) -> list[dict]:
     """Find exact candidate IDs anywhere in JSON documents.
 
-    The scan deliberately does not infer field names. A bounded regular
-    expression matches numeric JSON values in nested objects/arrays, while
-    JSON_SEARCH recursively matches string values. A match is a blocker;
-    payloads and row identifiers are never returned or logged.
+    The scan deliberately does not infer field names. JSON values are parsed
+    recursively in memory so numeric and string scalars are distinguished from
+    surrounding text. A match is a blocker; payloads and row identifiers are
+    never returned or logged. A malformed value blocks all candidate IDs for
+    that column rather than being treated as empty.
     """
     findings = []
     for item in opaque_json:
         schema, table, column = (str(item[key]) for key in ("schema", "table", "column"))
-        for property_id in sorted(set(int(value) for value in property_ids)):
-            numeric_pattern = _json_numeric_reference_pattern(property_id)
-            await cur.execute(
-                "SELECT /*+ MAX_EXECUTION_TIME(5000) */ COUNT(*) "
-                f"FROM {_quote(schema)}.{_quote(table)} "
-                f"WHERE {_quote(column)} IS NOT NULL "
-                f"AND (REGEXP_LIKE(CAST({_quote(column)} AS CHAR),%s,'c') "
-                f"OR JSON_SEARCH({_quote(column)},'one',%s,NULL,'$') IS NOT NULL)",
-                (numeric_pattern, str(property_id)),
-            )
-            row = await cur.fetchone()
-            count = int(row[0] or 0) if row else 0
+        candidates = sorted(set(int(value) for value in property_ids))
+        await cur.execute(
+            "SELECT /*+ MAX_EXECUTION_TIME(5000) */ "
+            f"{_quote(column)} FROM {_quote(schema)}.{_quote(table)} "
+            f"WHERE {_quote(column)} IS NOT NULL"
+        )
+        counts = {property_id: 0 for property_id in candidates}
+        parse_failed = False
+        for row in await cur.fetchall():
+            value = row[0] if isinstance(row, (tuple, list)) else row
+            try:
+                parsed = json.loads(value) if isinstance(value, (str, bytes, bytearray)) else value
+                for property_id in candidates:
+                    if _json_contains_property_scalar(parsed, property_id):
+                        counts[property_id] += 1
+            except (TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+                parse_failed = True
+                break
+        if parse_failed:
+            counts = {property_id: 1 for property_id in candidates}
+        for property_id in candidates:
+            count = counts[property_id]
             findings.append({
                 "property_id": property_id,
                 "schema": schema,
                 "table": table,
                 "column": column,
                 "count": count,
-                "key_pattern": "nested_numeric_or_string_scalar",
+                "key_pattern": "parsed_nested_numeric_or_string_scalar" if not parse_failed else "json_parse_failed",
             })
     return findings
 

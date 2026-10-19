@@ -9,7 +9,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.registry_identity_evidence import (
-    _json_numeric_reference_pattern,
+    _json_contains_property_scalar,
     discover_reference_inventory,
     scan_certificate_source_references,
     scan_opaque_json_reference_markers,
@@ -174,37 +174,48 @@ async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_na
     class JsonCursor:
         def __init__(self):
             self.calls = []
-            self.params = ()
 
         async def execute(self, sql, params=()):
             self.calls.append((sql, params))
-            self.params = params
 
-        async def fetchone(self):
-            return (1 if "7" in self.params[0] else 0,)
+        async def fetchall(self):
+            return [
+                ({"nested": {"property_id": 7}},),
+                ({"items": ["8", {"value": 9}]},),
+            ]
 
     cursor = JsonCursor()
     findings = await scan_opaque_json_reference_markers(cursor, [{
         "schema": "RegistryData", "table": "registry_source_records", "column": "payload_json",
     }], [7, 8])
-    assert [item["count"] for item in findings] == [1, 0]
+    assert [item["count"] for item in findings] == [1, 1]
     assert all(set(item) == {"property_id", "schema", "table", "column", "count", "key_pattern"} for item in findings)
-    assert all(
-        "COUNT(*)" in sql and "MAX_EXECUTION_TIME(5000)" in sql
-        and "REGEXP_LIKE" in sql and "JSON_SEARCH" in sql
-        for sql, _ in cursor.calls
+    assert all("MAX_EXECUTION_TIME(5000)" in sql and "`payload_json`" in sql for sql, _ in cursor.calls)
+    assert all(params == () for _, params in cursor.calls)
+
+
+@pytest.mark.asyncio
+async def test_opaque_json_parse_failure_blocks_every_candidate_without_echoing_payload():
+    class InvalidJsonCursor:
+        async def execute(self, sql, params=()):
+            self.sql = sql
+
+        async def fetchall(self):
+            return [("not-json",)]
+
+    findings = await scan_opaque_json_reference_markers(
+        InvalidJsonCursor(), [{"schema": "RegistryData", "table": "opaque", "column": "payload_json"}], [7, 8]
     )
-    assert [params[1] for _, params in cursor.calls] == ["7", "8"]
+    assert [item["count"] for item in findings] == [1, 1]
+    assert all(item["key_pattern"] == "json_parse_failed" for item in findings)
+    assert all("not-json" not in json.dumps(item) for item in findings)
 
 
-def test_json_numeric_pattern_matches_nested_objects_and_arrays_only_at_value_boundary():
-    import re
-
-    pattern = _json_numeric_reference_pattern(123)
-    assert re.search(pattern, '{"nested":{"property_id":123}}')
-    assert re.search(pattern, '{"items":[1,{"id":123},4]}')
-    assert not re.search(pattern, '{"id":1234}')
-    assert not re.search(pattern, '{"text":"x123y"}')
+def test_json_scalar_parser_distinguishes_nested_values_from_surrounding_text():
+    assert _json_contains_property_scalar({"nested": {"property_id": 123}}, 123)
+    assert _json_contains_property_scalar({"items": [1, {"id": "123"}]}, 123)
+    assert not _json_contains_property_scalar({"id": 1234}, 123)
+    assert not _json_contains_property_scalar({"text": "text ,123]"}, 123)
 
 
 @pytest.mark.asyncio
