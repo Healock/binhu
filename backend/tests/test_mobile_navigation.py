@@ -151,12 +151,12 @@ class MobileNavigationConfigTests(unittest.TestCase):
                         "items": ["grid_members"],
                     },
                     {
-                        "id": "summaries",
-                        "items": ["online_summary", "visit_summary"],
+                        "id": "tasks",
+                        "items": ["address_confirmation"],
                     },
                     {
-                        "id": "system",
-                        "items": ["settings", "workflow_config"],
+                        "id": "summaries",
+                        "items": ["online_summary", "visit_summary", "code_summary"],
                     },
                 ],
             },
@@ -219,6 +219,74 @@ class MobileNavigationConfigTests(unittest.TestCase):
         }
         self.assertIn("data_upload", items)
         self.assertIn("police_addresses", items)
+
+    def test_workflow_handlers_can_save_data_upload_entry(self):
+        config = validate_mobile_dock_config(
+            {
+                "version": 2,
+                "groups": [
+                    {"id": "workspace", "items": ["dashboard", "data_upload"]},
+                ],
+            },
+            "member",
+            ["workflow.ticket.handle"],
+        )
+        self.assertIn("data_upload", config["groups"][0]["items"])
+
+    def test_basic_control_can_save_frontend_dock_configuration(self):
+        permissions = [
+            "online.raw.view",
+            "online.raw.edit",
+            "online.task.manage",
+            "police.dispatch.manage",
+            "visit.summary.view",
+            "personnel.basic.view",
+            "community.view",
+            "registry.property.view",
+            "venue.view",
+        ]
+        config = {
+            "version": 2,
+            "groups": [
+                {
+                    "id": "workspace",
+                    "items": ["dashboard", "online_query"],
+                },
+                {
+                    "id": "tasks",
+                    "items": [
+                        "flow_tasks",
+                        "address_confirmation",
+                        "police_tasks",
+                        "police_analysis",
+                    ],
+                },
+                {
+                    "id": "resources",
+                    "items": [
+                        "grid_members",
+                        "communities",
+                        "venue",
+                        "registry",
+                    ],
+                },
+                {
+                    "id": "system",
+                    "items": ["help", "settings"],
+                },
+            ],
+        }
+
+        saved = validate_mobile_dock_config(
+            config,
+            "member",
+            permissions,
+            ["internal_business"],
+            "基础管控",
+        )
+
+        self.assertEqual(saved["groups"][1]["items"][1], "address_confirmation")
+        self.assertIn("venue", saved["groups"][2]["items"])
 
     def test_old_task_items_move_to_new_navigation_pages(self):
         config = normalize_mobile_dock_config(
@@ -379,15 +447,16 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
                 "id": "summaries",
                 "items": ["visit_summary", "online_summary"],
             }, {
+                "id": "tasks",
+                "items": ["address_confirmation"],
+            }, {
                 "id": "resources",
                 "items": [
                     "grid_members",
                     "communities",
+                    "venue",
                     "registry",
                 ],
-            }, {
-                "id": "system",
-                "items": ["settings", "workflow_config"],
             }],
         }
         self.assertEqual(json.loads(params[1]), expected_dock_config)

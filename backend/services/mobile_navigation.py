@@ -21,22 +21,26 @@ GROUP_ITEMS: dict[str, tuple[str, ...]] = {
     ),
     "tasks": (
         "flow_tasks",
+        "address_confirmation",
         "police_tasks",
         "police_analysis",
     ),
     "summaries": (
         "online_summary",
         "visit_summary",
+        "code_summary",
     ),
     "resources": (
         "grid_members",
         "communities",
         "police_addresses",
+        "venue",
         "registry",
         "users",
         "permission_groups",
     ),
     "system": (
+        "help",
         "settings",
         "workflow_config",
         "operations",
@@ -50,16 +54,19 @@ ITEM_PERMISSIONS: dict[str, str] = {
     "online_summary": "online.summary.view",
     "online_query": "online.raw.view",
     "flow_tasks": "online.raw.view",
+    "address_confirmation": "online.raw.edit",
     "police_tasks": "police.dispatch.manage",
     "police_analysis": "online.task.manage",
     "workflow_tickets": "workflow.ticket.view",
     "visit_summary": "visit.summary.view",
+    "code_summary": "visit.summary.view",
     "data_upload": "visit.import",
     "work_log": "worklog.manage",
     "grid_members": "personnel.basic.view",
     "communities": "community.view",
     "police_addresses": "police.address.manage",
     "registry": "registry.property.view",
+    "venue": "venue.view",
     "users": "user.manage",
     "permission_groups": "permission.manage",
     "workflow_config": "workflow.config.manage",
@@ -67,7 +74,12 @@ ITEM_PERMISSIONS: dict[str, str] = {
 }
 
 ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
-    "data_upload": ("visit.import", "police.dispatch.manage"),
+    "data_upload": (
+        "visit.import",
+        "police.dispatch.manage",
+        "workflow.ticket.handle",
+        "workflow.ticket.manage",
+    ),
     "police_analysis": ("online.task.manage", "police.dispatch.manage"),
 }
 
