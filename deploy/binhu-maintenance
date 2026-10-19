@@ -8,34 +8,77 @@ umask 077
 : "${BINHU_MAINTENANCE_BACKUP_ROOT:=$BINHU_PROJECT_DIR/deploy-backups/automated}"
 : "${BINHU_WORKFLOW_ATTACHMENT_DIR:=/data/binhu/workflow-attachments}"
 : "${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:=/data/binhu/workflow-photo-imports}"
+: "${BINHU_COMPOSE_PROJECT_NAME:=binhu}"
 
 fail() { printf '[binhu-maintenance] ERROR: %s\n' "$*" >&2; exit 1; }
-[[ $# -ge 3 && $# -le 5 ]] || fail "expected operation, phase, run id and optional apply arguments"
+valid_property_id() {
+  [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]] &&
+    python3 -c 'import sys; sys.exit(0 if int(sys.argv[1]) <= 9223372036854775807 else 1)' "$1"
+}
+[[ $# -ge 3 && $# -le 8 ]] || fail "invalid production-maintenance argument count"
 
 operation="$1"
 phase="$2"
 run_id="$3"
 case "$operation" in
-  internal-department-retirement|photo-sheet-retirement) ;;
+  internal-department-retirement|photo-sheet-retirement|registry-property-identity) ;;
   *) fail "unsupported maintenance operation" ;;
 esac
 case "$phase" in
-  measure|backup|apply|verify) ;;
+  measure|backup|apply|verify|rollback) ;;
   *) fail "unsupported maintenance phase" ;;
 esac
 [[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || fail "invalid run id"
 
-if [[ "$phase" == apply ]]; then
-  [[ $# -eq 5 && "$4" =~ ^[0-9]+$ ]] || fail "apply requires an expected count and confirmation"
-  expected_count="$4"
-  confirmation="$5"
+expected_count=""
+confirmation=""
+old_property_id=""
+canonical_property_id=""
+measurement_hash=""
+maintenance_actor=""
+if [[ "$operation" == registry-property-identity ]]; then
+  case "$phase" in
+    measure|verify)
+      [[ $# -eq 6 ]] || fail "$phase requires property ids and an actor id"
+      old_property_id="$4"
+      canonical_property_id="$5"
+      maintenance_actor="$6"
+      valid_property_id "$old_property_id" && valid_property_id "$canonical_property_id" || fail "invalid property id"
+      [[ "$maintenance_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]] || fail "invalid maintenance actor"
+      ;;
+    backup)
+      [[ $# -eq 4 ]] || fail "backup requires an actor id"
+      maintenance_actor="$4"
+      [[ "$maintenance_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]] || fail "invalid maintenance actor"
+      ;;
+    apply|rollback)
+      [[ $# -eq 8 ]] || fail "$phase requires property ids, measurement hash, confirmation and actor id"
+      old_property_id="$4"
+      canonical_property_id="$5"
+      measurement_hash="$6"
+      confirmation="$7"
+      maintenance_actor="$8"
+      valid_property_id "$old_property_id" && valid_property_id "$canonical_property_id" || fail "invalid property id"
+      [[ "$measurement_hash" =~ ^[0-9a-f]{64}$ ]] || fail "invalid measurement hash"
+      [[ "$maintenance_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]] || fail "invalid maintenance actor"
+      ;;
+  esac
 else
-  [[ $# -eq 3 ]] || fail "this phase takes no extra arguments"
-  expected_count=""
-  confirmation=""
+  case "$phase" in
+    apply)
+      [[ $# -eq 5 && "$4" =~ ^[0-9]+$ ]] || fail "apply requires an expected count and confirmation"
+      expected_count="$4"
+      confirmation="$5"
+      ;;
+    rollback) fail "rollback is only available for registry property identity" ;;
+    *) [[ $# -eq 3 ]] || fail "this phase takes no extra arguments" ;;
+  esac
 fi
 case "$operation:$phase:$confirmation" in
-  internal-department-retirement:apply:confirm-remove-internal|photo-sheet-retirement:apply:confirm-empty-photo-tables|*:measure:|*:backup:|*:verify:) ;;
+  internal-department-retirement:apply:confirm-remove-internal|photo-sheet-retirement:apply:confirm-empty-photo-tables|\
+  registry-property-identity:apply:confirm-registry-property-identity|\
+  registry-property-identity:rollback:confirm-registry-property-identity-rollback|\
+  *:measure:|*:backup:|*:verify:) ;;
   *) fail "invalid confirmation for operation" ;;
 esac
 
@@ -67,11 +110,80 @@ payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 print(json.dumps({
     "command": payload.get("command"),
     "ok": payload.get("ok"),
+    "run_id": payload.get("run_id"),
+    "old_property_id": payload.get("old_property_id"),
+    "canonical_property_id": payload.get("canonical_property_id"),
+    "maintenance_actor": payload.get("maintenance_actor"),
+    "state": payload.get("state"),
+    "measurement_hash": payload.get("measurement_hash"),
+    "post_apply_measurement_hash": payload.get("post_apply_measurement_hash"),
+    "disposition": payload.get("disposition"),
+    "execution_available": payload.get("execution_available"),
+    "read_only": payload.get("read_only"),
+    "reference_summary": payload.get("reference_summary"),
+    "references": payload.get("references"),
+    "properties": payload.get("properties"),
+    "certificate_references_moved": payload.get("certificate_references_moved"),
+    "certificate_references_restored": payload.get("certificate_references_restored"),
+    "idempotent": payload.get("idempotent"),
     "internal_member_count": payload.get("internal_member_count"),
     "photo_work_orders": payload.get("photo_work_orders"),
     "table_counts": payload.get("table_counts"),
     "checks": payload.get("checks"),
 }, ensure_ascii=False, sort_keys=True))
+PY
+}
+
+compose=(docker compose --project-directory "$BINHU_PROJECT_DIR" -f "$BINHU_PROJECT_DIR/docker-compose.yml" -p "$BINHU_COMPOSE_PROJECT_NAME")
+backend_stopped=0
+restore_backend() {
+  if [[ "$backend_stopped" == 1 ]]; then
+    "${compose[@]}" start backend >>"$log_file" 2>&1 || return 1
+    local attempt=0 backend_running=""
+    while (( attempt < 30 )); do
+      backend_running="$(docker inspect --format '{{.State.Running}}' binhu-backend 2>/dev/null || true)"
+      if [[ "$backend_running" == true ]]; then
+        backend_stopped=0
+        return 0
+      fi
+      attempt=$((attempt + 1))
+      sleep 2
+    done
+    return 1
+  fi
+}
+restore_backend_on_exit() {
+  if ! restore_backend; then
+    printf '[binhu-maintenance] ERROR: backend_restore_failed; manual service recovery may be required\n' >&2
+  fi
+}
+trap 'restore_backend_on_exit' EXIT
+trap 'restore_backend_on_exit; exit 130' INT
+trap 'restore_backend_on_exit; exit 143' TERM
+
+run_identity_json() {
+  local output="$1"
+  shift
+  local backend_running status=0
+  [[ -f "$BINHU_PROJECT_DIR/docker-compose.yml" ]] || fail "compose project file is missing"
+  docker image inspect binhu-backend >/dev/null 2>&1 || fail "deployed backend image is missing"
+  backend_running="$(docker inspect --format '{{.State.Running}}' binhu-backend 2>/dev/null || true)"
+  [[ "$backend_running" == true ]] || fail "backend must be running before identity maintenance"
+  backend_stopped=1
+  "${compose[@]}" stop --timeout 60 backend >>"$log_file" 2>&1 || fail "backend_stop_failed; see $log_file"
+  "${compose[@]}" run --name "binhu-identity-maintenance-$run_id" --no-TTY --no-build --rm --no-deps backend "$@" >"$output" 2>"$log_file" || status=$?
+  restore_backend || fail "backend_restart_failed; see $log_file"
+  (( status == 0 )) || fail "identity maintenance command failed; see $log_file"
+  python3 - "$output" <<'PY'
+import json, sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+fields = (
+    "command", "ok", "run_id", "old_property_id", "canonical_property_id", "state",
+    "maintenance_actor", "measurement_hash", "post_apply_measurement_hash", "disposition", "execution_available",
+    "certificate_references_moved", "certificate_references_restored", "idempotent", "checks",
+)
+print(json.dumps({key: payload.get(key) for key in fields if key in payload}, ensure_ascii=False, sort_keys=True))
 PY
 }
 
@@ -87,38 +199,59 @@ backup_database() {
 }
 
 write_manifest() {
-  python3 - "$backup_dir" "$operation" "$run_id" <<'PY'
+  python3 - "$backup_dir" "$operation" "$run_id" "$maintenance_actor" <<'PY'
 import hashlib, json, sys
 from datetime import datetime, timezone
 from pathlib import Path
 root = Path(sys.argv[1])
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 entries = []
 for path in sorted(root.glob("*.sql.gz")):
     entries.append({"database": path.name.removesuffix(".sql.gz"), "filename": path.name,
                     "size_bytes": path.stat().st_size,
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+                    "sha256": sha256_file(path)})
 for path in sorted(root.glob("*.tar.gz")):
     entries.append({"artifact": path.name, "size_bytes": path.stat().st_size,
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-(root / "backup-manifest.json").write_text(json.dumps({
+                    "sha256": sha256_file(path)})
+manifest = {
     "schema": 1, "operation": sys.argv[2], "run_id": sys.argv[3],
     "created_at": datetime.now(timezone.utc).isoformat(), "databases": entries,
-}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+}
+if sys.argv[4]:
+    manifest["initiated_by"] = sys.argv[4]
+(root / "backup-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
   cp "$manifest_host" "$evidence_dir/backup-manifest.json"
 }
 
 if [[ "$phase" == measure ]]; then
+  if [[ "$operation" == registry-property-identity && -e "$evidence_dir/measure.json" ]]; then
+    fail "identity measurement evidence is immutable; use a new run id"
+  fi
   case "$operation" in
     internal-department-retirement)
       run_json "$evidence_dir/measure.json" python -m migrations.internal_department_retirement measure ;;
     photo-sheet-retirement)
       run_json "$evidence_dir/measure.json" python -m migrations.photo_sheet_retirement measure ;;
+    registry-property-identity)
+      run_json "$evidence_dir/measure.json" python -m migrations.registry_property_identity_maintenance measure \
+        --environment production --run-id "$run_id" --old-property-id "$old_property_id" \
+        --canonical-property-id "$canonical_property_id" --actor "$maintenance_actor" ;;
   esac
   exit 0
 fi
 
 if [[ "$phase" == backup ]]; then
+  if [[ "$operation" == registry-property-identity && ( \
+    -e "$manifest_host" || -e "$backup_dir/RegistryData.sql.gz" || \
+    -e "$backup_dir/RegistryData.sql.gz.sha256" ) ]]; then
+    fail "identity backup evidence is immutable; use a new run id"
+  fi
   case "$operation" in
     internal-department-retirement)
       backup_database PlatformData ;;
@@ -131,6 +264,8 @@ if [[ "$phase" == backup ]]; then
         tar -czf "$backup_dir/workflow-photo-imports.tar.gz" -C "$BINHU_WORKFLOW_PHOTO_IMPORT_DIR" .
       fi
       ;;
+    registry-property-identity)
+      backup_database RegistryData ;;
   esac
   write_manifest
   printf '{"operation":"%s","phase":"backup","manifest":"%s"}\n' "$operation" "$manifest_host"
@@ -159,7 +294,58 @@ if actual != int(sys.argv[2]): raise SystemExit(f"measure count mismatch: expect
 PY
       run_json "$evidence_dir/apply.json" python -m migrations.photo_sheet_retirement migrate --apply \
         --expect-photo-tickets "$expected_count" --confirm-empty-photo-tables ;;
+    registry-property-identity)
+      python3 - "$evidence_dir/measure.json" "$run_id" "$old_property_id" \
+        "$canonical_property_id" "$measurement_hash" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+path, run_id, old_id, canonical_id, expected_hash = sys.argv[1:]
+artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+payload = {key: value for key, value in artifact.items() if key != "artifact_sha256"}
+canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+valid = (
+    artifact.get("artifact_type") == "registry_property_identity_single_group_measurement"
+    and artifact.get("read_only") is True
+    and artifact.get("run_id") == run_id
+    and str(artifact.get("old_property_id")) == old_id
+    and str(artifact.get("canonical_property_id")) == canonical_id
+    and artifact.get("measurement_hash") == expected_hash
+    and artifact.get("execution_available") is True
+    and artifact.get("disposition") in {"no_references_candidate", "certificate_only_exception_candidate"}
+    and artifact.get("artifact_sha256") == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+)
+if not valid:
+    raise SystemExit("measurement evidence mismatch or candidate is blocked")
+PY
+      run_identity_json "$evidence_dir/apply.json" python -m migrations.registry_property_identity_maintenance migrate --apply \
+        --environment production --run-id "$run_id" --old-property-id "$old_property_id" \
+        --canonical-property-id "$canonical_property_id" --measurement-hash "$measurement_hash" \
+        --backup-manifest "$manifest_container" --confirm "$confirmation" --actor "$maintenance_actor" ;;
   esac
+  exit 0
+fi
+
+if [[ "$phase" == rollback ]]; then
+  [[ -f "$manifest_host" ]] || fail "backup manifest is missing; rollback requires the original verified backup"
+  python3 - "$evidence_dir/verify.json" "$run_id" "$old_property_id" \
+    "$canonical_property_id" "$measurement_hash" <<'PY'
+import json, sys
+from pathlib import Path
+path, run_id, old_id, canonical_id, expected_hash = sys.argv[1:]
+payload = json.loads(Path(path).read_text(encoding="utf-8"))
+if not (
+    payload.get("ok") is True and payload.get("state") == "active"
+    and payload.get("run_id") == run_id
+    and str(payload.get("old_property_id")) == old_id
+    and str(payload.get("canonical_property_id")) == canonical_id
+    and payload.get("measurement_hash") == expected_hash
+):
+    raise SystemExit("latest successful active verify evidence is required for rollback")
+PY
+  run_identity_json "$evidence_dir/rollback.json" python -m migrations.registry_property_identity_maintenance rollback \
+    --environment production --run-id "$run_id" --old-property-id "$old_property_id" \
+    --canonical-property-id "$canonical_property_id" --measurement-hash "$measurement_hash" \
+    --backup-manifest "$manifest_container" --confirm "$confirmation" --actor "$maintenance_actor"
   exit 0
 fi
 
@@ -168,6 +354,10 @@ case "$operation" in
     run_json "$evidence_dir/verify.json" python -m migrations.internal_department_retirement verify ;;
   photo-sheet-retirement)
     run_json "$evidence_dir/verify.json" python -m migrations.photo_sheet_retirement verify ;;
+  registry-property-identity)
+    run_json "$evidence_dir/verify.json" python -m migrations.registry_property_identity_maintenance verify \
+      --environment production --run-id "$run_id" --old-property-id "$old_property_id" \
+      --canonical-property-id "$canonical_property_id" --actor "$maintenance_actor" ;;
 esac
 python3 - "$evidence_dir/verify.json" <<'PY'
 import json, sys

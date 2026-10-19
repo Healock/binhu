@@ -11,6 +11,7 @@ os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 from services.registry_identity_evidence import (
     discover_reference_inventory,
     scan_certificate_source_references,
+    scan_opaque_json_reference_markers,
     scan_references,
     seal_artifact,
     verify_artifact,
@@ -38,6 +39,9 @@ class Cursor:
                 ("RegistryData", "registry_source_records", "entity_type", "varchar"),
                 ("RegistryData", "registry_change_candidates", "entity_id", "bigint"),
                 ("RegistryData", "registry_change_candidates", "entity_type", "varchar"),
+                ("RegistryData", "registry_property_identity_mappings", "old_property_id", "bigint"),
+                ("RegistryData", "registry_property_identity_events", "canonical_property_id", "bigint"),
+                ("RegistryData", "registry_property_identity_reference_events", "old_property_id", "bigint"),
                 ("OnlineData", "task_links", "registration_property_id", "bigint"),
                 ("OnlineData", "people", "property_manager_id", "bigint"),
             ]
@@ -85,6 +89,7 @@ async def test_inventory_covers_direct_and_typed_polymorphic_references():
         ("RegistryData", "registry_change_candidates", "entity_id", "polymorphic", "property"),
     }
     assert not any(item["column"] == "property_manager_id" for item in inventory)
+    assert not any("identity_" in item["table"] for item in inventory)
 
 
 @pytest.mark.asyncio
@@ -130,6 +135,30 @@ async def test_reference_scan_adds_discriminator_and_only_returns_digests():
     source_params = next(params for sql, params in cursor.calls
                          if "registry_source_records`" in sql and "`entity_type`=%s" in sql)
     assert source_params[-1] == "household_property"
+
+
+@pytest.mark.asyncio
+async def test_opaque_json_reference_scan_returns_only_counts_and_safe_column_names():
+    class JsonCursor:
+        def __init__(self):
+            self.calls = []
+            self.params = ()
+
+        async def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            self.params = params
+
+        async def fetchone(self):
+            return (1 if "property[_]?id" in self.params[0] and "7" in self.params[0] else 0,)
+
+    cursor = JsonCursor()
+    findings = await scan_opaque_json_reference_markers(cursor, [{
+        "schema": "RegistryData", "table": "registry_source_records", "column": "payload_json",
+    }], [7, 8])
+    assert [item["count"] for item in findings] == [1, 0]
+    assert all(set(item) == {"property_id", "schema", "table", "column", "count", "key_pattern"} for item in findings)
+    assert all("COUNT(*)" in sql and "MAX_EXECUTION_TIME(5000)" in sql for sql, _ in cursor.calls)
+    assert ["7" in params[0] for _, params in cursor.calls] == [True, False]
 
 
 @pytest.mark.asyncio

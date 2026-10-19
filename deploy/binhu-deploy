@@ -53,7 +53,7 @@ PY
 fi
 
 if [[ "${1:-}" == "production-maintenance" ]]; then
-  [[ $# -ge 4 && $# -le 6 ]] || fail "production-maintenance requires operation, phase and run id"
+  [[ $# -ge 4 && $# -le 9 ]] || fail "production-maintenance requires operation, phase and run id"
   [[ -x /usr/local/sbin/binhu-maintenance ]] || fail "production maintenance contract is not installed"
   exec /usr/local/sbin/binhu-maintenance "${@:2}"
 fi

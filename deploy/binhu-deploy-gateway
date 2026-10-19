@@ -8,38 +8,71 @@ if [[ "${command_parts[0]:-}" == "status" && "${#command_parts[@]}" -eq 1 ]]; th
   exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy status
 fi
 
-# Production data maintenance is limited to the two explicitly registered
-# retirement tools. The root-owned deploy script validates every argument again.
+# Production data maintenance is limited to fixed, registered operations. The
+# root-owned deploy script validates every argument again.
 if [[ "${command_parts[0]:-}" == "production-maintenance" ]]; then
-  [[ "${#command_parts[@]}" -ge 4 && "${#command_parts[@]}" -le 6 ]] || {
+  [[ "${#command_parts[@]}" -ge 4 && "${#command_parts[@]}" -le 9 ]] || {
     echo "Invalid production-maintenance argument count." >&2; exit 64;
   }
   readonly maintenance_operation="${command_parts[1]}"
   readonly maintenance_phase="${command_parts[2]}"
   readonly maintenance_run_id="${command_parts[3]}"
   case "$maintenance_operation" in
-    internal-department-retirement|photo-sheet-retirement) ;;
+    internal-department-retirement|photo-sheet-retirement|registry-property-identity) ;;
     *) echo "Invalid production-maintenance operation." >&2; exit 64 ;;
   esac
   case "$maintenance_phase" in
-    measure|backup|apply|verify) ;;
+    measure|backup|apply|verify|rollback) ;;
     *) echo "Invalid production-maintenance phase." >&2; exit 64 ;;
   esac
   [[ "$maintenance_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || {
     echo "Invalid production-maintenance run id." >&2; exit 64;
   }
-  if [[ "$maintenance_phase" == "apply" ]]; then
-    [[ "${#command_parts[@]}" -eq 6 && "${command_parts[4]}" =~ ^[0-9]+$ ]] || {
-      echo "Apply requires an expected count and confirmation token." >&2; exit 64;
+  if [[ "$maintenance_operation" == "registry-property-identity" ]]; then
+    valid_property_id() {
+      [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]] &&
+        python3 -c 'import sys; sys.exit(0 if int(sys.argv[1]) <= 9223372036854775807 else 1)' "$1"
     }
-    case "$maintenance_operation:${command_parts[5]}" in
-      internal-department-retirement:confirm-remove-internal|photo-sheet-retirement:confirm-empty-photo-tables) ;;
-      *) echo "Invalid production-maintenance confirmation." >&2; exit 64 ;;
+    valid_actor() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]]; }
+    case "$maintenance_phase" in
+      measure|verify)
+        [[ "${#command_parts[@]}" -eq 7 ]] && valid_property_id "${command_parts[4]}" && \
+          valid_property_id "${command_parts[5]}" && valid_actor "${command_parts[6]}" || {
+          echo "Measure and verify require property ids and an actor id." >&2; exit 64;
+        }
+        ;;
+      backup)
+        [[ "${#command_parts[@]}" -eq 5 ]] && valid_actor "${command_parts[4]}" || {
+          echo "Backup requires an actor id." >&2; exit 64;
+        }
+        ;;
+      apply|rollback)
+        [[ "${#command_parts[@]}" -eq 9 ]] && valid_property_id "${command_parts[4]}" && \
+          valid_property_id "${command_parts[5]}" && [[ "${command_parts[6]}" =~ ^[0-9a-f]{64}$ ]] && \
+          valid_actor "${command_parts[8]}" || {
+          echo "Apply and rollback require property ids, a measurement hash and an actor id." >&2; exit 64;
+        }
+        case "$maintenance_phase:${command_parts[7]}" in
+          apply:confirm-registry-property-identity|rollback:confirm-registry-property-identity-rollback) ;;
+          *) echo "Invalid registry identity confirmation." >&2; exit 64 ;;
+        esac
+        ;;
     esac
   else
-    [[ "${#command_parts[@]}" -eq 4 ]] || {
-      echo "This production-maintenance phase takes no extra arguments." >&2; exit 64;
-    }
+    [[ "$maintenance_phase" != rollback ]] || { echo "Rollback is only registered for registry identity maintenance." >&2; exit 64; }
+    if [[ "$maintenance_phase" == apply ]]; then
+      [[ "${#command_parts[@]}" -eq 6 && "${command_parts[4]}" =~ ^[0-9]+$ ]] || {
+        echo "Apply requires an expected count and confirmation token." >&2; exit 64;
+      }
+      case "$maintenance_operation:${command_parts[5]}" in
+        internal-department-retirement:confirm-remove-internal|photo-sheet-retirement:confirm-empty-photo-tables) ;;
+        *) echo "Invalid production-maintenance confirmation." >&2; exit 64 ;;
+      esac
+    else
+      [[ "${#command_parts[@]}" -eq 4 ]] || {
+        echo "This production-maintenance phase takes no extra arguments." >&2; exit 64;
+      }
+    fi
   fi
   exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy \
     production-maintenance "${command_parts[@]:1}"

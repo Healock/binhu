@@ -15,6 +15,11 @@ POLYMORPHIC_REFERENCE_TABLES = {
     "registry_source_records": ("household_property", "property"),
     "registry_change_candidates": ("property",),
 }
+IDENTITY_MAINTENANCE_AUDIT_TABLES = {
+    "registry_property_identity_mappings",
+    "registry_property_identity_events",
+    "registry_property_identity_reference_events",
+}
 KNOWN_ENTITY_TYPES = {
     "household_property",
     "property_certificate",
@@ -61,6 +66,10 @@ async def discover_reference_inventory(cur, schemas: list[str], registry_schema:
     polymorphic_warnings = []
     for schema, table, column, data_type in columns:
         schema, table, column = str(schema), str(table), str(column)
+        # The identity graph and its audit rows describe the resolver itself;
+        # they are not business references that should block a later measure.
+        if schema == registry_schema and table in IDENTITY_MAINTENANCE_AUDIT_TABLES:
+            continue
         table_primary_keys = primary_keys.get((schema, table), [])
         key = (schema, table, column)
         lower = column.lower()
@@ -210,6 +219,41 @@ async def scan_certificate_source_references(
                 "count": len(keys),
                 "record_key_sha256": sha256(canonical.encode("utf-8")).hexdigest(),
                 "stable_record_keys": True,
+            })
+    return findings
+
+
+async def scan_opaque_json_reference_markers(
+    cur, opaque_json: list[dict], property_ids: list[int]
+) -> list[dict]:
+    """Find exact internal property ids under JSON keys that can hold references.
+
+    JSON bodies and row identifiers are never returned. A match is a blocker;
+    this deliberately treats incidental matches as blockers rather than trying
+    to infer or rewrite opaque payloads.
+    """
+    findings = []
+    for item in opaque_json:
+        schema, table, column = (str(item[key]) for key in ("schema", "table", "column"))
+        pattern = r'"[[:alnum:]_]*(property[_]?id|house[_]?id|entity[_]?id)"[[:space:]]*:[[:space:]]*"?{id}"?([,}}]|[[:space:]]|$)'
+        for property_id in sorted(set(int(value) for value in property_ids)):
+            expression = pattern.format(id=property_id)
+            await cur.execute(
+                "SELECT /*+ MAX_EXECUTION_TIME(5000) */ COUNT(*) "
+                f"FROM {_quote(schema)}.{_quote(table)} "
+                f"WHERE {_quote(column)} IS NOT NULL "
+                f"AND REGEXP_LIKE(CAST({_quote(column)} AS CHAR),%s,'i')",
+                (expression,),
+            )
+            row = await cur.fetchone()
+            count = int(row[0] or 0) if row else 0
+            findings.append({
+                "property_id": property_id,
+                "schema": schema,
+                "table": table,
+                "column": column,
+                "count": count,
+                "key_pattern": "property_house_entity_id",
             })
     return findings
 

@@ -1656,7 +1656,7 @@ Registry/Workflow 开关在全部迁移和权限核验完成前保持关闭。�
 
 ## 房屋户号沿革只读测量
 
-`migrations.registry_property_identity` 仅测量同正式社区、精确完整地址一致、来源时间可区分的“旧已注销登记 → 唯一较新未注销登记”。只提供 `measure` 和 `verify`；不存在 `migrate`、`--apply` 或历史归并执行入口，测量命令本身不写归并映射或事件。应用数据库结构另包含 `registry_property_identity_mappings` 与 `registry_property_identity_events`，供未来经评审的固定维护流程记录映射和审计；当前版本只有只读解析与展示，没有创建映射或迁移引用的业务入口。命令显式校验环境及八库范围，使用数据库强制只读的一致性快照，结束时始终回滚并关闭连接。
+`migrations.registry_property_identity` 保持只读，只提供同正式社区、精确完整地址一致、来源时间可区分的“旧已注销登记 → 唯一较新未注销登记”测量和核验。历史归并使用独立的一次性命令 `migrations.registry_property_identity_maintenance`，通过已经部署的 GitHub `Production maintenance` 固定入口运行；本次不新增常驻网关服务或通用命令执行入口。
 
 在 backend 工作目录中，通过获准的只读诊断渠道执行：
 
@@ -1673,11 +1673,33 @@ python -m migrations.registry_property_identity_evidence --environment productio
 python -m migrations.registry_property_identity_evidence --environment production --property-id <房屋ID>
 ```
 
-该命令只读取八库的一致性快照，枚举直接房屋引用、已知 `entity_id` 多态引用及可用的行主键，输出数量、内部 ID 和 SHA-256 摘要；告知书来源记录通过告知书记录 ID 反查到房屋，不把两种 ID 混用。不会读取或输出 JSON 载荷正文。每次运行内部生成唯一的非敏感 `run_id`、绑定房屋状态/更新时间/社区/地址摘要的 `measurement_hash` 和自校验 `artifact_sha256`；已有证据文件不会覆盖，文件由调用方在受保护目录中创建。未知 `entity_type`、跨社区同址和未解释的 `opaque_json_columns` 都是复核阻断警告，不能据此申请归并。单条查询带有限执行时间，普通元数据锁和 InnoDB 行锁分别设置有限等待上限；这不是整个命令的总时限。该证据只用于设计和审查独立维护网关，不能作为 `apply`、备份完成或生产迁移授权。
+该证据命令只读取八库的一致性快照，枚举直接房屋引用、已知 `entity_id` 多态引用和稳定记录键摘要；告知书来源记录通过告知书记录 ID 反查房屋，不把两种 ID 混用。不会输出 JSON 载荷正文。未知 `entity_type`、跨社区同址和无法解释的引用都会阻断后续申请。
 
-输出仅包含内部 ID、计数、测量摘要和只读标记，不输出地址或来源正文。测量摘要包含数据库范围；它不是写入许可。verify 在仍有待整理或阻塞组时返回失败，不表示发生过归并。存在人员、机构、房间、跨域引用或历史人工小区确认的候选会标记为阻塞；告知书独占引用则只会进入专用例外候选，仍需单独审查。真实 MySQL 和驱动未在本地验证，不能使用生产制造测试数据。
+生产单组流程固定为：
 
-本 PR 不自动消除已经存在的重复档案，也不生成真实映射。告知书独占引用只作为“可进一步审查的专用例外候选”，还必须证明旧侧恰有一条告知书、来源记录唯一、现行侧没有告知书且不存在其他活动引用；它不是归并许可。历史整理必须另立经过评审的固定维护网关：验证备份内容、环境及恢复能力，阻断所有并发写入并排空持有旧房屋 ID 的任务，检查跨库引用和人工确认的保留方案，通过独立 MySQL 验收后再申请生产维护授权。人工暂停说明、文件存在检查或单纯表锁均不能替代这些要求。
+```text
+production-maintenance registry-property-identity measure <run-id> <old-id> <canonical-id>
+production-maintenance registry-property-identity backup <run-id>
+production-maintenance registry-property-identity apply <run-id> <old-id> <canonical-id> <measurement-hash> confirm-registry-property-identity
+production-maintenance registry-property-identity verify <run-id> <old-id> <canonical-id>
+```
+
+`measure` 只输出密钥化地址 HMAC 摘要、内部 ID、引用计数、字段名、状态和校验摘要，不输出可被字典枚举的裸地址哈希。查询有固定 30 秒执行上限、元数据锁最多等待 2 秒、InnoDB 行锁最多等待 5 秒；预算超限即失败关闭。可执行候选仅限“无活动引用”或“告知书独占引用”两类；引用扫描覆盖八库的直接引用、已知多态引用、JSON 中以房屋 ID 命名的值以及人工小区关联。发现未识别的多态类型或旧房屋引用时会阻断。告知书例外要求旧房屋恰有一条告知书及唯一来源记录，现行房屋没有告知书，且旧房屋没有其他活动引用和小区匹配关系。
+
+`backup` 只备份 `RegistryData`，维护脚本验证 gzip 和 SHA-256，并把不可变清单放在 root-only 证据目录；相同 run id 的测量和备份证据不能覆盖。Production maintenance 工作流自动记录触发者标识到测量/备份证据、映射和事件，不接受调用者自填身份。`apply` 必须使用同一 run id、测量摘要和已校验的备份清单。应用或回滚期间，固定脚本会停止生产 Backend 容器，再使用已部署 Backend 镜像启动无端口的一次性 Compose 容器执行迁移；命令后会启动 Backend 并等待容器恢复运行，失败时保留错误并要求人工恢复。此时业务 API 会短暂不可用，应安排维护窗口。数据库映射、事件和告知书 `property_id` 更新都在同一 `RegistryData` MySQL 事务内提交；其他来源记录和地址历史保持原样。
+
+归并成功后使用上述 `verify`。若需回滚，先取得同一 run id 下最新成功的活动态 verify 摘要，再运行：
+
+```text
+production-maintenance registry-property-identity rollback <run-id> <old-id> <canonical-id> <latest-verify-hash> confirm-registry-property-identity-rollback
+production-maintenance registry-property-identity verify <run-id> <old-id> <canonical-id>
+```
+
+回滚会重新测量当前引用、映射版本和告知书内容摘要。若归并后状态有变化、出现新引用或告知书内容变化，回滚会停止并要求人工恢复；不会用整库备份覆盖新业务数据。相同 run id 的已提交 apply 和 rollback 可幂等重试。
+
+命令显式校验环境及八库范围，并拒绝任意 SQL、表名、脚本路径和批量 ID。发现人员、机构、任务、跨域引用、历史人工小区确认、未知多态类型或旧 ID JSON 引用时均不允许执行。此 PR 仅支持一个房屋对；不会应用先前测量中的 1,034 个候选批次。生产写入须等本 PR 合并并部署、数据库结构初始化、生产只读测量、备份校验和单组验收授权全部完成后另行执行。
+
+本 PR 不自动消除重复档案，不生成真实映射，也不执行生产 apply。真实 MySQL 和驱动未在本地验证；维护命令、备份清单和实际生产容器行为仍需在正式维护窗口前核对。全量候选重算、批量归并以及 1,034 组候选范围不属于本次命令。
 
 走访归属按稳定 community_id 查找全局同址档案，不按页面中的社区名称快照判断唯一性。VisitData 的社区文本通过正式名称、社区别名和档案历史名称映射；名称指向多个正式社区时不猜测归属，也不把无法核对的记录列为“从未走访”。请档案管理员维护正式社区和历史名称映射后重试。
 
@@ -1709,16 +1731,18 @@ python -m migrations.photo_sheet_retirement verify
 
 本脚本不删除普通工单，不删除其他腾讯快照、迁移审计或回滚材料，也不改变 `TXDOCS_MIGRATION_MODE=readonly` 的历史兼容范围。真实 MySQL、生产备份和清理未在开发机验证，不能以本机测试替代生产维护验收。
 
-## 生产基础归位与照片退役固定维护入口
+## Production 固定维护入口
 
-部门归位和照片退役都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或在容器中手工拼接命令。两项操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
+部门归位、照片退役和单组房屋户号归并都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或手工拼接命令。三项操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
 
 ```text
 production-maintenance <operation> <phase> <run-id>
 production-maintenance <operation> apply <run-id> <expected-count> <confirmation>
+production-maintenance registry-property-identity apply <run-id> <old-id> <canonical-id> <measurement-hash> confirm-registry-property-identity
+production-maintenance registry-property-identity rollback <run-id> <old-id> <canonical-id> <latest-verify-hash> confirm-registry-property-identity-rollback
 ```
 
-允许的 `operation` 只有 `internal-department-retirement` 和 `photo-sheet-retirement`；允许的 `phase` 只有 `measure`、`backup`、`apply`、`verify`。`apply` 前必须已经完成同一运行编号的 `measure` 和 `backup`，脚本会重新核对数量、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
+允许的 `operation` 为 `internal-department-retirement`、`photo-sheet-retirement`、`registry-property-identity`。常规阶段为 `measure`、`backup`、`apply`、`verify`；`rollback` 只允许房屋身份归并使用。执行 `apply` 前必须有同一运行编号的测量和备份，脚本重新核对固定证据、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。房屋归并只接受一个旧房屋 ID、一个现行房屋 ID 和一个测量摘要，不接受候选列表、表名、SQL 或任意脚本路径。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
 
 该入口由服务器 root 安装，不随普通应用发布自动覆盖。安装或更新时机是：对应网关/维护脚本 PR 合并、CI 通过，且生产发布前；由部署负责人执行 `deploy/install-server-deployer.sh`，先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再运行 `visudo -cf`、检查脚本 SHA-256，并使用 `status` 和一个拒绝性参数测试确认入口边界。安装完成后才允许触发维护工作流。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
 
