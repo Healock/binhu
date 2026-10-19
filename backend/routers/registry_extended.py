@@ -77,6 +77,8 @@ from services.xlsx_export import XLSX_MEDIA_TYPE, build_xlsx
 router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
 
 REGISTRY_IMPORT_WRITE_CHUNK = 500
+HOUSEHOLD_IMPORT_MAX_BYTES = 50 * 1024 * 1024
+HOUSEHOLD_IMPORT_MAX_ROWS = 100000
 
 
 class OrganizationSearch(BaseModel):
@@ -1928,7 +1930,12 @@ def _find_header(headers: list[str], *names: str) -> int | None:
     return None
 
 
-def _parse_household_workbook(content: bytes, *, allow_empty: bool = False) -> list[dict]:
+def _parse_household_workbook(
+    content: bytes,
+    *,
+    allow_empty: bool = False,
+    max_rows: int = HOUSEHOLD_IMPORT_MAX_ROWS,
+) -> list[dict]:
     """读取户号表，按中文表头解析，所有标识字段都先转为文本。"""
     try:
         workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
@@ -1979,6 +1986,8 @@ def _parse_household_workbook(content: bytes, *, allow_empty: bool = False) -> l
         for physical_row, raw in enumerate(iterator, start=header_row + 1):
             if not any(value not in (None, "") for value in raw):
                 continue
+            if len(rows) >= max_rows:
+                raise HTTPException(422, "户号表不能超过 100000 条，请拆成不同批次")
             def cell(key: str):
                 index = indexes[key]
                 return raw[index] if index >= 0 and index < len(raw) else ""
@@ -2097,14 +2106,12 @@ async def preview_household_import(
     user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
     conn=Depends(get_registry_db),
 ):
-    content = await file.read()
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(413, "户号表不能超过 50MB")
     if not str(file.filename or "").lower().endswith(".xlsx"):
         raise HTTPException(422, "户号表必须为 XLSX 文件")
+    content = await file.read(HOUSEHOLD_IMPORT_MAX_BYTES + 1)
+    if len(content) > HOUSEHOLD_IMPORT_MAX_BYTES:
+        raise HTTPException(413, "户号表不能超过 50MB")
     rows = _parse_household_workbook(content)
-    if len(rows) > 100000:
-        raise HTTPException(422, "户号表不能超过 100000 条，请拆成不同批次")
     digest = hashlib.sha256(content).hexdigest()
     for row in rows:
         row["source_file"] = normalize_text(file.filename)[:255]
@@ -2178,7 +2185,7 @@ async def preview_household_files(
             raise HTTPException(413, "本批户号表文件总大小不能超过 50MB")
         if not str(file.filename or "").lower().endswith(".xlsx"):
             raise HTTPException(422, f"第 {index} 份文件必须为 XLSX")
-        parsed = _parse_household_workbook(content, allow_empty=True)
+        parsed = _parse_household_workbook(content, allow_empty=True, max_rows=HOUSEHOLD_IMPORT_MAX_ROWS - len(rows))
         if option.expected_count is not None and len(parsed) != option.expected_count:
             raise HTTPException(422, f"第 {index} 份文件实际 {len(parsed)} 条，与填写的查询总数 {option.expected_count} 不一致；请检查是否只导出了前 30000 条")
         if len(rows) + len(parsed) > 100000:
