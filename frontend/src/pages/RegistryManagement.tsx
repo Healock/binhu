@@ -1532,9 +1532,9 @@ export default function RegistryManagement() {
         </Form>
       </Modal>
 
-      <Drawer open={detailOpen} onClose={() => setDetailOpen(false)} width="min(96vw, 980px)" title={detail?.normalized_address || detail?.name || '档案详情'}>
+      <Drawer open={detailOpen} onClose={() => setDetailOpen(false)} width="min(100vw, 1080px)" title={detailKind === 'property' ? '房屋档案详情' : detail?.name || '档案详情'}>
         {!detail ? <div className="py-16 text-center text-[var(--app-text-secondary)]">正在读取…</div> : <div className="registry-detail">
-          {canManage && detailKind === 'property' && <Space wrap>
+          {canManage && detailKind === 'property' && <Space wrap className="registry-detail__actions">
             <Button onClick={() => openEdit('property', detail)}>编辑房屋</Button>
             <Button icon={<PlusOutlined />} onClick={() => { setSelected(detail); form.resetFields(); setModal('alias') }}>添加地址别名</Button>
             <Button onClick={() => { setSelected(detail); form.resetFields(); setModal('personRelation') }}>添加人员关系</Button>
@@ -1542,6 +1542,39 @@ export default function RegistryManagement() {
           </Space>}
           {canManage && detailKind === 'person' && <Space><Button onClick={() => openEdit('person', detail)}>编辑人员</Button><Button onClick={() => { setSelected(detail); form.resetFields(); setModal('phone') }}>添加号码</Button></Space>}
           {canManage && detailKind === 'organization' && <Space><Button onClick={() => openEdit('organization', detail)}>编辑机构</Button></Space>}
+          {detailKind === 'property' && (() => {
+            const householdStatus = detail.household_status || ''
+            const householdStatusLabel = householdStatus === '未注销'
+              ? '当前户号有效'
+              : householdStatus === '已注销'
+                ? '当前户号已注销'
+                : '户号状态待核对'
+            const propertyStatusLabel = detail.status === 'active'
+              ? '有效'
+              : detail.status === 'inactive'
+                ? '已停用'
+                : detail.status || '未知'
+            const buildingRoom = [detail.building, detail.room].filter(Boolean).join(' / ')
+            return <section className="registry-property-identity" aria-label="当前房屋档案">
+              <div className="registry-property-identity__heading">
+                <span>当前房屋档案</span>
+                <h2>{detail.normalized_address || detail.natural_address || '地址未登记'}</h2>
+                <Space size={[6, 6]} wrap>
+                  <Tag color={householdStatus === '未注销' ? 'success' : householdStatus === '已注销' ? 'error' : 'default'}>
+                    {householdStatusLabel}
+                  </Tag>
+                  <Tag color={propertyStatusLabel === '有效' ? 'blue' : 'default'}>档案{propertyStatusLabel}</Tag>
+                  <Tag color="blue">{detail.identity?.redirected ? '已定位到现行档案' : '现行档案'}</Tag>
+                </Space>
+              </div>
+              <dl className="registry-property-identity__facts">
+                <div><dt>正式社区</dt><dd>{detail.community_name || '待核对'}</dd></div>
+                <div><dt>当前户号</dt><dd>{detail.source_house_no || '未记录'}</dd></div>
+                <div><dt>楼栋与室号</dt><dd>{buildingRoom || '未登记'}</dd></div>
+                <div><dt>住房类型</dt><dd>{detail.housing_type || '未标注'}</dd></div>
+              </dl>
+            </section>
+          })()}
           {detailKind === 'property' && detail.certificate_summary && (() => {
             const summary = detail.certificate_summary
             const current = detail.certificates?.[0]
@@ -1629,24 +1662,48 @@ export default function RegistryManagement() {
               }}>{match.status === 'confirmed' ? '修正小区' : '人工确认小区'}</Button>}
             </section>
           })()}
-          {detailKind === 'property' && <Descriptions bordered size="small" column={1} items={[{ key: 'household_status', label: '注销状态（户号表）', children: detail.household_status || '未知' }]} />}
-          {detailKind === 'property' && detail.identity?.historical_ids?.length > 0 && (
-            <Collapse
+          {detailKind === 'property' && <Panel title="档案信息">
+            <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 2 }} items={[
+              { key: 'street', label: '所属街道', children: detail.street || '未登记' },
+              { key: 'residence_type', label: '居住类型', children: detail.residence_type || '未标注' },
+              { key: 'source_updated_at', label: '户号资料更新时间', children: detail.source_updated_at ? formatUTCTime(detail.source_updated_at, systemTimezone) : '暂无记录' },
+              { key: 'updated_at', label: '档案更新时间', children: detail.updated_at ? formatUTCTime(detail.updated_at, systemTimezone) : '暂无记录' },
+            ]} />
+          </Panel>}
+          {detailKind === 'property' && <section className="registry-property-lineage" aria-label="房屋历史沿革">
+            <div className="registry-property-lineage__heading">
+              <div>
+                <span>房屋身份</span>
+                <strong>当前户号与历史户号</strong>
+              </div>
+              <Tag color={detail.identity?.historical_ids?.length ? 'blue' : 'default'}>
+                {detail.identity?.historical_ids?.length ? `${detail.identity.historical_ids.length} 条历史户号` : '暂无历史户号'}
+              </Tag>
+            </div>
+            <p>历史户号用于追溯同一套房屋的登记变化，房屋列表只显示现行档案；走访和告知书保留旧户号关联记录。</p>
+            {detail.identity?.historical_ids?.length > 0 && <Collapse
+              className="registry-property-lineage__collapse"
               items={[{
                 key: 'history',
                 label: `历史户号（${detail.identity.historical_ids.length}）`,
-                children: <Space direction="vertical" size="small" className="w-full">
+                children: <div className="registry-property-lineage__items">
                   {detail.identity.historical_ids.map((item: any) => (
-                    <span key={`${item.old_property_id}-${item.mapping_version}`}>
-                      历史档案 {item.old_property_id}，户号 {item.source_house_no || '未知'}，状态 {item.household_status}，
-                      来源 {item.source_count} 条，归并时间 {item.mapped_at ? formatUTCTime(item.mapped_at, systemTimezone) : '未知'}
-                    </span>
+                    <article className="registry-property-lineage__item" key={`${item.old_property_id}-${item.mapping_version}`}>
+                      <div className="registry-property-lineage__item-heading">
+                        <strong>{item.source_house_no || '历史户号未记录'}</strong>
+                        <Tag color={item.household_status === '已注销' ? 'default' : 'warning'}>{item.household_status || '状态未知'}</Tag>
+                      </div>
+                      <div className="registry-property-lineage__item-facts">
+                        <span>历史来源 {item.source_count || 0} 条</span>
+                        <span>归并时间 {item.mapped_at ? formatUTCTime(item.mapped_at, systemTimezone) : '未知'}</span>
+                      </div>
+                    </article>
                   ))}
-                </Space>,
+                </div>,
               }]}
-            />
-          )}
-          <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'visit_association_status', 'small_community_match', ...(detailKind === 'property' ? ['status', 'household_status'] : [])].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />
+            />}
+          </section>}
+          {detailKind !== 'property' && <Descriptions bordered size="small" column={1} items={Object.entries(detail).filter(([key, value]) => !Array.isArray(value) && typeof value !== 'object' && !['identity_hmac', 'certificate_summary', 'visit_count', 'latest_visit_date', 'latest_star_rating', 'latest_star_rating_at', 'visit_association_status', 'small_community_match'].includes(key)).slice(0, 12).map(([key, value]) => ({ key, label: key, children: String(value ?? '-') }))} />}
           {detailKind === 'person' && canViewTags && <Panel
             title="人员标签"
             extra={canManageTags ? <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => openCreate('personTag')}>添加标签</Button> : undefined}
