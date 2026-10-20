@@ -12,7 +12,7 @@ from app_version import APP_VERSION
 from environment_static import frontend_index_response
 from config import settings
 from database import init_db, close_db
-from deps import get_current_user
+from deps import get_current_user, require_module
 from http_security import add_cors_middleware
 from routers.spreadsheets import router as spreadsheets_router
 from routers.sync import router as sync_router
@@ -51,6 +51,7 @@ from routers.residence_platform import router as residence_platform_router
 from routers.house_candidate import router as house_candidate_router
 from routers.maintenance import router as maintenance_router
 from routers.app_bootstrap import router as app_bootstrap_router
+from routers.function_modules import router as function_modules_router
 from routers.help_docs import router as help_docs_router
 from services.backup_scheduler import run_backup_scheduler
 from services.backups import recover_interrupted_backups, stop_backup_tasks
@@ -335,48 +336,55 @@ app.include_router(house_candidate_router)
 
 # 业务路由（全部需要登录）
 auth_dep = [Depends(get_current_user)]
-app.include_router(spreadsheets_router, dependencies=auth_dep)
-app.include_router(sync_router, dependencies=auth_dep)
-app.include_router(stats_router, dependencies=auth_dep)
-app.include_router(query_router, dependencies=auth_dep)
+community_police_dep = auth_dep + [Depends(require_module("community_police"))]
+platform_admin_dep = auth_dep + [Depends(require_module("platform_admin"))]
+workflow_dep = auth_dep + [Depends(require_module("workflow"))]
+# Module administration is gated by the dedicated module.access.manage
+# permission in the router itself.  It must not depend on a legacy “internal”
+# department or on the platform_admin module's department bindings.
+app.include_router(function_modules_router, dependencies=auth_dep)
+app.include_router(spreadsheets_router, dependencies=community_police_dep)
+app.include_router(sync_router, dependencies=community_police_dep)
+app.include_router(stats_router, dependencies=community_police_dep)
+app.include_router(query_router, dependencies=community_police_dep)
 from routers.query_socket import router as query_socket_router
 # WebSocket has its own cookie/origin/session checks; Request-only dependencies
 # cannot be installed on its handshake route.
 app.include_router(query_socket_router)
-app.include_router(mobile_tasks_router, dependencies=auth_dep)
-app.include_router(police_dispatch_router, dependencies=auth_dep)
-app.include_router(fullchain_archive_router, dependencies=auth_dep)
+app.include_router(mobile_tasks_router, dependencies=community_police_dep)
+app.include_router(police_dispatch_router, dependencies=community_police_dep)
+app.include_router(fullchain_archive_router, dependencies=community_police_dep)
 app.include_router(grid_members_router, dependencies=auth_dep)
-app.include_router(system_router, dependencies=auth_dep)
-app.include_router(mac_address_router, dependencies=auth_dep)
+app.include_router(system_router, dependencies=platform_admin_dep)
+app.include_router(mac_address_router, dependencies=platform_admin_dep)
 app.include_router(notifications_router, dependencies=auth_dep)
-app.include_router(visits_router, dependencies=auth_dep)
-app.include_router(visit_sources_router, dependencies=auth_dep)
-app.include_router(code_summaries_router, dependencies=auth_dep)
-app.include_router(personnel_attendance_router, dependencies=auth_dep)
-app.include_router(work_logs_router, dependencies=auth_dep)
-app.include_router(permission_groups_router, dependencies=auth_dep)
+app.include_router(visits_router, dependencies=community_police_dep)
+app.include_router(visit_sources_router, dependencies=community_police_dep)
+app.include_router(code_summaries_router, dependencies=community_police_dep)
+app.include_router(personnel_attendance_router, dependencies=community_police_dep)
+app.include_router(work_logs_router, dependencies=community_police_dep)
+app.include_router(permission_groups_router, dependencies=platform_admin_dep)
 app.include_router(profiles_router, dependencies=auth_dep)
-app.include_router(dashboard_router, dependencies=auth_dep)
-app.include_router(exports_router, dependencies=auth_dep)
-app.include_router(registry_router, dependencies=auth_dep)
-app.include_router(registry_extended_router, dependencies=auth_dep)
-app.include_router(watch_import_router, dependencies=auth_dep)
-app.include_router(workflow_router, dependencies=auth_dep)
-app.include_router(workflow_extended_router, dependencies=auth_dep)
-app.include_router(qmf_registration_router, dependencies=auth_dep)
+app.include_router(dashboard_router, dependencies=community_police_dep)
+app.include_router(exports_router, dependencies=community_police_dep)
+app.include_router(registry_router, dependencies=community_police_dep)
+app.include_router(registry_extended_router, dependencies=community_police_dep)
+app.include_router(watch_import_router, dependencies=community_police_dep)
+app.include_router(workflow_router, dependencies=workflow_dep)
+app.include_router(workflow_extended_router, dependencies=workflow_dep)
+app.include_router(qmf_registration_router, dependencies=community_police_dep)
 app.include_router(residence_platform_router, dependencies=auth_dep)
 app.include_router(task_graph_router, dependencies=auth_dep)
-app.include_router(qmf_source_router, dependencies=auth_dep)
-app.include_router(external_acquisition_router, dependencies=auth_dep)
-app.include_router(venue_admin_router, dependencies=auth_dep)
+app.include_router(qmf_source_router, dependencies=community_police_dep)
+app.include_router(external_acquisition_router, dependencies=community_police_dep)
+app.include_router(venue_admin_router, dependencies=community_police_dep)
 app.include_router(venue_public_router)
 
 # 用户管理路由（超管专用，dependencies 在路由内 Depends(require_super_admin)）
-app.include_router(users_router, dependencies=auth_dep)
+app.include_router(users_router, dependencies=platform_admin_dep)
 app.include_router(environment_accounts_router)
-app.include_router(admin_ops_router, dependencies=auth_dep)
-app.include_router(admin_task_queue_router, dependencies=auth_dep)
+app.include_router(admin_ops_router, dependencies=platform_admin_dep)
+app.include_router(admin_task_queue_router, dependencies=platform_admin_dep)
 
 
 # ========== 前端静态文件一体化托管（单端口模式，无需 Nginx） ==========

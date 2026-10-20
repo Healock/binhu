@@ -253,6 +253,53 @@ export interface AppBootstrapSummary {
   environment: 'production' | 'staging' | 'development' | 'shadow'
   environment_label: string
   load_test_run_id: string
+  available_modules?: string[]
+  available_module_routes?: Record<string, string[]>
+  available_mobile_modules?: string[]
+}
+
+export interface FunctionModuleItem {
+  module_id: string
+  name: string
+  department_ids: number[]
+  departments?: FunctionModuleDepartment[]
+  is_public: boolean
+  required_permissions: string[]
+  route: string
+  routes?: string[]
+  mobile_visible: boolean
+  enabled: boolean
+  version: number
+}
+
+export interface FunctionModuleDepartment {
+  id: number
+  name: string
+  parent_id: number | null
+  type: string
+  is_active: boolean
+}
+
+export interface FunctionModulePayload {
+  name: string
+  department_ids: number[]
+  is_public: boolean
+  required_permissions: string[]
+  route: string
+  mobile_visible: boolean
+  enabled: boolean
+  module_id?: string
+}
+
+export async function listFunctionModules(): Promise<{ data: FunctionModuleItem[]; departments: FunctionModuleDepartment[] }> {
+  return (await api.get('/function-modules')).data
+}
+
+export async function updateFunctionModule(
+  moduleId: string,
+  payload: FunctionModulePayload,
+): Promise<{ module_id: string; version: number }> {
+  return (await api.patch(`/function-modules/${encodeURIComponent(moduleId)}`, payload)).data
 }
 
 export interface LoginSessionSummary {

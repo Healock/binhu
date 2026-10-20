@@ -63,12 +63,16 @@ export default function Layout() {
           user.permissions,
           permissionGroupCodes,
           user.member?.position,
+          user.available_mobile_modules || user.available_modules,
+          user.available_module_routes,
         )
         : accessibleNavigationGroups(
           user.role,
           user.permissions,
           permissionGroupCodes,
           user.member?.position,
+          user.available_modules,
+          user.available_module_routes,
         ))
       : [],
     [mobile, permissionGroupCodes, user],
@@ -84,6 +88,8 @@ export default function Layout() {
           user.permissions,
           permissionGroupCodes,
           user.member?.position,
+          user.available_mobile_modules || user.available_modules,
+          user.available_module_routes,
         )
       : { groups: [] },
     [permissionGroupCodes, user],
@@ -363,6 +369,8 @@ export default function Layout() {
           permissions={user.permissions}
           position={user.member?.position}
           permissionGroupCodes={permissionGroupCodes}
+          availableModules={user.available_mobile_modules || user.available_modules}
+          availableModuleRoutes={user.available_module_routes}
         />
       )}
     </div>

@@ -50,6 +50,7 @@ QMF_REGISTRATION_EXECUTE = "qmf.registration.execute"
 VENUE_VIEW = "venue.view"
 VENUE_MANAGE = "venue.manage"
 VENUE_EXPORT = "venue.export"
+MODULE_ACCESS_MANAGE = "module.access.manage"
 
 PERMISSION_CATALOG = [
     (ONLINE_SUMMARY_VIEW, "数据查看", "查看在线数据汇总"),
@@ -96,6 +97,7 @@ PERMISSION_CATALOG = [
     (VENUE_VIEW, "基础资料", "查看场所码和登记记录"),
     (VENUE_MANAGE, "基础资料", "管理场所码和二维码"),
     (VENUE_EXPORT, "业务操作", "导出场所码登记记录"),
+    (MODULE_ACCESS_MANAGE, "平台管理", "管理功能模块部门归属"),
 ]
 
 ALL_PERMISSIONS = {item[0] for item in PERMISSION_CATALOG}
@@ -198,6 +200,7 @@ DEFAULT_PERMISSION_GROUPS: dict[str, dict[str, Any]] = {
             QMF_REGISTRATION_EXECUTE,
             PRESENCE_DETAIL_VIEW,
             SERVER_MAC_MANAGE,
+            MODULE_ACCESS_MANAGE,
         },
         "sort_order": 40,
     },

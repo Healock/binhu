@@ -303,6 +303,8 @@ export default function DockConfigurator({
   permissions,
   position,
   permissionGroupCodes,
+  availableModules,
+  availableModuleRoutes,
   onChange,
 }: {
   value: MobileDockConfig
@@ -310,6 +312,8 @@ export default function DockConfigurator({
   permissions: PermissionCode[]
   position?: string | null
   permissionGroupCodes?: string[]
+  availableModules?: string[]
+  availableModuleRoutes?: Record<string, string[]>
   onChange: (value: MobileDockConfig) => void
 }) {
   const normalized = useMemo(
@@ -319,8 +323,10 @@ export default function DockConfigurator({
       permissions,
       permissionGroupCodes,
       position,
+      availableModules,
+      availableModuleRoutes,
     ),
-    [permissionGroupCodes, permissions, position, role, value],
+    [availableModuleRoutes, availableModules, permissionGroupCodes, permissions, position, role, value],
   )
   const definitions = useMemo(
     () => mobileAccessibleNavigationGroups(
@@ -328,8 +334,10 @@ export default function DockConfigurator({
       permissions,
       permissionGroupCodes,
       position,
+      availableModules,
+      availableModuleRoutes,
     ),
-    [permissionGroupCodes, permissions, position, role],
+    [availableModuleRoutes, availableModules, permissionGroupCodes, permissions, position, role],
   )
   const [selectedGroupId, setSelectedGroupId] = (
     useState<MobileNavigationGroupId>(

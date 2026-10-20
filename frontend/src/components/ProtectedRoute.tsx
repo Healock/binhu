@@ -7,9 +7,10 @@ interface Props {
   requireRoles?: Role[]
   requirePermission?: PermissionCode
   requireAnyPermission?: PermissionCode[]
+  requireModule?: string
 }
 
-export default function ProtectedRoute({ requireRole, requireRoles, requirePermission, requireAnyPermission }: Props) {
+export default function ProtectedRoute({ requireRole, requireRoles, requirePermission, requireAnyPermission, requireModule }: Props) {
   const { user, loading, environment } = useAuth()
   const location = useLocation()
 
@@ -23,6 +24,20 @@ export default function ProtectedRoute({ requireRole, requireRoles, requirePermi
 
   if (!user) {
     return <Navigate to="/login" replace />
+  }
+
+  const matchesPrefix = (prefix: string) => (
+    prefix === '/' ? location.pathname === '/' : (
+      location.pathname === prefix || location.pathname.startsWith(`${prefix}/`)
+    )
+  )
+  const registeredRoute = Object.entries(user.available_module_routes || {})
+    .flatMap(([moduleId, routes]) => routes.map(route => ({ moduleId, route })))
+    .filter(item => matchesPrefix(item.route))
+    .sort((a, b) => b.route.length - a.route.length)[0]?.moduleId
+  const pathModule = requireModule || registeredRoute
+  if (pathModule && !user.available_modules?.includes(pathModule)) {
+    return <AccessDenied title="当前账号所属单位未开通该功能模块，请联系管理员确认模块归属和权限。" />
   }
 
   if (environment !== 'production' && environment !== 'shadow' && user.password_is_temporary && location.pathname !== '/settings/account-security') {

@@ -45,6 +45,7 @@ import VenueCodeManagement, { PublicVenuePage } from './pages/VenueCodeManagemen
 import WorkflowTickets from './pages/WorkflowTickets'
 import AnalysisWorkbench from './pages/AnalysisWorkbench'
 import WorkflowConfig from './pages/WorkflowConfig'
+import FunctionModulesSettings from './pages/FunctionModulesSettings'
 import useMobileViewport from './hooks/useMobileViewport'
 import {
   canAccessFlowTaskWorkbench,
@@ -133,40 +134,42 @@ function App() {
               <Route path="/people" element={<Navigate to="/grid-members" replace />} />
               <Route path="/people/:userId" element={<PublicProfile />} />
               <Route path="/" element={<RoleDashboard />} />
-              <Route element={<ProtectedRoute requireRole="super_admin" />}>
+              <Route element={<ProtectedRoute requireRole="super_admin" requireModule="platform_admin" />}>
                 <Route path="/settings/txdocs-monitor" element={<TxDocsMonitorSettings />} />
                 <Route path="/task-flow-lab" element={<LazyPage><TaskFlowLab /></LazyPage>} />
                 <Route path="/task-flow-rete-lab" element={<LazyPage><ReteTaskFlowLab /></LazyPage>} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="online.summary.view" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="online.summary.view" />}>
                 <Route path="/summary" element={<DesktopSummaryRoute><Dashboard /></DesktopSummaryRoute>} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
-                <Route path="/query" element={<QueryEntry />} />
-                <Route path="/tasks/home" element={<MobileTaskHomeEntry />} />
-                <Route path="/tasks/*" element={<MobileTaskFlowEntry />} />
+              <Route element={<ProtectedRoute requireModule="community_police" />}>
+                <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
+                  <Route path="/query" element={<QueryEntry />} />
+                  <Route path="/tasks/home" element={<MobileTaskHomeEntry />} />
+                  <Route path="/tasks/*" element={<MobileTaskFlowEntry />} />
+                </Route>
+                <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
+                  <Route path="/address-confirmation" element={<AddressConfirmation />} />
+                </Route>
               </Route>
-              <Route element={<ProtectedRoute requirePermission="online.raw.view" />}>
-                <Route path="/address-confirmation" element={<AddressConfirmation />} />
-              </Route>
-              <Route element={<ProtectedRoute requirePermission="online.task.manage" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="online.task.manage" />}>
                 <Route path="/police-analysis/:parserType/:rowKey" element={<MobileTaskDetail mode="analysis" />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="visit.summary.view" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="visit.summary.view" />}>
                 <Route path="/visit-summary" element={<DesktopSummaryRoute><VisitSummary /></DesktopSummaryRoute>} />
                 <Route path="/code-summary" element={<DesktopSummaryRoute><CodeSummary /></DesktopSummaryRoute>} />
               </Route>
-              <Route element={<ProtectedRoute requireAnyPermission={['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage']} />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requireAnyPermission={['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage']} />}>
                 <Route path="/data-upload" element={<DataUploadCenter />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="police.dispatch.manage" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="police.dispatch.manage" />}>
                 <Route path="/police-tasks" element={<PoliceDispatchWorkbench />} />
                 <Route path="/police-dispatch/batches/:batchId" element={<PoliceDispatchBatchDetail />} />
               </Route>
-              <Route element={<ProtectedRoute requireAnyPermission={['online.task.manage', 'police.dispatch.manage']} />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requireAnyPermission={['online.task.manage', 'police.dispatch.manage']} />}>
                 <Route path="/police-analysis" element={<AnalysisWorkbench />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="worklog.manage" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="worklog.manage" />}>
                 <Route path="/work-log" element={<WorkLog />} />
                 <Route path="/work-log/drafts" element={<WorkLogDrafts />} />
               </Route>
@@ -179,29 +182,29 @@ function App() {
               <Route element={<ProtectedRoute requirePermission="community.view" />}>
                 <Route path="/communities" element={<Communities />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="police.address.manage" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="police.address.manage" />}>
                 <Route path="/police-addresses" element={<PoliceAddressManagement />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="venue.view" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="venue.view" />}>
                 <Route path="/qr-codes" element={<VenueCodeManagement />} />
                 <Route path="/venue-codes" element={<Navigate to="/qr-codes" replace />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="registry.property.view" />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requirePermission="registry.property.view" />}>
                 <Route path="/registry" element={<RegistryManagement />} />
               </Route>
               <Route path="/watch-people" element={<Navigate to="/registry" replace />} />
-              <Route element={<ProtectedRoute requirePermission="workflow.ticket.view" />}>
+              <Route element={<ProtectedRoute requireModule="workflow" requirePermission="workflow.ticket.view" />}>
                 <Route path="/workflow" element={<WorkflowTickets />} />
               </Route>
               {/* 用户管理仅超管 */}
-              <Route element={<ProtectedRoute requirePermission="user.manage" />}>
+              <Route element={<ProtectedRoute requireModule="platform_admin" requirePermission="user.manage" />}>
                 <Route path="/users" element={<UserManagement />} />
               </Route>
-              <Route element={<ProtectedRoute requirePermission="permission.manage" />}>
+              <Route element={<ProtectedRoute requireModule="platform_admin" requirePermission="permission.manage" />}>
                 <Route path="/permission-groups" element={<PermissionGroups />} />
               </Route>
               <Route path="/department-management" element={<Navigate to="/settings/departments" replace />} />
-              <Route element={<ProtectedRoute requirePermission="ops.manage" />}>
+              <Route element={<ProtectedRoute requireModule="platform_admin" requirePermission="ops.manage" />}>
                 <Route path="/operations" element={<OperationsCenter />} />
                 <Route path="/settings/operations" element={<Navigate to="/operations" replace />} />
               </Route>
@@ -211,17 +214,22 @@ function App() {
                 <Route path="account-security" element={<AccountSecuritySettings />} />
                 <Route path="personalization" element={<PersonalizationSettings />} />
                 <Route path="updates" element={<UpdateSettings />} />
-                <Route element={<ProtectedRoute requirePermission="system.manage" />}>
+                <Route element={<ProtectedRoute requireModule="platform_admin" requirePermission="system.manage" />}>
                   <Route path="system" element={<SystemSettings />} />
                 </Route>
-                <Route element={<ProtectedRoute requirePermission="system.server_mac.manage" />}>
+                <Route element={<ProtectedRoute requireModule="platform_admin" />}>
+                  <Route element={<ProtectedRoute requirePermission="system.server_mac.manage" />}>
                   <Route path="server-mac" element={<ServerMacSettings />} />
+                  </Route>
                 </Route>
-                <Route element={<ProtectedRoute requirePermission="workflow.config.manage" />}>
+                <Route element={<ProtectedRoute requireModule="platform_admin" requirePermission="workflow.config.manage" />}>
                   <Route path="workflow" element={<WorkflowConfig />} />
                 </Route>
                 <Route element={<ProtectedRoute requirePermission="community.manage" />}>
                   <Route path="departments" element={<DepartmentManagement />} />
+                </Route>
+                <Route element={<ProtectedRoute requirePermission="module.access.manage" />}>
+                  <Route path="function-modules" element={<FunctionModulesSettings />} />
                 </Route>
               </Route>
             </Route>

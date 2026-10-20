@@ -22,6 +22,7 @@ from services.permissions import (
     POSITION_DEFAULT_GROUP,
     QMF_REGISTRATION_EXECUTE,
     SERVER_MAC_MANAGE,
+    MODULE_ACCESS_MANAGE,
     VISIT_SOURCE_MANAGE,
     WORKFLOW_ATTACHMENT_VIEW,
     WORKFLOW_TICKET_CREATE,
@@ -49,6 +50,7 @@ from services.address_match_feedback import ensure_address_match_feedback_schema
 from services.online_projection_jobs import ensure_online_projection_job_schema
 from services.online_summary_updates import ensure_online_summary_update_schema
 from services.txdocs_statistics_monitor import ensure_txdocs_statistics_schema
+from services.module_registry import ensure_function_module_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -332,6 +334,7 @@ async def ensure_permission_schema(cur) -> None:
             QMF_REGISTRATION_EXECUTE,
             PRESENCE_DETAIL_VIEW,
             SERVER_MAC_MANAGE,
+            MODULE_ACCESS_MANAGE,
         },
         "super_admin": {
             VISIT_SOURCE_MANAGE,
@@ -2999,6 +3002,7 @@ class DatabaseManager:
                       COLLATE=utf8mb4_unicode_ci
                 """)
                 await ensure_permission_schema(cur)
+                await ensure_function_module_schema(cur)
                 await ensure_online_editor_schema(cur)
                 await ensure_suspect_missing_registration_schema(cur)
                 await ensure_local_source_schema(cur)

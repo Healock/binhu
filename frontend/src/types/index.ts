@@ -340,7 +340,7 @@ export type PermissionCode =
   | 'report.config.manage' | 'visit.import'
   | 'visit.source.manage'
   | 'worklog.manage' | 'attendance.manage' | 'personnel.manage'
-  | 'community.manage' | 'user.manage' | 'permission.manage'
+  | 'community.manage' | 'user.manage' | 'permission.manage' | 'module.access.manage'
   | 'announcement.manage' | 'system.manage' | 'ops.manage'
   | 'presence.detail.view'
   | 'police.dispatch.manage' | 'police.address.manage'
@@ -455,6 +455,9 @@ export interface User extends UserPreferences {
   mobile_dock_config: MobileDockConfig
   theme_mode: ThemeMode
   permissions: PermissionCode[]
+  available_modules?: string[]
+  available_module_routes?: Record<string, string[]>
+  available_mobile_modules?: string[]
   data_scope: 'all' | 'own_department'
   permission_scopes: Partial<Record<PermissionCode, 'all' | 'own_department'>>
   member: { id: number; name: string; position: string } | null
