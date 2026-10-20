@@ -170,6 +170,10 @@ class MobileNavigationConfigTests(unittest.TestCase):
                         "id": "summaries",
                         "items": ["online_summary", "visit_summary", "code_summary"],
                     },
+                    {
+                        "id": "system",
+                        "items": ["help", "settings", "workflow_config"],
+                    },
                 ],
             },
         )
@@ -469,6 +473,9 @@ class MobileNavigationPreferenceTests(unittest.IsolatedAsyncioTestCase):
                     "venue",
                     "registry",
                 ],
+            }, {
+                "id": "system",
+                "items": ["help", "settings", "workflow_config"],
             }],
         }
         self.assertEqual(json.loads(params[1]), expected_dock_config)
