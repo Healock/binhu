@@ -20,6 +20,7 @@ from config import settings
 from deps import get_current_user, require_permission, require_super_admin
 from routers.workflow import _can_view_ticket as workflow_ticket_access
 from routers.workflow import _deactivate_leave_attendance, get_workflow_db
+from routers.workflow import _reject_retired_photo_ticket
 from services.audit import record_admin_audit, request_audit_fields
 from services.permissions import (
     WORKFLOW_ATTACHMENT_VIEW,
@@ -943,6 +944,7 @@ async def transfer_ticket(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            await _reject_retired_photo_ticket(cur, ticket_id)
             await cur.execute(
                 "SELECT status, current_assignee_user_id, current_queue, version_no FROM work_orders WHERE id=%s FOR UPDATE",
                 (ticket_id,),
@@ -1037,6 +1039,7 @@ async def supplement_ticket(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            await _reject_retired_photo_ticket(cur, ticket_id)
             await cur.execute(
                 "SELECT requester_user_id, current_queue, status, version_no, form_data FROM work_orders WHERE id=%s FOR UPDATE",
                 (ticket_id,),
@@ -1124,6 +1127,7 @@ async def restore_ticket_to_queue(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            await _reject_retired_photo_ticket(cur, ticket_id)
             await cur.execute(
                 "SELECT status, current_queue, version_no, requester_user_id "
                 "FROM work_orders WHERE id=%s FOR UPDATE",
@@ -1224,6 +1228,7 @@ async def withdraw_ticket(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            await _reject_retired_photo_ticket(cur, ticket_id)
             await cur.execute(
                 "SELECT requester_user_id, current_assignee_user_id, status, version_no, type_code "
                 "FROM work_orders WHERE id=%s FOR UPDATE",
