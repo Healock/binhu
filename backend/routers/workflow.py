@@ -174,8 +174,18 @@ async def _formal_community(cur, value: str) -> str:
     return str(row[0]).strip() if row else ""
 
 
+async def _reject_retired_photo_ticket(cur, ticket_id: int) -> None:
+    await cur.execute("SELECT type_code FROM work_orders WHERE id=%s", (ticket_id,))
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "工单不存在")
+    if str(row[0] or "") == "photo_request":
+        raise HTTPException(410, "照片调取业务已下线，停止服务")
+
+
 async def _can_view_ticket(cur, ticket_id: int, user: dict) -> tuple:
     """返回工单访问摘要；所有详情、评论和附件共用同一范围校验。"""
+    await _reject_retired_photo_ticket(cur, ticket_id)
     await cur.execute(
         "SELECT requester_user_id, current_assignee_user_id, current_queue, status, version_no "
         "FROM work_orders WHERE id=%s",
@@ -714,6 +724,7 @@ async def claim_ticket(
     await conn.begin()
     try:
         async with conn.cursor() as cur:
+            await _reject_retired_photo_ticket(cur, ticket_id)
             await cur.execute(
                 "SELECT status, current_assignee_user_id, version_no, current_queue, requester_user_id "
                 "FROM work_orders WHERE id=%s FOR UPDATE",
@@ -800,20 +811,14 @@ async def decide_ticket(
             row = await cur.fetchone()
             if not row:
                 raise HTTPException(404, "工单不存在")
+            if row[4] == "photo_request":
+                raise HTTPException(410, "照片调取业务已下线，停止服务")
             if int(row[2]) != data.expected_version:
                 raise HTTPException(409, "工单已被其他人修改，请刷新后重试")
             if row[1] and int(row[1]) != int(user["id"]) and not _can_manage(user):
                 raise HTTPException(403, "当前工单未分配给你")
             if row[0] not in {"in_progress", "queued"}:
                 raise HTTPException(409, "当前工单状态不能执行该操作")
-            if row[4] == "photo_request" and data.action in {"approve", "complete"}:
-                if not data.result_status:
-                    raise HTTPException(422, "照片调取完成前请选择找到或未找到")
-                await cur.execute(
-                    "UPDATE photo_request_details SET result_status=%s, result_note=%s "
-                    "WHERE work_order_id=%s",
-                    (data.result_status, data.note.strip(), ticket_id),
-                )
             await cur.execute(
                 "SELECT order_step.id, order_step.workflow_step_id, order_step.step_order, "
                 "order_step.status, definition.config_json FROM work_order_steps order_step "
