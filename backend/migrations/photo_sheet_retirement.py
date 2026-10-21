@@ -213,6 +213,7 @@ async def attachment_inventory(cur, ticket_ids: list[int]) -> dict[str, object]:
     placeholders = ",".join(["%s"] * len(ticket_ids))
     await cur.execute(
         "SELECT storage_key,sha256,COUNT(*),SUM(CASE WHEN deleted_at IS NULL THEN 1 ELSE 0 END) "
+        "FROM work_order_attachments "
         f"WHERE work_order_id IN ({placeholders}) "
         "GROUP BY storage_key,sha256",
         tuple(ticket_ids),
