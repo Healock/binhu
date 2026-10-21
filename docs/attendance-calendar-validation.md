@@ -37,6 +37,27 @@ npm run build
 
 全仓 TypeScript 检查与未修改基线各有 44 条去除行列号后的唯一诊断，本次没有新增诊断；不能将此记录为全仓类型检查通过。变更 Python 编译、帮助文档解析、`git diff --check` 和敏感信息边界检查通过。
 
+## PR #1053 首轮审查修复
+
+针对 `7ce00d27` 的四项审查意见：
+
+- 出勤、岗位配置及名册查询统一限定人员域库名；`PLATFORM_DOMAIN_ACTIVE=false` 使用配置的在线库，开启时使用配置的人员库，调用方为日报连接也不依赖默认库。
+- 日历新建长期离岗明确提交 `end_date=null`；切换类型时清空隐藏日期，更正已有长期离岗仍保留原结束日期合同。
+- 草稿、打开记录及取消编辑使旧预览失效；晚到响应、错误和结束状态不能恢复旧确认内容。真正提交期间冻结编辑，避免提交内容与表单分离。
+- 迁移 `verify` 按每人每日最新变更的状态及版本校验，已有人工修改后恢复迁移初值或较早审计版本均判为不通过。
+
+本轮在 `backend/` 执行：
+
+```text
+python -m pytest tests/test_attendance_schedule.py tests/test_report_members.py tests/test_personnel_attendance.py tests/test_personnel_positions.py tests/test_business_time.py tests/test_domain_routing.py tests/test_visit_summary.py -q
+```
+
+81 项测试及 2 项子断言通过。新增报表读取用例在空默认库连接上挂载独立 SQLite schema，保留查询库名前缀，分别验证分域开关关闭、开启时休息、请假及正常工作日的名册结果；不把该结果当作 MySQL 驱动、锁或跨库写事务验证。迁移用例增加“人工修改后无审计恢复 legacy 初值”和“恢复较早有效审计版本”两种失败断言。
+
+前端 `npm run test -- --test-name-pattern=attendanceCalendar` 实际执行了完整 Node 套件，443 项通过（该尾部参数未筛选测试，不能将其记为定向运行）。`npm run test:attendance:browser` 六种视口均通过，新增新建长期离岗的预览及提交请求断言，并通过延迟预览响应复现草稿修改竞态，确认旧响应不能启用确认，重新预览和提交使用当前状态及原因。`npm run build` 通过，保留既有分块警告；变更 Python 编译及 `git diff --check` 通过。
+
+本轮仍未执行真实 MySQL、真实进程重启、部署或生产迁移。独立复核与 CI 的结果另行记录，不能由本地通过推断。
+
 ## 隔离 MySQL 上线前验收
 
 真实 MySQL 迁移、跨库审批事务、并发锁等待及后端重启验证均未执行。本机没有项目数据库，不使用生产补测。

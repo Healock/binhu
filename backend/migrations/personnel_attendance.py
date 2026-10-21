@@ -69,23 +69,30 @@ async def verify(cur):
     await cur.execute(
         f"SELECT member_id,revision,after_json FROM {table('_personnel_attendance_changes')} WHERE action IN ('schedule','weekend')"
     )
+    # The current schedule must match the latest immutable change for each
+    # member/date. Looking up only the current revision would let a raw restore
+    # of the migration row evade verification after a later edit.
     changed = {}
     for m, revision, body in await cur.fetchall():
         changes = json.loads(body) if isinstance(body, str) else body
         for item in changes:
-            changed[int(m), str(item["date"]), int(revision)] = item["after"]
+            key = int(m), str(item["date"])
+            candidate = (int(revision), item["after"])
+            if key not in changed or candidate[0] > changed[key][0]:
+                changed[key] = candidate
     missing = sum((m, d) not in actual for m, d, _, _ in expected)
     mismatches, edited = 0, 0
     for m, d, state, _ in expected:
         row = actual.get((m, d))
         if row is None:
             continue
-        if row[1] == "legacy_weekend":
-            mismatches += row[0] != state or row[2] != 0
-        else:
-            valid = changed.get((m, str(d), row[2])) == row[0]
+        latest = changed.get((m, str(d)))
+        if latest is not None:
+            valid = row[2] == latest[0] and row[0] == latest[1]
             mismatches += not valid
             edited += valid
+        else:
+            mismatches += row != (state, "legacy_weekend", 0)
     expected_keys = {(m, d) for m, d, _, _ in expected}
     extra_legacy = sum(
         source == "legacy_weekend" and key not in expected_keys

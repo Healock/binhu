@@ -87,10 +87,10 @@ async def list_attendance_periods(
         member_filter = f" AND member_id IN ({placeholders})"
         params.extend(materialized_ids)
     await cur.execute(
-        """
+        f"""
         SELECT member_id, absence_type, start_date, end_date,
                reason, source, is_active
-        FROM _personnel_attendance_history
+        FROM {table('_personnel_attendance_history')}
         WHERE is_active=1
           AND start_date <= %s
           AND (end_date IS NULL OR end_date >= %s)
@@ -128,12 +128,12 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
                GROUP_CONCAT(DISTINCT community.name
                    ORDER BY link.sort_order, community.name SEPARATOR '、'),
                member.position
-        FROM _grid_members AS member
-        LEFT JOIN _grid_member_department_links AS link
+        FROM {table('_grid_members')} AS member
+        LEFT JOIN {table('_grid_member_department_links')} AS link
           ON link.member_id=member.id
-        LEFT JOIN _departments AS department
+        LEFT JOIN {table('_departments')} AS department
           ON department.id=link.department_id
-        LEFT JOIN _communities AS community
+        LEFT JOIN {table('_communities')} AS community
           ON community.id=department.community_id
         WHERE member.position IN ({placeholders})
         GROUP BY member.id, member.name, member.position, member.community
@@ -273,10 +273,10 @@ async def get_attendance_context(
                 scope_placeholders = ", ".join(["%s"] * len(community_scope))
                 scope_clause = (
                     "AND EXISTS (SELECT 1 "
-                    "FROM _grid_member_department_links AS scope_link "
-                    "JOIN _departments AS scope_department "
+                    f"FROM {table('_grid_member_department_links')} AS scope_link "
+                    f"JOIN {table('_departments')} AS scope_department "
                     "ON scope_department.id=scope_link.department_id "
-                    "JOIN _communities AS scope_community "
+                    f"JOIN {table('_communities')} AS scope_community "
                     "ON scope_community.id=scope_department.community_id "
                     "WHERE scope_link.member_id=member.id "
                     f"AND scope_community.name IN ({scope_placeholders}))"
@@ -300,12 +300,12 @@ async def get_attendance_context(
             f"""
             SELECT member.id, member.name, community.name, member.position,
                    link.sort_order
-            FROM _grid_members AS member
-            LEFT JOIN _grid_member_department_links AS link
+            FROM {table('_grid_members')} AS member
+            LEFT JOIN {table('_grid_member_department_links')} AS link
               ON link.member_id=member.id
-            LEFT JOIN _departments AS department
+            LEFT JOIN {table('_departments')} AS department
               ON department.id=link.department_id
-            LEFT JOIN _communities AS community
+            LEFT JOIN {table('_communities')} AS community
               ON community.id=department.community_id
             WHERE member.position IN ({placeholders})
               {scope_clause}
@@ -361,9 +361,9 @@ async def get_attendance_context(
                 missing_weeks.add(normalize_week_start(target))
 
     await cur.execute(
-        """
+        f"""
         SELECT config_value
-        FROM _system_config
+        FROM {table('_system_config')}
         WHERE config_key='attendance_history_started_on'
         """
     )

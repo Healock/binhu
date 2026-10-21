@@ -123,7 +123,8 @@ export default function AttendanceCalendar() {
   const [dragMonth, setDragMonth] = useState<string | null>(null);
   const requestSeq = useRef(0),
     peopleSeq = useRef(0),
-    historySeq = useRef(0);
+    historySeq = useRef(0),
+    previewSeq = useRef(0);
   const first = dayjs(month).startOf("month").format("YYYY-MM-DD");
   const gridStart = addDays(
     first,
@@ -143,6 +144,7 @@ export default function AttendanceCalendar() {
   );
   const listView = view ? view === "list" : isCompact;
   const writable = editable && Boolean(calendar?.editable);
+  const submitting = busy && Boolean(pending);
   const selectedKey = ids.join(",");
   const load = useCallback(async () => {
     if (!allowed) return;
@@ -208,9 +210,14 @@ export default function AttendanceCalendar() {
     Object.fromEntries(
       (calendar?.members || []).map((m) => [m.id, m.attendance_revision]),
     );
+  const invalidatePreview = () => {
+    ++previewSeq.current;
+    setPending(null);
+    setBusy(false);
+  };
   const openNew = (kind: "schedule" | "leave") => {
     if (!ids.length) return;
-    setPending(null);
+    invalidatePreview();
     setEditor({
       kind,
       members: kind === "leave" ? [ids[0]] : ids,
@@ -225,7 +232,7 @@ export default function AttendanceCalendar() {
     });
   };
   const openSpan = (span: AttendanceSpan) => {
-    setPending(null);
+    invalidatePreview();
     const leave = calendar?.leaves?.find((l) => l.id === span.leaveId);
     setEditor({
       kind: leave ? "leave" : "schedule",
@@ -247,7 +254,7 @@ export default function AttendanceCalendar() {
     });
   };
   const openHistory = (item: AttendanceHistoryItem) => {
-    setPending(null);
+    invalidatePreview();
     setEditor({
       kind: "leave",
       members: [item.member_id],
@@ -266,11 +273,14 @@ export default function AttendanceCalendar() {
     });
   };
   const updateEditor = (patch: Partial<Editor>) => {
-    setPending(null);
+    if (submitting) return;
+    invalidatePreview();
     setEditor((e) => (e ? { ...e, ...patch } : e));
   };
   const preview = async () => {
     if (!editor) return;
+    const seq = ++previewSeq.current;
+    setPending(null);
     setBusy(true);
     setError("");
     const payload: ScheduleChange | LeaveChange =
@@ -297,19 +307,23 @@ export default function AttendanceCalendar() {
             absence_type: editor.absenceType,
             start_date: editor.start,
             end_date:
+              editor.action === "create" &&
               editor.absenceType === "long_term_leave"
-                ? editor.end || null
-                : editor.end,
+                ? null
+                : editor.absenceType === "long_term_leave"
+                  ? editor.end || null
+                  : editor.end,
             reason: editor.reason,
             leave_reason: editor.leaveReason,
           };
     try {
       const result = await changeAttendance(editor.kind, payload, true);
-      setPending({ kind: editor.kind, payload, preview: result });
+      if (seq === previewSeq.current)
+        setPending({ kind: editor.kind, payload, preview: result });
     } catch (e) {
-      setError(errorText(e));
+      if (seq === previewSeq.current) setError(errorText(e));
     } finally {
-      setBusy(false);
+      if (seq === previewSeq.current) setBusy(false);
     }
   };
   const commit = async () => {
@@ -357,7 +371,7 @@ export default function AttendanceCalendar() {
       setDrag(null);
       return;
     }
-    setPending(null);
+    invalidatePreview();
     setEditor({
       kind: leave ? "leave" : "schedule",
       members: [span.memberId],
@@ -469,7 +483,7 @@ export default function AttendanceCalendar() {
                   )}
                   onChange={(next) => {
                     setIds(next);
-                    setPending(null);
+                    invalidatePreview();
                   }}
                 />
               </>
@@ -927,7 +941,7 @@ export default function AttendanceCalendar() {
         onCancel={() => {
           if (!busy) {
             setEditor(null);
-            setPending(null);
+            invalidatePreview();
           }
         }}
         footer={
@@ -937,7 +951,7 @@ export default function AttendanceCalendar() {
               disabled={busy}
               onClick={() => {
                 setEditor(null);
-                setPending(null);
+                invalidatePreview();
               }}
             >
               取消
@@ -949,7 +963,7 @@ export default function AttendanceCalendar() {
               aria-label="确认提交"
               type="primary"
               loading={busy && Boolean(pending)}
-              disabled={!pending || !writable}
+              disabled={!pending || !writable || busy}
               onClick={() => void commit()}
             >
               确认提交
@@ -971,6 +985,7 @@ export default function AttendanceCalendar() {
             {editor.kind === "leave" ? (
               <Select
                 aria-label="请假操作"
+                disabled={submitting}
                 value={editor.action}
                 onChange={(action) => updateEditor({ action })}
                 options={
@@ -988,6 +1003,7 @@ export default function AttendanceCalendar() {
             ) : (
               <Select
                 aria-label="工作安排"
+                disabled={submitting}
                 value={editor.state}
                 onChange={(state) =>
                   updateEditor({
@@ -1006,8 +1022,17 @@ export default function AttendanceCalendar() {
             {editor.kind === "leave" && !editor.recordId && (
               <Select
                 aria-label="请假类型"
+                disabled={submitting}
                 value={editor.absenceType}
-                onChange={(absenceType) => updateEditor({ absenceType })}
+                onChange={(absenceType) =>
+                  updateEditor({
+                    absenceType,
+                    end:
+                      absenceType === "long_term_leave"
+                        ? ""
+                        : editor.end || editor.start,
+                  })
+                }
                 options={[
                   { value: "temporary_leave", label: "临时请假" },
                   { value: "long_term_leave", label: "长期离岗" },
@@ -1019,6 +1044,7 @@ export default function AttendanceCalendar() {
                 <label>
                   {editor.action === "resume" ? "恢复上班日期" : "开始日期"}
                   <DatePicker
+                    disabled={submitting}
                     allowClear={false}
                     value={editor.start ? dayjs(editor.start) : null}
                     onChange={(d) =>
@@ -1031,6 +1057,7 @@ export default function AttendanceCalendar() {
                   <label>
                     结束日期
                     <DatePicker
+                      disabled={submitting}
                       allowClear={false}
                       value={editor.end ? dayjs(editor.end) : null}
                       onChange={(d) =>
@@ -1050,6 +1077,7 @@ export default function AttendanceCalendar() {
             {editor.kind === "leave" && !editor.recordId && (
               <Input.TextArea
                 aria-label="请假原因"
+                disabled={submitting}
                 placeholder="请假原因"
                 maxLength={200}
                 value={editor.leaveReason}
@@ -1058,6 +1086,7 @@ export default function AttendanceCalendar() {
             )}
             <Input.TextArea
               aria-label="调整原因"
+              disabled={submitting}
               placeholder="必填：调整／更正原因"
               maxLength={200}
               value={editor.reason}

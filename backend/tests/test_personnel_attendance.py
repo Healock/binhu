@@ -27,6 +27,7 @@ from services.personnel_attendance import (
     save_weekend_board,
     weekend_dates,
 )
+from services.attendance_schedule import table
 
 
 def context(*, periods=None, duties=None, missing=()):
@@ -249,12 +250,12 @@ class PersonnelAttendanceRouteTests(unittest.IsolatedAsyncioTestCase):
                 self.last_params = params
 
             async def fetchone(self):
-                if "FROM OnlineData._system_config" in self.last_sql:
+                if f"FROM {table('_system_config')}" in self.last_sql:
                     return ('["中队长"]',)
                 return None
 
             async def fetchall(self):
-                if "FROM _grid_members" in self.last_sql:
+                if f"FROM {table('_grid_members')} AS member" in self.last_sql:
                     self.assert_configured_position_query()
                     return [(1, "队长甲", "长板", "中队长")]
                 return []
@@ -285,12 +286,12 @@ class PersonnelAttendanceRouteTests(unittest.IsolatedAsyncioTestCase):
                 self.last_params = params
 
             async def fetchone(self):
-                if "FROM OnlineData._system_config" in self.last_sql:
+                if f"FROM {table('_system_config')}" in self.last_sql:
                     return ('["组员"]',)
                 return None
 
             async def fetchall(self):
-                if "FROM _grid_members" in self.last_sql:
+                if f"FROM {table('_grid_members')} AS member" in self.last_sql:
                     return [(1, "张三", "长板", "组员")]
                 if (
                     "FROM _personnel_weekend_duty" in self.last_sql

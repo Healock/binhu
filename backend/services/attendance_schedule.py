@@ -12,23 +12,18 @@ from datetime import date, timedelta
 from typing import Any
 
 from fastapi import HTTPException
-from config import settings
 from services.business_time import get_business_date
 from services.personnel_positions import (
     get_configured_positions,
     WEEKEND_DUTY_POSITION_CONFIG_KEY,
+    personnel_table,
 )
 
 MIGRATION_KEY = "attendance_daily_schedule_v1"
 
 
 def table(name: str) -> str:
-    schema = (
-        settings.MYSQL_PLATFORM_DB
-        if settings.PLATFORM_DOMAIN_ACTIVE
-        else settings.MYSQL_ONLINE_DATA_DB
-    )
-    return f"`{schema.replace('`', '')}`.`{name}`"
+    return personnel_table(name)
 
 
 def dates(start: date, end: date):

@@ -34,6 +34,7 @@ try {
       errors = [],
       writes = [],
       previews = [];
+    let nextPreviewGate = null;
     page.on("pageerror", (e) => errors.push(e.message));
     page.setDefaultTimeout(15000);
     const people = Array.from({ length: 10 }, (_, i) => ({
@@ -130,6 +131,9 @@ try {
         return send({ data: [], total: 0 });
       if (url.pathname.endsWith("/preview")) {
         previews.push(route.request().postDataJSON());
+        const gate = nextPreviewGate;
+        nextPreviewGate = null;
+        if (gate) await gate;
         return send({
           message: "合成预览",
           changes: [
@@ -267,6 +271,50 @@ try {
       assert.equal(writes.length, 1);
       await page.getByRole("button", { name: "取消调整", exact: true }).click();
       await page.locator(".ant-modal-wrap").waitFor({ state: "hidden" });
+    }
+    // A hidden temporary-leave end date must never leak into a new long-term
+    // leave request. Exercise the actual form in desktop and narrow layouts.
+    await page.getByRole("button", { name: "登记请假", exact: true }).click();
+    await page.getByRole("combobox", { name: "请假类型", exact: true }).click();
+    await page.locator('.ant-select-item-option[title="长期离岗"]').click();
+    await page.getByRole("textbox", { name: "请假原因", exact: true }).fill("合成离岗");
+    await page.getByRole("textbox", { name: "调整原因", exact: true }).fill("合成长期离岗登记");
+    await page.getByRole("button", { name: "预览影响", exact: true }).click();
+    await page.getByText("请核对后确认").waitFor();
+    assert.equal(previews.at(-1).absence_type, "long_term_leave");
+    assert.equal(previews.at(-1).end_date, null);
+    await page.getByRole("button", { name: "确认提交", exact: true }).click();
+    await page.locator(".ant-modal-wrap").waitFor({ state: "hidden" });
+    assert.equal(writes.at(-1).end_date, null);
+    assert.equal(writes.at(-1).action, "create");
+
+    if (width === 1280 && height === 960) {
+      // Hold an old preview while changing both state and reason. Its late
+      // response must not re-enable confirmation or replace the new draft.
+      await page.getByRole("button", { name: "安排上班／休息" }).click();
+      await page.getByRole("textbox", { name: "调整原因" }).fill("合成旧草稿");
+      let release;
+      nextPreviewGate = new Promise((resolve) => { release = resolve; });
+      const requested = page.waitForRequest((r) => r.url().endsWith("/preview"));
+      await page.getByRole("button", { name: "预览影响", exact: true }).click();
+      await requested;
+      await page.getByRole("combobox", { name: "工作安排", exact: true }).click();
+      await page.locator('.ant-select-item-option[title="休息"]').click();
+      await page.getByRole("textbox", { name: "调整原因" }).fill("合成当前草稿");
+      const oldResponse = page.waitForResponse((r) => r.url().endsWith("/preview"));
+      release();
+      await oldResponse;
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await page.locator(".attendance-preview").count(), 0);
+      assert.equal(await page.getByRole("button", { name: "确认提交", exact: true }).isDisabled(), true);
+      await page.getByRole("button", { name: "预览影响", exact: true }).click();
+      await page.getByText("请核对后确认").waitFor();
+      assert.equal(previews.at(-1).state, "rest");
+      assert.equal(previews.at(-1).reason, "合成当前草稿");
+      await page.getByRole("button", { name: "确认提交", exact: true }).click();
+      await page.locator(".ant-modal-wrap").waitFor({ state: "hidden" });
+      assert.equal(writes.at(-1).state, "rest");
+      assert.equal(writes.at(-1).reason, "合成当前草稿");
     }
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth + 1,

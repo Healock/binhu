@@ -390,6 +390,29 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.conn.raw.commit()
         async with self.conn.cursor() as cur:
             self.assertFalse((await verify(cur))["verified"])
+        # Restoring the full migration row used to evade the source-specific
+        # branch even though the later immutable edit still says "rest".
+        self.conn.raw.execute(
+            "UPDATE _personnel_work_schedule SET state='work',source='legacy_weekend',revision=0 WHERE work_date='2026-10-24'"
+        )
+        self.conn.raw.commit()
+        async with self.conn.cursor() as cur:
+            self.assertFalse((await verify(cur))["verified"])
+        await service.schedule_mutation(
+            self.conn,
+            self.schedule(state="rest", expected_versions={1: 1}, request_id="request-latest-edit"),
+            9,
+        )
+        async with self.conn.cursor() as cur:
+            self.assertTrue((await verify(cur))["verified"])
+        # Matching an older valid audit is insufficient when a newer revision
+        # exists for this date, even if both changes ended in the same state.
+        self.conn.raw.execute(
+            "UPDATE _personnel_work_schedule SET source='manual',revision=1 WHERE work_date='2026-10-24'"
+        )
+        self.conn.raw.commit()
+        async with self.conn.cursor() as cur:
+            self.assertFalse((await verify(cur))["verified"])
         self.conn.raw.execute(
             "DELETE FROM _personnel_work_schedule WHERE work_date='2026-10-25'"
         )
