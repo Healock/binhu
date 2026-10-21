@@ -126,6 +126,27 @@ test('现行房屋详情提供可折叠的历史户号沿革', () => {
   assert.match(apiSource, /historical_ids: Array</)
 })
 
+test('房屋详情突出当前档案并将历史户号与中文档案信息分开展示', () => {
+  const pageSource = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const propertyDetail = pageSource.slice(
+    pageSource.indexOf("detailKind === 'property' && (() => {"),
+    pageSource.indexOf("detailKind !== 'property' && <Descriptions"),
+  )
+  const styles = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+
+  assert.match(propertyDetail, /aria-label="当前房屋档案"/)
+  assert.match(propertyDetail, /当前户号/)
+  assert.match(propertyDetail, /户号状态待核对/)
+  assert.match(propertyDetail, /registry-property-lineage/)
+  assert.match(propertyDetail, /历史户号未记录/)
+  assert.match(propertyDetail, /归并时间/)
+  assert.match(propertyDetail, /label: '所属街道'/)
+  assert.match(propertyDetail, /label: '户号资料更新时间'/)
+  assert.doesNotMatch(propertyDetail, /Object\.entries\(detail\)/)
+  assert.match(styles, /\.registry-property-identity__facts[\s\S]*?grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/)
+  assert.match(styles, /@media \(max-width: 720px\)[\s\S]*?\.registry-property-identity__facts[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+})
+
 test('问题数据可按问题编号和来源行直接定位，房屋搜索提示保持原有范围', () => {
   const pageSource = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
   const issueColumns = pageSource.slice(

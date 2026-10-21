@@ -46,7 +46,27 @@ try {
       if (url.pathname === '/api/registry/properties/4') return send({
         ...base,
         id: 4,
+        street: '合成街道',
+        community_name: '合成社区',
+        natural_address: '合成新路4号，4幢301室，测试社区第七单元东侧房屋',
+        normalized_address: '合成新路4号，4幢301室，测试社区第七单元东侧房屋',
+        building: '4幢',
+        room: '301室',
+        housing_type: '个人出租',
+        residence_type: '出租',
+        source_house_no: 'SYNTHETIC-CURRENT-HOUSEHOLD',
+        source_updated_at: '2026-10-18T02:00:00Z',
+        updated_at: '2026-10-19T02:00:00Z',
+        status: 'active',
         visit_association_status: 'community_unresolved',
+        visit_count: 2,
+        latest_visit_date: '2026-10-10',
+        certificate_summary: {
+          certificate_status: 'normal_signed', certificate_status_label: '正常签署', certificate_count: 1,
+          certificate_issue_count: 0, landlord_renter_relation_label: '房东与实际出租人不同',
+          responsibility_identity: '普通房东', certificate_updated_at: '2026-10-17T02:00:00Z',
+        },
+        certificates: [],
         identity: {
           requested_id: 4,
           canonical_id: 4,
@@ -75,12 +95,26 @@ try {
     const detailButtons = page.getByRole('button', { name: /详\s*情/ })
     if (await detailButtons.count() >= 4) await detailButtons.nth(3).click()
     else await page.locator('.registry-mobile-property-row').nth(3).click()
-    await page.getByText('请档案管理员核对房屋正式社区及社区历史名称映射，修正后刷新重试。').waitFor()
-    await page.getByText('历史户号（1）', { exact: true }).click()
-    await page.getByText(/户号 SYNTHETIC-OLD-HOUSEHOLD/).waitFor()
-    assert.equal(await page.getByText('visit_association_status', { exact: true }).count(), 0)
     const drawer = page.getByRole('dialog')
     await drawer.waitFor()
+    await page.getByText('请档案管理员核对房屋正式社区及社区历史名称映射，修正后刷新重试。').waitFor()
+    await page.getByRole('region', { name: '当前房屋档案' }).getByText('SYNTHETIC-CURRENT-HOUSEHOLD').waitFor()
+    await page.getByText('当前户号有效', { exact: true }).waitFor()
+    await page.getByRole('region', { name: '房屋历史沿革' }).getByText('1 条历史户号').waitFor()
+    await page.getByText('历史户号（1）', { exact: true }).click()
+    await page.getByText('SYNTHETIC-OLD-HOUSEHOLD', { exact: true }).waitFor()
+    await page.getByText('已注销', { exact: true }).last().waitFor()
+    await page.getByText('所属街道', { exact: true }).waitFor()
+    const identityColumns = await drawer.locator('.registry-property-identity__facts').evaluate(
+      element => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+    )
+    assert.equal(identityColumns, width <= 720 ? 2 : 4)
+    const identityOverflow = await drawer.locator('.registry-property-identity').evaluate(
+      element => element.scrollWidth > element.clientWidth + 1,
+    )
+    assert.equal(identityOverflow, false, 'long property address must wrap within the identity panel')
+    assert.equal(await page.getByText('visit_association_status', { exact: true }).count(), 0)
+    await drawer.locator('.ant-drawer-body').evaluate(element => { element.scrollTop = 0 })
     await page.waitForTimeout(400)
     await page.screenshot({ path: resolve(screenshotDirectory, `${width}-${height}-${dark ? 'dark' : 'light'}.png`) })
     const overflow = await drawer.evaluate(element => element.scrollWidth > element.clientWidth + 1)
