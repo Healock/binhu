@@ -75,6 +75,47 @@ class _AttachmentInventoryCursor:
 
 
 class PhotoSheetRetirementTests(unittest.IsolatedAsyncioTestCase):
+    def test_apply_allows_only_missing_zip_files_after_valid_reconciliation(self):
+        reconciliation = {
+            "attachments": {
+                "missing": 0, "sha256_mismatches": 0, "invalid_sha256": 0,
+                "conflicting_sha256": 0, "invalid_storage_key_rows": 0,
+            },
+            "photo_import_zips": {
+                "missing": 6, "sha256_mismatches": 0, "invalid_sha256": 0,
+                "conflicting_sha256": 0, "invalid_storage_key_rows": 0,
+            },
+        }
+        self.assertFalse(photo_sheet_retirement._file_reconciliation_blocked(
+            reconciliation,
+            invalid_attachment_storage_key_rows=0,
+        ))
+
+    def test_apply_still_stops_for_missing_attachments_or_bad_zip_hashes(self):
+        reconciliation = {
+            "attachments": {
+                "missing": 1, "sha256_mismatches": 0, "invalid_sha256": 0,
+                "conflicting_sha256": 0, "invalid_storage_key_rows": 0,
+            },
+            "photo_import_zips": {
+                "missing": 0, "sha256_mismatches": 1, "invalid_sha256": 0,
+                "conflicting_sha256": 0, "invalid_storage_key_rows": 0,
+            },
+        }
+        self.assertTrue(photo_sheet_retirement._file_reconciliation_blocked(
+            reconciliation,
+            invalid_attachment_storage_key_rows=0,
+        ))
+
+    def test_missing_zip_is_accepted_only_when_path_is_safe_and_absent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(photo_sheet_retirement.settings, "WORKFLOW_PHOTO_IMPORT_DIR", temp_dir):
+                self.assertIsNone(
+                    photo_sheet_retirement._resolve_photo_import_zip_for_retirement("missing.zip")
+                )
+                with self.assertRaisesRegex(RuntimeError, "无效"):
+                    photo_sheet_retirement._resolve_photo_import_zip_for_retirement("../outside.zip")
+
     async def test_photo_ticket_guard_stops_before_database_access(self):
         ticket = TicketCreate(type_code="photo_request", title="历史照片", form_data={})
         with self.assertRaises(HTTPException) as raised:

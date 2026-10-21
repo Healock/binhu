@@ -312,6 +312,55 @@ def _file_reference_reconciliation(
     }
 
 
+def _file_reconciliation_blocked(
+    reconciliation: dict[str, dict[str, int]],
+    *,
+    invalid_attachment_storage_key_rows: int,
+) -> bool:
+    attachment_checks = (
+        "missing", "sha256_mismatches", "invalid_sha256",
+        "conflicting_sha256", "invalid_storage_key_rows",
+    )
+    zip_checks = (
+        "sha256_mismatches", "invalid_sha256",
+        "conflicting_sha256", "invalid_storage_key_rows",
+    )
+    return bool(
+        invalid_attachment_storage_key_rows
+        or any(int(reconciliation["attachments"][key]) for key in attachment_checks)
+        or any(int(reconciliation["photo_import_zips"][key]) for key in zip_checks)
+    )
+
+
+def _resolve_photo_import_zip_for_retirement(storage_key: str) -> Path | None:
+    """Return an existing safe ZIP, or None for a genuinely absent file.
+
+    A missing historical ZIP has no bytes to preserve or delete; the database
+    backup retains its reference before retirement. Unsafe paths, symlinks,
+    directories, and present files that fail normal resolution remain fatal.
+    """
+    relative = Path(storage_key)
+    if not storage_key or relative.is_absolute() or ".." in relative.parts:
+        raise RuntimeError("照片导入压缩包存储路径无效，已停止")
+    root = Path(settings.WORKFLOW_PHOTO_IMPORT_DIR).resolve()
+    candidate = root / relative
+    if root not in candidate.resolve(strict=False).parents:
+        raise RuntimeError("照片导入压缩包路径超出存储目录，已停止")
+    current = candidate
+    while current != root:
+        if current.is_symlink():
+            raise RuntimeError("照片导入压缩包路径包含符号链接，已停止")
+        current = current.parent
+    if not candidate.exists():
+        return None
+    if not candidate.is_file():
+        raise RuntimeError("照片导入压缩包路径不是普通文件，已停止")
+    try:
+        return resolve_photo_import_zip(storage_key)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise RuntimeError("照片导入压缩包无法安全读取，已停止") from exc
+
+
 async def measure_with_cursor(cur, *, expected_photo_tickets: int | None = None) -> dict:
     ticket_ids = await photo_ticket_ids(cur)
     table_counts = {table: await count_table(cur, table) for table in PHOTO_TABLES}
@@ -492,6 +541,7 @@ async def run_apply(
     conn = await open_connection()
     run_id = uuid.uuid4().hex
     staged_files: list[dict[str, str]] = []
+    missing_zip_files = 0
     stage_root = _retirement_stage_root() / run_id
     state = {
         "kind": "photo_sheet_retirement",
@@ -516,17 +566,14 @@ async def run_apply(
             if before["shared_attachment_rows"]:
                 raise RuntimeError("发现被其他业务工单共享的照片附件，已停止")
             reconciliation = before["file_reconciliation"]
-            bad_files = any(
-                int(reconciliation[kind][field])
-                for kind in ("attachments", "photo_import_zips")
-                for field in (
-                    "missing", "sha256_mismatches", "invalid_sha256",
-                    "conflicting_sha256", "invalid_storage_key_rows",
-                )
-            )
             cleanup_state = reconciliation["cleanup_state"]
-            if bad_files or before["invalid_attachment_storage_key_rows"]:
-                raise RuntimeError("照片文件存在缺失、SHA-256 不匹配或无效引用，已停止")
+            if _file_reconciliation_blocked(
+                reconciliation,
+                invalid_attachment_storage_key_rows=before[
+                    "invalid_attachment_storage_key_rows"
+                ],
+            ):
+                raise RuntimeError("照片附件或 ZIP 存在哈希不匹配或无效引用，已停止")
             if any(cleanup_state.values()):
                 raise RuntimeError("检测到未完成的照片退役清理状态，已停止")
             ticket_ids = await photo_ticket_ids(cur, lock=True)
@@ -554,7 +601,10 @@ async def run_apply(
                 hashes = zip_hashes[key]
                 if len(hashes) != 1:
                     raise RuntimeError("照片导入压缩包存在冲突的 SHA-256 记录，已停止")
-                path = resolve_photo_import_zip(key)
+                path = _resolve_photo_import_zip_for_retirement(key)
+                if path is None:
+                    missing_zip_files += 1
+                    continue
                 staged = _stage_and_remove(
                     path, zip_root, stage_root / "zips", next(iter(hashes)),
                 )
@@ -595,6 +645,7 @@ async def run_apply(
             "cleanup_error": cleanup_error,
             "deleted": deleted,
             "staged_file_count": len(staged_files),
+            "missing_zip_files": missing_zip_files,
         }
     return {
         "command": "migrate",
@@ -605,6 +656,7 @@ async def run_apply(
         "deleted": deleted,
         "attachment_keys": len(attachment_keys),
         "zip_keys": len(zip_keys),
+        "missing_zip_files": missing_zip_files,
         "file_reconciliation": before["file_reconciliation"],
         "backup_scope": "WorkflowData + private photo attachment/ZIP directories",
         "external_tencent_materials": "untouched",

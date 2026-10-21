@@ -1727,7 +1727,7 @@ python -m migrations.photo_sheet_retirement migrate --apply --expect-photo-ticke
 python -m migrations.photo_sheet_retirement verify
 ```
 
-`measure` 必须记录 `work_orders.type_code='photo_request'` 的实测数量，并核对每个照片附件和 ZIP 的文件存在性及 SHA-256；执行 `migrate --apply` 时必须传入本次实测的 `--expect-photo-tickets <数量>`，并显式提供 `--confirm-empty-photo-tables` 确认九张照片专属表允许整表清空。数量与实测不符、文件缺失、摘要不符或发现共享附件时，清理自动停止。维护人员应在执行前后保存脱敏校验结果：照片工单数量、九张专属表数量、附件和 ZIP 对账结果、非照片工单数量，以及其他腾讯只读迁移材料未变化的证明。附件删除属于个人信息删除流程，必须保留备份授权和执行留痕。
+`measure` 必须记录 `work_orders.type_code='photo_request'` 的实测数量，并核对每个照片附件和 ZIP 的文件存在性及 SHA-256；执行 `migrate --apply` 时必须传入本次实测的 `--expect-photo-tickets <数量>`，并显式提供 `--confirm-empty-photo-tables` 确认九张照片专属表允许整表清空。照片附件只要文件缺失、摘要不符或存在共享引用就自动停止；历史 ZIP 如果数据库仍有有效存储键和 SHA-256，但文件已经不存在，会记录为缺失引用并随数据库记录一并清除，不伪造或跳过仍存在文件的 SHA-256 核对。数量与实测不符、无效路径、摘要不符或发现共享附件时，清理自动停止。维护人员应在执行前后保存脱敏校验结果：照片工单数量、九张专属表数量、附件和 ZIP 对账结果、非照片工单数量，以及其他腾讯只读迁移材料未变化的证明。附件删除属于个人信息删除流程，必须保留备份授权和执行留痕。
 
 清理采用两阶段文件处置：先核对 SHA-256，再将附件和 ZIP 复制到退役临时目录并从原路径移除，之后删除数据库记录并提交事务。提交前失败会恢复临时文件并回滚事务；提交后若暂存目录清理失败，会在私有状态目录记录待处理状态，命令返回失败，后续 `verify` 也会失败。出现待处理状态时停止后续 apply，由维护负责人按受控流程核验暂存文件并处理；不得手工删除状态文件或用强制参数跳过恢复。
 
