@@ -6,9 +6,6 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from config import settings
-
-
 POSITION_OPTIONS = (
     "中队长",
     "基础管控",
@@ -39,6 +36,9 @@ POSITION_CONFIG_KEYS = {
 
 def personnel_table(name: str) -> str:
     """Qualify personnel reads even when the caller uses a report connection."""
+    # Snapshot tools import the position constants without backend dependencies.
+    from config import settings
+
     schema = (
         settings.MYSQL_PLATFORM_DB
         if settings.PLATFORM_DOMAIN_ACTIVE

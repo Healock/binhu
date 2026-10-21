@@ -58,6 +58,14 @@ python -m pytest tests/test_attendance_schedule.py tests/test_report_members.py 
 
 本轮仍未执行真实 MySQL、真实进程重启、部署或生产迁移。独立复核与 CI 的结果另行记录，不能由本地通过推断。
 
+## PR #1053 部署工具导入修复
+
+`b12ba4e8` 将配置导入放在岗位模块顶层，导致只读取 `POSITION_OPTIONS` 的 Staging 快照工具也加载后端配置；GitHub 制品预构建的部署测试因缺少 Pydantic 出现 12 项错误。配置导入现移到 `personnel_table()` 内部，实际查询仍使用同一配置和人员域库名。
+
+新增回归在 `python -I -S` 子进程中导入岗位常量，验证不依赖第三方包，也不加载 `config`。仓库根目录执行 `python -B -m unittest discover -s deploy/tests`：471 项，469 项通过、2 项跳过；在 `backend/` 执行 `python -B -m pytest tests/test_attendance_schedule.py tests/test_report_members.py tests/test_personnel_attendance.py tests/test_personnel_positions.py tests/test_domain_routing.py -q -p no:cacheprovider`：66 项及 2 项子断言通过。变更 Python 编译和 `git diff --check` 通过。
+
+本轮未修改前端，未重复执行前端构建或浏览器回归。新提交的 CI 结果须单独确认；真实 MySQL、重启、部署和生产迁移仍未执行。
+
 ## 隔离 MySQL 上线前验收
 
 真实 MySQL 迁移、跨库审批事务、并发锁等待及后端重启验证均未执行。本机没有项目数据库，不使用生产补测。
