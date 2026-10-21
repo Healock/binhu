@@ -265,9 +265,14 @@ async def _apply_certificate_batch(
                 "FROM registry_property_certificates WHERE source_type='certificate' FOR UPDATE"
             )
             existing_rows = list(await cur.fetchall())
-            existing_by_ref = {str(row[1]): row for row in existing_rows}
+            existing_by_ref: dict[str, list[tuple]] = defaultdict(list)
             derived: dict[str, list[tuple]] = defaultdict(list)
+            existing_by_property: dict[int, list[tuple]] = defaultdict(list)
             for row in existing_rows:
+                existing_by_ref[str(row[1])].append(row)
+                persisted_property_id = int(row[2] or 0)
+                canonical_property_id = identity_graph.resolve(persisted_property_id).canonical_id
+                existing_by_property[canonical_property_id].append(row)
                 old_payload = _json(row[4], {})
                 if old_payload:
                     derived[certificate_source_ref(old_payload)].append(row)
@@ -290,6 +295,13 @@ async def _apply_certificate_batch(
             restore_missing_state: list[tuple] = []
             claimed_existing_ids: set[int] = set()
             eligible_record_ids: set[int] = set()
+            candidate_property_counts: dict[int, int] = defaultdict(int)
+            candidate_ref_counts: dict[str, int] = defaultdict(int)
+            for item in candidates:
+                property_row = property_cache.get((item["normalized"], item["community_id"]))
+                if property_row and property_row[1] in RENTAL_HOUSING_TYPES:
+                    candidate_property_counts[int(property_row[0])] += 1
+                    candidate_ref_counts[item["source_ref"]] += 1
 
             for item in candidates:
                 payload = item["payload"]
@@ -308,13 +320,21 @@ async def _apply_certificate_batch(
                     continue
 
                 property_id = property_row[0]
-                direct_match = existing_by_ref.get(item["source_ref"])
+                direct_matches = existing_by_ref.get(item["source_ref"], [])
                 derived_matches = derived.get(item["source_ref"], [])
-                existing_matches = {int(row[0]): row for row in derived_matches}
-                if direct_match:
-                    existing_matches[int(direct_match[0])] = direct_match
+                existing_matches = {int(row[0]): row for row in [*direct_matches, *derived_matches]}
+                # A source ID is not the house identity.  When it changes,
+                # reuse the sole current notice for this canonical house so a
+                # refresh updates one record instead of inserting a duplicate.
+                property_matches = existing_by_property.get(int(property_id), [])
+                for row in property_matches:
+                    existing_matches[int(row[0])] = row
                 existing = next(iter(existing_matches.values())) if len(existing_matches) == 1 else None
-                identity_conflict = len(existing_matches) > 1
+                identity_conflict = (
+                    len(existing_matches) > 1
+                    or candidate_property_counts[int(property_id)] > 1
+                    or candidate_ref_counts[item["source_ref"]] > 1
+                )
                 if existing and int(existing[0]) in claimed_existing_ids:
                     identity_conflict = True
                 if existing and identity_graph.resolve(int(existing[2])).canonical_id != int(property_id):
@@ -332,7 +352,7 @@ async def _apply_certificate_batch(
                         item["source_ref"],
                         item["normalized"],
                         json.dumps(payload, ensure_ascii=False, default=str),
-                        "同一来源告知书关联到不同房屋档案，需人工核查",
+                        "告知书与房屋无法一一对应，请管理员核对同房屋记录、社区别名和来源标识后重新读取",
                     ))
                     skipped += 1
                     continue
@@ -375,7 +395,15 @@ async def _apply_certificate_batch(
                         unchanged += 1
                     else:
                         updates.append((persisted_property_id, *values[1:], certificate_id))
-                        updated += 1
+                        # Source numbering and legacy hash normalization are
+                        # metadata refreshes, not changes to business content.
+                        old_payload = _json(existing[4], {})
+                        if str(existing[3] or "") == item["content_hash"] or (
+                            old_payload and certificate_content_hash(old_payload) == item["content_hash"]
+                        ):
+                            unchanged += 1
+                        else:
+                            updated += 1
                     source_links.append((certificate_id, item["record_id"]))
                 else:
                     inserts.append((*values, actor_id))

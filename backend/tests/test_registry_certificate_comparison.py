@@ -69,6 +69,77 @@ def test_mutable_renter_change_is_updated_not_added_and_missing():
     assert result["missing_from_source"] == 0
 
 
+def test_source_identifier_change_reuses_the_single_notice_for_the_house():
+    old = _row(ref="notice-1")
+    new = _row(ref="notice-2")
+    result = compare_certificate_snapshot(
+        [new], [_existing(old)],
+        [{"id": 7, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}],
+    )
+    assert result["unchanged"] == 1
+    assert result["added"] == 0
+    assert result["updated"] == 0
+    assert result["missing_from_source"] == 0
+
+
+def test_source_identifier_and_content_change_is_one_update_for_the_house():
+    old = _row(ref="notice-1", renter="甲")
+    new = _row(ref="notice-2", renter="乙")
+    result = compare_certificate_snapshot(
+        [new], [_existing(old)],
+        [{"id": 7, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}],
+    )
+    assert result["updated"] == 1
+    assert result["added"] == 0
+    assert result["missing_from_source"] == 0
+
+
+def test_multiple_existing_notices_for_one_house_are_reviewed_not_selected():
+    first = _existing(_row(ref="notice-1"))
+    second = _existing(_row(ref="notice-2"))
+    result = compare_certificate_snapshot(
+        [_row(ref="notice-3")], [first, second],
+        [{"id": 7, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}],
+    )
+    assert result["pending_review"] == 1
+    assert result["safe_to_apply"] == 0
+    assert result["issue_breakdown"]["duplicate"] == 1
+    assert result["status_summary"]["multiple_or_conflict"]["total"] == 1
+
+
+def test_multiple_incoming_notices_for_one_house_are_all_reviewed():
+    result = compare_certificate_snapshot(
+        [_row(ref="notice-1"), _row(ref="notice-2")], [],
+        [{"id": 7, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}],
+    )
+    assert result["pending_review"] == 2
+    assert result["safe_to_apply"] == 0
+    assert result["issue_breakdown"]["duplicate"] == 1
+    assert result["status_summary"]["multiple_or_conflict"]["total"] == 1
+
+
+def test_source_identifier_owned_by_another_house_is_reviewed_not_added():
+    old = _row(address="合成甲路1号")
+    new = _row(address="合成乙路2号")
+    result = compare_certificate_snapshot(
+        [new], [_existing(old)],
+        [{"id": 7, "normalized_address": "合成甲路1号", "community_name": "长板社区", "housing_type": "个人出租"},
+         {"id": 8, "normalized_address": "合成乙路2号", "community_name": "长板社区", "housing_type": "个人出租"}],
+    )
+    assert result["pending_review"] == 1
+    assert result["safe_to_apply"] == 0
+
+
+def test_same_incoming_source_identifier_cannot_be_applied_to_two_houses():
+    result = compare_certificate_snapshot(
+        [_row(address="合成甲路1号"), _row(address="合成乙路2号")], [],
+        [{"id": 7, "normalized_address": "合成甲路1号", "community_name": "长板社区", "housing_type": "个人出租"},
+         {"id": 8, "normalized_address": "合成乙路2号", "community_name": "长板社区", "housing_type": "个人出租"}],
+    )
+    assert result["pending_review"] == 2
+    assert result["safe_to_apply"] == 0
+
+
 def test_unmatched_and_non_rental_records_are_pending_review():
     result = compare_certificate_snapshot(
         [_row(address="不存在路99号"), _row(ref="notice-2", address="自购房1号")],
@@ -108,7 +179,7 @@ def test_status_total_counts_unchanged_house_once_and_conflict_is_not_unsigned()
     assert result["status_summary"]["not_required"]["total"] == 0
 
 
-def test_historical_certificate_projects_to_current_property_without_double_counting():
+def test_historical_and_current_certificates_project_to_current_property_as_conflict():
     row = _row()
     graph = PropertyIdentityGraph(
         edges=[(10, 20, 3, 1)],
@@ -126,14 +197,32 @@ def test_historical_certificate_projects_to_current_property_without_double_coun
     result = compare_certificate_snapshot([row], existing, properties)
 
     assert [item["id"] for item in properties] == [20]
-    assert existing == [_existing(row, property_id=20)]
-    assert result["unchanged"] == 1
-    assert result["updated"] == 0
-    assert result["status_summary"]["normal_signed"]["total"] == 1
+    assert [item["property_id"] for item in existing] == [20, 20]
+    assert result["pending_review"] == 1
+    assert result["safe_to_apply"] == 0
+    assert result["status_summary"]["multiple_or_conflict"]["total"] == 1
+
+
+def test_historical_and_current_duplicate_notices_remain_visible_after_projection():
+    graph = PropertyIdentityGraph(
+        edges=[(10, 20, 3, 1)],
+        properties=[(10, 3, "湖滨路1号"), (20, 3, "湖滨路1号")],
+    )
+    first = _row(ref="notice-1")
+    second = _row(ref="notice-2")
+    properties, existing = _canonicalize_comparison_inputs(
+        [{"id": 20, "normalized_address": "湖滨路1号", "community_name": "长板社区", "housing_type": "个人出租"}],
+        [_existing(first, property_id=10), _existing(second, property_id=20)], graph,
+    )
+    result = compare_certificate_snapshot([_row(ref="notice-3")], existing, properties)
+    assert result["pending_review"] == 1
+    assert result["safe_to_apply"] == 0
+    assert result["status_summary"]["multiple_or_conflict"]["total"] == 1
 
 
 @pytest.mark.asyncio
-async def test_comparison_loader_resolves_existing_certificate_before_counting():
+@pytest.mark.parametrize("duplicate", [False, True])
+async def test_comparison_loader_resolves_existing_certificate_before_counting(duplicate):
     import json
 
     class Cursor:
@@ -164,6 +253,8 @@ async def test_comparison_loader_resolves_existing_certificate_before_counting()
                     10, old["source_ref"], old["source_content_hash"], old["sjczrxm"],
                     "", old["czrxm"], old["isSign"], old["signType"], json.dumps(old),
                 )]
+                if duplicate:
+                    self.rows.append(self.rows[0])
             else:
                 self.rows = []
 
@@ -179,6 +270,12 @@ async def test_comparison_loader_resolves_existing_certificate_before_counting()
         Connection(), [incoming], {"normal_rows": [incoming], "problem_row_count": 0},
     )
 
-    assert result["unchanged"] == 1
     assert result["added"] == 0
-    assert result["status_summary"]["normal_signed"]["total"] == 1
+    if duplicate:
+        assert result["pending_review"] == 1
+        assert result["safe_to_apply"] == 0
+        assert result["issue_breakdown"]["duplicate"] == 1
+        assert result["status_summary"]["multiple_or_conflict"]["total"] == 1
+    else:
+        assert result["unchanged"] == 1
+        assert result["status_summary"]["normal_signed"]["total"] == 1

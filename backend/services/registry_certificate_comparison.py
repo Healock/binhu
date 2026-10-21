@@ -76,20 +76,15 @@ def _canonicalize_comparison_inputs(
         if previous is None or original_id == canonical_id:
             properties_by_identity[key] = item
 
-    existing_by_reference: dict[str, dict[str, Any]] = {}
-    existing_without_reference: list[dict[str, Any]] = []
+    projected_existing: list[dict[str, Any]] = []
     for source in existing:
         item = dict(source)
         original_id = int(item.get("property_id") or 0)
         item["property_id"] = identity_graph.resolve(original_id).canonical_id if original_id else 0
-        source_ref = normalize_text(item.get("source_ref"))
-        if not source_ref:
-            existing_without_reference.append(item)
-            continue
-        previous = existing_by_reference.get(source_ref)
-        if previous is None or original_id == item["property_id"]:
-            existing_by_reference[source_ref] = item
-    return list(properties_by_identity.values()), [*existing_by_reference.values(), *existing_without_reference]
+        # Keep every projected row.  Collapsing by source_ref can hide two
+        # current notices for one house, which must remain a review condition.
+        projected_existing.append(item)
+    return list(properties_by_identity.values()), projected_existing
 
 
 def compare_certificate_snapshot(
@@ -119,22 +114,26 @@ def compare_certificate_snapshot(
         for pair, prop in properties.items()
         if pair in (conflict_keys or set())
     }
-    existing_by_ref: dict[str, dict[str, Any]] = {}
+    existing_by_ref: dict[str, list[dict[str, Any]]] = defaultdict(list)
     existing_by_derived: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    existing_by_property: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in existing:
         item = dict(row)
         item["payload"] = _payload(item.get("payload"))
         ref = normalize_text(item.get("source_ref"))
         if ref:
-            existing_by_ref[ref] = item
+            existing_by_ref[ref].append(item)
+        property_id = int(item.get("property_id") or 0)
+        if property_id:
+            existing_by_property[property_id].append(item)
         derived = certificate_source_ref(item["payload"])
         existing_by_derived[derived].append(item)
         legacy = legacy_certificate_source_ref(item["payload"])
         if legacy != derived:
             existing_by_derived[legacy].append(item)
 
-    seen_refs: set[str] = set()
     actions = {"added": 0, "updated": 0, "unchanged": 0, "pending_review": 0}
+    actions_by_property: dict[int, list[str]] = defaultdict(list)
     issue_breakdown = {
         "duplicate": 0,
         "content_conflict": 0,
@@ -143,10 +142,12 @@ def compare_certificate_snapshot(
         "community_unresolved": 0,
     }
     predicted_by_property: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    incoming_ref_counts: dict[str, int] = defaultdict(int)
+    for row in incoming:
+        incoming_ref_counts[normalize_text(row.get("source_ref")) or certificate_source_ref(row)] += 1
 
     for row in incoming:
         ref = normalize_text(row.get("source_ref")) or certificate_source_ref(row)
-        seen_refs.add(ref)
         community = normalize_community(row.get("community") or row.get("sssq"))
         normalized = normalize_address(row.get("address") or row.get("dz"))
         prop = properties.get((normalized, community))
@@ -159,11 +160,28 @@ def compare_certificate_snapshot(
         if not prop or str(prop.get("housing_type") or "") not in {"个人出租", "单位出租"}:
             actions["pending_review"] += 1
             continue
-        existing_item = existing_by_ref.get(ref)
-        if existing_item is None and len(existing_by_derived.get(ref, [])) == 1:
-            existing_item = existing_by_derived[ref][0]
+        property_existing = existing_by_property.get(int(prop["id"]), [])
+        ref_matches = existing_by_ref.get(ref, [])
+        derived_matches = existing_by_derived.get(ref, [])
+        identity_matches: list[dict[str, Any]] = []
+        for item in [*ref_matches, *derived_matches]:
+            if not any(item is matched for matched in identity_matches):
+                identity_matches.append(item)
+        if len(property_existing) > 1 or len(identity_matches) > 1 or incoming_ref_counts[ref] > 1 or any(
+            int(item.get("property_id") or 0) != int(prop["id"]) for item in identity_matches
+        ):
+            actions["pending_review"] += 1
+            issue_breakdown["duplicate"] += 1
+            predicted_by_property[int(prop["id"])].append({
+                **row, "housing_type": prop.get("housing_type"), "_conflict": True,
+            })
+            continue
+        existing_item = identity_matches[0] if identity_matches else None
+        if existing_item is None and len(property_existing) == 1:
+            existing_item = property_existing[0]
         if existing_item is None:
             actions["added"] += 1
+            actions_by_property[int(prop["id"])].append("added")
         else:
             same_property = int(existing_item.get("property_id") or 0) == int(prop.get("id") or 0)
             incoming_hash = certificate_content_hash(row)
@@ -174,11 +192,25 @@ def compare_certificate_snapshot(
             )
             if same_property and same_content:
                 actions["unchanged"] += 1
+                actions_by_property[int(prop["id"])].append("unchanged")
             else:
                 actions["updated"] += 1
+                actions_by_property[int(prop["id"])].append("updated")
         predicted_by_property[int(prop["id"])].append({**row, "housing_type": prop.get("housing_type")})
 
-    missing = sum(1 for row in existing if normalize_text(row.get("source_ref")) not in seen_refs)
+    for property_id, kinds in actions_by_property.items():
+        if len(kinds) <= 1:
+            continue
+        for kind in kinds:
+            actions[kind] -= 1
+        actions["pending_review"] += len(kinds)
+        issue_breakdown["duplicate"] += 1
+        for item in predicted_by_property[property_id]:
+            item["_conflict"] = True
+
+    incoming_properties = set(predicted_by_property)
+    existing_properties = set(existing_by_property)
+    missing = len(existing_properties - incoming_properties)
     status_summary = _empty_status()
     old_by_property: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in existing:
@@ -196,7 +228,7 @@ def compare_certificate_snapshot(
         old_status = _status(old[0], housing_type=housing_type, count=len(old)) if old else str(
             certificate_status_summary(housing_type=housing_type, certificate_count=0, source_ready=True)["certificate_status"]
         )
-        if property_id in conflicted_ids or len(new) > 1:
+        if property_id in conflicted_ids or len(old) > 1 or len(new) > 1 or any(item.get("_conflict") for item in new):
             new_status = "multiple_or_conflict"
         elif new:
             new_status = _status(new[0], housing_type=housing_type)
@@ -299,8 +331,8 @@ async def load_certificate_comparison(conn, rows: Iterable[dict[str, Any]], clas
         conflict_keys=conflict_keys,
     )
     result["incoming_total"] = len(list(rows))
-    result["issue_breakdown"]["duplicate"] = issue_breakdown["duplicate"]
-    result["issue_breakdown"]["content_conflict"] = issue_breakdown["content_conflict"]
+    result["issue_breakdown"]["duplicate"] += issue_breakdown["duplicate"]
+    result["issue_breakdown"]["content_conflict"] += issue_breakdown["content_conflict"]
     result["pending_review"] = max(
         result["pending_review"],
         int(classified.get("problem_row_count") or 0),
