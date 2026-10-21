@@ -24,6 +24,7 @@ TABLE_DOMAINS: dict[str, tuple[str, str]] = {
         "_help_documents",
         "_function_modules", "_function_module_units", "_function_module_versions",
         "_admin_audit_log", "_personnel_attendance_history", "_personnel_weekend_duty", "_system_config",
+        "_personnel_work_schedule", "_personnel_attendance_changes", "_personnel_attendance_operations",
         "_backup_schedule", "_backup_jobs", "_work_activity_events",
         "_qmf_registration_runs", "_administrative_areas",
     )},

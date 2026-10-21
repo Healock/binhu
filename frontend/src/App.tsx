@@ -12,6 +12,7 @@ import SettingsLayout from './components/SettingsLayout'
 import Dashboard from './pages/Dashboard'
 import GridMembers from './pages/GridMembers'
 import WeekendDuty from './pages/WeekendDuty'
+import AttendanceCalendar from './pages/AttendanceCalendar'
 import Communities from './pages/Communities'
 import UserManagement from './pages/UserManagement'
 import SystemSettings from './pages/SystemSettings'
@@ -175,6 +176,9 @@ function App() {
               </Route>
               <Route element={<ProtectedRoute requirePermission="personnel.basic.view" />}>
                 <Route path="/grid-members" element={<GridMembers />} />
+              </Route>
+              <Route element={<ProtectedRoute requireAnyPermission={["attendance.manage", "personnel.sensitive.view"]} />}>
+                <Route path="/grid-members/attendance-calendar" element={<AttendanceCalendar />} />
               </Route>
               <Route element={<ProtectedRoute requirePermission="attendance.manage" />}>
                 <Route path="/grid-members/weekend-duty" element={<WeekendDuty />} />

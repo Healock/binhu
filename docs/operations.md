@@ -1749,3 +1749,24 @@ production-maintenance registry-property-identity rollback <run-id> <old-id> <ca
 该入口由服务器 root 安装，不随普通应用发布自动覆盖。安装或更新时机是：对应网关/维护脚本 PR 合并、CI 通过，且生产发布前；由部署负责人执行 `deploy/install-server-deployer.sh`，先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再运行 `visudo -cf`、检查脚本 SHA-256，并使用 `status` 和一个拒绝性参数测试确认入口边界。安装完成后才允许触发维护工作流。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
 
 部门归位的执行顺序固定为：`measure → backup → apply → verify`。`measure` 输出的内勤人数必须原样作为 `expected-count`；`backup` 只备份 `PlatformData`；`apply` 调用 `migrations.internal_department_retirement` 的完整参数（包括 `--run-id`、`--backup-manifest`、`--expect-internal-members`、`--confirm-remove-internal`）。照片退役同样按四阶段执行，`backup` 包含 `WorkflowData`、照片附件和 ZIP 目录，`apply` 调用既有 `--expect-photo-tickets` 与 `--confirm-empty-photo-tables`。任一阶段失败都停止后续阶段，不覆盖失败证据。
+
+
+## 逐日出勤迁移
+
+本次变更包含源码、Schema 和人员出勤口径；部署和写入须另行授权。先在隔离 MySQL 验证，不得在生产制造测试数据。本地 SQLite 测试只验证业务和事务适配逻辑，不证明真实 MySQL 的 SQL、驱动或锁行为。
+
+上线顺序：备份实际人员域数据库（分域启用时为 `PlatformData`，未启用时为配置的在线库），部署新版并确保旧进程退出，启用现有维护模式且确认没有管理员或后台审批写入，再在批准的运维入口执行以下命令。迁移命令核对运行环境、维护模式、测量摘要、数量和备份文件 SHA-256；不提供绕过参数，不删除旧排班。首次启用前写接口拒绝新安排，查询只读兼容旧排班。
+
+```text
+python -m migrations.personnel_attendance measure --environment staging
+python -m migrations.personnel_attendance migrate --environment staging --apply --maintenance-confirmed --run-id attendance-run-001 --measurement-hash <measure返回值> --expected-count <expected_daily_count> --backup-manifest <受控备份清单文件>
+python -m migrations.personnel_attendance verify --environment staging
+```
+
+备份清单 JSON 必须包含 `environment`、`schema`、`path`、`sha256`：分别为目标环境、实际人员域库名、运维机上已完成数据库备份文件的绝对路径及 SHA-256。清单与备份受控保存，不提交仓库。数据包含人员资料，不能公开。
+
+每条旧周末记录转换为两条逐日记录；没有旧记录的不补。迁移前后数量及未修改的历史逐日状态必须一致。已有审批来源记录按原审批记录补齐工单关联，不依赖当前功能开关；缺少关联证据时停止迁移并先核对工单历史。原测量摘要和数量永久保存，后续人工安排必须有对应变更记录，verify 才接受其与迁移初始状态不同。迁移与启用标记在同一事务提交，失败整批回滚；重复 apply 校验已有转换结果，不重写后来人工修改的日程。
+
+验收：两天上班、双休与未排班、工作日调休、请假覆盖但不删除原排班、历史更正撤销后重启不复活、原审批结果不变、动态人日与日历一致。已保存工作日志和导出不自动改写。旧排班表只作核对，不双写。
+
+启用后已有双日或工作日调整，**不得直接回退到单日排班旧程序**。优先向前修复；确需回退先冻结出勤写入、备份新表与变更记录并制定数据兼容方案，数据库恢复需单独批准，不因程序回退自动导入备份。确认 verify 和业务验收后再退出维护模式。

@@ -11,9 +11,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal, Optional
 from database import get_db
 from deps import require_permission, require_super_admin
+from services.attendance_schedule import load_daily, load_periods, resolve_day, leave_mutation, table
 from services.audit import record_admin_audit, request_audit_fields
 from services.grid_member_status import (
-    apply_weekend_duty_status,
     get_business_date,
     get_status_snapshot,
     validate_leave_period,
@@ -167,6 +167,8 @@ class GridMemberLeaveUpdate(BaseModel):
     leave_start_date: Optional[date] = None
     leave_end_date: Optional[date] = None
     leave_reason: str = Field(default="", max_length=200)
+    expected_version: int = Field(ge=0)
+    request_id: str = Field(min_length=16, max_length=64)
 
     @model_validator(mode="after")
     def validate_action(self):
@@ -479,29 +481,26 @@ def _member_to_dict(
     identity_access: bool,
     departments: list[dict] | None = None,
     account: dict | None = None,
-    weekend_duty_positions: set[str] | None = None,
-    weekend_duty_recorded: bool = False,
-    weekend_duty_date: date | None = None,
+    attendance_snapshot: dict | None = None,
+    attendance_revision: int = 0,
 ) -> dict:
     departments = departments or []
     primary_department = departments[0] if departments else None
     snapshot = get_status_snapshot(row[6], row[7], row[8], business_date)
-    snapshot = apply_weekend_duty_status(
-        snapshot,
-        position=str(row[3]),
-        as_of=business_date,
-        duty_positions=weekend_duty_positions or set(),
-        duty_recorded=weekend_duty_recorded,
-        duty_date=weekend_duty_date,
-    )
+    if attendance_snapshot is not None:
+        state = attendance_snapshot['state']
+        snapshot = dict(effective_status={'work':'在岗','rest':'休息','unassigned':'未排班','leave':'离岗','long_term_leave':'离岗'}[state],
+                        status_detail={'work':'工作安排','rest':'休息安排','unassigned':'尚未安排，请联系出勤管理员','leave':'请假中','long_term_leave':'长期离岗'}[state],
+                        leave_state='active' if state == 'leave' else snapshot.get('leave_state'))
     result = {
         "id": row[0],
+        "attendance_revision": attendance_revision,
         "name": row[1],
         "community": row[2],
         "position": row[3],
         "phone": row[4],
         "notes": row[5],
-        "status": row[6],
+        "status": ("离岗" if attendance_snapshot["state"] == "long_term_leave" else "在岗") if attendance_snapshot is not None else row[6],
         "leave_start_date": row[7],
         "leave_end_date": row[8],
         "leave_reason": row[9],
@@ -546,6 +545,7 @@ def _member_to_dict(
 @router.get("")
 async def list_members(
     keyword: Optional[str] = Query(None),
+    department_id: int | None = Query(default=None,gt=0),
     community: Optional[str] = Query(None),
     position: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
@@ -595,6 +595,9 @@ async def list_members(
             raise HTTPException(400, str(exc)) from exc
         where_parts.append("member.position = %s")
         params.append(position)
+    if isinstance(department_id,int):
+        where_parts.append("EXISTS (WITH RECURSIVE department_scope AS (SELECT id FROM _departments WHERE id=%s UNION ALL SELECT d.id FROM _departments d JOIN department_scope parent ON d.parent_id=parent.id) SELECT 1 FROM _grid_member_department_links scope_link WHERE scope_link.member_id=member.id AND scope_link.department_id IN (SELECT id FROM department_scope))")
+        params.append(department_id)
     base_where_parts = list(where_parts)
     base_params = list(params)
     if category:
@@ -661,7 +664,6 @@ async def list_members(
         departments_by_member = await get_member_departments(cur, member_ids)
         accounts_by_member: dict[int, dict] = {}
         weekend_duty_positions: set[str] = set()
-        weekend_duty_records: dict[int, date | None] = {}
         if member_ids:
             placeholders = ", ".join(["%s"] * len(member_ids))
             await cur.execute(
@@ -677,23 +679,13 @@ async def list_members(
                 }
                 for account_row in await cur.fetchall()
             }
-            if business_date.weekday() >= 5:
-                weekend_duty_positions = set(await get_configured_positions(
-                    cur,
-                    WEEKEND_DUTY_POSITION_CONFIG_KEY,
-                ))
-                week_start = business_date - timedelta(days=business_date.weekday())
-                placeholders = ", ".join(["%s"] * len(member_ids))
-                await cur.execute(
-                    f"SELECT member_id, duty_date "
-                    f"FROM _personnel_weekend_duty "
-                    f"WHERE week_start=%s AND member_id IN ({placeholders})",
-                    [week_start, *member_ids],
-                )
-                weekend_duty_records = {
-                    int(duty_row[0]): duty_row[1]
-                    for duty_row in await cur.fetchall()
-                }
+        weekend_duty_positions = set(await get_configured_positions(cur, WEEKEND_DUTY_POSITION_CONFIG_KEY))
+        daily = await load_daily(cur, member_ids, business_date, business_date)
+        periods = await load_periods(cur, member_ids, business_date, business_date)
+        versions = {}
+        if member_ids:
+            await cur.execute(f"SELECT id,attendance_revision FROM {table('_grid_members')} WHERE id IN ({','.join(['%s']*len(member_ids))})", member_ids)
+            versions = {int(m):int(v) for m,v in await cur.fetchall()}
 
     return {
         "data": [
@@ -704,9 +696,8 @@ async def list_members(
                 identity_access=can_manage_identity,
                 departments=departments_by_member.get(int(row[0]), []),
                 account=accounts_by_member.get(int(row[0])),
-                weekend_duty_positions=weekend_duty_positions,
-                weekend_duty_recorded=int(row[0]) in weekend_duty_records,
-                weekend_duty_date=weekend_duty_records.get(int(row[0])),
+                attendance_revision=versions.get(int(row[0]),0),
+                attendance_snapshot=resolve_day(dict(id=int(row[0]),position=str(row[3])), business_date, daily, periods.get(int(row[0]),[]),weekend_duty_positions),
             )
             for row in rows
         ],
@@ -2217,6 +2208,8 @@ async def create_member(
     conn=Depends(get_db),
 ):
     """原子创建人员，并关联或创建其登录账号。"""
+    if data.status != '在岗' or data.leave_start_date or data.leave_end_date or data.leave_reason:
+        raise HTTPException(400, "请先创建人员，再通过出勤日历登记请假")
     if data.id_card_number and str(user.get("role") or "") != "super_admin":
         raise HTTPException(403, "只有超级管理员可以填写身份证号")
     await conn.begin()
@@ -2312,6 +2305,8 @@ async def update_member(
 ):
     """修改"""
     fields_set = data.model_fields_set
+    if fields_set & {'status','leave_start_date','leave_end_date','leave_reason','leave_source'}:
+        raise HTTPException(409, "出勤信息请在出勤日历中登记、更正或撤销，人员资料接口不再修改请假")
     relationship_fields = {
         "department_id", "department_ids", "community", "position", "area_id",
     }
@@ -2345,21 +2340,8 @@ async def update_member(
             if not current_ids and existing[4] is not None:
                 current_ids = [int(existing[4])]
 
-            next_start = (
-                data.leave_start_date
-                if "leave_start_date" in fields_set else existing[1]
-            )
-            next_end = (
-                data.leave_end_date
-                if "leave_end_date" in fields_set else existing[2]
-            )
-            try:
-                validate_leave_period(next_start, next_end)
-            except ValueError as exc:
-                raise HTTPException(400, str(exc)) from exc
-
             updates = {}
-            for field in ["position", "phone", "notes", "leave_reason"]:
+            for field in ["position", "phone", "notes"]:
                 if field in fields_set:
                     updates[field] = getattr(data, field) or ""
             if identity_changed:
@@ -2372,17 +2354,6 @@ async def update_member(
                     if await cur.fetchone():
                         raise HTTPException(409, "该身份证号已被其他人员使用")
                 updates["id_card_number"] = data.id_card_number
-            for field in ["leave_start_date", "leave_end_date"]:
-                if field in fields_set:
-                    updates[field] = getattr(data, field)
-            if "status" in fields_set and data.status is not None:
-                updates["status"] = data.status
-            if "leave_source" in fields_set:
-                updates["leave_source"] = data.leave_source or "manual"
-            if {"leave_start_date", "leave_end_date"} & fields_set:
-                updates.setdefault("leave_source", "manual")
-                if next_start is None and next_end is None:
-                    updates.setdefault("leave_reason", "")
             if (
                 not updates
                 and not (relationship_fields & fields_set)
@@ -2488,118 +2459,18 @@ async def update_member_leave(
     user: dict = Depends(require_permission(ATTENDANCE_MANAGE)),
     conn=Depends(get_db),
 ):
-    """更新当前状态，同时把过去的请假记录保留在出勤历史中。"""
+    """Compatibility entry point backed by the versioned attendance service."""
+    from services.business_time import get_business_date
     async with conn.cursor() as cur:
-        business_date = await get_business_date(cur)
-    if data.action == "temporary":
-        updates = (
-            "在岗",
-            data.leave_start_date,
-            data.leave_end_date,
-            data.leave_reason,
-            "manual",
-        )
-    elif data.action == "long_term":
-        updates = ("离岗", None, None, data.leave_reason, "manual")
-    else:
-        updates = ("在岗", None, None, "", "manual")
-    historical_only = (
-        data.action == "temporary"
-        and data.leave_end_date is not None
-        and data.leave_end_date < business_date
-    )
-
-    await conn.begin()
-    try:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT id FROM _grid_members WHERE id=%s FOR UPDATE",
-                (member_id,),
-            )
-            if not await cur.fetchone():
-                raise HTTPException(404, "人员不存在")
-
-            if not historical_only:
-                await cur.execute(
-                    """
-                    UPDATE _personnel_attendance_history
-                    SET is_active=0
-                    WHERE member_id=%s
-                      AND is_active=1
-                      AND start_date >= %s
-                    """,
-                    (member_id, business_date),
-                )
-                await cur.execute(
-                    """
-                    UPDATE _personnel_attendance_history
-                    SET end_date=%s
-                    WHERE member_id=%s
-                      AND is_active=1
-                      AND start_date < %s
-                      AND (end_date IS NULL OR end_date >= %s)
-                    """,
-                    (
-                        business_date - timedelta(days=1),
-                        member_id,
-                        business_date,
-                        business_date,
-                    ),
-                )
-
-            if data.action == "temporary":
-                await cur.execute(
-                    """
-                    INSERT INTO _personnel_attendance_history (
-                        member_id, absence_type, start_date, end_date,
-                        reason, source, created_by
-                    ) VALUES (%s, 'temporary_leave', %s, %s, %s, 'manual', %s)
-                    """,
-                    (
-                        member_id,
-                        data.leave_start_date,
-                        data.leave_end_date,
-                        data.leave_reason,
-                        user["id"],
-                    ),
-                )
-            elif data.action == "long_term":
-                await cur.execute(
-                    """
-                    INSERT INTO _personnel_attendance_history (
-                        member_id, absence_type, start_date, end_date,
-                        reason, source, created_by
-                    ) VALUES (%s, 'long_term_leave', %s, NULL, %s, 'manual', %s)
-                    """,
-                    (
-                        member_id,
-                        business_date,
-                        data.leave_reason,
-                        user["id"],
-                    ),
-                )
-
-            if not historical_only:
-                await cur.execute(
-                    """
-                    UPDATE _grid_members
-                    SET status=%s, leave_start_date=%s, leave_end_date=%s,
-                        leave_reason=%s, leave_source=%s
-                    WHERE id=%s
-                    """,
-                    (*updates, member_id),
-                )
-        await conn.commit()
-    except Exception:
-        await conn.rollback()
-        raise
-    return {
-        "message": (
-            "过去的请假记录已补录"
-            if historical_only
-            else "请假状态已更新"
-        )
-    }
+        today = await get_business_date(cur)
+    if data.action == 'clear':
+        raise HTTPException(409, "恢复或撤销请到出勤日历，选择具体请假记录操作；不会自动删除其他有效请假")
+    payload = dict(request_id=data.request_id, member_id=member_id, expected_version=data.expected_version,
+                   action='create', record_id=None,
+                   absence_type='temporary_leave' if data.action=='temporary' else 'long_term_leave',
+                   start_date=data.leave_start_date if data.action=='temporary' else today,
+                   end_date=data.leave_end_date, leave_reason=data.leave_reason, reason='手工请假登记')
+    return await leave_mutation(conn,payload,int(user['id']))
 
 
 @router.delete("/{member_id}")
@@ -2641,14 +2512,6 @@ async def delete_member(
                     (account_id,),
                 )
                 await cur.execute("DELETE FROM _users WHERE id=%s", (account_id,))
-            await cur.execute(
-                "DELETE FROM _personnel_attendance_history WHERE member_id=%s",
-                (member_id,),
-            )
-            await cur.execute(
-                "DELETE FROM _personnel_weekend_duty WHERE member_id=%s",
-                (member_id,),
-            )
             await cur.execute(
                 "DELETE FROM _grid_member_department_links WHERE member_id=%s",
                 (member_id,),
@@ -2729,7 +2592,7 @@ async def export_csv(
             "member.community), "
             "member.position, member.phone, member.notes, member.status, "
             "leave_start_date, "
-            "leave_end_date, leave_reason, leave_source "
+            "leave_end_date, leave_reason, leave_source, member.id "
             "FROM _grid_members AS member "
             "LEFT JOIN _grid_member_department_links AS link "
             "ON link.member_id=member.id "
@@ -2741,6 +2604,10 @@ async def export_csv(
             "ORDER BY 2, member.name"
         )
         rows = await cur.fetchall()
+        ids = [int(r[10]) for r in rows]
+        daily = await load_daily(cur,ids,business_date,business_date)
+        periods = await load_periods(cur,ids,business_date,business_date)
+        duty_positions = set(await get_configured_positions(cur,WEEKEND_DUTY_POSITION_CONFIG_KEY))
 
     output = io.StringIO()
     output.write("\ufeff")  # BOM for Excel
@@ -2759,7 +2626,8 @@ async def export_csv(
         "请假来源",
     ])
     for r in rows:
-        snapshot = get_status_snapshot(r[5], r[6], r[7], business_date)
+        current = resolve_day(dict(id=int(r[10]),position=r[2]),business_date,daily,periods.get(int(r[10]),[]),duty_positions)
+        snapshot = dict(effective_status={'work':'在岗','rest':'休息','unassigned':'未排班','leave':'离岗','long_term_leave':'离岗'}[current['state']])
         leave_type = (
             "长期"
             if r[5] == "离岗"

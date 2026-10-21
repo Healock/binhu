@@ -1,3 +1,4 @@
+import { watchAttendanceChanges } from '../utils/attendanceInvalidation'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Alert,
@@ -408,6 +409,8 @@ export default function RoleDashboard() {
     setData(null)
     void load(true)
   }, [load, user?.id])
+
+  useEffect(() => watchAttendanceChanges(() => { void load() }), [load])
 
   const syncLabel = useMemo(() => {
     if (!data?.last_success_at) return '尚无数据快照记录'

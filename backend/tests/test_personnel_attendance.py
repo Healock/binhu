@@ -39,7 +39,7 @@ def context(*, periods=None, duties=None, missing=()):
     return {
         "members": {"张三": member},
         "periods": periods or {},
-        "duties": duties or {},
+        "daily": {(m,day):'work' for (m,_),day in (duties or {}).items() if day is not None},
         "missing_week_starts": set(missing),
         "history_started_on": date(2026, 7, 30),
         "legacy_history_incomplete": False,
@@ -112,9 +112,10 @@ class PersonnelAttendanceTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             WeekendDutyUpdate(
                 week_start=date(2026, 7, 27),
+                request_id="request-0000000001",
                 assignments=[
-                    WeekendAssignment(member_id=1, duty_day="saturday"),
-                    WeekendAssignment(member_id=1, duty_day="sunday"),
+                    WeekendAssignment(member_id=1, duty_days=["saturday"],expected_version=0),
+                    WeekendAssignment(member_id=1, duty_days=["sunday"],expected_version=0),
                 ],
             )
 
@@ -298,97 +299,17 @@ class PersonnelAttendanceRouteTests(unittest.IsolatedAsyncioTestCase):
                     return [(1, None)]
                 return []
 
-        board = await get_weekend_board(Cursor(), date(2026, 7, 27))
+        with patch('services.personnel_attendance.load_daily',AsyncMock(return_value={(1,date(2026,8,1)):'rest',(1,date(2026,8,2)):'rest'})):
+            board = await get_weekend_board(Cursor(), date(2026, 7, 27))
 
         self.assertTrue(board["complete"])
         self.assertEqual(board["unassigned_count"], 0)
-        self.assertIsNone(board["members"][0]["assignment"])
+        self.assertEqual(board["members"][0]["duty_days"],[])
         self.assertTrue(board["members"][0]["recorded"])
 
-    async def test_save_accepts_null_duty_but_requires_every_member(self):
-        initial_board = {
-            "members": [{
-                "id": 1,
-                "name": "张三",
-                "community": "长板",
-                "position": "组员",
-                "unavailable_days": [],
-                "exempt": False,
-            }],
-        }
-        saved_board = {
-            **initial_board,
-            "complete": True,
-            "unassigned_count": 0,
-        }
-
-        class Cursor:
-            def __init__(self):
-                self.rows = []
-
-            async def executemany(self, _sql, rows):
-                self.rows = list(rows)
-
-        class CursorContext:
-            def __init__(self, cursor):
-                self.cursor = cursor
-
-            async def __aenter__(self):
-                return self.cursor
-
-            async def __aexit__(self, *_args):
-                return False
-
-        class Connection:
-            def __init__(self):
-                self.test_cursor = Cursor()
-                self.committed = False
-                self.rolled_back = False
-
-            async def begin(self):
-                return None
-
-            def cursor(self):
-                return CursorContext(self.test_cursor)
-
-            async def commit(self):
-                self.committed = True
-
-            async def rollback(self):
-                self.rolled_back = True
-
-        conn = Connection()
-        board_loader = AsyncMock(side_effect=[initial_board, saved_board])
-        with patch(
-            "services.personnel_attendance.get_weekend_board",
-            board_loader,
-        ):
-            result = await save_weekend_board(
-                conn,
-                requested_date=date(2026, 7, 27),
-                raw_assignments={1: None},
-                updated_by=9,
-            )
-
-        self.assertIs(result, saved_board)
-        self.assertTrue(conn.committed)
-        self.assertFalse(conn.rolled_back)
-        self.assertEqual(len(conn.test_cursor.rows), 1)
-        self.assertIsNone(conn.test_cursor.rows[0][2])
-
-        missing_conn = Connection()
-        with patch(
-            "services.personnel_attendance.get_weekend_board",
-            AsyncMock(return_value=initial_board),
-        ):
-            with self.assertRaisesRegex(ValueError, "全部备勤人员"):
-                await save_weekend_board(
-                    missing_conn,
-                    requested_date=date(2026, 7, 27),
-                    raw_assignments={},
-                    updated_by=9,
-                )
-        self.assertTrue(missing_conn.rolled_back)
+    async def test_single_day_legacy_payload_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            WeekendAssignment(member_id=1,duty_day='saturday')
 
 
 if __name__ == "__main__":

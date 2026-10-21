@@ -425,6 +425,7 @@ export default function WorkflowTickets() {
               ]}
             />
 
+            {detail.attendance_correction && <Alert type="warning" showIcon message={detail.attendance_correction} />}
             {detail.type_detail && (
               <section className="workflow-ticket-detail__section">
                 <h3 className="workflow-ticket-detail__heading">

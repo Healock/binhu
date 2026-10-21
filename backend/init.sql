@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS _work_log_daily_detail_population (
     INDEX idx_work_log_population_date (business_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE TABLE IF NOT EXISTS _grid_members (
+    attendance_revision BIGINT NOT NULL DEFAULT 0,
     id               INT AUTO_INCREMENT PRIMARY KEY,
     name             VARCHAR(100) NOT NULL,
     community        VARCHAR(200) DEFAULT '',
@@ -155,6 +156,10 @@ CREATE TABLE IF NOT EXISTS _personnel_attendance_history (
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                     ON UPDATE CURRENT_TIMESTAMP,
+    superseded_by BIGINT NULL,
+    correction_action VARCHAR(20) NOT NULL DEFAULT '',
+    correction_reason VARCHAR(200) NOT NULL DEFAULT '',
+    corrected_by INT NULL, corrected_at DATETIME NULL, workflow_ticket_id BIGINT NULL,
     INDEX idx_attendance_member_dates (member_id, start_date, end_date),
     INDEX idx_attendance_active (is_active, start_date, end_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1813,3 +1818,22 @@ CREATE TABLE IF NOT EXISTS _txdocs_monitor_run_communities (
     PRIMARY KEY (run_id, community_hash),
     INDEX idx_txdocs_monitor_run_community (community_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Daily attendance schema; activation is an explicit measure/apply/verify migration.
+CREATE TABLE IF NOT EXISTS _personnel_work_schedule (
+    member_id INT NOT NULL, work_date DATE NOT NULL, state VARCHAR(10) NOT NULL,
+    source VARCHAR(30) NOT NULL, revision BIGINT NOT NULL, updated_by INT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(member_id,work_date), INDEX idx_work_date(work_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS _personnel_attendance_changes (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY, member_id INT NOT NULL, revision BIGINT NOT NULL,
+    action VARCHAR(40) NOT NULL, actor_id INT NULL, reason VARCHAR(200) NOT NULL,
+    before_json JSON NOT NULL, after_json JSON NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_member_revision(member_id,revision)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS _personnel_attendance_operations (
+    request_id VARCHAR(64) PRIMARY KEY, actor_id INT NOT NULL, payload_hash CHAR(64) NOT NULL,
+    response_json JSON NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

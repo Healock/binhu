@@ -5,7 +5,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 import unicodedata
 
-from services.grid_member_status import active_member_sql
 from services.personnel_positions import (
     get_eligible_online_personnel,
 )
@@ -125,35 +124,13 @@ async def get_active_members(
     as_of_date: str,
 ) -> list[tuple[str, str]]:
     """读取指定日期实际在岗的网格员，返回（社区，姓名）。"""
-    active_condition = active_member_sql(
-        "g",
-        attendance_history_table="OnlineData._personnel_attendance_history",
-    )
-    await cur.execute(
-        f"""
-        SELECT
-            TRIM(community.name),
-            TRIM(g.name)
-        FROM OnlineData._grid_members g
-        JOIN OnlineData._grid_member_department_links AS link
-          ON link.member_id=g.id
-        JOIN OnlineData._departments AS department
-          ON department.id=link.department_id
-         AND department.department_type='community'
-        JOIN OnlineData._communities AS community
-          ON community.id=department.community_id
-        WHERE TRIM(g.name) <> ''
-          AND TRIM(community.name) <> ''
-          AND g.position IN ('组长', '组员')
-          AND {active_condition}
-        ORDER BY community.name, g.name
-        """,
-        (as_of_date, as_of_date, as_of_date),
-    )
-    return [
-        (str(community).strip(), str(name).strip())
-        for community, name in await cur.fetchall()
-    ]
+    from datetime import date
+    from services.personnel_attendance import get_attendance_context, is_member_on_duty
+    target = date.fromisoformat(as_of_date)
+    context = await get_attendance_context(cur, start_date=target, end_date=target, selected_positions={'组长','组员'})
+    return [(community,m['name']) for m in context['members'].values()
+            if is_member_on_duty(m,target,context) for community in m['communities']]
+
 
 
 def get_missing_zero_rows(

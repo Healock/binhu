@@ -6,7 +6,6 @@
 import json
 from config import settings
 from database import db_manager
-from services.grid_member_status import active_member_sql
 from services.report_builders import BUILDERS
 from services.report_members import (
     aggregate_community_rows,
@@ -181,12 +180,6 @@ async def build_summary(
                     f"FROM `{date_str}_daily_{suffix}`"
                 )
             union_sql = " UNION ALL ".join(union_parts)
-            active_condition = active_member_sql(
-                "member",
-                attendance_history_table=(
-                    "OnlineData._personnel_attendance_history"
-                ),
-            )
             await cur.execute(f"""
                 INSERT INTO {t_summary} (社区, 数据总数, 未核查, 已核查, 已完成, 无法见底数, 网格员人数)
                 SELECT
@@ -196,7 +189,7 @@ async def build_summary(
                     report_rows.已核查,
                     report_rows.已完成,
                     report_rows.无法见底数,
-                    COALESCE(member_counts.网格员人数, 0)
+                    0
                 FROM (
                     SELECT
                         COALESCE(formal_community.name, t.社区) AS 社区,
@@ -214,22 +207,8 @@ async def build_summary(
                       ON formal_community.id = community_alias.community_id
                     GROUP BY COALESCE(formal_community.name, t.社区)
                 ) AS report_rows
-                LEFT JOIN (
-                    SELECT community.name AS community,
-                           COUNT(DISTINCT member.id) AS 网格员人数
-                    FROM OnlineData._grid_members AS member
-                    JOIN OnlineData._grid_member_department_links AS link
-                      ON link.member_id=member.id
-                    JOIN OnlineData._departments AS department
-                      ON department.id=link.department_id
-                    JOIN OnlineData._communities AS community
-                      ON community.id=department.community_id
-                    WHERE member.position IN ('组长', '组员')
-                      AND {active_condition}
-                    GROUP BY community.name
-                ) AS member_counts
-                  ON member_counts.community = report_rows.社区
-            """, (date_str, date_str, date_str))
+            """)
+
 
             await cur.execute(f"""
                 UPDATE {t_summary} SET
@@ -255,8 +234,8 @@ async def build_summary(
                     if attendance["complete"] else 0
                 )
                 await cur.execute(
-                    f"UPDATE {t_summary} SET 当日人均核查数=%s WHERE 社区=%s",
-                    (average, community_name),
+                    f"UPDATE {t_summary} SET 当日人均核查数=%s, 网格员人数=%s WHERE 社区=%s",
+                    (average, person_days.get(community,0) if attendance["complete"] else None, community_name),
                 )
 
             await cur.execute(
