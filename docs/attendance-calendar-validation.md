@@ -21,6 +21,8 @@ python -m pytest tests/test_attendance_schedule.py tests/test_personnel_attendan
 
 结果：117 项测试及 70 项子断言通过。新事务行为测试使用 SQLite SQL 适配器，不能证明 MySQL 的锁、驱动和 SQL 行为。
 
+PR 首轮后端 CI 暴露走访汇总测试仍模拟旧人员 SQL，已改为在出勤服务边界提供名册，不再将走访记录误返回给出勤查询。修正后，走访汇总及人员报表的 22 项针对性测试通过；在 `backend/` 执行与 CI 相同的 `python -m unittest discover -s tests`，1,039 项测试全部通过。以上仍不代表真实 MySQL 验证。
+
 在 `frontend/` 执行：
 
 ```text

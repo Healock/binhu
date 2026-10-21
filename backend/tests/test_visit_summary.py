@@ -1,6 +1,7 @@
 from datetime import date
 from decimal import Decimal
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -30,10 +31,10 @@ class SummaryCursor:
     async def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.connection.calls.append((normalized, params))
-        if "FROM OnlineData._grid_members g" in normalized:
-            self.rows = list(self.connection.active_member_rows)
-        else:
+        if "FROM t_visit_details" in normalized:
             self.rows = list(self.connection.inspector_rows)
+        else:
+            raise AssertionError(f"Unexpected summary query: {normalized}")
 
     async def fetchall(self):
         return list(self.rows)
@@ -61,6 +62,19 @@ def attendance_context(members=None):
 
 
 class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        # Aggregation tests supply the roster at the service boundary. The daily
+        # attendance SQL and precedence have their own integration-focused tests.
+        async def active_members(cursor, as_of_date):
+            return list(cursor.connection.active_member_rows)
+
+        roster_patch = patch(
+            "services.visit_summary.get_active_members",
+            new=AsyncMock(side_effect=active_members),
+        )
+        self.active_members = roster_patch.start()
+        self.addCleanup(roster_patch.stop)
+
     def test_household_average_uses_round_half_up(self):
         self.assertEqual(_round_ratio(1, 4), 0.3)
         self.assertEqual(_round_ratio(0, 0), 0.0)
@@ -150,10 +164,8 @@ class VisitSummaryTests(unittest.IsolatedAsyncioTestCase):
             connection.calls[0][1],
             (date(2026, 7, 1), date(2026, 7, 31)),
         )
-        self.assertEqual(
-            connection.calls[-1][1],
-            ("2026-07-31", "2026-07-31", "2026-07-31"),
-        )
+        self.active_members.assert_awaited_once()
+        self.assertEqual(self.active_members.await_args.args[1], "2026-07-31")
 
     async def test_empty_range_still_returns_zero_totals(self):
         result = await get_visit_summary(
