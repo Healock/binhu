@@ -2819,58 +2819,9 @@ class DatabaseManager:
                         "ALTER TABLE _grid_members "
                         "ADD INDEX idx_grid_position (position)"
                     )
-                await cur.execute("""
-                    INSERT INTO _personnel_attendance_history (
-                        member_id, absence_type, start_date, end_date,
-                        reason, source
-                    )
-                    SELECT
-                        g.id,
-                        CASE
-                            WHEN g.status = '离岗'
-                            THEN 'long_term_leave'
-                            ELSE 'temporary_leave'
-                        END,
-                        CASE
-                            WHEN g.status = '离岗'
-                            THEN COALESCE(DATE(g.updated_at), CURRENT_DATE)
-                            ELSE g.leave_start_date
-                        END,
-                        CASE
-                            WHEN g.status = '离岗'
-                            THEN NULL
-                            ELSE g.leave_end_date
-                        END,
-                        COALESCE(g.leave_reason, ''),
-                        'legacy_current_state'
-                    FROM _grid_members AS g
-                    WHERE (
-                        g.status = '离岗'
-                        OR (
-                            g.leave_start_date IS NOT NULL
-                            AND g.leave_end_date IS NOT NULL
-                        )
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM _personnel_attendance_history AS history
-                        WHERE history.member_id = g.id
-                          AND history.is_active=1
-                          AND (
-                              (
-                                  g.status = '离岗'
-                                  AND history.absence_type='long_term_leave'
-                                  AND history.end_date IS NULL
-                              )
-                              OR (
-                                  g.status <> '离岗'
-                                  AND history.absence_type='temporary_leave'
-                                  AND history.start_date=g.leave_start_date
-                                  AND history.end_date=g.leave_end_date
-                              )
-                          )
-                    )
-                """)
+                from services.attendance_schedule import ensure_schema, seed_legacy_once
+                await ensure_schema(cur)
+                await seed_legacy_once(cur)
                 # 用户表
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _users (

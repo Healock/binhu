@@ -1,3 +1,4 @@
+import { notifyAttendanceChanged } from '../utils/attendanceInvalidation.ts'
 import { environmentLoginPath } from '../utils/apiEnvironment.ts'
 import axios from 'axios'
 import type {
@@ -2916,6 +2917,7 @@ export async function getQueryWritebackAudit(params: {
 
 // ---- Grid Members ----
 export interface GridMember {
+  attendance_revision: number
   id: number
   name: string
   community: string
@@ -3085,6 +3087,7 @@ export async function deleteCommunityArea(id: number): Promise<void> {
 }
 
 export async function listGridMembers(params: {
+  department_id?: number
   keyword?: string
   community?: string
   position?: string
@@ -3166,6 +3169,8 @@ export async function updateGridMember(id: number, payload: GridMemberPayload): 
 export async function updateGridMemberLeave(
   id: number,
   payload: {
+    expected_version: number
+    request_id: string
     action: 'temporary' | 'long_term' | 'clear'
     leave_start_date?: string | null
     leave_end_date?: string | null
@@ -3173,6 +3178,7 @@ export async function updateGridMemberLeave(
   },
 ): Promise<void> {
   await api.put(`/grid-members/${id}/leave`, payload)
+  notifyAttendanceChanged()
 }
 
 export async function deleteGridMember(id: number): Promise<void> {
@@ -3195,9 +3201,12 @@ export interface WeekendDutyMember {
   name: string
   community: string
   position: string
-  assignment: WeekendDutyDay | null
+  duty_days: WeekendDutyDay[]
+  attendance_revision: number
+  conflict: boolean
   recorded: boolean
-  previous_assignment: WeekendDutyDay | null
+  previous_duty_days: WeekendDutyDay[]
+  previous_recorded: boolean
   unavailable_days: WeekendDutyDay[]
   exempt: boolean
   absence_reason: string
@@ -3221,10 +3230,17 @@ export interface AttendanceScheduleStatus {
 }
 
 export interface AttendanceHistoryItem {
+  state: 'active' | 'corrected' | 'revoked' | 'inactive'
+  superseded_by: number | null
+  corrected_at: string | null
+  corrected_by: number | null
+  correction_reason: string
+  workflow_ticket_id: number | null
+  attendance_revision: number
   id: number
   member_id: number
   member_name: string
-  absence_type: 'temporary_leave' | 'long_term_leave'
+  absence_type: 'temporary_leave' | 'long_term_leave' | 'sick_leave' | 'annual_leave'
   start_date: string
   end_date: string | null
   reason: string
@@ -3251,7 +3267,7 @@ export async function getWeekendDuty(
   weekStart: string,
 ): Promise<WeekendDutyBoard> {
   const { data } = await api.get('/personnel/attendance/weekend-duty', {
-    params: { week_start: weekStart },
+    params: { week_start: weekStart, model_version: 2 },
   })
   return data
 }
@@ -3273,13 +3289,17 @@ export async function saveWeekendDuty(
   weekStart: string,
   assignments: Array<{
     member_id: number
-    duty_day: WeekendDutyDay | null
+    duty_days: WeekendDutyDay[]
+    expected_version: number
   }>,
+  requestId: string,
 ): Promise<WeekendDutyBoard> {
   const { data } = await api.put('/personnel/attendance/weekend-duty', {
+    request_id: requestId,
     week_start: weekStart,
     assignments,
   })
+  notifyAttendanceChanged()
   return data
 }
 
@@ -5298,6 +5318,7 @@ export interface WorkOrderDetail extends WorkOrderSummary {
   description: string
   requester_user_id: number | null
   form_data: Record<string, unknown>
+  attendance_correction?: string | null
   type_detail?: Record<string, unknown>
   steps: WorkOrderStep[]
   links: Array<{ object_type: string; object_id: string; object_ref: string }>
@@ -5397,4 +5418,53 @@ export async function getAddressAnnotationOptions(parserType: string, rowKey: st
 }
 export async function markAddressManualUnmatched(parserType: string, rowKey: string, payload: { source_id: number; expected_revision: number; expected_row_hash: string; reason_code: string }): Promise<{ message: string; address_match: MobileTaskAddressMatch }> {
   return (await api.post(`/mobile-tasks/${encodeURIComponent(parserType)}/${encodeURIComponent(rowKey)}/address-match/manual-unmatched`, payload, activeRequest)).data
+}
+
+
+export type AttendanceState = 'work' | 'rest' | 'leave' | 'long_term_leave' | 'unassigned'
+export interface AttendanceDay {
+  member_id: number; date: string; state: AttendanceState; source: string
+  leave_id: number | null; conflict: boolean; overlapping: boolean
+}
+export interface CalendarLeave {
+  id: number; member_id: number; absence_type: 'temporary_leave' | 'long_term_leave'
+  start_date: string; end_date: string | null; source: string; workflow_ticket_id: number | null
+}
+export interface AttendanceCalendarData {
+  editable: boolean; business_today: string; legacy_history_incomplete?: boolean
+  members: Array<{ id: number; name: string; position: string; attendance_revision: number }>
+  days: AttendanceDay[]; leaves?: CalendarLeave[]
+}
+export interface ScheduleChange {
+  request_id: string; member_ids: number[]; expected_versions: Record<number, number>
+  start_date: string; end_date: string; state: 'work' | 'rest'; reason: string
+  original_start?: string; original_end?: string
+}
+export interface LeaveChange {
+  request_id: string; member_id: number; expected_version: number
+  record_id?: number; action: 'create' | 'correct' | 'revoke' | 'resume'
+  absence_type?: 'temporary_leave' | 'long_term_leave'
+  start_date?: string; end_date?: string | null; reason: string; leave_reason?: string
+}
+export interface AttendancePreview {
+  changes?: Array<{member_id:number; date:string; before:string; after:string}>
+  start_date?: string; end_date?: string | null; message: string
+  before?: {start_date:string; end_date:string|null} | null
+  after?: {start_date:string; end_date:string|null} | null
+}
+export async function getAttendanceCalendar(start: string, end: string, ids: number[]): Promise<AttendanceCalendarData> {
+  const params = new URLSearchParams({ start_date: start, end_date: end })
+  ids.forEach(id => params.append('member_ids', String(id)))
+  return (await api.get(`/personnel/attendance/calendar?${params}`)).data
+}
+export async function changeAttendance(kind: 'schedule' | 'leave', payload: ScheduleChange | LeaveChange, preview = false): Promise<AttendancePreview> {
+  const result = (await api.post(`/personnel/attendance/${kind}${preview ? '/preview' : ''}`, payload)).data
+  if (!preview) notifyAttendanceChanged()
+  return result
+}
+
+export async function getAttendanceOptions(keyword = '', departmentId?: number): Promise<{
+  members: AttendanceCalendarData['members']; departments: Array<{id:number; name:string; parent_id:number|null}>
+}> {
+  return (await api.get('/personnel/attendance/calendar-options', {params:{keyword,department_id:departmentId}})).data
 }

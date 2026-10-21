@@ -2,6 +2,7 @@ import json
 import copy
 import hashlib
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -54,6 +55,19 @@ class Cursor:
 
 
 class BuildTests(unittest.IsolatedAsyncioTestCase):
+    def test_position_constants_import_without_backend_configuration(self):
+        backend_path = str(Path(__file__).resolve().parents[2] / 'backend')
+        script = (
+            f"import sys; sys.path.insert(0, {backend_path!r}); "
+            "from services.personnel_positions import POSITION_OPTIONS; "
+            "assert POSITION_OPTIONS; assert 'config' not in sys.modules"
+        )
+        result = subprocess.run(
+            [sys.executable, '-I', '-S', '-c', script],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_dynamic_daily_report_tables_are_excluded_from_fixed_contract(self):
         signature = {'columns': [['id']], 'indexes': [], 'constraints': []}
         self.assertTrue(is_dynamic_daily_report_table('daily_report', '2026-09-20_fullchain'))

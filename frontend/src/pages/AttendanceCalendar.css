@@ -1,0 +1,188 @@
+.attendance-page,
+.attendance-content {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.attendance-month-controls,
+.attendance-legend {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.attendance-month {
+  border: 1px solid var(--app-border, #cbd5e1);
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+.attendance-weekdays,
+.attendance-week-dates,
+.attendance-week-events {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.attendance-weekdays span {
+  padding: 10px;
+  text-align: center;
+  color: var(--app-text-secondary);
+}
+.attendance-week {
+  border-top: 1px solid var(--app-border, #cbd5e1);
+  padding-bottom: 8px;
+  min-height: 100px;
+}
+.attendance-week-dates button {
+  min-height: 44px;
+  background: transparent;
+  color: var(--app-text-strong);
+  border: 0;
+  border-right: 1px solid var(--app-border, #cbd5e1);
+  cursor: pointer;
+}
+.attendance-week-dates .attendance-outside {
+  opacity: 0.5;
+}
+.attendance-week-events {
+  gap: 4px 2px;
+  padding: 0 3px;
+}
+.attendance-bar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: 5px;
+  border: 1px solid currentColor;
+  padding: 3px 5px;
+  min-width: 0;
+  font-size: 12px;
+  min-height: 28px;
+}
+.attendance-bar > button {
+  background: transparent;
+  color: inherit;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  cursor: pointer;
+}
+.attendance-work {
+  background: color-mix(in srgb, #1677ff 15%, var(--app-bg, #fff));
+  color: var(--attendance-blue, #1663c7);
+}
+.attendance-leave {
+  background: color-mix(in srgb, #fa8c16 15%, var(--app-bg, #fff));
+  color: var(--attendance-orange, #9c5200);
+}
+.attendance-long_term_leave {
+  background: color-mix(in srgb, #9254de 15%, var(--app-bg, #fff));
+  color: var(--attendance-purple, #753ab8);
+}
+.attendance-rest {
+  background: color-mix(in srgb, #8893a4 15%, var(--app-bg, #fff));
+  color: var(--app-text-secondary, #526075);
+}
+.attendance-unassigned {
+  background: transparent;
+  color: var(--app-text-secondary, #526075);
+  border-style: dashed;
+}
+.attendance-legend-item {
+  padding: 3px 8px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+}
+.attendance-resize {
+  cursor: ew-resize;
+  flex: none;
+  padding: 0 3px;
+}
+.attendance-date-list {
+  display: grid;
+  gap: 12px;
+}
+.attendance-date-list section,
+.attendance-history-item {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--app-border, #cbd5e1);
+  padding: 12px;
+  border-radius: 8px;
+}
+.attendance-preview {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--app-border, #cbd5e1);
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+.attendance-content label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.attendance-drag-navigation {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 8px;
+  background: var(--app-bg, #fff);
+}
+[data-theme="dark"],
+.dark {
+  --attendance-blue: #80b7ff;
+  --attendance-orange: #ffc078;
+  --attendance-purple: #c5a3f5;
+}
+@media (max-width: 767px) {
+  .attendance-page,
+  .attendance-content {
+    gap: 12px;
+  }
+  .attendance-month-controls {
+    gap: 8px;
+  }
+  .attendance-date-list .attendance-bar {
+    min-height: 40px;
+  }
+}
+
+/* Keep the source calendar mounted during native dragging across months. */
+.attendance-drag-navigation {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  width: min(800px, calc(100vw - 24px));
+  flex-wrap: wrap;
+  border: 1px solid var(--app-border, #cbd5e1);
+  border-radius: 8px;
+}
+.attendance-drag-targets {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
+}
+.attendance-drag-targets strong {
+  grid-column: 1 / -1;
+}
+.attendance-drag-targets button {
+  background: var(--app-bg, #fff);
+  color: var(--app-text-strong);
+  border: 1px solid var(--app-border, #cbd5e1);
+  min-height: 32px;
+  border-radius: 4px;
+  font-size: 11px;
+}

@@ -1,3 +1,4 @@
+import { watchAttendanceChanges } from '../utils/attendanceInvalidation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
@@ -138,6 +139,7 @@ export default function GridMembers() {
   const canManage = Boolean(user?.permissions.includes('personnel.manage'))
   const canManageAttendance = Boolean(user?.permissions.includes('attendance.manage'))
   const canViewSensitive = Boolean(user?.permissions.includes('personnel.sensitive.view'))
+  const canViewAttendance = canViewSensitive || canManageAttendance
   const canManageIdentity = user?.role === 'super_admin'
   const canDelete = Boolean(
     user?.permission_groups.some(group => group.code === 'super_admin'),
@@ -240,7 +242,7 @@ export default function GridMembers() {
     if (canManageAttendance) void checkSchedule()
   }, [canManageAttendance, checkSchedule])
   useEffect(() => {
-    if (!historyOpen || !canViewSensitive) return
+    if (!historyOpen || !canViewAttendance) return
     setHistoryLoading(true)
     getAttendanceHistory({ page: 1, page_size: 200 })
       .then(response => {
@@ -252,7 +254,9 @@ export default function GridMembers() {
         setHistoryTotal(0)
       })
       .finally(() => setHistoryLoading(false))
-  }, [canViewSensitive, historyOpen])
+  }, [canViewAttendance, historyOpen])
+
+  useEffect(() => watchAttendanceChanges(() => { void fetch() }), [fetch])
 
   const refresh = () => {
     void fetch()
@@ -396,7 +400,7 @@ export default function GridMembers() {
         description="查看人员所属部门、岗位和在岗状态；有权限的账号可以维护资料与出勤"
         actions={(
           <>
-            {canViewSensitive && <Button
+            {canViewAttendance && <Button
               icon={<HistoryOutlined />}
               onClick={() => setHistoryOpen(true)}
             >
@@ -408,6 +412,7 @@ export default function GridMembers() {
             >
               双休日备勤
             </Button>}
+            {canViewAttendance && <Button icon={<CalendarOutlined />} onClick={()=>navigate('/grid-members/attendance-calendar')}>出勤日历</Button>}
             {canViewSensitive && <Button
               icon={<DownloadOutlined />}
               onClick={() => window.open(exportGridMembersUrl(), '_blank')}
@@ -729,13 +734,14 @@ export default function GridMembers() {
                   <Tag color={item.absence_type === 'long_term_leave' ? 'default' : 'orange'}>
                     {item.absence_type === 'long_term_leave' ? '长期离岗' : '临时请假'}
                   </Tag>
-                  {!item.is_active && <Tag>已撤销</Tag>}
+                  {!item.is_active && <Tag>{item.state==='corrected'?'已更正':item.state==='revoked'?'已撤销':'已失效'}</Tag>}
                 </div>
                 <div className="mt-1 text-sm text-slate-600">
                   {item.start_date}
                   {' 至 '}
                   {item.end_date || '长期'}
                 </div>
+                {canManageAttendance && item.is_active && <Button size="small" onClick={()=>navigate(`/grid-members/attendance-calendar?history=1&member=${item.member_id}`)}>更正／撤销</Button>}
                 {item.reason && (
                   <div className="mt-1 text-sm text-slate-500">
                     原因：{item.reason}
@@ -1352,6 +1358,7 @@ function LeaveModal({
   onClose: () => void
   onSaved: (message: string) => void
 }) {
+  const saveAttempt=useRef({key:'',id:crypto.randomUUID()})
   const [mode, setMode] = useState<'temporary' | 'long_term'>(
     member.status === '离岗' ? 'long_term' : 'temporary',
   )
@@ -1397,7 +1404,11 @@ function LeaveModal({
     setSaving(true)
     setFormError('')
     try {
+      const key=JSON.stringify([mode,leaveRange,reason])
+      if(saveAttempt.current.key!==key)saveAttempt.current={key,id:crypto.randomUUID()}
       await updateGridMemberLeave(member.id, {
+        expected_version: member.attendance_revision,
+        request_id: saveAttempt.current.id,
         action: mode,
         leave_start_date: mode === 'temporary' ? leaveRange[0] : null,
         leave_end_date: mode === 'temporary' ? leaveRange[1] : null,
@@ -1415,8 +1426,7 @@ function LeaveModal({
     setSaving(true)
     setFormError('')
     try {
-      await updateGridMemberLeave(member.id, { action: 'clear' })
-      onSaved('已恢复正常')
+      window.location.assign(`/grid-members/attendance-calendar?history=1&member=${member.id}`)
     } catch (error: any) {
       setFormError(error?.response?.data?.detail || '恢复失败')
     } finally {

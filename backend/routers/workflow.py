@@ -252,14 +252,13 @@ async def _apply_leave_attendance(cur, ticket_id: int, actor_user_id: int) -> in
         return None
     if row[5]:
         return int(row[5])
-    schema = platform_schema().replace("`", "")
-    await cur.execute(
-        f"INSERT INTO `{schema}`._personnel_attendance_history "
-        "(member_id, absence_type, start_date, end_date, reason, source, created_by, is_active) "
-        "VALUES (%s,%s,%s,%s,%s,'workflow',%s,1)",
-        (row[0], row[1], row[2], row[3], str(row[4] or "")[:200], actor_user_id),
-    )
-    attendance_id = int(cur.lastrowid)
+    from services.attendance_schedule import require_ready, lock_members, insert_leave, record_change, sync_current
+    await require_ready(cur)
+    member_id = int(row[0])
+    versions = await lock_members(cur, None, [member_id])
+    attendance_id = await insert_leave(cur,member_id,row[1],row[2],row[3],str(row[4] or '')[:200], 'workflow',actor_user_id,ticket_id)
+    await record_change(cur,member_id,versions[member_id],'leave_approved',actor_user_id,'审批请假生效',None,dict(record_id=attendance_id,ticket_id=ticket_id))
+    await sync_current(cur,member_id)
     await cur.execute(
         "UPDATE leave_request_details SET attendance_record_id=%s WHERE work_order_id=%s AND attendance_record_id IS NULL",
         (attendance_id, ticket_id),
@@ -267,20 +266,21 @@ async def _apply_leave_attendance(cur, ticket_id: int, actor_user_id: int) -> in
     return attendance_id
 
 
-async def _deactivate_leave_attendance(cur, ticket_id: int) -> None:
-    await cur.execute(
-        "SELECT attendance_record_id FROM leave_request_details WHERE work_order_id=%s",
-        (ticket_id,),
-    )
+async def _deactivate_leave_attendance(cur, ticket_id: int, actor_user_id: int = 0) -> None:
+    from services.attendance_schedule import table, require_ready, lock_members, replace_leave, record_change, sync_current
+    await require_ready(cur)
+    await cur.execute(f"SELECT member_id FROM {table('_personnel_attendance_history')} WHERE workflow_ticket_id=%s AND is_active=1 LIMIT 1", (ticket_id,))
     row = await cur.fetchone()
-    if not row or not row[0]:
+    if not row:
         return
-    schema = platform_schema().replace("`", "")
-    await cur.execute(
-        f"UPDATE `{schema}`._personnel_attendance_history SET is_active=0 "
-        "WHERE id=%s AND source='workflow'",
-        (row[0],),
-    )
+    m = int(row[0])
+    versions = await lock_members(cur,None,[m])
+    await cur.execute(f"SELECT id FROM {table('_personnel_attendance_history')} WHERE workflow_ticket_id=%s AND is_active=1 FOR UPDATE",(ticket_id,))
+    rows = await cur.fetchall()
+    for (record_id,) in rows:
+        await replace_leave(cur,record_id,m,None,None,'原工单取消',actor_user_id,action='revoke')
+    await record_change(cur,m,versions[m],'leave_ticket_cancel',actor_user_id,'原工单取消',dict(ticket_id=ticket_id),None)
+    await sync_current(cur,m)
 
 
 def _ticket_payload(row):
@@ -632,6 +632,7 @@ async def get_ticket(
             (ticket_id,),
         )
         attachments = await cur.fetchall()
+        attendance_correction = None
         detail_row = None
         if row[2] == "leave_request":
             await cur.execute(
@@ -640,6 +641,12 @@ async def get_ticket(
                 (ticket_id,),
             )
             detail_row = await cur.fetchone()
+            if detail_row and detail_row[6]:
+                from services.attendance_schedule import table as attendance_table
+                await cur.execute(f"SELECT correction_action,superseded_by FROM {attendance_table('_personnel_attendance_history')} WHERE id=%s",(detail_row[6],))
+                correction = await cur.fetchone()
+                if correction and correction[0]:
+                    attendance_correction = '出勤效力已更正或撤销；原审批结果保持不变，请到出勤历史查看最新记录'
         elif row[2] == "photo_request":
             await cur.execute(
                 "SELECT subject_type, subject_id, subject_name, identity_number, source_parser_type, source_row_key, "
@@ -654,6 +661,7 @@ async def get_ticket(
             )
             detail_row = await cur.fetchone()
     payload = _ticket_payload(row)
+    payload["attendance_correction"] = attendance_correction
     payload["events"] = [{"event_type": x[0], "actor_user_id": x[1], "from_status": x[2], "to_status": x[3], "detail": x[4], "created_at": _iso(x[5])} for x in events]
     payload["comments"] = [{"user_id": x[0], "content": x[1], "created_at": _iso(x[2])} for x in comments]
     payload["steps"] = [
@@ -913,7 +921,7 @@ async def decide_ticket(
             if row[4] == "leave_request" and next_status in {"approved", "completed"}:
                 await _apply_leave_attendance(cur, ticket_id, user["id"])
             elif row[4] == "leave_request" and next_status == "cancelled":
-                await _deactivate_leave_attendance(cur, ticket_id)
+                await _deactivate_leave_attendance(cur, ticket_id, user["id"])
             if next_status in {"approved", "completed", "rejected", "cancelled"}:
                 await cur.execute(
                     "UPDATE work_order_attachments SET retention_until=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 90 DAY) "

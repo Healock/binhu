@@ -1,3 +1,4 @@
+import { watchAttendanceChanges } from '../utils/attendanceInvalidation'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Alert,
@@ -240,6 +241,8 @@ export default function Dashboard() {
     ))
   }, [browserToday, systemTimezone])
   useEffect(() => { getReportTypes().then((r) => { setTypes(r.data); setImplemented(r.implemented) }).catch(() => {}) }, [])
+  useEffect(() => watchAttendanceChanges(() => { void fetchReport() }), [fetchReport])
+
   useEffect(() => { fetchReport() }, [fetchReport])
   useEffect(() => {
     setDetailRows([])

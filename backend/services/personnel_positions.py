@@ -6,7 +6,6 @@ import json
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-
 POSITION_OPTIONS = (
     "中队长",
     "基础管控",
@@ -33,6 +32,19 @@ POSITION_CONFIG_KEYS = {
     VISIT_POSITION_CONFIG_KEY,
     WEEKEND_DUTY_POSITION_CONFIG_KEY,
 }
+
+
+def personnel_table(name: str) -> str:
+    """Qualify personnel reads even when the caller uses a report connection."""
+    # Snapshot tools import the position constants without backend dependencies.
+    from config import settings
+
+    schema = (
+        settings.MYSQL_PLATFORM_DB
+        if settings.PLATFORM_DOMAIN_ACTIVE
+        else settings.MYSQL_ONLINE_DATA_DB
+    )
+    return f"`{schema.replace('`', '')}`.`{name}`"
 
 
 def normalize_position(value: Any, *, allow_empty: bool = False) -> str:
@@ -107,7 +119,7 @@ async def get_configured_positions(cur, config_key: str) -> list[str]:
     if config_key not in POSITION_CONFIG_KEYS:
         raise ValueError("未知的岗位统计配置")
     await cur.execute(
-        "SELECT config_value FROM OnlineData._system_config "
+        f"SELECT config_value FROM {personnel_table('_system_config')} "
         "WHERE config_key=%s",
         (config_key,),
     )
@@ -121,7 +133,7 @@ def normalized_person_name(value: Any) -> str:
 
 async def get_known_personnel_positions(cur) -> dict[str, str]:
     await cur.execute(
-        "SELECT name, position FROM OnlineData._grid_members "
+        f"SELECT name, position FROM {personnel_table('_grid_members')} "
         "WHERE TRIM(name) <> ''"
     )
     return {
@@ -133,15 +145,15 @@ async def get_known_personnel_positions(cur) -> dict[str, str]:
 async def get_eligible_online_personnel(cur) -> dict[str, dict[str, str]]:
     """返回在线汇总允许统计的人员及其有效社区部门。"""
     await cur.execute(
-        """
+        f"""
         SELECT member.name, member.position, community.name
-        FROM OnlineData._grid_members AS member
-        JOIN OnlineData._grid_member_department_links AS link
+        FROM {personnel_table('_grid_members')} AS member
+        JOIN {personnel_table('_grid_member_department_links')} AS link
           ON link.member_id=member.id
-        JOIN OnlineData._departments AS department
+        JOIN {personnel_table('_departments')} AS department
           ON department.id=link.department_id
          AND department.department_type='community'
-        JOIN OnlineData._communities AS community
+        JOIN {personnel_table('_communities')} AS community
           ON community.id=department.community_id
         WHERE member.position IN ('组长', '组员')
           AND TRIM(member.name) <> ''

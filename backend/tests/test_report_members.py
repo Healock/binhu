@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import sys
 import types
 import unittest
@@ -30,6 +31,64 @@ from services.personnel_positions import get_eligible_online_personnel
 
 
 class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_report_connection_reads_attendance_from_selected_personnel_schema(self):
+        from datetime import date
+        from config import settings
+        from services.personnel_attendance import get_attendance_context
+        from services.personnel_positions import get_known_personnel_positions
+
+        # Preserve schema qualifiers: the report connection has no personnel
+        # tables, and only the selected domain is attached. This checks read
+        # routing, not MySQL locking or cross-schema write transactions.
+        for active, schema in ((False, "OnlineFixture"), (True, "PlatformFixture")):
+            with self.subTest(platform_active=active), sqlite3.connect(
+                ":memory:", detect_types=sqlite3.PARSE_DECLTYPES
+            ) as conn, patch.object(settings, "PLATFORM_DOMAIN_ACTIVE", active), patch.object(
+                settings, "MYSQL_ONLINE_DATA_DB", "OnlineFixture"
+            ), patch.object(
+                settings, "MYSQL_PLATFORM_DB", "PlatformFixture"
+            ):
+                self.addCleanup(conn.close)
+                conn.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
+                conn.executescript(f"""
+                    CREATE TABLE {schema}._grid_members(id INT,name TEXT,position TEXT);
+                    INSERT INTO {schema}._grid_members VALUES(1,'合成人员','组员');
+                    CREATE TABLE {schema}._grid_member_department_links(member_id INT,department_id INT,sort_order INT);
+                    INSERT INTO {schema}._grid_member_department_links VALUES(1,2,0);
+                    CREATE TABLE {schema}._departments(id INT,community_id INT,department_type TEXT);
+                    INSERT INTO {schema}._departments VALUES(2,3,'community');
+                    CREATE TABLE {schema}._communities(id INT,name TEXT);
+                    INSERT INTO {schema}._communities VALUES(3,'合成社区');
+                    CREATE TABLE {schema}._personnel_attendance_history(id INT,member_id INT,absence_type TEXT,start_date DATE,end_date DATE,reason TEXT,source TEXT,is_active INT);
+                    INSERT INTO {schema}._personnel_attendance_history VALUES(1,1,'temporary_leave','2026-10-20','2026-10-20','','manual',1);
+                    CREATE TABLE {schema}._personnel_work_schedule(member_id INT,work_date DATE,state TEXT);
+                    INSERT INTO {schema}._personnel_work_schedule VALUES(1,'2026-10-19','rest');
+                    CREATE TABLE {schema}._system_config(config_key TEXT,config_value TEXT);
+                    INSERT INTO {schema}._system_config VALUES('attendance_daily_schedule_v1','1'),('attendance_history_started_on','2026-01-01'),('weekend_duty_positions','["组员"]');
+                """)
+
+                class ReportCursor:
+                    async def execute(self, sql, params=()):
+                        self.raw = conn.execute(sql.replace("%s", "?"), params)
+
+                    async def fetchall(self):
+                        return self.raw.fetchall()
+
+                    async def fetchone(self):
+                        return self.raw.fetchone()
+
+                cur = ReportCursor()
+                self.assertEqual(await get_active_members(cur, "2026-10-19"), [])
+                self.assertEqual(await get_active_members(cur, "2026-10-20"), [])
+                self.assertEqual(await get_active_members(cur, "2026-10-21"), [("合成社区", "合成人员")])
+                context = await get_attendance_context(
+                    cur, start_date=date(2026, 10, 21), end_date=date(2026, 10, 21),
+                    selected_positions={"组员"}, community_scope=["合成社区"], member_names=["合成人员"],
+                )
+                self.assertEqual(list(context["members"]), ["合成人员"])
+                self.assertEqual((await get_known_personnel_positions(cur))["合成人员"], "组员")
+                self.assertEqual((await get_eligible_online_personnel(cur))["合成人员"]["community"], "合成社区")
+
     async def test_online_scope_requires_registered_group_member_and_community(self):
         cursor = MagicMock()
         cursor.execute = AsyncMock()
@@ -87,39 +146,15 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             [("社区乙", "李四", 0, 0, 0, 0, 0, 0, 0)],
         )
 
-    async def test_active_member_query_uses_requested_date_and_status_rules(self):
-        cursor = MagicMock()
-        cursor.execute = AsyncMock()
-        cursor.fetchall = AsyncMock(
-            return_value=[("社区甲", "赵六")]
-        )
-
-        members = await get_active_members(
-            cursor,
-            "2026-07-28",
-        )
-
-        sql, params = cursor.execute.await_args.args
-        self.assertIn("g.status = '在岗'", sql)
-        self.assertIn(
-            "%s BETWEEN g.leave_start_date AND g.leave_end_date",
-            sql,
-        )
-        self.assertIn(
-            "FROM OnlineData._personnel_attendance_history AS attendance_history",
-            sql,
-        )
-        self.assertIn("attendance_history.member_id=g.id", sql)
-        self.assertIn("g.position IN ('组长', '组员')", sql)
-        self.assertIn("department.department_type='community'", sql)
-        self.assertEqual(
-            params,
-            ("2026-07-28", "2026-07-28", "2026-07-28"),
-        )
-        self.assertEqual(
-            members,
-            [("社区甲", "赵六")],
-        )
+    async def test_active_member_query_uses_canonical_daily_context(self):
+        from datetime import date
+        from unittest.mock import patch
+        context=dict(members={'合成人员':dict(id=1,name='合成人员',communities=['合成社区'],position='组员')},
+                     periods={},daily={(1,date(2026,7,28)):'rest'})
+        with patch('services.personnel_attendance.get_attendance_context',AsyncMock(return_value=context)) as loader:
+            result=await get_active_members(MagicMock(),'2026-07-28')
+        self.assertEqual(result,[])
+        self.assertEqual(loader.await_args.kwargs['start_date'],date(2026,7,28))
 
     async def test_old_report_is_completed_without_losing_real_rows(self):
         cursor = MagicMock()

@@ -72,7 +72,7 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
                     "is_active": True,
                 }],
             },
-            "duties": {(1, date(2026, 7, 27)): date(2026, 8, 1)},
+            "daily": {(1, date(2026, 8, 1)): "work"},
             "weekend_duty_positions": {"组长", "组员"},
             "missing_week_starts": set(),
             "history_started_on": date(2026, 7, 1),

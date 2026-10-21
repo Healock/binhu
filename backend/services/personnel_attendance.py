@@ -13,6 +13,7 @@ from services.personnel_positions import (
     get_configured_positions,
 )
 from services.business_time import get_business_date
+from services.attendance_schedule import load_daily, resolve_day, lock_members, record_change, mutation, table
 
 DEFAULT_WEEKEND_DUTY_POSITIONS = set(DEFAULT_SUMMARY_POSITIONS)
 
@@ -86,10 +87,10 @@ async def list_attendance_periods(
         member_filter = f" AND member_id IN ({placeholders})"
         params.extend(materialized_ids)
     await cur.execute(
-        """
+        f"""
         SELECT member_id, absence_type, start_date, end_date,
                reason, source, is_active
-        FROM _personnel_attendance_history
+        FROM {table('_personnel_attendance_history')}
         WHERE is_active=1
           AND start_date <= %s
           AND (end_date IS NULL OR end_date >= %s)
@@ -127,12 +128,12 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
                GROUP_CONCAT(DISTINCT community.name
                    ORDER BY link.sort_order, community.name SEPARATOR '、'),
                member.position
-        FROM _grid_members AS member
-        LEFT JOIN _grid_member_department_links AS link
+        FROM {table('_grid_members')} AS member
+        LEFT JOIN {table('_grid_member_department_links')} AS link
           ON link.member_id=member.id
-        LEFT JOIN _departments AS department
+        LEFT JOIN {table('_departments')} AS department
           ON department.id=link.department_id
-        LEFT JOIN _communities AS community
+        LEFT JOIN {table('_communities')} AS community
           ON community.id=department.community_id
         WHERE member.position IN ({placeholders})
         GROUP BY member.id, member.name, member.position, member.community
@@ -160,31 +161,20 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
         member_ids=member_ids,
     )
 
-    await cur.execute(
-        """
-        SELECT member_id, duty_date
-        FROM _personnel_weekend_duty
-        WHERE week_start=%s
-        """,
-        (week_start,),
-    )
-    assignments = {int(row[0]): row[1] for row in await cur.fetchall()}
-    recorded_member_ids = set(assignments)
-
-    previous_week = week_start - timedelta(days=7)
-    previous_saturday, previous_sunday = weekend_dates(previous_week)
-    await cur.execute(
-        """
-        SELECT member_id, duty_date
-        FROM _personnel_weekend_duty
-        WHERE week_start=%s
-        """,
-        (previous_week,),
-    )
-    previous_assignments = {
-        int(row[0]): duty_label(row[1], previous_saturday, previous_sunday)
-        for row in await cur.fetchall()
+    daily = await load_daily(cur, member_ids, saturday - timedelta(days=7), sunday)
+    assignments = {
+        m: [label for label, day in (("saturday", saturday), ("sunday", sunday)) if daily.get((m, day)) == "work"]
+        for m in member_ids
     }
+    recorded_member_ids = {m for m in member_ids if all((m, d) in daily for d in (saturday, sunday))}
+    previous_assignments = {
+        m: [label for label, day in (("saturday", saturday-timedelta(days=7)), ("sunday", sunday-timedelta(days=7))) if daily.get((m, day)) == "work"]
+        for m in member_ids
+    }
+    versions = {}
+    if member_ids:
+        await cur.execute(f"SELECT id,attendance_revision FROM {table('_grid_members')} WHERE id IN ({','.join(['%s']*len(member_ids))})", member_ids)
+        versions = {int(m):int(v) for m,v in await cur.fetchall()}
 
     result_members = []
     unassigned_count = 0
@@ -199,37 +189,29 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
             if period_covers(target_date, member_periods)
         ]
         exempt = len(unavailable) == 2
-        assignment = duty_label(
-            assignments.get(member["id"]),
-            saturday,
-            sunday,
-        )
-        if assignment in unavailable:
-            assignment = None
+        assignment = assignments.get(member["id"], [])
         recorded = member["id"] in recorded_member_ids
-        if not exempt and not recorded:
+        complete = all(label in unavailable or (member["id"], day) in daily for label,day in (("saturday",saturday),("sunday",sunday)))
+        if not complete:
             unassigned_count += 1
-        reasons = sorted({
-            str(period.get("reason") or "请假")
-            for period in member_periods
-            if any(
-                period_covers(target_date, [period])
-                for target_date in (saturday, sunday)
-            )
-        })
         result_members.append(
             {
                 **member,
-                "assignment": assignment,
+                "duty_days": assignment,
+                "attendance_revision": versions.get(member["id"], 0),
                 "recorded": recorded,
-                "previous_assignment": previous_assignments.get(member["id"]),
+                "complete": complete,
+                "previous_duty_days": previous_assignments.get(member["id"], []),
+                "previous_recorded": all((member["id"], d-timedelta(days=7)) in daily for d in (saturday,sunday)),
                 "unavailable_days": unavailable,
                 "exempt": exempt,
-                "absence_reason": "；".join(reasons),
+                "absence_reason": "",
+                "conflict": any(day in unavailable for day in assignment),
             }
         )
 
     return {
+        "model_version": 2,
         "week_start": week_start.isoformat(),
         "saturday": saturday.isoformat(),
         "sunday": sunday.isoformat(),
@@ -240,81 +222,37 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
     }
 
 
-async def save_weekend_board(
-    conn,
-    *,
-    requested_date: date,
-    raw_assignments: dict[int, str | None],
-    updated_by: int,
-) -> dict[str, Any]:
-    week_start = normalize_week_start(requested_date)
-    saturday, sunday = weekend_dates(week_start)
-    await conn.begin()
-    try:
-        async with conn.cursor() as cur:
-            board = await get_weekend_board(cur, week_start)
-            members = {member["id"]: member for member in board["members"]}
-            unknown_ids = set(raw_assignments) - set(members)
-            missing_ids = set(members) - set(raw_assignments)
-            if unknown_ids:
-                raise ValueError("排班中包含不存在或不参与排班的人员")
-            if missing_ids:
-                raise ValueError("请提交本周全部备勤人员的安排")
-
-            rows: list[tuple[Any, ...]] = []
-            for member_id, member in members.items():
-                assignment = raw_assignments[member_id]
-                unavailable = set(member["unavailable_days"])
-                if member["exempt"]:
-                    if assignment is not None:
-                        raise ValueError(f"{member['name']}周末两天都请假，无需排班")
-                    duty_date = None
-                else:
-                    if assignment not in {None, "saturday", "sunday"}:
-                        raise ValueError(f"{member['name']}的备勤选项无效")
-                    if assignment is not None and assignment in unavailable:
-                        raise ValueError(f"{member['name']}所选日期处于请假状态")
-                    duty_date = (
-                        saturday
-                        if assignment == "saturday"
-                        else sunday if assignment == "sunday" else None
-                    )
-                rows.append(
-                    (
-                        week_start,
-                        member_id,
-                        duty_date,
-                        member["name"],
-                        member["community"],
-                        member["position"],
-                        updated_by,
-                    )
-                )
-
-            if rows:
-                await cur.executemany(
-                    """
-                    INSERT INTO _personnel_weekend_duty (
-                        week_start, member_id, duty_date, member_name,
-                        community_snapshot, position_snapshot, updated_by
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        duty_date=VALUES(duty_date),
-                        member_name=VALUES(member_name),
-                        community_snapshot=VALUES(community_snapshot),
-                        position_snapshot=VALUES(position_snapshot),
-                        updated_by=VALUES(updated_by)
-                    """,
-                    rows,
-                )
-        await conn.commit()
-    except Exception:
-        await conn.rollback()
-        raise
-
-    async with conn.cursor() as cur:
-        return await get_weekend_board(cur, week_start)
+async def save_weekend_board(conn, *, requested_date, raw_assignments, updated_by, expected_versions, request_id):
+    saturday, sunday = weekend_dates(requested_date)
+    async def apply(cur, versions, dry):
+        board = await get_weekend_board(cur, requested_date)
+        members = {m["id"]:m for m in board["members"]}
+        if not set(raw_assignments).issubset(members):
+            raise ValueError("包含不存在或不参与备勤的人员")
+        daily = await load_daily(cur, list(raw_assignments), saturday, sunday)
+        for m, days in raw_assignments.items():
+            member = members[m]
+            if set(days) - {"saturday","sunday"}:
+                raise ValueError("备勤选项无效")
+            changes = []
+            for label, day in (("saturday",saturday),("sunday",sunday)):
+                state = "work" if label in days else "rest"
+                old = daily.get((m,day))
+                # Existing work covered by a newly entered leave is preserved.
+                if state == "work" and label in member["unavailable_days"] and old != "work":
+                    raise ValueError("所选日期有有效请假，请先处理请假记录")
+                if old != state:
+                    changes.append(dict(date=day.isoformat(),before=old,after=state))
+                    await cur.execute(f"INSERT INTO {table('_personnel_work_schedule')} "
+                                      "(member_id,work_date,state,source,revision,updated_by) VALUES (%s,%s,%s,'weekend',%s,%s) "
+                                      "ON DUPLICATE KEY UPDATE state=VALUES(state),source=VALUES(source),revision=VALUES(revision),updated_by=VALUES(updated_by),updated_at=UTC_TIMESTAMP()",
+                                      (m,day,state,versions[m]+1,updated_by))
+            if changes:
+                await record_change(cur,m,versions[m],'weekend',updated_by,'双休日排班调整',[],changes)
+        return await get_weekend_board(cur, requested_date)
+    return await mutation(conn, actor=updated_by, request_id=request_id,
+                          payload=dict(week=str(requested_date),assignments=raw_assignments,versions=expected_versions),
+                          member_ids=list(raw_assignments),expected=expected_versions,callback=apply)
 
 
 async def get_attendance_context(
@@ -335,10 +273,10 @@ async def get_attendance_context(
                 scope_placeholders = ", ".join(["%s"] * len(community_scope))
                 scope_clause = (
                     "AND EXISTS (SELECT 1 "
-                    "FROM _grid_member_department_links AS scope_link "
-                    "JOIN _departments AS scope_department "
+                    f"FROM {table('_grid_member_department_links')} AS scope_link "
+                    f"JOIN {table('_departments')} AS scope_department "
                     "ON scope_department.id=scope_link.department_id "
-                    "JOIN _communities AS scope_community "
+                    f"JOIN {table('_communities')} AS scope_community "
                     "ON scope_community.id=scope_department.community_id "
                     "WHERE scope_link.member_id=member.id "
                     f"AND scope_community.name IN ({scope_placeholders}))"
@@ -362,12 +300,12 @@ async def get_attendance_context(
             f"""
             SELECT member.id, member.name, community.name, member.position,
                    link.sort_order
-            FROM _grid_members AS member
-            LEFT JOIN _grid_member_department_links AS link
+            FROM {table('_grid_members')} AS member
+            LEFT JOIN {table('_grid_member_department_links')} AS link
               ON link.member_id=member.id
-            LEFT JOIN _departments AS department
+            LEFT JOIN {table('_departments')} AS department
               ON department.id=link.department_id
-            LEFT JOIN _communities AS community
+            LEFT JOIN {table('_communities')} AS community
               ON community.id=department.community_id
             WHERE member.position IN ({placeholders})
               {scope_clause}
@@ -412,39 +350,20 @@ async def get_attendance_context(
     ]
     business_today = await get_business_date(cur)
     week_starts = required_week_starts(start_date, end_date, business_today)
-    duties: dict[tuple[int, date], date | None] = {}
-    if week_starts and duty_members:
-        placeholders = ", ".join(["%s"] * len(week_starts))
-        await cur.execute(
-            f"""
-            SELECT week_start, member_id, duty_date
-            FROM _personnel_weekend_duty
-            WHERE week_start IN ({placeholders})
-            """,
-            week_starts,
-        )
-        for row in await cur.fetchall():
-            duties[(int(row[1]), row[0])] = row[2]
-
+    daily = await load_daily(cur, [member["id"] for member in members.values()], start_date, end_date)
     missing_weeks: set[date] = set()
-    for week_start in week_starts:
-        saturday, sunday = weekend_dates(week_start)
+    for target in iter_dates(start_date, min(end_date, business_today)):
+        if target.weekday() < 5:
+            continue
         for member in duty_members:
-            member_periods = periods.get(member["id"], [])
-            unavailable_both = (
-                period_covers(saturday, member_periods)
-                and period_covers(sunday, member_periods)
-            )
-            if (
-                not unavailable_both
-                and (member["id"], week_start) not in duties
-            ):
-                missing_weeks.add(week_start)
+            status = resolve_day(member, target, daily, periods.get(member["id"], []), configured_duty_positions)
+            if status["state"] == "unassigned":
+                missing_weeks.add(normalize_week_start(target))
 
     await cur.execute(
-        """
+        f"""
         SELECT config_value
-        FROM _system_config
+        FROM {table('_system_config')}
         WHERE config_key='attendance_history_started_on'
         """
     )
@@ -463,7 +382,7 @@ async def get_attendance_context(
     return {
         "members": members,
         "periods": periods,
-        "duties": duties,
+        "daily": daily,
         "weekend_duty_positions": configured_duty_positions,
         "missing_week_starts": missing_weeks,
         "history_started_on": history_started_on,
@@ -476,21 +395,9 @@ def is_member_on_duty(
     target_date: date,
     context: dict[str, Any],
 ) -> bool:
-    if period_covers(
-        target_date,
-        context["periods"].get(member["id"], []),
-    ):
-        return False
-    if target_date.weekday() < 5:
-        return True
-    duty_positions = context.get(
-        "weekend_duty_positions",
-        DEFAULT_WEEKEND_DUTY_POSITIONS,
-    )
-    if member["position"] not in duty_positions:
-        return False
-    week_start = normalize_week_start(target_date)
-    return context["duties"].get((member["id"], week_start)) == target_date
+    return resolve_day(member, target_date, context.get("daily", {}),
+                       context["periods"].get(member["id"], []),
+                       context.get("weekend_duty_positions", DEFAULT_WEEKEND_DUTY_POSITIONS))["state"] == "work"
 
 
 def allocate_person_days(

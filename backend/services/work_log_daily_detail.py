@@ -16,10 +16,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from services.personnel_attendance import (
     get_attendance_context,
-    is_member_on_duty,
-    normalize_week_start,
-    period_covers,
 )
+from services.attendance_schedule import resolve_day
 from services.personnel_positions import (
     VISIT_POSITION_CONFIG_KEY,
     get_configured_positions,
@@ -303,7 +301,7 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
               ON leader_link.member_id=member.id
             LEFT JOIN _areas AS leader_area ON leader_area.id=leader_link.area_id
             LEFT JOIN _areas AS member_area ON member_area.id=member.area_id
-            WHERE TRIM(member.name) <> '' AND member.status <> '离岗'
+            WHERE TRIM(member.name) <> ''
             GROUP BY member.id, member.name, member.position, member.status,
                      member_area.id, member_area.name
             """
@@ -322,11 +320,6 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
             selected_positions=positions,
         )
     area_labels, area_order = await _area_labels(conn)
-    missing_week = normalize_week_start(business_date) in attendance.get(
-        "missing_week_starts",
-        set(),
-    )
-
     roster: list[dict[str, Any]] = []
     for raw_row in rows:
         if len(raw_row) >= 10:
@@ -363,21 +356,12 @@ async def _load_roster(conn, business_date: date) -> list[dict[str, Any]]:
             "communities": [community] if community else [],
             "position": member_position,
         })
-        periods = attendance.get("periods", {}).get(int(member_id), [])
-        if period_covers(business_date, periods):
-            attendance_text = "否"
-        elif (
-            business_date.weekday() >= 5
-            and member_position in attendance.get("weekend_duty_positions", set())
-            and missing_week
-        ):
-            attendance_text = "未排班"
-        else:
-            attendance_text = (
-                "是"
-                if is_member_on_duty(attendance_member, business_date, attendance)
-                else "否"
-            )
+        current = resolve_day(
+            attendance_member, business_date, attendance.get("daily", {}),
+            attendance.get("periods", {}).get(int(member_id), []),
+            attendance.get("weekend_duty_positions", set()),
+        )
+        attendance_text = "是" if current["state"] == "work" else "未排班" if current["state"] == "unassigned" else "否"
 
         if area:
             group_key = f"area:{area}"
