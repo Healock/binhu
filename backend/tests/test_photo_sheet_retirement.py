@@ -168,7 +168,7 @@ class PhotoSheetRetirementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["attachment_keys"], ["active/photo.jpg"])
         self.assertEqual(result["attachment_hashes"], {"active/photo.jpg": {"b" * 64}})
         self.assertEqual(result["invalid_storage_key_rows"], 1)
-        self.assertIn("attachment.deleted_at IS NULL", cursor.statements[1][0])
+        self.assertIn("FROM work_order_attachments", cursor.statements[1][0])
 
     async def test_discard_stage_failure_is_persisted_for_verify(self):
         with tempfile.TemporaryDirectory() as temp_dir:
