@@ -93,6 +93,16 @@ test('辖区档案页面显示告知书后台进度并允许断点继续', () =>
   assert.match(pageSource, /来源未再出现/)
 })
 
+test('辖区档案页面导入进度组件保持显式导入', () => {
+  const pageSource = readFileSync(
+    new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(pageSource, /Progress, Select, Space, Spin, Tabs, Tag, Upload, message/)
+  assert.match(pageSource, /<Progress[\s\S]*certificateRun/)
+})
+
 test('房屋档案和问题核查使用正文搜索并提供完整筛选', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/RegistryManagement.tsx', import.meta.url),
