@@ -143,6 +143,43 @@ components:
           type: array
           maxItems: 50
           items: { $ref: '#/components/schemas/SubmissionEnvelope' }
+    RecoveryExportRequest:
+      type: object
+      required: [request_id, submission_ids]
+      properties:
+        request_id: { type: string, format: uuid }
+        submission_ids:
+          type: array
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items: { type: string, format: uuid }
+    RecoveryPhotoSubmission:
+      type: object
+      required: [submission_id, submission_kind, local_venue_id, encrypted_payload, wrapped_data_key, key_id, algorithm_version, payload_nonce, ciphertext_sha256, photo_nonce, photo_ciphertext_sha256, photo_size, photo_mime_type, photo_download_path]
+      properties:
+        submission_id: { type: string, format: uuid }
+        submission_kind: { type: string, const: venue_visit }
+        local_venue_id: { type: integer, minimum: 1 }
+        encrypted_payload: { type: string }
+        wrapped_data_key: { type: string }
+        key_id: { type: string }
+        algorithm_version: { type: string }
+        payload_nonce: { type: string }
+        ciphertext_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        photo_nonce: { type: string }
+        photo_ciphertext_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        photo_size: { type: integer, minimum: 1 }
+        photo_mime_type: { type: string, enum: [image/jpeg, image/png, image/webp] }
+        photo_download_path: { type: string }
+    RecoveryExportResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/RecoveryPhotoSubmission' }
     AckItem:
       type: object
       required: [submission_id, status]
@@ -428,6 +465,58 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: '#/components/responses/AuthenticationError' }
         "404": { description: 租约或照片不存在 }
+  /api/internal/submissions/recovery-export:
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    post:
+      summary: 导出指定 accepted 场所登记的加密恢复材料
+      description: 仅返回指定且已 accepted 的 venue_visit 元数据；每次最多 50 条。响应带 Ed25519 签名，接口不改变队列状态或 ACK。
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecoveryExportRequest' }
+      responses:
+        "200":
+          description: 签名后的恢复元数据
+          headers:
+            X-Binhu-Response-Timestamp: { $ref: '#/components/headers/ResponseTimestamp' }
+            X-Binhu-Response-Signature: { $ref: '#/components/headers/ResponseSignature' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecoveryExportResponse' }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+        "409": { $ref: '#/components/responses/Conflict' }
+  /api/internal/submissions/{submission_id}/recovery-photo:
+    parameters:
+      - { $ref: '#/components/parameters/RequestTimestamp' }
+      - { $ref: '#/components/parameters/RequestNonce' }
+      - { $ref: '#/components/parameters/RequestId' }
+      - { $ref: '#/components/parameters/RequestSignature' }
+    get:
+      summary: 下载指定 accepted 场所登记的加密照片
+      description: 仅限已 accepted 的 venue_visit；返回密文，使用响应 X-Content-SHA256 与签名元数据核验密文摘要。
+      security: [{ mutualTLS: [], requestSignature: [] }]
+      parameters:
+        - in: path
+          name: submission_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 已 accepted 的照片密文
+          headers:
+            X-Content-SHA256: { schema: { type: string, pattern: '^[a-f0-9]{64}$' } }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: '#/components/responses/AuthenticationError' }
+        "404": { description: accepted 提交或照片不存在 }
   /api/internal/submissions/ack:
     parameters:
       - { $ref: '#/components/parameters/RequestTimestamp' }

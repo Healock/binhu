@@ -8,6 +8,7 @@ umask 077
 : "${BINHU_MAINTENANCE_BACKUP_ROOT:=$BINHU_PROJECT_DIR/deploy-backups/automated}"
 : "${BINHU_WORKFLOW_ATTACHMENT_DIR:=/data/binhu/workflow-attachments}"
 : "${BINHU_WORKFLOW_PHOTO_IMPORT_DIR:=/data/binhu/workflow-photo-imports}"
+: "${BINHU_VENUE_PHOTO_DIR:=/data/binhu/venue-photos}"
 : "${BINHU_COMPOSE_PROJECT_NAME:=binhu}"
 
 fail() { printf '[binhu-maintenance] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -21,7 +22,7 @@ operation="$1"
 phase="$2"
 run_id="$3"
 case "$operation" in
-  internal-department-retirement|photo-sheet-retirement|registry-property-identity) ;;
+  internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery) ;;
   *) fail "unsupported maintenance operation" ;;
 esac
 case "$phase" in
@@ -63,6 +64,17 @@ if [[ "$operation" == registry-property-identity ]]; then
       [[ "$maintenance_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]] || fail "invalid maintenance actor"
       ;;
   esac
+elif [[ "$operation" == venue-photo-recovery ]]; then
+  case "$phase" in
+    measure|backup|verify) [[ $# -eq 3 ]] || fail "$phase takes no extra arguments" ;;
+    apply)
+      [[ $# -eq 6 && "$4" =~ ^[0-9]+$ && "$5" =~ ^[0-9a-f]{64}$ ]] || fail "apply requires expected count, measurement hash and confirmation"
+      expected_count="$4"
+      measurement_hash="$5"
+      confirmation="$6"
+      ;;
+    rollback) fail "venue photo recovery has no destructive rollback" ;;
+  esac
 else
   case "$phase" in
     apply)
@@ -78,6 +90,7 @@ case "$operation:$phase:$confirmation" in
   internal-department-retirement:apply:confirm-remove-internal|photo-sheet-retirement:apply:confirm-empty-photo-tables|\
   registry-property-identity:apply:confirm-registry-property-identity|\
   registry-property-identity:rollback:confirm-registry-property-identity-rollback|\
+  venue-photo-recovery:apply:confirm-venue-photo-recovery|\
   *:measure:|*:backup:|*:verify:) ;;
   *) fail "invalid confirmation for operation" ;;
 esac
@@ -128,6 +141,13 @@ print(json.dumps({
     "idempotent": payload.get("idempotent"),
     "internal_member_count": payload.get("internal_member_count"),
     "photo_work_orders": payload.get("photo_work_orders"),
+    "candidate_count": payload.get("candidate_count"),
+    "measurement_hash": payload.get("measurement_hash"),
+    "key_ids": payload.get("key_ids"),
+    "restored_count": payload.get("restored_count"),
+    "present_and_valid": payload.get("present_and_valid"),
+    "missing": payload.get("missing"),
+    "mismatched": payload.get("mismatched"),
     "table_counts": payload.get("table_counts"),
     "checks": payload.get("checks"),
 }, ensure_ascii=False, sort_keys=True))
@@ -270,6 +290,9 @@ if [[ "$phase" == measure ]]; then
   if [[ "$operation" == registry-property-identity && -e "$evidence_dir/measure.json" ]]; then
     fail "identity measurement evidence is immutable; use a new run id"
   fi
+  if [[ "$operation" == venue-photo-recovery && -e "$evidence_dir/measure.json" ]]; then
+    fail "photo recovery measurement evidence is immutable; use a new run id"
+  fi
   case "$operation" in
     internal-department-retirement)
       run_json "$evidence_dir/measure.json" python -m migrations.internal_department_retirement measure ;;
@@ -279,6 +302,8 @@ if [[ "$phase" == measure ]]; then
       run_json "$evidence_dir/measure.json" python -m migrations.registry_property_identity_maintenance measure \
         --environment production --run-id "$run_id" --old-property-id "$old_property_id" \
         --canonical-property-id "$canonical_property_id" --actor "$maintenance_actor" ;;
+    venue-photo-recovery)
+      run_json "$evidence_dir/measure.json" python -m tools.venue_photo_recovery measure --run-id "$run_id" ;;
   esac
   exit 0
 fi
@@ -288,6 +313,11 @@ if [[ "$phase" == backup ]]; then
     -e "$manifest_host" || -e "$backup_dir/RegistryData.sql.gz" || \
     -e "$backup_dir/RegistryData.sql.gz.sha256" ) ]]; then
     fail "identity backup evidence is immutable; use a new run id"
+  fi
+  if [[ "$operation" == venue-photo-recovery ]]; then
+    [[ ! -e "$manifest_host" && ! -e "$backup_dir/RegistryData.sql.gz" && \
+      ! -e "$backup_dir/RegistryData.sql.gz.sha256" && ! -e "$backup_dir/venue-photos.tar.gz" ]] || \
+      fail "photo recovery backup evidence is immutable; use a new run id"
   fi
   case "$operation" in
     internal-department-retirement)
@@ -303,6 +333,10 @@ if [[ "$phase" == backup ]]; then
       ;;
     registry-property-identity)
       backup_database RegistryData ;;
+    venue-photo-recovery)
+      [[ -d "$BINHU_VENUE_PHOTO_DIR" ]] || fail "venue photo directory is missing"
+      backup_database RegistryData
+      tar -czf "$backup_dir/venue-photos.tar.gz" -C "$BINHU_VENUE_PHOTO_DIR" . ;;
   esac
   write_manifest
   printf '{"operation":"%s","phase":"backup","manifest":"%s"}\n' "$operation" "$manifest_host"
@@ -358,6 +392,21 @@ PY
         --environment production --run-id "$run_id" --old-property-id "$old_property_id" \
         --canonical-property-id "$canonical_property_id" --measurement-hash "$measurement_hash" \
         --backup-manifest "$manifest_container" --confirm "$confirmation" --actor "$maintenance_actor" ;;
+    venue-photo-recovery)
+      python3 - "$evidence_dir/measure.json" "$run_id" "$expected_count" "$measurement_hash" <<'PY'
+import json, sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+_, run_id, count, digest = sys.argv[1:]
+if not (payload.get("ok") is True and payload.get("run_id") == run_id
+        and payload.get("candidate_count") == int(count)
+        and payload.get("measurement_hash") == digest):
+    raise SystemExit("photo recovery measurement evidence mismatch")
+PY
+      [[ "$confirmation" == confirm-venue-photo-recovery ]] || fail "photo recovery confirmation is required"
+      run_json "$evidence_dir/apply.json" python -m tools.venue_photo_recovery apply \
+        --run-id "$run_id" --expected-count "$expected_count" --measurement-hash "$measurement_hash" \
+        --backup-manifest "$manifest_container" --confirm "$confirmation" ;;
   esac
   exit 0
 fi
@@ -395,6 +444,8 @@ case "$operation" in
     run_json "$evidence_dir/verify.json" python -m migrations.registry_property_identity_maintenance verify \
       --environment production --run-id "$run_id" --old-property-id "$old_property_id" \
       --canonical-property-id "$canonical_property_id" --actor "$maintenance_actor" ;;
+    venue-photo-recovery)
+      run_json "$evidence_dir/verify.json" python -m tools.venue_photo_recovery verify --run-id "$run_id" ;;
 esac
 python3 - "$evidence_dir/verify.json" <<'PY'
 import json, sys

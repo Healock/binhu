@@ -89,17 +89,8 @@ jobs:
           win7_full="$(printf '%s\n' "$status" | awk -F= '$1=="WIN7_X64_FULL_PACKAGE"{print $2}')"
           win10_full="$(printf '%s\n' "$status" | awk -F= '$1=="WIN10_X64_FULL_PACKAGE"{print $2}')"
           android_version="$(printf '%s\n' "$status" | awk -F= '$1=="ANDROID_ARM64_VERSION"{print $2}')"
-          python - "$version" "$win7_version" "$win10_version" "$android_version" <<'PY'
-          import re, sys
-          incoming, win7, win10, android = sys.argv[1:]
-          parse = lambda value: tuple(map(int, value.split('.'))) if re.fullmatch(r'\d+\.\d+\.\d+', value) else None
-          target = parse(incoming)
-          if target is None: raise SystemExit('invalid repository VERSION')
-          if bool(win7) != bool(win10) or (win7 and win7 != win10): raise SystemExit('server platform versions are inconsistent')
-          if android and android != win7: raise SystemExit('server Android version is inconsistent with Windows')
-          if not win7 and incoming != '0.25.15': raise SystemExit('an empty server must start at baseline 0.25.15')
-          if win7 and target < parse(win7): raise SystemExit('VERSION would downgrade the client release')
-          PY
+          python desktop/scripts/validate_release_versions.py \
+            "$version" "$win7_version" "$win10_version" "$android_version"
           publish=true
           if [ -n "$win7_version" ] && [ "$version" = "$win7_version" ]; then
             if [ "$win7_commit" != "$win10_commit" ]; then

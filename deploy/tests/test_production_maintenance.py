@@ -18,6 +18,7 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn("internal-department-retirement", workflow)
         self.assertIn("photo-sheet-retirement", workflow)
         self.assertIn("registry-property-identity", workflow)
+        self.assertIn("venue-photo-recovery", workflow)
         self.assertIn("old_property_id", workflow)
         self.assertIn("canonical_property_id", workflow)
         self.assertIn("measurement_hash", workflow)
@@ -41,6 +42,8 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn("confirm-remove-internal", gateway)
         self.assertIn("confirm-empty-photo-tables", gateway)
         self.assertIn("confirm-registry-property-identity", gateway)
+        self.assertIn("venue-photo-recovery", gateway)
+        self.assertIn("confirm-venue-photo-recovery", gateway)
         self.assertIn("valid_actor()", gateway)
         self.assertIn("^[0-9a-f]{64}$", gateway)
         self.assertNotIn("--sql", maintenance_block)
@@ -69,6 +72,9 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn("identity measurement evidence is immutable; use a new run id", script)
         self.assertIn("identity backup evidence is immutable; use a new run id", script)
         self.assertIn("registry-property-identity", script)
+        self.assertIn("venue-photos.tar.gz", script)
+        self.assertIn('"$backup_dir/RegistryData.sql.gz.sha256"', script)
+        self.assertIn("photo recovery measurement evidence is immutable", script)
 
     def test_installer_requires_and_installs_root_maintenance_contract(self) -> None:
         installer = (ROOT / "deploy/install-server-deployer.sh").read_text(encoding="utf-8")

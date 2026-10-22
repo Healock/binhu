@@ -136,6 +136,37 @@ async def test_renew_lease_is_bound_to_owner_and_active_lease():
 
 
 @pytest.mark.asyncio
+async def test_accepted_photo_export_is_scoped_to_requested_accepted_venue_visits():
+    row = {"submission_id": "recovery-id", "submission_kind": "venue_visit", "key_id": "key-1"}
+    cursor = FakeCursor([row])
+    repository = MySQLRepository(FakePool(cursor), queued_retention_hours=168, lease_seconds=300)
+
+    result = await repository.get_accepted_photo_submissions(["recovery-id"])
+
+    sql, params = cursor.executed[0]
+    assert "state='accepted'" in sql
+    assert "submission_kind='venue_visit'" in sql
+    assert "photo_object_key IS NOT NULL" in sql
+    assert params == ("recovery-id",)
+    assert result == [row]
+
+
+@pytest.mark.asyncio
+async def test_accepted_photo_lookup_is_scoped_to_accepted_venue_visit():
+    row = {"photo_object_key": "photo.bin", "photo_ciphertext_sha256": "a" * 64, "photo_size": 12}
+    cursor = FakeCursor([row])
+    repository = MySQLRepository(FakePool(cursor), queued_retention_hours=168, lease_seconds=300)
+
+    result = await repository.get_accepted_photo("recovery-id")
+
+    sql, params = cursor.executed[0]
+    assert "state='accepted'" in sql
+    assert "submission_kind='venue_visit'" in sql
+    assert params == ("recovery-id",)
+    assert result == row
+
+
+@pytest.mark.asyncio
 async def test_pull_includes_photo_object_key_for_download_url_generation():
     cursor = FakeCursor(rows=[
         [{"submission_id": "submission-id"}],

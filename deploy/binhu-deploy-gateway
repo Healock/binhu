@@ -18,7 +18,7 @@ if [[ "${command_parts[0]:-}" == "production-maintenance" ]]; then
   readonly maintenance_phase="${command_parts[2]}"
   readonly maintenance_run_id="${command_parts[3]}"
   case "$maintenance_operation" in
-    internal-department-retirement|photo-sheet-retirement|registry-property-identity) ;;
+    internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery) ;;
     *) echo "Invalid production-maintenance operation." >&2; exit 64 ;;
   esac
   case "$maintenance_phase" in
@@ -58,6 +58,20 @@ if [[ "${command_parts[0]:-}" == "production-maintenance" ]]; then
         esac
         ;;
     esac
+  elif [[ "$maintenance_operation" == "venue-photo-recovery" ]]; then
+    [[ "$maintenance_phase" != rollback ]] || { echo "Venue photo recovery has no rollback phase." >&2; exit 64; }
+    if [[ "$maintenance_phase" == apply ]]; then
+      [[ "${#command_parts[@]}" -eq 7 && "${command_parts[4]}" =~ ^[0-9]+$ && "${command_parts[5]}" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "Apply requires an expected count, measurement hash and confirmation token." >&2; exit 64;
+      }
+      [[ "${command_parts[6]}" == confirm-venue-photo-recovery ]] || {
+        echo "Invalid venue photo recovery confirmation." >&2; exit 64;
+      }
+    else
+      [[ "${#command_parts[@]}" -eq 4 ]] || {
+        echo "This production-maintenance phase takes no extra arguments." >&2; exit 64;
+      }
+    fi
   else
     [[ "$maintenance_phase" != rollback ]] || { echo "Rollback is only registered for registry identity maintenance." >&2; exit 64; }
     if [[ "$maintenance_phase" == apply ]]; then

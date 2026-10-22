@@ -49,6 +49,54 @@ def test_hmac_digest_rejects_unknown_kind():
         hmac_digest("value", kind="unknown")
 
 
+@pytest.mark.asyncio
+async def test_recovery_export_client_validates_exact_requested_submission_ids():
+    item = {
+        "submission_id": "submission-1",
+        "submission_kind": "venue_visit",
+        "local_venue_id": 1,
+        "encrypted_payload": "encrypted",
+        "wrapped_data_key": "wrapped",
+        "key_id": "key-1",
+        "algorithm_version": "rsa-oaep-sha256+aes-256-gcm-v1",
+        "payload_nonce": "nonce",
+        "ciphertext_sha256": "a" * 64,
+        "photo_nonce": "photo-nonce",
+        "photo_ciphertext_sha256": "b" * 64,
+        "photo_size": 12,
+        "photo_mime_type": "image/jpeg",
+        "photo_download_path": "/api/internal/submissions/submission-1/recovery-photo",
+    }
+    client = venue_cloud.VenueCloudClient.__new__(venue_cloud.VenueCloudClient)
+    calls = []
+
+    async def request_json(method, path, payload):
+        calls.append((method, path, payload))
+        return {"items": [item]}
+
+    client.request_json = request_json
+    result = await client.export_accepted_photo_submissions(["submission-1"])
+
+    assert result == [item]
+    assert calls[0][0:2] == ("POST", "/api/internal/submissions/recovery-export")
+    assert calls[0][2]["submission_ids"] == ["submission-1"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_export_client_rejects_duplicate_ids_and_unrequested_results():
+    client = venue_cloud.VenueCloudClient.__new__(venue_cloud.VenueCloudClient)
+
+    with pytest.raises(VenueCloudClientError, match="invalid_recovery_submission_ids"):
+        await client.export_accepted_photo_submissions(["same", "same"])
+
+    async def request_json(_method, _path, _payload):
+        return {"items": [{"submission_id": "other"}]}
+
+    client.request_json = request_json
+    with pytest.raises(VenueCloudClientError, match="invalid_cloud_response"):
+        await client.export_accepted_photo_submissions(["requested"])
+
+
 class FakeClient:
     def __init__(self, signal):
         self.signal = signal
