@@ -343,7 +343,7 @@ test('告知书旧问题可查询已替代历史，未签订不冒充重复冲�
   const page = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
   assert.match(page, /value: 'superseded', label: '已被新快照替代'/)
   assert.match(page, /value: 'not_uploaded', label: '未签订'/)
-  assert.match(page, /旧记录与旧问题只保留历史/)
+  assert.match(page, /同一套房屋只保留一份当前告知书/)
 })
 
 test('房屋档案显示小区匹配状态、待确认数量和人工确认入口', () => {

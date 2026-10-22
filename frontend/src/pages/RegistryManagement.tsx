@@ -1322,11 +1322,11 @@ export default function RegistryManagement() {
                 : '可以点击“继续读取”从已保存分页继续；如来源数据已经大幅调整，也可以选择重新读取。'}
             />}
             {importPreview ? <Alert type="success" showIcon message={importPreview.source_type === 'certificate'
-              ? `告知书共 ${importPreview.total_count} 条；${comparison?.safe_to_apply ?? importPreview.normal_count} 条可安全挂载；${comparison?.pending_review ?? importPreview.problem_row_count} 条需核查。`
+              ? `告知书共 ${importPreview.total_count} 条；新增挂载 ${comparison?.added ?? 0} 条，刷新既有告知书 ${comparison?.updated ?? 0} 条，与现有一致 ${comparison?.unchanged ?? 0} 条，${comparison?.pending_review ?? importPreview.problem_row_count} 条需核查。`
               : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条需核查。`}
               description={importPreview.status === 'preview'
                 ? importPreview.source_type === 'certificate'
-                  ? '当前仍是预览状态；确认完整告知书快照后，旧记录与旧问题只保留历史，当前状态以本次来源为准。'
+                  ? '当前仍是预览状态；同一套房屋只保留一份当前告知书，来源编号或告知人变化都会刷新原记录，确认后才生效。'
                   : '当前仍是预览状态，确认只处理安全记录，问题记录进入“问题数据核查”。'
                 : importPreview.source_type === 'household' && importPreview.status === 'partially_imported'
                   ? '本批已完成部分导入，可点击“继续导入正常数据”处理剩余安全记录；已成功导入的记录不会重复写入，问题记录仍保留在“问题数据核查”。'
@@ -1357,9 +1357,9 @@ export default function RegistryManagement() {
               <div className="rounded border border-[var(--app-border)] p-3">
                 <div className="mb-2 font-medium">本次变化</div>
                 <div className="grid grid-cols-2 gap-2 text-sm">
-                  <span>新增可挂载：{comparison.added}</span>
-                  <span>内容/房屋更新：{comparison.updated}</span>
-                  <span>保持不变：{comparison.unchanged}</span>
+                  <span>新增挂载：{comparison.added}</span>
+                  <span>刷新既有告知书：{comparison.updated}</span>
+                  <span>与现有一致：{comparison.unchanged}</span>
                   <span>来源未再出现：{comparison.missing_from_source}</span>
                   <span>安全可处理：{comparison.safe_to_apply}</span>
                   <span>进入问题核查：{comparison.pending_review}</span>
