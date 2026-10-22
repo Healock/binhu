@@ -613,7 +613,7 @@ async def _property_search_result(
         "ON property_match.property_id=property.id "
         "LEFT JOIN (SELECT canonical_property_id property_id,COUNT(*) certificate_count,"
         "MAX(CASE WHEN latest_rank=1 THEN id END) latest_id FROM ("
-        "SELECT distinct_sources.*,ROW_NUMBER() OVER (PARTITION BY canonical_property_id "
+        "SELECT ranked_sources.*,ROW_NUMBER() OVER (PARTITION BY canonical_property_id "
         "ORDER BY updated_at DESC,id DESC) latest_rank FROM ("
         "SELECT family_rows.*,ROW_NUMBER() OVER (PARTITION BY canonical_property_id,source_type,source_identity "
         "ORDER BY is_current DESC,updated_at DESC,id DESC) source_rank FROM ("
