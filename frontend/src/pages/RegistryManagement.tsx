@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert, Button, Collapse, DatePicker, Descriptions, Drawer, Dropdown, Form, Image, Input, Modal, Pagination, Popconfirm,
-  Select, Space, Spin, Tabs, Tag, Upload, message,
+  Progress, Select, Space, Spin, Tabs, Tag, Upload, message,
 } from 'antd'
 import type { TableColumnsType } from 'antd'
 import type { ReactNode } from 'react'
