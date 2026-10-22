@@ -199,6 +199,8 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
             "/api/internal/submissions/wait",
             "/api/internal/submissions/pull",
             "/api/internal/submissions/{submission_id}/photo/{lease_id}",
+            "/api/internal/submissions/recovery-export",
+            "/api/internal/submissions/{submission_id}/recovery-photo",
             "/api/internal/submissions/ack",
             "/api/internal/submissions/renew-lease",
         ):
@@ -207,6 +209,8 @@ class VenueCloudDeploymentContractTests(unittest.TestCase):
         self.assertIn("X-Binhu-Nonce", contract)
         self.assertIn("X-Binhu-Request-Id", contract)
         self.assertIn("X-Binhu-Response-Signature", contract)
+        self.assertIn("RecoveryExportRequest", contract)
+        self.assertIn("accepted 场所登记", contract)
 
 
 if __name__ == "__main__":

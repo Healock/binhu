@@ -12,6 +12,7 @@ on:
           - internal-department-retirement
           - photo-sheet-retirement
           - registry-property-identity
+          - venue-photo-recovery
       phase:
         description: Maintenance phase
         required: true
@@ -22,7 +23,7 @@ on:
         required: true
         type: string
       expected_count:
-        description: Count confirmed from measure (retirement operations only)
+        description: Count confirmed by the measurement phase (apply only)
         required: false
         type: string
       old_property_id:
@@ -34,11 +35,11 @@ on:
         required: false
         type: string
       measurement_hash:
-        description: Exact measurement hash from the latest evidence (apply or rollback)
+        description: Exact measurement hash from the latest evidence (operation dependent)
         required: false
         type: string
       confirmation:
-        description: Explicit confirmation for destructive apply or rollback
+        description: Explicit confirmation phrase required by the selected apply operation
         required: false
         type: choice
         options:
@@ -47,6 +48,7 @@ on:
           - confirm-empty-photo-tables
           - confirm-registry-property-identity
           - confirm-registry-property-identity-rollback
+          - confirm-venue-photo-recovery
         default: none
 
 permissions:
@@ -88,7 +90,7 @@ jobs:
           INITIATED_BY: ${{ github.actor }}
         run: |
           set -Eeuo pipefail
-          [[ "$OPERATION" =~ ^(internal-department-retirement|photo-sheet-retirement|registry-property-identity)$ ]]
+          [[ "$OPERATION" =~ ^(internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery)$ ]]
           [[ "$PHASE" =~ ^(measure|backup|apply|verify|rollback)$ ]]
           [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]]
           if [[ "$OPERATION" == registry-property-identity ]]; then
@@ -120,6 +122,15 @@ jobs:
                 [[ "$CONFIRMATION" == confirm-registry-property-identity-rollback ]]
                 ;;
             esac
+          elif [[ "$OPERATION" == venue-photo-recovery ]]; then
+            [[ -z "$OLD_PROPERTY_ID" && -z "$CANONICAL_PROPERTY_ID" ]]
+            if [[ "$PHASE" == apply ]]; then
+              [[ "$EXPECTED_COUNT" =~ ^[0-9]+$ ]]
+              [[ "$MEASUREMENT_HASH" =~ ^[0-9a-f]{64}$ ]]
+              [[ "$CONFIRMATION" == confirm-venue-photo-recovery ]]
+            else
+              [[ -z "$EXPECTED_COUNT" && -z "$MEASUREMENT_HASH" && "$CONFIRMATION" == none ]]
+            fi
           else
             [[ "$PHASE" != rollback ]]
             [[ -z "$OLD_PROPERTY_ID" && -z "$CANONICAL_PROPERTY_ID" && -z "$MEASUREMENT_HASH" ]]
@@ -157,6 +168,8 @@ jobs:
               backup) command+=("$INITIATED_BY") ;;
               apply|rollback) command+=("$OLD_PROPERTY_ID" "$CANONICAL_PROPERTY_ID" "$MEASUREMENT_HASH" "$CONFIRMATION" "$INITIATED_BY") ;;
             esac
+          elif [[ "$OPERATION" == venue-photo-recovery && "$PHASE" == apply ]]; then
+            command+=("$EXPECTED_COUNT" "$MEASUREMENT_HASH" "$CONFIRMATION")
           elif [[ "$PHASE" == apply ]]; then
             command+=("$EXPECTED_COUNT" "$CONFIRMATION")
           fi

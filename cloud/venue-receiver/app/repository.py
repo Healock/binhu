@@ -408,6 +408,32 @@ class MySQLRepository:
                 )
                 return await cur.fetchone()
 
+    async def get_accepted_photo_submissions(self, submission_ids: list[str]) -> list[dict[str, Any]]:
+        if not submission_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(submission_ids))
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT submission_id,submission_kind,local_venue_id,encrypted_payload,wrapped_data_key,key_id,"
+                    "algorithm_version,payload_nonce,ciphertext_sha256,photo_nonce,photo_ciphertext_sha256,photo_size,photo_mime_type "
+                    f"FROM submissions WHERE submission_id IN ({placeholders}) AND state='accepted' "
+                    "AND submission_kind='venue_visit' AND photo_object_key IS NOT NULL",
+                    tuple(submission_ids),
+                )
+                return list(await cur.fetchall())
+
+    async def get_accepted_photo(self, submission_id: str) -> dict[str, Any] | None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT photo_object_key,photo_ciphertext_sha256,photo_size FROM submissions "
+                    "WHERE submission_id=%s AND state='accepted' AND submission_kind='venue_visit' "
+                    "AND photo_object_key IS NOT NULL",
+                    (submission_id,),
+                )
+                return await cur.fetchone()
+
     async def acknowledge(self, lease_id: str, results: list[dict[str, str]]) -> list[dict[str, str]]:
         applied: list[dict[str, str]] = []
         terminal = {"accepted", "rejected", "uncertain"}

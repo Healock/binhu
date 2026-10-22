@@ -82,6 +82,11 @@ class PullRequest(BaseModel):
     supported_encryption_versions: list[str] = Field(min_length=1, max_length=10)
 
 
+class RecoveryExportRequest(BaseModel):
+    request_id: uuid.UUID
+    submission_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
+
+
 class WaitRequest(BaseModel):
     request_id: uuid.UUID
     worker_id: str = Field(min_length=8, max_length=100)
@@ -625,6 +630,25 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
             })
         return signed_json(request, {"lease_id": lease_id, "lease_expires_at": _iso(expires_at), "items": items})
 
+    @application.post("/api/internal/submissions/recovery-export")
+    async def recovery_export(data: RecoveryExportRequest, request: Request, _: str = Depends(internal_request)):
+        submission_ids = [str(value) for value in data.submission_ids]
+        if len(set(submission_ids)) != len(submission_ids):
+            raise HTTPException(422, "duplicate_submission_id")
+        rows = await request.app.state.repo.get_accepted_photo_submissions(submission_ids)
+        items = []
+        for row in rows:
+            submission_id = str(row["submission_id"])
+            items.append({
+                **{key: row[key] for key in (
+                    "submission_id", "submission_kind", "local_venue_id", "encrypted_payload", "wrapped_data_key",
+                    "key_id", "algorithm_version", "payload_nonce", "ciphertext_sha256", "photo_nonce",
+                    "photo_ciphertext_sha256", "photo_size", "photo_mime_type",
+                )},
+                "photo_download_path": f"/api/internal/submissions/{submission_id}/recovery-photo",
+            })
+        return signed_json(request, {"items": items})
+
     @application.post("/api/internal/submissions/wait")
     async def wait_for_submissions(data: WaitRequest, request: Request, _: str = Depends(internal_request)):
         notifier = request.app.state.submission_notifier
@@ -651,6 +675,24 @@ def create_app(*, repo=None, config: Settings | None = None) -> FastAPI:
         row = await request.app.state.repo.get_leased_photo(submission_id, lease_id)
         if not row:
             raise HTTPException(404, "lease_or_photo_not_found")
+        path = (app_config.PHOTO_DIR / str(row["photo_object_key"])).resolve()
+        if app_config.PHOTO_DIR.resolve() not in path.parents or not path.is_file():
+            raise HTTPException(404, "photo_not_found")
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-SHA256": str(row["photo_ciphertext_sha256"]),
+                "Content-Length": str(row["photo_size"]),
+            },
+        )
+
+    @application.get("/api/internal/submissions/{submission_id}/recovery-photo")
+    async def accepted_recovery_photo(submission_id: str, request: Request, _: str = Depends(internal_request)):
+        row = await request.app.state.repo.get_accepted_photo(submission_id)
+        if not row:
+            raise HTTPException(404, "accepted_photo_not_found")
         path = (app_config.PHOTO_DIR / str(row["photo_object_key"])).resolve()
         if app_config.PHOTO_DIR.resolve() not in path.parents or not path.is_file():
             raise HTTPException(404, "photo_not_found")

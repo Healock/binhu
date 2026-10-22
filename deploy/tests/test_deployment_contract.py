@@ -69,6 +69,7 @@ class DeploymentContractTests(unittest.TestCase):
         )
         self.assertIn("permissions:\n  contents: write\n  pull-requests: read", workflow)
         self.assertIn("gh pr list", workflow)
+        self.assertIn("validate_release_versions.py", workflow)
 
     def test_client_release_frontend_build_has_explicit_node_heap(self) -> None:
         workflow = (ROOT / ".github/workflows/desktop-release.yml").read_text(

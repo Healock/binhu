@@ -183,6 +183,39 @@ class VenueCloudClient:
             )
         )
 
+    async def export_accepted_photo_submissions(self, submission_ids: list[str]) -> list[dict[str, Any]]:
+        if not submission_ids or len(submission_ids) > 50 or len(set(submission_ids)) != len(submission_ids):
+            raise VenueCloudClientError("invalid_recovery_submission_ids")
+        response = await self.request_json(
+            "POST",
+            "/api/internal/submissions/recovery-export",
+            {"request_id": str(uuid.uuid4()), "submission_ids": submission_ids},
+        )
+        items = response.get("items")
+        if not isinstance(items, list) or len(items) > len(submission_ids):
+            raise VenueCloudClientError("invalid_cloud_response")
+        requested = set(submission_ids)
+        seen: set[str] = set()
+        required = {
+            "submission_id", "submission_kind", "local_venue_id", "encrypted_payload", "wrapped_data_key",
+            "key_id", "algorithm_version", "payload_nonce", "ciphertext_sha256", "photo_nonce",
+            "photo_ciphertext_sha256", "photo_size", "photo_mime_type", "photo_download_path",
+        }
+        for item in items:
+            if (
+                not isinstance(item, dict)
+                or not required.issubset(item)
+                or item.get("submission_id") not in requested
+                or item.get("submission_id") in seen
+                or item.get("submission_kind") != "venue_visit"
+                or item.get("photo_download_path") != f"/api/internal/submissions/{item.get('submission_id')}/recovery-photo"
+                or type(item.get("photo_size")) is not int
+                or item["photo_size"] <= 0
+            ):
+                raise VenueCloudClientError("invalid_cloud_response")
+            seen.add(str(item["submission_id"]))
+        return items
+
     async def download_photo(self, path: str, request_id: str, expected_size: int, expected_sha256: str) -> bytes:
         if not path.startswith("/api/internal/submissions/") or ".." in path:
             raise VenueCloudClientError("invalid_photo_path")
@@ -192,6 +225,27 @@ class VenueCloudClient:
             raise VenueCloudClientError("transport_error") from exc
         if response.status_code != 200:
             raise VenueCloudClientError("photo_download_failed")
+        if response.headers.get("X-Content-SHA256") != expected_sha256:
+            raise VenueCloudClientError("photo_hash_header_mismatch")
+        data = response.content
+        if len(data) != expected_size:
+            raise VenueCloudClientError("photo_length_mismatch")
+        import hashlib
+
+        if hashlib.sha256(data).hexdigest() != expected_sha256:
+            raise VenueCloudClientError("photo_hash_mismatch")
+        return data
+
+    async def download_recovery_photo(self, submission_id: str, request_id: str, expected_size: int, expected_sha256: str) -> bytes:
+        path = f"/api/internal/submissions/{submission_id}/recovery-photo"
+        try:
+            response = await self.client.get(path, headers=self._headers("GET", path, request_id, b""))
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise VenueCloudClientError("transport_error") from exc
+        if response.status_code != 200:
+            raise VenueCloudClientError("photo_download_failed")
+        if response.headers.get("X-Content-SHA256") != expected_sha256:
+            raise VenueCloudClientError("photo_hash_header_mismatch")
         data = response.content
         if len(data) != expected_size:
             raise VenueCloudClientError("photo_length_mismatch")

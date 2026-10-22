@@ -10,7 +10,9 @@
 
 ### 场所登记照片存储
 
-场所登记照片由 `VENUE_PHOTO_DIR` 指向后端文件目录。Production Compose 必须将 `/data/binhu/venue-photos` 绑定挂载到后端容器 `/venue-photos`，并显式设置 `VENUE_PHOTO_DIR=/venue-photos`；部署后核对宿主机源目录、容器挂载和后端目录中的文件数量/哈希。不得把独立云端接收服务中的 `.bin` 加密暂存文件直接复制为本地登记照片；恢复必须保留队列元数据并通过已配置的验签、解密、幂等入库和 ACK 流程。
+场所登记照片由 `VENUE_PHOTO_DIR` 指向后端文件目录。Production Compose 必须将 `/data/binhu/venue-photos` 绑定挂载到后端容器 `/venue-photos`，并显式设置 `VENUE_PHOTO_DIR=/venue-photos`；部署后核对宿主机源目录、容器挂载和后端目录中的文件数量/哈希。
+
+已被云端标记为 `accepted`、但 Production 照片引用文件缺失的历史记录，使用固定维护操作 `venue-photo-recovery`。先执行 `measure`，逐条从云端读取仍保留的加密提交并在 Production 内存中解密；只有解密后 MIME、长度和 SHA-256 与 RegistryData 原有照片引用完全一致的记录进入清单。然后执行 `backup`，必须同时备份 `RegistryData` 和整个 `/data/binhu/venue-photos`，再使用测量数量、哈希和固定确认短语执行 `apply`，最后执行 `verify`。Apply 仅原子补入缺失文件，不修改数据库引用、云端队列状态或 ACK；已存在且哈希一致的文件保持不变，路径冲突或来源变化会停止操作。该流程不替代新提交的验签、解密、幂等入库和 ACK 流程。
 
 运维记录至少分开写明：问题已复现、根因已确认、修复已验证、目标环境已部署、业务验收已完成。缺少真实环境或真实 MySQL 证据时写“未验证”，不得用本地模拟、历史日志或代码合入替代。
 

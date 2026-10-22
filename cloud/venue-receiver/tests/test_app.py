@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import hashlib
 import io
+import json
 import sys
 import threading
 import time
@@ -31,6 +33,9 @@ class FakeRepository:
         self.submissions = {}
         self.nonces = set()
         self.rate_limits = []
+        self.accepted_photo_submissions = []
+        self.accepted_photo = None
+        self.recovery_export_ids = []
 
     async def ping(self):
         return None
@@ -106,6 +111,16 @@ class FakeRepository:
             "active_venue_count": 0,
         }
 
+    async def get_accepted_photo_submissions(self, submission_ids):
+        self.recovery_export_ids.append(list(submission_ids))
+        requested = set(submission_ids)
+        return [row for row in self.accepted_photo_submissions if row["submission_id"] in requested]
+
+    async def get_accepted_photo(self, submission_id):
+        if self.accepted_photo and self.accepted_photo["submission_id"] == submission_id:
+            return self.accepted_photo
+        return None
+
     async def expire_records(self, *_args):
         return []
 
@@ -169,12 +184,12 @@ def make_secure_client(tmp_path):
     return TestClient(create_app(repo=repo, config=config)), repo, request_private
 
 
-def signed_headers(private_key, *, method="GET", path="/api/internal/status", request_id=None, nonce=None, timestamp=None):
+def signed_headers(private_key, *, method="GET", path="/api/internal/status", request_id=None, nonce=None, timestamp=None, body=b""):
     request_id = request_id or str(uuid.uuid4())
     nonce = nonce or "nonce-for-secure-tests-0001"
     timestamp = timestamp or str(int(time.time()))
     signature = b64encode(
-        private_key.sign(canonical_request(method, path, timestamp, nonce, request_id, b""))
+        private_key.sign(canonical_request(method, path, timestamp, nonce, request_id, body))
     )
     return {
         "X-Binhu-Client-Verify": "SUCCESS",
@@ -714,6 +729,85 @@ def test_internal_api_rejects_nonce_replay_and_signs_valid_response(tmp_path):
     assert first.headers.get("X-Binhu-Response-Timestamp")
     assert first.headers.get("X-Binhu-Response-Signature")
     assert replay.status_code == 409
+
+
+def test_recovery_export_only_returns_requested_accepted_photo_submissions(tmp_path):
+    client, repo, request_private = make_secure_client(tmp_path)
+    submission_id = str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+    repo.accepted_photo_submissions = [{
+        "submission_id": submission_id,
+        "submission_kind": "venue_visit",
+        "local_venue_id": 10,
+        "encrypted_payload": "encrypted",
+        "wrapped_data_key": "wrapped",
+        "key_id": "key-1",
+        "algorithm_version": "rsa-oaep-sha256+aes-256-gcm-v1",
+        "payload_nonce": "payload-nonce",
+        "ciphertext_sha256": "a" * 64,
+        "photo_nonce": "photo-nonce",
+        "photo_ciphertext_sha256": "b" * 64,
+        "photo_size": 123,
+        "photo_mime_type": "image/jpeg",
+    }]
+    body = json.dumps({"request_id": request_id, "submission_ids": [submission_id]}).encode()
+    headers = signed_headers(
+        request_private,
+        method="POST",
+        path="/api/internal/submissions/recovery-export",
+        request_id=request_id,
+        nonce="recovery-export-test-nonce-0001",
+        body=body,
+    )
+    with client:
+        response = client.post("/api/internal/submissions/recovery-export", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["submission_id"] == submission_id
+    assert response.json()["items"][0]["photo_download_path"] == f"/api/internal/submissions/{submission_id}/recovery-photo"
+    assert repo.recovery_export_ids == [[submission_id]]
+    assert response.headers.get("X-Binhu-Response-Signature")
+
+
+def test_recovery_photo_rejects_nonaccepted_submission(tmp_path):
+    client, _repo, request_private = make_secure_client(tmp_path)
+    submission_id = str(uuid.uuid4())
+    path = f"/api/internal/submissions/{submission_id}/recovery-photo"
+    with client:
+        response = client.get(
+            path,
+            headers=signed_headers(request_private, path=path, nonce="recovery-photo-missing-nonce-0001"),
+        )
+
+    assert response.status_code == 404
+
+
+def test_recovery_photo_serves_only_accepted_encrypted_file(tmp_path):
+    client, repo, request_private = make_secure_client(tmp_path)
+    submission_id = str(uuid.uuid4())
+    photo_dir = tmp_path / "photos"
+    photo_dir.mkdir()
+    encrypted_photo = b"encrypted-photo"
+    photo_path = photo_dir / "photo.bin"
+    photo_path.write_bytes(encrypted_photo)
+    repo.accepted_photo = {
+        "submission_id": submission_id,
+        "photo_object_key": "photo.bin",
+        "photo_ciphertext_sha256": hashlib.sha256(encrypted_photo).hexdigest(),
+        "photo_size": len(encrypted_photo),
+    }
+    path = f"/api/internal/submissions/{submission_id}/recovery-photo"
+
+    with client:
+        response = client.get(
+            path,
+            headers=signed_headers(request_private, path=path, nonce="recovery-photo-valid-nonce-0001"),
+        )
+
+    assert response.status_code == 200
+    assert response.content == encrypted_photo
+    assert response.headers["X-Content-SHA256"] == hashlib.sha256(encrypted_photo).hexdigest()
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_signature_fallback_uses_landscape_logical_canvas_geometry(tmp_path):
