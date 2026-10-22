@@ -1,5 +1,6 @@
 import os
 import sys
+import zipfile
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from openpyxl import load_workbook
 from starlette.requests import Request
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -17,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import settings
 import routers.venue_codes as venue_codes
 from routers.venue_codes import (
+    _build_venue_visits_archive,
     _local_display,
     _utc_iso,
     _append_venue_filter,
@@ -107,6 +110,46 @@ def test_private_photo_response_disables_browser_caching(monkeypatch, tmp_path):
     response = __import__("asyncio").run(venue_codes.venue_visit_photo(7, user={}, conn=FakeConnection()))
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_venue_visits_archive_includes_available_photos_and_marks_missing_ones(tmp_path):
+    photo_dir = tmp_path / "photos"
+    photo_dir.mkdir()
+    (photo_dir / "available.jpg").write_bytes(b"photo-bytes")
+    records = [
+        {
+            "id": 1,
+            "venue_name": "测试场所",
+            "name": "测试人员",
+            "identity_number": "000000000000000000",
+            "phone": "00000000000",
+            "address": "虚构地址",
+            "submitted_at": "2026-10-23T00:00:00",
+            "storage_key": "available.jpg",
+        },
+        {
+            "id": 2,
+            "venue_name": "测试场所",
+            "name": "缺失照片人员",
+            "identity_number": "111111111111111111",
+            "phone": "11111111111",
+            "address": "另一虚构地址",
+            "submitted_at": "2026-10-23T00:00:00",
+            "storage_key": "missing.jpg",
+        },
+    ]
+
+    archive_path, missing_count = _build_venue_visits_archive(records, photo_dir)
+    try:
+        assert missing_count == 1
+        with zipfile.ZipFile(archive_path) as archive:
+            assert archive.read("photos/测试人员_000000000000000000.jpg") == b"photo-bytes"
+            workbook = load_workbook(BytesIO(archive.read("登记信息.xlsx")), read_only=True)
+            rows = list(workbook.active.values)
+        assert rows[1][-1] == "photos/测试人员_000000000000000000.jpg"
+        assert rows[2][-1] == "照片文件缺失或已过期"
+    finally:
+        Path(archive_path).unlink(missing_ok=True)
 
 
 def test_public_venue_url_is_absolute_and_normalizes_trailing_slash(monkeypatch):

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import html
 import io
+import os
 import secrets
+import tempfile
 import time
 import zipfile
 import re
@@ -18,6 +21,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from openpyxl import Workbook
 from pydantic import BaseModel, Field
 
@@ -551,13 +555,18 @@ async def list_visits(user: dict = Depends(require_permission(VENUE_VIEW)), conn
     async with conn.cursor() as cur:
         await cur.execute(f"SELECT COUNT(*) FROM _venue_visits visit JOIN _venue_codes venue ON venue.id=visit.venue_id WHERE {where_sql}", tuple(params))
         total = int((await cur.fetchone())[0])
-        visit_sql = f"SELECT visit.id,visit.venue_id,visit.encrypted_name,visit.encrypted_identity,visit.encrypted_phone,visit.encrypted_address,visit.submitted_at,venue.name,photo.mime_type,photo.size_bytes FROM _venue_visits visit JOIN _venue_codes venue ON venue.id=visit.venue_id LEFT JOIN _venue_visit_photos photo ON photo.visit_id=visit.id AND photo.deleted_at IS NULL WHERE {where_sql} ORDER BY visit.submitted_at DESC"
+        visit_sql = f"SELECT visit.id,visit.venue_id,visit.encrypted_name,visit.encrypted_identity,visit.encrypted_phone,visit.encrypted_address,visit.submitted_at,venue.name,photo.mime_type,photo.size_bytes,photo.storage_key FROM _venue_visits visit JOIN _venue_codes venue ON venue.id=visit.venue_id LEFT JOIN _venue_visit_photos photo ON photo.visit_id=visit.id AND photo.deleted_at IS NULL AND photo.retention_until>UTC_TIMESTAMP() WHERE {where_sql} ORDER BY visit.submitted_at DESC"
         if keyword.strip():
             await cur.execute(visit_sql, tuple(params))
         else:
             await cur.execute(visit_sql + " LIMIT %s OFFSET %s", tuple(params + [page_size, offset]))
         rows = await cur.fetchall()
-    data = [{"id": int(r[0]), "venue_id": int(r[1]), "venue_name": str(r[7]), "name": decrypt_secret(r[2]), "identity_number": decrypt_secret(r[3]), "phone": decrypt_secret(r[4]), "address": decrypt_secret(r[5]), "submitted_at": r[6].isoformat() if r[6] else None, "photo": {"mime_type": r[8], "size_bytes": int(r[9])} if r[8] else None} for r in rows]
+    photo_dir = Path(settings.VENUE_PHOTO_DIR).resolve()
+    data = []
+    for r in rows:
+        photo_path = (photo_dir / str(r[10])).resolve() if r[10] else None
+        photo_available = bool(photo_path and photo_dir in photo_path.parents and photo_path.is_file())
+        data.append({"id": int(r[0]), "venue_id": int(r[1]), "venue_name": str(r[7]), "name": decrypt_secret(r[2]), "identity_number": decrypt_secret(r[3]), "phone": decrypt_secret(r[4]), "address": decrypt_secret(r[5]), "submitted_at": r[6].isoformat() if r[6] else None, "photo": {"mime_type": r[8], "size_bytes": int(r[9])} if r[8] and photo_available else None})
     if keyword.strip():
         needle = keyword.strip().casefold()
         data = [item for item in data if any(needle in str(item[field]).casefold() for field in ("venue_name", "name", "identity_number", "phone", "address"))]
@@ -570,6 +579,42 @@ def _safe_export_filename(name: str, identity: str) -> str:
     safe_name = re.sub(r"[\\/:*?\"<>|\r\n]+", "_", name).strip(" ._") or "未知姓名"
     safe_identity = re.sub(r"[^0-9Xx]", "_", identity).strip(" ._") or "未知证件"
     return f"{safe_name}_{safe_identity}.jpg"
+
+
+def _build_venue_visits_archive(records: list[dict], photo_dir: Path) -> tuple[str, int]:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "场所登记"
+    ws.append(["编号", "场所", "姓名", "公民身份号码", "手机号", "地址", "登记时间", "照片文件"])
+    fd, archive_name = tempfile.mkstemp(prefix="venue-visits-", suffix=".zip")
+    os.close(fd)
+    missing_photos = 0
+    try:
+        with zipfile.ZipFile(archive_name, "w", compression=zipfile.ZIP_STORED) as zf:
+            used: set[str] = set()
+            for record in records:
+                filename = None
+                if record["storage_key"]:
+                    candidate = _safe_export_filename(record["name"], record["identity_number"])
+                    if candidate in used:
+                        stem, suffix = Path(candidate).stem, Path(candidate).suffix
+                        candidate = f"{stem}_{record['id']}{suffix}"
+                    used.add(candidate)
+                    photo_path = (photo_dir / str(record["storage_key"])).resolve()
+                    if photo_dir in photo_path.parents and photo_path.is_file():
+                        zf.write(photo_path, arcname=f"photos/{candidate}")
+                        filename = f"photos/{candidate}"
+                    else:
+                        filename = "照片文件缺失或已过期"
+                        missing_photos += 1
+                ws.append([record["id"], record["venue_name"], record["name"], record["identity_number"], record["phone"], record["address"], record["submitted_at"], filename or ""])
+            xlsx = io.BytesIO()
+            wb.save(xlsx)
+            zf.writestr("登记信息.xlsx", xlsx.getvalue())
+        return archive_name, missing_photos
+    except Exception:
+        Path(archive_name).unlink(missing_ok=True)
+        raise
 
 
 def _signature_svg(strokes_text: str) -> str:
@@ -665,25 +710,14 @@ async def export_visits_zip(request: Request, user: dict = Depends(require_permi
         record = {"id": int(row[0]), "venue_name": str(row[1]), "name": decrypt_secret(row[2]), "identity_number": decrypt_secret(row[3]), "phone": decrypt_secret(row[4]), "address": decrypt_secret(row[5]), "submitted_at": row[6].isoformat() if row[6] else "", "storage_key": row[7], "mime_type": row[8]}
         if not needle or any(needle in str(record[field]).casefold() for field in ("venue_name", "name", "identity_number", "phone", "address")):
             records.append(record)
-    wb = Workbook(); ws = wb.active; ws.title = "场所登记"; ws.append(["编号", "场所", "姓名", "公民身份号码", "手机号", "地址", "登记时间", "照片文件"])
-    archive = io.BytesIO(); photo_dir = Path(settings.VENUE_PHOTO_DIR).resolve()
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-        used: set[str] = set()
-        for record in records:
-            filename = None
-            if record["storage_key"]:
-                candidate = _safe_export_filename(record["name"], record["identity_number"])
-                if candidate in used:
-                    candidate = candidate[:-4] + f"_{record['id']}.jpg"
-                used.add(candidate)
-                photo_path = (photo_dir / str(record["storage_key"])).resolve()
-                if photo_dir in photo_path.parents and photo_path.is_file():
-                    zf.write(photo_path, arcname=f"photos/{candidate}"); filename = f"photos/{candidate}"
-            ws.append([record["id"], record["venue_name"], record["name"], record["identity_number"], record["phone"], record["address"], record["submitted_at"], filename or ""])
-        xlsx = io.BytesIO(); wb.save(xlsx); zf.writestr("登记信息.xlsx", xlsx.getvalue())
-    archive.seek(0)
-    await record_admin_audit(user, "venue.export_zip", target_type="venue_visits", target_name="filtered", detail={"rows": len(records)}, **request_audit_fields(request))
-    return StreamingResponse(archive, media_type="application/zip", headers={"Content-Disposition": "attachment; filename=venue-visits.zip"})
+    photo_dir = Path(settings.VENUE_PHOTO_DIR).resolve()
+    archive_name, missing_photos = await asyncio.to_thread(_build_venue_visits_archive, records, photo_dir)
+    try:
+        await record_admin_audit(user, "venue.export_zip", target_type="venue_visits", target_name="filtered", detail={"rows": len(records), "photos_unavailable": missing_photos}, **request_audit_fields(request))
+    except Exception:
+        Path(archive_name).unlink(missing_ok=True)
+        raise
+    return FileResponse(archive_name, media_type="application/zip", filename="venue-visits.zip", background=BackgroundTask(Path(archive_name).unlink, missing_ok=True))
 
 
 @admin_router.get("/venue-visits/export")
