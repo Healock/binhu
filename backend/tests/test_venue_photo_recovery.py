@@ -6,6 +6,52 @@ import pytest
 from tools import venue_photo_recovery as recovery
 
 
+@pytest.mark.asyncio
+async def test_measurement_keeps_only_accepted_export_subset(tmp_path, monkeypatch):
+    monkeypatch.setattr(recovery.settings, "VENUE_PHOTO_DIR", str(tmp_path))
+    refs = [
+        {
+            "submission_id": "accepted-submission",
+            "storage_key": "accepted.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": 3,
+            "sha256": recovery.hashlib.sha256(b"jpg").hexdigest(),
+        },
+        {
+            "submission_id": "rejected-submission",
+            "storage_key": "rejected.jpg",
+            "mime_type": "image/jpeg",
+            "size_bytes": 3,
+            "sha256": recovery.hashlib.sha256(b"bad").hexdigest(),
+        },
+    ]
+    async def fake_photo_rows(_ids=None):
+        return refs
+
+    monkeypatch.setattr(recovery, "_photo_rows", fake_photo_rows)
+
+    item = {
+        "submission_id": "accepted-submission",
+        "photo_size": 3,
+        "photo_ciphertext_sha256": "c" * 64,
+        "key_id": "venue-rsa-2026-09-2",
+        "photo_mime_type": "image/jpeg",
+    }
+
+    class Client:
+        async def export_accepted_photo_submissions(self, _ids):
+            return [item]
+
+        async def download_recovery_photo(self, *_args):
+            return b"encrypted"
+
+    monkeypatch.setattr(recovery, "decrypt_submission", lambda *_args: ({}, b"jpg"))
+    monkeypatch.setattr(recovery, "_validate_decrypted_payload", lambda *_args: None)
+    result = await recovery._verified_candidates(Client())
+
+    assert [row["submission_id"] for row in result] == ["accepted-submission"]
+
+
 def test_measurement_is_immutable_and_hash_bound_to_candidate_list(tmp_path, monkeypatch):
     monkeypatch.setattr(recovery.settings, "BACKUP_DIR", tmp_path)
     candidates = [{

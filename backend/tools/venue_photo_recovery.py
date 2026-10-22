@@ -153,10 +153,16 @@ async def _verified_candidates(
         ids = [row["submission_id"] for row in batch]
         exported = await client.export_accepted_photo_submissions(ids)
         by_id = {str(item["submission_id"]): item for item in exported}
-        if len(by_id) != len(batch) or set(by_id) != set(ids):
-            raise RuntimeError("accepted_submission_mapping_incomplete")
         for target in batch:
-            item = by_id[target["submission_id"]]
+            # The receiver deliberately exports only accepted submissions. A
+            # production reference can therefore be absent when its upstream
+            # submission was rejected, expired, or never reached acceptance.
+            # Those references are measured as unavailable; only the returned
+            # accepted subset is eligible for recovery. Apply still requires
+            # every measured candidate to be returned again.
+            item = by_id.get(target["submission_id"])
+            if item is None:
+                continue
             encrypted_photo = await client.download_recovery_photo(
                 target["submission_id"], str(uuid.uuid4()), int(item["photo_size"]),
                 str(item["photo_ciphertext_sha256"]),
