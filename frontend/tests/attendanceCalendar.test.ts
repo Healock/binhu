@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   addDays,
@@ -53,4 +54,17 @@ test("跨周横条保持同一逻辑区间并显示延续标识", () => {
   assert.equal(parts[0].continuesBefore, true);
   assert.equal(parts[0].continuesAfter, true);
   assert.equal(parts[0].span.start, "2026-10-16");
+});
+
+test("周排班确认期间冻结草稿并在提交重试时复用请求编号", () => {
+  const page = readFileSync(new URL("../src/pages/WeekendDuty.tsx", import.meta.url), "utf8");
+  const client = readFileSync(new URL("../src/api/client.ts", import.meta.url), "utf8");
+
+  assert.match(page, /const requestId = crypto\.randomUUID\(\);/);
+  assert.match(page, /changeWeeklySchedule\(board\.week_start, assignments, false, requestId\)/);
+  assert.match(page, /const editingLocked = busy \|\| confirmOpen;/);
+  assert.match(page, /disabled=\{!editable \|\| editingLocked \|\| leave\}/);
+  assert.match(page, /onCancel: \(\) => setConfirmOpen\(false\)/);
+  assert.match(client, /requestId = crypto\.randomUUID\(\)/);
+  assert.match(client, /request_id: requestId, assignments/);
 });
