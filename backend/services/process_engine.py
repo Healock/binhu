@@ -11,6 +11,9 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
+import aiomysql
+
+from database import db_manager
 from services.workflow_support import platform_schema, workflow_notification
 
 
@@ -347,6 +350,21 @@ class ProcessEngine:
             content=content, severity="warning",
         )
 
+    async def _position_order(self) -> list[str]:
+        """岗位顺序配置属于 OnlineData，不使用当前 WorkflowData 游标。"""
+        pool = db_manager.get_pool("online_data")
+        async with pool.acquire() as conn:
+            # DomainRoutingCursor intentionally routes _system_config reads
+            # after the platform-domain switch. This setting is owned by
+            # OnlineData for B1, so use a raw cursor on the explicit pool.
+            async with conn.cursor(aiomysql.Cursor) as cur:
+                await cur.execute(
+                    "SELECT config_value FROM _system_config WHERE config_key=%s",
+                    (POSITION_ORDER_CONFIG,),
+                )
+                row = await cur.fetchone()
+        return parse_json(row[0], []) if row else []
+
     async def start(self, *, process_version_id: int, requester_user_id: int,
                     title: str, description: str = "", form_data: dict[str, Any] | None = None,
                     now=None) -> dict[str, Any]:
@@ -492,9 +510,7 @@ class ProcessEngine:
                     candidates = _unique_ids(x[0] for x in await self.cur.fetchall())
             elif int(stage) >= 1:
                 # 岗位顺序表是独立配置；空表按 D8 直接挂起。
-                await self.cur.execute("SELECT config_value FROM _system_config WHERE config_key=%s", (POSITION_ORDER_CONFIG,))
-                cfg = await self.cur.fetchone()
-                order = parse_json(cfg[0], []) if cfg else []
+                order = await self._position_order()
                 promotion_source = int(primary) if primary else 0
                 if int(stage) >= 2:
                     await self.cur.execute(
