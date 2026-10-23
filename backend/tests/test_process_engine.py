@@ -6,12 +6,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.process_engine import ProcessEngine, ProcessValidationError, validate_nodes
 from services.process_engine import resolve_assignees
+from database import db_manager
+from routers import processes as processes_router
 
 
 def test_nodes_are_a_sequence_and_only_single_is_executable():
@@ -190,7 +193,7 @@ class _MemoryCursor:
                            and self.member_positions.get(peer_member_id) == position]
             self._all = [(user_id,) for user_id in sorted(account_ids)]
         elif query.startswith("SELECT config_value FROM _system_config"):
-            self._one = (json.dumps(self.position_order),) if self.position_order else None
+            raise AssertionError("岗位顺序必须通过独立 OnlineData 连接读取")
         elif query.startswith("SELECT detail_json FROM process_events"):
             matches = [event for event in self.events if event["task"] == params[0]
                        and event["type"] == "task_escalated"]
@@ -229,14 +232,82 @@ class _MemoryCursor:
 
 
 class _Connection:
-    def __init__(self):
-        self.cursor_value = _MemoryCursor()
+    def __init__(self, cursor=None):
+        self.cursor_value = cursor or _MemoryCursor()
 
-    def cursor(self):
+    def cursor(self, *_args):
         return _CursorContext(self.cursor_value)
 
     async def commit(self):
         pass
+
+
+class _PoolAcquire:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _Pool:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def acquire(self):
+        return _PoolAcquire(self.connection)
+
+
+class _OnlineConfigCursor:
+    def __init__(self, workflow_cursor):
+        self.workflow_cursor = workflow_cursor
+        self._one = None
+
+    async def execute(self, query, params=()):
+        assert query.startswith("SELECT config_value FROM _system_config")
+        assert params == ("process_position_order",)
+        order = self.workflow_cursor.position_order
+        self._one = (json.dumps(order),) if order else None
+
+    async def fetchone(self):
+        return self._one
+
+
+@pytest.mark.asyncio
+async def test_create_process_definition_rolls_back_validation_errors(monkeypatch):
+    class InvalidDefinitionEngine:
+        def __init__(self, _cursor):
+            pass
+
+        async def create_process(self, **_kwargs):
+            raise ProcessValidationError("invalid definition")
+
+    class Connection:
+        def __init__(self):
+            self.rollbacks = 0
+
+        async def begin(self):
+            pass
+
+        def cursor(self):
+            return _CursorContext(object())
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    conn = Connection()
+    monkeypatch.setattr(processes_router, "ProcessEngine", InvalidDefinitionEngine)
+    with pytest.raises(HTTPException) as exc:
+        await processes_router.create_process_definition(
+            processes_router.ProcessDefinitionPayload(code="bad_definition", name="invalid"),
+            conn=conn,
+            user={"id": 7},
+        )
+    assert exc.value.status_code == 422
+    assert conn.rollbacks == 1
 
 
 @pytest.mark.asyncio
@@ -267,9 +338,11 @@ async def test_two_json_processes_run_without_process_specific_code():
 
 
 @pytest.mark.asyncio
-async def test_timeout_keeps_one_task_and_empty_position_order_holds_and_notifies():
+async def test_timeout_keeps_one_task_and_empty_position_order_holds_and_notifies(monkeypatch):
     conn = _Connection()
     cursor = conn.cursor_value
+    online_conn = _Connection(_OnlineConfigCursor(cursor))
+    monkeypatch.setattr(db_manager, "get_pool", lambda name: _Pool(online_conn) if name == "online_data" else None)
     async with conn.cursor() as cur:
         engine = ProcessEngine(cur)
         definition = await engine.create_process(code="fake_escalation", name="假流程")
@@ -295,9 +368,11 @@ async def test_timeout_keeps_one_task_and_empty_position_order_holds_and_notifie
 
 
 @pytest.mark.asyncio
-async def test_position_sequence_escalates_same_task_one_rank_per_timeout_then_holds():
+async def test_position_sequence_escalates_same_task_one_rank_per_timeout_then_holds(monkeypatch):
     conn = _Connection()
     cursor = conn.cursor_value
+    online_conn = _Connection(_OnlineConfigCursor(cursor))
+    monkeypatch.setattr(db_manager, "get_pool", lambda name: _Pool(online_conn) if name == "online_data" else None)
     cursor.member_positions[13] = "中队长"
     cursor.department_peers[11] = [20]
     cursor.member_positions[20] = "组长"
