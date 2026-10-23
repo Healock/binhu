@@ -306,15 +306,23 @@ export default function VenueCodeManagement() {
         <Table rowKey="id" loading={loading} columns={columns} dataSource={venues} pagination={{ pageSize: 20 }} scroll={{ x: 1120 }} />
       </Panel>
       <Panel title="最近登记记录" padded={false}>
-        <div className="grid gap-3 p-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <Form layout="inline" onFinish={searchVisits} className="flex flex-1 flex-wrap items-end gap-3">
-              <Form.Item name="venue_ids" label="场所" className="mb-0"><Select mode="multiple" allowClear maxTagCount="responsive" placeholder="全部场所" style={{ width: 280 }} options={venues.filter(item => item.status !== 'deleted').map(item => ({ label: item.name, value: item.id }))} /></Form.Item>
-              <Form.Item name="keyword" className="mb-0"><Input allowClear placeholder="姓名、身份证号、手机号、地址" style={{ width: 260 }} /></Form.Item>
-              <Form.Item name="range" className="mb-0"><DatePicker.RangePicker showTime /></Form.Item>
-              <Button type="primary" htmlType="submit">查询</Button>
+        <div className="venue-visit-content">
+          <div className="venue-visit-toolbar">
+            <Form layout="vertical" onFinish={searchVisits} className="venue-visit-filters">
+              <Form.Item name="venue_ids" label="场所">
+                <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="全部场所" options={venues.filter(item => item.status !== 'deleted').map(item => ({ label: item.name, value: item.id }))} />
+              </Form.Item>
+              <Form.Item name="keyword" label="关键词">
+                <Input allowClear placeholder="姓名、身份证号、手机号、地址" />
+              </Form.Item>
+              <Form.Item name="range" label="登记时间">
+                <DatePicker.RangePicker showTime className="venue-visit-range" />
+              </Form.Item>
+              <div className="venue-visit-actions">
+                <Button type="primary" htmlType="submit">查询</Button>
+                {canExport && <Button icon={<DownloadOutlined />} loading={exportingVisits} disabled={exportingVisits} onClick={exportZip}>导出查询结果（ZIP）</Button>}
+              </div>
             </Form>
-            {canExport && <Button icon={<DownloadOutlined />} loading={exportingVisits} disabled={exportingVisits} onClick={exportZip}>导出查询结果（ZIP）</Button>}
           </div>
           {exportingVisits && <div className="grid max-w-xl gap-1" role="status" aria-live="polite">
             <span className="text-xs text-[var(--app-text-secondary)]">正在生成并下载 ZIP；桌面端显示传输进度，网页端请在浏览器下载列表查看。场所留空表示导出全部场所。</span>
@@ -322,6 +330,7 @@ export default function VenueCodeManagement() {
           </div>}
         </div>
         <Table
+          size="small"
           rowKey="id"
           loading={loading}
           dataSource={visits}
