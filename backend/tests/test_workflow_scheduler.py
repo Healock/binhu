@@ -50,6 +50,15 @@ class _ReminderConnection:
     def cursor(self):
         return _CursorContext(self._cursor)
 
+    async def begin(self):
+        return None
+
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
+
 
 class _ReminderPool:
     def __init__(self, cursor):

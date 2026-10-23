@@ -44,6 +44,7 @@ from routers.registry_extended import router as registry_extended_router
 from routers.watch_import import router as watch_import_router
 from routers.workflow import router as workflow_router
 from routers.workflow_extended import router as workflow_extended_router
+from routers.processes import router as processes_router
 from routers.qmf_registration import router as qmf_registration_router
 from routers.task_graph import router as task_graph_router
 from routers.qmf_source import router as qmf_source_router
@@ -372,6 +373,7 @@ app.include_router(registry_extended_router, dependencies=community_police_dep)
 app.include_router(watch_import_router, dependencies=community_police_dep)
 app.include_router(workflow_router, dependencies=workflow_dep)
 app.include_router(workflow_extended_router, dependencies=workflow_dep)
+app.include_router(processes_router, dependencies=workflow_dep)
 app.include_router(qmf_registration_router, dependencies=community_police_dep)
 app.include_router(residence_platform_router, dependencies=auth_dep)
 app.include_router(task_graph_router, dependencies=auth_dep)

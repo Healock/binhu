@@ -9,6 +9,7 @@ from database import db_manager
 from services.online_source import json_value
 from services.workflow_support import queue_user_ids, remove_attachment, workflow_notification
 from config import settings
+from services.process_engine import ProcessEngine
 
 
 async def run_workflow_maintenance_once() -> dict:
@@ -22,8 +23,16 @@ async def run_workflow_maintenance_once() -> dict:
     reminders = 0
     deleted = 0
     orphaned = 0
+    process_timeouts = 0
     try:
         async with conn.cursor() as cur:
+            await conn.begin()
+            try:
+                process_timeouts = await ProcessEngine(cur).advance_timeouts()
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
             await cur.execute(
                 "SELECT order_row.id, order_row.current_assignee_user_id, order_row.current_queue, "
                 "order_row.due_at, order_row.version_no, definition.config_json "
@@ -95,7 +104,12 @@ async def run_workflow_maintenance_once() -> dict:
                 orphaned += 1
     finally:
         pool.release(conn)
-    return {"reminders": reminders, "attachments_deleted": deleted, "orphan_files_checked": orphaned}
+    return {
+        "reminders": reminders,
+        "attachments_deleted": deleted,
+        "orphan_files_checked": orphaned,
+        "process_timeouts": process_timeouts,
+    }
 
 
 async def run_workflow_scheduler() -> None:
