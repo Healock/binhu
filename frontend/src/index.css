@@ -9345,3 +9345,77 @@ html[data-theme='dark'] .fullscreen-notice__panel { box-shadow: 0 24px 70px rgb(
 .member-department-cascader-popup { max-width: calc(100vw - 32px); }
 .member-department-cascader-popup .ant-cascader-menus { max-width: calc(100vw - 32px); overflow-x: auto; }
 .member-department-cascader-popup .ant-cascader-menu { flex-shrink: 0; max-height: min(300px, 50vh); }
+
+.venue-visit-content {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.venue-visit-toolbar {
+  min-width: 0;
+}
+
+.venue-visit-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(240px, 1.1fr) minmax(330px, 1.4fr);
+  align-items: end;
+  gap: 12px 16px;
+}
+
+.venue-visit-filters .ant-form-item {
+  min-width: 0;
+  margin: 0;
+}
+
+.venue-visit-filters .ant-form-item-label {
+  padding: 0 0 4px;
+}
+
+.venue-visit-filters .ant-form-item-label > label {
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.venue-visit-filters .ant-form-item-control,
+.venue-visit-filters .ant-form-item-control-input,
+.venue-visit-filters .ant-form-item-control-input-content {
+  min-width: 0;
+}
+
+.venue-visit-filters .ant-select,
+.venue-visit-filters .ant-input,
+.venue-visit-range {
+  width: 100%;
+}
+
+.venue-visit-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+@media (max-width: 1199px) {
+  .venue-visit-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .venue-visit-content {
+    padding: 12px;
+  }
+
+  .venue-visit-filters {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .venue-visit-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
