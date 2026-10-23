@@ -555,6 +555,143 @@ async def schedule_mutation(conn, data: dict, actor: int, preview=False):
     )
 
 
+async def weekly_schedule_mutation(conn, data: dict, actor: int, preview=False):
+    week_start = data["week_start"]
+    assignments = {
+        item["member_id"]: {
+            day["date"]: day["state"] for day in item["days"]
+        }
+        for item in data["assignments"]
+    }
+    member_ids = list(assignments)
+    all_dates = [target for days in assignments.values() for target in days]
+    if not all_dates or any(
+        target < week_start or target > week_start + timedelta(days=6)
+        for target in all_dates
+    ):
+        raise HTTPException(400, "排班日期必须位于所选周内")
+
+    async def apply(cur, versions, dry):
+        start, end = min(all_dates), max(all_dates)
+        daily = await load_daily(cur, member_ids, start, end)
+        periods = await load_periods(cur, member_ids, start, end)
+        positions = set(
+            await get_configured_positions(cur, WEEKEND_DUTY_POSITION_CONFIG_KEY)
+        )
+        marks = ",".join(["%s"] * len(member_ids))
+        await cur.execute(
+            f"SELECT id,position FROM {table('_grid_members')} "
+            f"WHERE id IN ({marks}) ORDER BY id",
+            member_ids,
+        )
+        members = {int(member_id): str(position) for member_id, position in await cur.fetchall()}
+        if set(members) != set(member_ids) or any(position not in positions for position in members.values()):
+            raise HTTPException(400, "包含不存在或不参与周排班的人员，请刷新名单")
+
+        diffs = []
+        skipped = []
+        for member_id, day_assignments in assignments.items():
+            member = {"id": member_id, "position": members[member_id]}
+            for target, requested in sorted(day_assignments.items()):
+                current = resolve_day(
+                    member, target, daily, periods.get(member_id, []), positions
+                )
+                if current["state"] in {"leave", "long_term_leave"}:
+                    skipped.append({"member_id": member_id, "date": target.isoformat()})
+                    continue
+                default = (
+                    "work"
+                    if target.weekday() < 5
+                    else "unassigned" if members[member_id] in positions else "rest"
+                )
+                after = requested or default
+                before_explicit = daily.get((member_id, target))
+                reset = requested is None or requested == default
+                next_explicit = None if reset else requested
+                if before_explicit != next_explicit:
+                    diffs.append(
+                        {
+                            "member_id": member_id,
+                            "date": target.isoformat(),
+                            "before": current["state"],
+                            "after": after,
+                            "explicit_state": next_explicit,
+                        }
+                    )
+
+        if not dry:
+            for member_id in sorted(member_ids):
+                own = [diff for diff in diffs if diff["member_id"] == member_id]
+                if not own:
+                    continue
+                for diff in own:
+                    if diff["explicit_state"] is None:
+                        await cur.execute(
+                            f"DELETE FROM {table('_personnel_work_schedule')} "
+                            "WHERE member_id=%s AND work_date=%s",
+                            (member_id, diff["date"]),
+                        )
+                    else:
+                        await cur.execute(
+                            f"INSERT INTO {table('_personnel_work_schedule')} "
+                            "(member_id,work_date,state,source,revision,updated_by) "
+                            "VALUES (%s,%s,%s,'manual',%s,%s) "
+                            "ON DUPLICATE KEY UPDATE state=VALUES(state),source=VALUES(source),"
+                            "revision=VALUES(revision),updated_by=VALUES(updated_by),updated_at=UTC_TIMESTAMP()",
+                            (
+                                member_id,
+                                diff["date"],
+                                diff["explicit_state"],
+                                versions[member_id] + 1,
+                                actor,
+                            ),
+                        )
+                await record_change(
+                    cur,
+                    member_id,
+                    versions[member_id],
+                    "schedule",
+                    actor,
+                    "每周排班调整",
+                    [
+                        {key: value for key, value in diff.items() if key != "explicit_state"}
+                        for diff in own
+                    ],
+                    [
+                        {key: value for key, value in diff.items() if key not in {"member_id", "explicit_state"}}
+                        for diff in own
+                    ],
+                )
+        return {
+            "changes": [
+                {key: value for key, value in diff.items() if key != "explicit_state"}
+                for diff in diffs
+            ],
+            "skipped": skipped,
+            "versions": {
+                str(member_id): versions[member_id]
+                + (not dry and any(diff["member_id"] == member_id for diff in diffs))
+                for member_id in member_ids
+            },
+            "preview": dry,
+            "message": "请假日期未修改；确认后一次保存本周安排",
+        }
+
+    return await mutation(
+        conn,
+        actor=actor,
+        request_id=data["request_id"],
+        payload=data,
+        member_ids=member_ids,
+        expected={
+            int(member_id): version
+            for member_id, version in data["expected_versions"].items()
+        },
+        callback=apply,
+        preview=preview,
+    )
+
+
 async def leave_mutation(conn, data: dict, actor: int, preview=False):
     m = data["member_id"]
 
