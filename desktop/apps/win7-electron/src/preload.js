@@ -3,7 +3,11 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('binhuDesktop', {
   target: 'win7',
   saveFile: (filename, data) => ipcRenderer.invoke('desktop:save-file', { filename, data }),
-  appVersion: '0.31.20',
+  beginSaveFile: (filename) => ipcRenderer.invoke('desktop:save-file-begin', { filename }),
+  writeSaveFileChunk: (handle, data, append) => ipcRenderer.invoke('desktop:save-file-chunk', { handle, data, append }),
+  finishSaveFile: (handle) => ipcRenderer.invoke('desktop:save-file-finish', { handle }),
+  cancelSaveFile: (handle) => ipcRenderer.invoke('desktop:save-file-cancel', { handle }),
+  appVersion: '0.31.21',
   getConfig: () => ipcRenderer.invoke('desktop:get-config'),
   openOnline: () => ipcRenderer.invoke('desktop:open-online'),
   openOffline: () => ipcRenderer.invoke('desktop:open-offline'),
