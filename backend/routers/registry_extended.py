@@ -79,6 +79,9 @@ router = APIRouter(prefix="/api/registry", tags=["辖区档案"])
 REGISTRY_IMPORT_WRITE_CHUNK = 500
 HOUSEHOLD_IMPORT_MAX_BYTES = 50 * 1024 * 1024
 HOUSEHOLD_IMPORT_MAX_ROWS = 100000
+HOUSEHOLD_RETRYABLE_ISSUE_REASONS = frozenset({
+    "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖",
+})
 
 
 class OrganizationSearch(BaseModel):
@@ -2342,8 +2345,22 @@ async def confirm_household_import(
                 (batch_id,),
             )
             records = await cur.fetchall()
-            await cur.execute("SELECT source_ref FROM registry_import_issues WHERE batch_id=%s AND status='pending'", (batch_id,))
-            blocked_refs = {str(row[0]) for row in await cur.fetchall()}
+            await cur.execute(
+                "SELECT source_ref, reason FROM registry_import_issues "
+                "WHERE batch_id=%s AND status='pending'",
+                (batch_id,),
+            )
+            pending_issues = await cur.fetchall()
+            retryable_issue_refs = {
+                str(source_ref)
+                for source_ref, reason in pending_issues
+                if str(reason or "") in HOUSEHOLD_RETRYABLE_ISSUE_REASONS
+            }
+            blocked_refs = {
+                str(source_ref)
+                for source_ref, reason in pending_issues
+                if str(reason or "") not in HOUSEHOLD_RETRYABLE_ISSUE_REASONS
+            }
             import_rows: list[tuple[int, str, dict]] = []
             superseded_source_refs: dict[str, list[int]] = {}
             for record_id, source_ref, payload_json in records:
@@ -2580,27 +2597,61 @@ async def confirm_household_import(
                 if not reason and existing and not historical_only:
                     current_source_time = _source_datetime(existing[8]) if len(existing) > 8 else None
                     incoming_source_time = _source_datetime(payload.get("updated_at"))
+                    has_snapshot_fields = len(existing) >= 12
+                    same_snapshot = has_snapshot_fields and (
+                        normalize_address(existing[3]) == normalized
+                        and normalize_text(existing[9]) == normalize_text(payload.get("housing_type"))
+                        and normalize_text(existing[10]) == normalize_text(payload.get("residence_type"))
+                        and normalize_text(existing[11]) == normalize_household_status(payload.get("household_status"))
+                    )
                     if current_source_time and (
                         incoming_source_time is None or incoming_source_time < current_source_time
                     ):
-                        reason = "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖"
-                    elif current_source_time and incoming_source_time == current_source_time:
-                        same_snapshot = (
-                            normalize_text(existing[3]) == address
-                            and normalize_text(existing[9]) == normalize_text(payload.get("housing_type"))
-                            and normalize_text(existing[10]) == normalize_text(payload.get("residence_type"))
-                            and normalize_text(existing[11]) == normalize_household_status(payload.get("household_status"))
-                        )
-                        if not same_snapshot:
-                            reason = "现有档案与来源更新时间相同但内容冲突，不能按导入顺序覆盖"
+                        if same_snapshot:
+                            historical_only = True
+                        else:
+                            reason = "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖"
+                    elif has_snapshot_fields and not same_snapshot and (current_source_time is None or incoming_source_time is None):
+                        # Without both timestamps a changed snapshot cannot
+                        # prove that it is newer. Keep it reviewable instead
+                        # of letting a retryable historical issue overwrite
+                        # the current property.
+                        reason = "现有档案或本次来源缺少可比较更新时间，内容有差异，不能安全覆盖"
+                    elif current_source_time and incoming_source_time == current_source_time and not same_snapshot:
+                        reason = "现有档案与来源更新时间相同但内容冲突，不能按导入顺序覆盖"
                 if reason:
-                    existing_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", source_ref, normalized,
-                                            json.dumps(_issue_payload(payload), ensure_ascii=False), reason))
+                    issue_values = (
+                        normalized,
+                        json.dumps(_issue_payload(payload), ensure_ascii=False),
+                        reason,
+                        batch_id,
+                        ISSUE_HOUSEHOLD_DUPLICATE,
+                        source_ref,
+                    )
+                    if source_ref in retryable_issue_refs:
+                        await cur.execute(
+                            "UPDATE registry_import_issues SET entity_key=%s, payload_json=%s, reason=%s, "
+                            "review_note='', reviewed_by=NULL, reviewed_at=NULL "
+                            "WHERE batch_id=%s AND issue_type=%s AND source_type='household' "
+                            "AND source_ref=%s AND status='pending'",
+                            issue_values,
+                        )
+                    else:
+                        existing_issues.append((batch_id, ISSUE_HOUSEHOLD_DUPLICATE, "household", source_ref, normalized,
+                                                json.dumps(_issue_payload(payload), ensure_ascii=False), reason))
                     continue
                 if historical_only:
                     await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s", (int(existing[0]), record_id))
                     for duplicate_id in superseded_source_refs.get(source_ref, []):
                         await cur.execute("UPDATE registry_source_records SET entity_id=%s WHERE id=%s AND entity_id IS NULL", (int(existing[0]), duplicate_id))
+                    await cur.execute(
+                        "UPDATE registry_import_issues SET status='resolved', "
+                        "review_note='与现有档案内容一致，已关联来源且保留现有档案', "
+                        "reviewed_by=NULL, reviewed_at=UTC_TIMESTAMP() "
+                        "WHERE batch_id=%s AND issue_type=%s AND source_type='household' "
+                        "AND source_ref=%s AND status='pending'",
+                        (batch_id, ISSUE_HOUSEHOLD_DUPLICATE, source_ref),
+                    )
                     imported += 1
                     continue
                 if obsolete_matches:
