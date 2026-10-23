@@ -484,7 +484,6 @@ export default function Dashboard() {
         <Panel
           title="外部腾讯表监控"
           description="独立只读统计；不导入平台任务，不参与核查完成率，也不向腾讯表回写"
-          extra={user?.role === 'super_admin' ? <Button size="small" onClick={() => navigate('/settings/txdocs-monitor')}>配置外部监控</Button> : undefined}
         >
           <div className="grid gap-3">
             {(txdocsOverviewError || (txdocsOverview && txdocsOverview.status !== 'healthy')) && (

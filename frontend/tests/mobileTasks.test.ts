@@ -515,6 +515,7 @@ test('流口任务和待研判任务按当前筛选排序导出并支持研判�
     new URL('../src/api/client.ts', import.meta.url),
     'utf8',
   )
+  const importPanel = readFileSync(new URL('../src/components/AnalysisImportPanel.tsx', import.meta.url), 'utf8')
 
   assert.match(apiSource, /mobileTaskSearchPayload\(params\)/)
   assert.match(apiSource, /\/mobile-tasks\/analysis\/export/)
@@ -522,7 +523,8 @@ test('流口任务和待研判任务按当前筛选排序导出并支持研判�
   assert.match(listSource, /exportMobileTasks\(\{[\s\S]*?sort,[\s\S]*?keyword:/)
   assert.match(listSource, /exportMobileTaskAnalysis\(\{[\s\S]*?sort,[\s\S]*?keyword:/)
   assert.match(listSource, /导出当前结果/)
-  assert.match(listSource, /导入研判结果/)
+  assert.match(listSource, /前往数据上传中心导入/)
+  assert.match(importPanel, /importMobileTaskAnalysis\(file\)/)
 })
 
 test('研判详情只提供结构化研判结果，不再自由保存研判文字', () => {
@@ -944,6 +946,7 @@ test('分配数据使用独立全屏工作台，只展示来源和地址', () =>
     new URL('../src/components/MobileTaskAssignmentWorkbench.tsx', import.meta.url),
     'utf8',
   )
+  const importPanel = readFileSync(new URL('../src/components/AnalysisImportPanel.tsx', import.meta.url), 'utf8')
   const clientSource = readFileSync(
     new URL('../src/api/client.ts', import.meta.url),
     'utf8',
@@ -993,6 +996,7 @@ test('地址匹配状态不阻断已归属社区的人工分配', () => {
     new URL('../src/components/MobileTaskAssignmentWorkbench.tsx', import.meta.url),
     'utf8',
   )
+  const importPanel = readFileSync(new URL('../src/components/AnalysisImportPanel.tsx', import.meta.url), 'utf8')
 
   assert.match(pageSource, />小区</)
   assert.match(pageSource, /placeholder="全部小区"/)
@@ -1008,10 +1012,10 @@ test('地址匹配状态不阻断已归属社区的人工分配', () => {
   assert.match(workbenchSource, /const isAssignableMatch = \(_status: string\) => true/)
   assert.match(workbenchSource, /地址匹配状态只描述小区关联质量，不决定任务能否分配核查人/)
   assert.match(workbenchSource, /自动匹配/)
-  assert.match(pageSource, /analysisImportResult/)
-  assert.match(pageSource, /条需要处理[\s\S]*问题明细/)
-  assert.match(pageSource, /重新导入修正后的文件/)
-  assert.match(pageSource, /需要处理的导入行/)
+  assert.match(pageSource, /前往数据上传中心导入/)
+  assert.match(importPanel, /failed\.map/)
+  assert.match(importPanel, /重新导出最新待研判任务/)
+  assert.match(importPanel, /analysisImportReason/)
   for (const blocked of ['ambiguous', 'conflict', 'unmatched', 'invalid']) {
     assert.match(workbenchSource, new RegExp(`${blocked}:`))
   }

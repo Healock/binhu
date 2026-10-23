@@ -1,5 +1,4 @@
 import AddressStatusTag from '../components/AddressStatusTag'
-import { analysisImportReason } from '../utils/analysisImport'
 import { addressAnnotationUrl } from '../utils/addressAnnotation'
 import {
   CopyOutlined,
@@ -8,7 +7,7 @@ import {
   PhoneOutlined,
   SearchOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Select, Skeleton, Tag, Upload, message } from 'antd'
+import { Alert, Button, Empty, Input, Modal, Progress, Segmented, Select, Skeleton, Tag, message } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { useNavigate, useNavigationType, useSearchParams } from 'react-router-dom'
 import {
@@ -17,10 +16,8 @@ import {
   getLatestQmfStatusScan,
   exportMobileTaskAnalysis,
   exportMobileTasks,
-  importMobileTaskAnalysis,
   listMobileTaskAnalysis,
   listMobileTasks,
-  startQmfStatusScan,
   type MobileTaskFacets,
   type MobileTaskFilterOption,
   type MobileTaskItem,
@@ -283,20 +280,6 @@ export default function MobileTaskList({
       ? requestedReviewStage as MobileTaskReviewStage
       : 'all',
   )
-  const [analysisImportResult, setAnalysisImportResult] = useState<{
-    success_count: number
-    failed_count: number
-    success: Array<{ row: number; task: string; state: string }>
-    failed: Array<{ row: number; reason: unknown }>
-    error?: string
-  } | null>(null)
-  const importResultRef = useRef<HTMLElement>(null)
-  useEffect(() => {
-    if (analysisImportResult) {
-      importResultRef.current?.scrollIntoView({ block: 'nearest', behavior: 'auto' })
-      importResultRef.current?.focus({ preventScroll: true })
-    }
-  }, [analysisImportResult])
   const [communities, setCommunities] = useState<string[]>(readMulti(searchParams, 'community'))
   const [smallCommunities, setSmallCommunities] = useState<string[]>(readMulti(searchParams, 'small_community'))
   const [results, setResults] = useState<string[]>(readMulti(searchParams, 'result'))
@@ -362,9 +345,7 @@ export default function MobileTaskList({
   const [error, setError] = useState('')
   const [sourceMessage, setSourceMessage] = useState(() => snapshotRef.current?.source_message || '')
   const [qmfScan, setQmfScan] = useState<QmfStatusScanRun | null>(null)
-  const [qmfScanLoading, setQmfScanLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [importingAnalysis, setImportingAnalysis] = useState(false)
   const [assignmentWorkbenchOpen, setAssignmentWorkbenchOpen] = useState(false)
   const loadingMoreRef = useRef(false)
   const scrollLoadArmedRef = useRef(false)
@@ -374,7 +355,6 @@ export default function MobileTaskList({
   const loadedPageRef = useRef(snapshotRef.current?.loaded_page || 1)
   const canBulkAssign = assignment.enabled
   const isModelThree = parserType === MODEL_THREE_PARSER && !analysisOnly
-  const canStartQmfScan = Boolean(user?.permissions.includes('qmf.registration.execute'))
   const canUseFullchainArchive = Boolean(
     !analysisOnly
       && UNVERIFIABLE_ARCHIVE_TYPES.has(parserType)
@@ -602,21 +582,17 @@ export default function MobileTaskList({
     }
   }, [analysisOnly, analysisParserTypes, communities, inspectors, keyword, matchStatuses, results, parserType, priority, qmfFeedbackStates, reviewStage, scope, smallCommunities, sort, status, watchCategories])
 
-  const loadQmfScan = useCallback(async (silent = true) => {
+  const loadQmfScan = useCallback(async () => {
     if (!isModelThree) {
       setQmfScan(null)
       return null
     }
-    if (!silent) setQmfScanLoading(true)
     try {
       const result = await getLatestQmfStatusScan()
       setQmfScan(result)
       return result
-    } catch (reason: any) {
-      if (!silent) message.error(reason?.response?.data?.detail || '全民防反馈扫描进度读取失败')
+    } catch {
       return null
-    } finally {
-      if (!silent) setQmfScanLoading(false)
     }
   }, [isModelThree])
 
@@ -635,29 +611,6 @@ export default function MobileTaskList({
     }, qmfScan?.status === 'queued' || qmfScan?.status === 'running' ? 3_000 : 30_000)
     return () => window.clearInterval(timer)
   }, [active, isModelThree, load, loadQmfScan, qmfScan?.status])
-
-  const confirmStartQmfScan = () => {
-    Modal.confirm({
-      title: '全量核对全民防反馈',
-      content: '将冻结当前全部已完成模型三任务清单，并使用四路并发逐条只读核对。扫描不会修改任何业务数据。',
-      okText: '开始核对',
-      cancelText: '取消',
-      onOk: async () => {
-        setQmfScanLoading(true)
-        try {
-          const result = await startQmfStatusScan()
-          setQmfScan(result)
-          message.success(result.total_count ? `已加入 ${result.total_count} 条任务` : '当前没有需要扫描的已完成任务')
-          if (!result.total_count) await load(1, false, true)
-        } catch (reason: any) {
-          message.error(reason?.response?.data?.detail || '全民防反馈扫描启动失败')
-          throw reason
-        } finally {
-          setQmfScanLoading(false)
-        }
-      },
-    })
-  }
 
   useEffect(() => {
     if (!active) return undefined
@@ -1048,32 +1001,6 @@ export default function MobileTaskList({
     }
   }
 
-  const importAnalysis = async (file: File) => {
-    setImportingAnalysis(true)
-    try {
-      const result = await importMobileTaskAnalysis(file)
-      setAnalysisImportResult(result)
-      if (result.failed_count) {
-        message.warning(`已导入 ${result.success_count} 条，${result.failed_count} 条需要处理；请查看页面下方的问题明细`)
-      } else if (result.success_count > 0) {
-        message.success(`已导入 ${result.success_count} 条研判结果`)
-      } else {
-        message.warning('没有导入任何研判结果，请填写本次研判结果和研判意见后重试')
-      }
-      await load(1, false, true)
-    } catch (reason: any) {
-      let detail = reason?.response?.data?.detail
-      if (reason?.response?.data instanceof Blob) {
-        try { detail = JSON.parse(await reason.response.data.text())?.detail } catch { detail = '' }
-      }
-      const error = analysisImportReason(detail, '文件导入未完成。请检查文件格式；网络中断时先刷新任务核对已处理状态，再重新导出待处理任务。')
-      setAnalysisImportResult({ success_count: 0, failed_count: 0, success: [], failed: [], error })
-      message.error(error)
-    } finally {
-      setImportingAnalysis(false)
-    }
-  }
-
   return (
     <div ref={pageRootRef} className="mobile-task-page">
       {(refreshing || refreshError || returnPosition.notice) && <div className="mobile-task-return-status" role="status">
@@ -1371,23 +1298,7 @@ export default function MobileTaskList({
           <Button icon={<DownloadOutlined />} onClick={() => void exportCurrent()} loading={exporting}>
             {analysisOnly ? '导出待研判' : '导出当前结果'}
           </Button>
-          {analysisOnly && <Upload
-            accept=".xlsx"
-            showUploadList={false}
-            beforeUpload={file => { void importAnalysis(file); return false }}
-          >
-            <Button loading={importingAnalysis}>导入研判结果</Button>
-          </Upload>}
-          {isModelThree && canStartQmfScan && (
-            <Button
-              type="primary"
-              loading={qmfScanLoading}
-              disabled={qmfScan?.status === 'queued' || qmfScan?.status === 'running'}
-              onClick={confirmStartQmfScan}
-            >
-              全量核对全民防反馈
-            </Button>
-          )}
+          {analysisOnly && <Button onClick={() => navigate('/data-upload?tab=files&panel=analysis')}>前往数据上传中心导入</Button>}
         </>}
       />
 
@@ -1443,36 +1354,6 @@ export default function MobileTaskList({
               )
             })}
           </div>
-        </section>
-      )}
-
-      {analysisOnly && analysisImportResult && (
-        <section ref={importResultRef} tabIndex={-1} className="app-card mobile-task-analysis-import-result" aria-live="polite" aria-label="研判导入结果">
-          <div className="mobile-task-analysis-import-result__header">
-            <div>
-              <strong>导入结果</strong>
-              <span>成功 {analysisImportResult.success_count} 条 · 需要处理 {analysisImportResult.failed_count} 条</span>
-            </div>
-            <Button type="text" onClick={() => setAnalysisImportResult(null)}>关闭结果</Button>
-          </div>
-          {analysisImportResult.error ? <Alert type="error" showIcon message="导入未完成" description={analysisImportResult.error} /> : analysisImportResult.failed_count > 0 ? <>
-            <Alert
-              type="warning"
-              showIcon
-              message="部分行没有写入，请按下面的行号修正后重新导入"
-              description="请仅保留需要处理的行再导入，清空已成功行的本次研判结果。遇到版本冲突，请重新导出最新待研判任务后填写。"
-            />
-            <div className="mobile-task-analysis-import-result__issues" role="list" aria-label="需要处理的导入行">
-              {analysisImportResult.failed.map(item => (
-                <div key={item.row} role="listitem">
-                  <strong>第 {item.row} 行</strong><span>{analysisImportReason(item.reason)}</span>
-                </div>
-              ))}
-            </div>
-          </> : analysisImportResult.success_count > 0 ? <Alert type="success" showIcon message="已填写的研判结果已导入" description="空白决定行不提交。列表已刷新，可继续核对待研判任务。" /> : <Alert type="info" showIcon message="没有导入任何研判结果" description="请在平台导出的 XLSX 中填写“本次研判结果”（成功或失败）和“研判意见”后重新导入；空白决定行会跳过。" />}
-          {(analysisImportResult.error || analysisImportResult.failed_count > 0 || analysisImportResult.success_count === 0) && <Upload accept=".xlsx" disabled={importingAnalysis} showUploadList={false} beforeUpload={file => { void importAnalysis(file); return false }}>
-            <Button type="primary" loading={importingAnalysis}>重新导入修正后的文件</Button>
-          </Upload>}
         </section>
       )}
 

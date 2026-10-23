@@ -342,6 +342,7 @@ export type PermissionCode =
   | 'worklog.manage' | 'attendance.manage' | 'personnel.manage'
   | 'community.manage' | 'user.manage' | 'permission.manage' | 'module.access.manage'
   | 'announcement.manage' | 'system.manage' | 'ops.manage'
+  | 'qmf.registration.execute'
   | 'presence.detail.view'
   | 'police.dispatch.manage' | 'police.address.manage'
   | 'registry.property.view' | 'registry.property.manage'
