@@ -75,6 +75,8 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn("venue-photos.tar.gz", script)
         self.assertIn('"$backup_dir/RegistryData.sql.gz.sha256"', script)
         self.assertIn("photo recovery measurement evidence is immutable", script)
+        self.assertIn('"content_check": "stream_scan_v1"', script)
+        self.assertIn('stream.read(1024 * 1024)', script)
 
     def test_installer_requires_and_installs_root_maintenance_contract(self) -> None:
         installer = (ROOT / "deploy/install-server-deployer.sh").read_text(encoding="utf-8")
