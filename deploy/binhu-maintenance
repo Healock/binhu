@@ -234,17 +234,36 @@ import re
 import sys
 
 path, database = sys.argv[1:]
-with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
-    sample = stream.read(8 * 1024 * 1024)
 quoted = re.escape(database)
-if "-- MySQL dump" not in sample:
+found = [False, False, False]
+carry = ""
+with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), ""):
+        sample = carry + chunk
+        found[0] = found[0] or "-- MySQL dump" in sample
+        found[1] = found[1] or re.search(rf"CREATE DATABASE(?: IF NOT EXISTS)?[^;]*`{quoted}`", sample, re.I) is not None
+        found[2] = found[2] or re.search(rf"\bUSE\s+`{quoted}`\s*;", sample, re.I) is not None
+        if all(found):
+            break
+        carry = sample[-4096:]
+if not found[0]:
     raise SystemExit("backup is not a mysqldump export")
-if not re.search(rf"CREATE DATABASE(?: IF NOT EXISTS)?[^;]*`{quoted}`", sample, re.I):
+if not found[1]:
     raise SystemExit("backup database scope is not proven")
-if not re.search(rf"\bUSE\s+`{quoted}`\s*;", sample, re.I):
+if not found[2]:
     raise SystemExit("backup USE database marker is missing")
-if database.endswith("RegistryData") and not re.search(r"CREATE TABLE[^;]*`registry_properties`", sample, re.I):
-    raise SystemExit("backup registry_properties table marker is missing")
+if database.endswith("RegistryData"):
+    found_properties = False
+    carry = ""
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), ""):
+            sample = carry + chunk
+            if re.search(r"CREATE TABLE[^;]*`registry_properties`", sample, re.I):
+                found_properties = True
+                break
+            carry = sample[-4096:]
+    if not found_properties:
+        raise SystemExit("backup registry_properties table marker is missing")
 PY
   sha256sum "$destination" >"$destination.sha256"
 }
@@ -275,7 +294,7 @@ manifest = {
     "database_scope": sorted(entry["database"] for entry in entries if "database" in entry),
     "dump_contract": {
         "format": "mysqldump-gzip",
-        "content_check": "bounded_header_v1",
+        "content_check": "stream_scan_v1",
         "restore_procedure": "approved_manual_only",
     },
 }
