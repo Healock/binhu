@@ -11,7 +11,13 @@ def frontend_index_response(index_path, environment):
     # Lazy import keeps the renderer usable by host-side preparation tools.
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     if environment not in PREFIXES:
-        return FileResponse(index_path)
+        # The entrypoint contains the current Vite asset hashes.  It must not
+        # be cached, otherwise a browser can keep loading an older bundle
+        # after a release while immutable /assets files remain cacheable.
+        return FileResponse(index_path, headers={
+            'Cache-Control': 'no-store',
+            'Pragma': 'no-cache',
+        })
     try:
         html = render_environment_index(Path(index_path).read_text(encoding='utf-8'), environment)
     except (ValueError, OSError):

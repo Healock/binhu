@@ -76,7 +76,10 @@ class EnvironmentStaticTests(unittest.TestCase):
             def page():
                 return frontend_index_response(index, 'production')
 
-            self.assertEqual(TestClient(app).get('/').text, html)
+            response = TestClient(app).get('/')
+            self.assertEqual(response.text, html)
+            self.assertEqual(response.headers.get('cache-control'), 'no-store')
+            self.assertEqual(response.headers.get('pragma'), 'no-cache')
 
     def test_same_bundle_resolves_inside_environment_even_on_nested_routes(self):
         for environment, prefix in [('development', '/dev/'), ('staging', '/staging/')]:
