@@ -129,6 +129,24 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         data.update(kw)
         return data
 
+    def weekly(self, **kw):
+        data = dict(
+            request_id="weekly-000000000001",
+            week_start=date(2026, 10, 19),
+            expected_versions={1: 0},
+            assignments=[
+                {
+                    "member_id": 1,
+                    "days": [
+                        {"date": date(2026, 10, 19), "state": "rest"},
+                        {"date": date(2026, 10, 24), "state": "work"},
+                    ],
+                }
+            ],
+        )
+        data.update(kw)
+        return data
+
     async def test_preview_rolls_back_and_double_duty_counts_two_person_days(self):
         data = self.schedule()
         preview = await service.schedule_mutation(self.conn, data, 9, True)
@@ -177,6 +195,132 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as caught:
             await service.schedule_mutation(self.conn, data, 9)
         self.assertEqual(caught.exception.status_code, 409)
+
+    async def test_weekly_preview_rolls_back_and_commit_retry_is_idempotent(self):
+        data = self.weekly()
+        preview = await service.weekly_schedule_mutation(self.conn, data, 9, True)
+        self.assertEqual(len(preview["changes"]), 2)
+        self.assertEqual(
+            self.conn.raw.execute("SELECT COUNT(*) FROM _personnel_work_schedule").fetchone()[0],
+            0,
+        )
+
+        committed = await service.weekly_schedule_mutation(self.conn, data, 9)
+        retried = await service.weekly_schedule_mutation(self.conn, data, 9)
+        self.assertEqual(retried, committed)
+        self.assertEqual(
+            self.conn.raw.execute("SELECT COUNT(*) FROM _personnel_work_schedule").fetchone()[0],
+            2,
+        )
+        self.assertEqual(
+            self.conn.raw.execute("SELECT COUNT(*) FROM _personnel_attendance_changes").fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.conn.raw.execute("SELECT attendance_revision FROM _grid_members WHERE id=1").fetchone()[0],
+            1,
+        )
+
+    async def test_weekly_schedule_skips_leave_and_restores_defaults(self):
+        await service.leave_mutation(
+            self.conn,
+            self.leave(end_date=date(2026, 10, 19)),
+            9,
+        )
+        data = self.weekly(
+            request_id="weekly-000000000002",
+            expected_versions={1: 1},
+            assignments=[
+                {
+                    "member_id": 1,
+                    "days": [
+                        {"date": date(2026, 10, 19), "state": "rest"},
+                        {"date": date(2026, 10, 20), "state": "rest"},
+                    ],
+                }
+            ],
+        )
+        result = await service.weekly_schedule_mutation(self.conn, data, 9, True)
+        self.assertEqual(result["skipped"], [{"member_id": 1, "date": "2026-10-19"}])
+        self.assertEqual(len(result["changes"]), 1)
+        await service.weekly_schedule_mutation(self.conn, data, 9)
+        self.assertEqual(
+            self.conn.raw.execute(
+                "SELECT state FROM _personnel_work_schedule WHERE member_id=1 AND work_date=?",
+                (date(2026, 10, 20),),
+            ).fetchone()[0],
+            "rest",
+        )
+
+        self.conn.raw.execute(
+            "INSERT INTO _personnel_work_schedule(member_id,work_date,state,source,revision,updated_by) "
+            "VALUES(1,?,'rest','manual',2,9),(1,?,'work','manual',2,9)",
+            (date(2026, 10, 21), date(2026, 10, 24)),
+        )
+        self.conn.raw.commit()
+        reset = self.weekly(
+            request_id="weekly-000000000003",
+            expected_versions={1: 2},
+            assignments=[
+                {
+                    "member_id": 1,
+                    "days": [
+                        {"date": date(2026, 10, 21), "state": None},
+                        {"date": date(2026, 10, 24), "state": None},
+                    ],
+                }
+            ],
+        )
+        restored = await service.weekly_schedule_mutation(self.conn, reset, 9)
+        self.assertEqual([item["after"] for item in restored["changes"]], ["work", "unassigned"])
+        self.assertIsNone(
+            self.conn.raw.execute(
+                "SELECT state FROM _personnel_work_schedule WHERE member_id=1 AND work_date=?",
+                (date(2026, 10, 21),),
+            ).fetchone()
+        )
+        self.assertIsNone(
+            self.conn.raw.execute(
+                "SELECT state FROM _personnel_work_schedule WHERE member_id=1 AND work_date=?",
+                (date(2026, 10, 24),),
+            ).fetchone()
+        )
+
+    async def test_weekly_schedule_rejects_stale_versions_and_rolls_back_batch(self):
+        stale = self.weekly(expected_versions={1: 1})
+        with self.assertRaises(HTTPException) as caught:
+            await service.weekly_schedule_mutation(self.conn, stale, 9)
+        self.assertEqual(caught.exception.status_code, 409)
+
+        data = self.weekly(
+            request_id="weekly-000000000004",
+            expected_versions={1: 0, 2: 0},
+            assignments=[
+                {"member_id": member_id, "days": [{"date": date(2026, 10, 24), "state": "work"}]}
+                for member_id in (1, 2)
+            ],
+        )
+        original_record_change = service.record_change
+        calls = 0
+
+        async def fail_on_second_member(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected weekly audit failure")
+            await original_record_change(*args)
+
+        with patch.object(service, "record_change", side_effect=fail_on_second_member):
+            with self.assertRaisesRegex(RuntimeError, "weekly audit failure"):
+                await service.weekly_schedule_mutation(self.conn, data, 9)
+        self.assertEqual(
+            self.conn.raw.execute("SELECT COUNT(*) FROM _personnel_work_schedule").fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.raw.execute("SELECT COUNT(*) FROM _personnel_attendance_changes").fetchone()[0],
+            0,
+        )
 
     async def test_request_id_cannot_be_reused_by_other_actor_or_payload(self):
         data = self.schedule()

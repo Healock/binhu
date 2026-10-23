@@ -58,6 +58,7 @@ export default function WeekendDuty() {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [patternOpen, setPatternOpen] = useState(false);
   const [pattern, setPattern] = useState<Record<number, "default" | "work" | "rest">>(
     Object.fromEntries(Array.from({ length: 7 }, (_, day) => [day, "default"])),
@@ -189,14 +190,21 @@ export default function WeekendDuty() {
       }))
       .filter((assignment) => assignment.days.length > 0);
     if (!assignments.length) return;
+    const requestId = crypto.randomUUID();
     setBusy(true);
     setError("");
     try {
-      const preview = await changeWeeklySchedule(board.week_start, assignments, true);
+      const preview = await changeWeeklySchedule(
+        board.week_start,
+        assignments,
+        true,
+        requestId,
+      );
       const previewRows = preview.changes.slice(0, 12).map((change) => {
         const member = board.members.find((item) => item.id === change.member_id);
         return `${member?.name || "人员"} · ${change.date}：${labels[change.before]} → ${labels[change.after]}`;
       });
+      setConfirmOpen(true);
       Modal.confirm({
         title: "确认本周排班调整",
         content: (
@@ -215,9 +223,10 @@ export default function WeekendDuty() {
           setBusy(true);
           setError("");
           try {
-            await changeWeeklySchedule(board.week_start, assignments);
+            await changeWeeklySchedule(board.week_start, assignments, false, requestId);
             setDraft({});
             setNotice(`排班已保存；请假日期跳过 ${preview.skipped.length} 项`);
+            setConfirmOpen(false);
             await load();
           } catch (reason) {
             setError(
@@ -229,6 +238,7 @@ export default function WeekendDuty() {
             setBusy(false);
           }
         },
+        onCancel: () => setConfirmOpen(false),
       });
     } catch (reason) {
       setError(
@@ -244,6 +254,7 @@ export default function WeekendDuty() {
     (total, days) => total + Object.keys(days).length,
     0,
   );
+  const editingLocked = busy || confirmOpen;
   const dayTotals = dayDates.map((_, dayIndex) =>
     (board?.members || []).reduce(
       (total, member) => total + Number(stateFor(member.id, dayIndex) === "work"),
@@ -273,6 +284,7 @@ export default function WeekendDuty() {
                 <DatePicker
                   picker="week"
                   allowClear={false}
+                  disabled={editingLocked}
                   value={dayjs(week)}
                   onChange={(value) => {
                     if (value && (!changedCount || window.confirm("切换周次会放弃当前草稿，是否继续？"))) {
@@ -299,14 +311,14 @@ export default function WeekendDuty() {
               <>
                 {editable && (
                   <>
-                    <Button onClick={() => {
+                    <Button disabled={editingLocked} onClick={() => {
                       setPattern(Object.fromEntries(Array.from({ length: 7 }, (_, day) => [day, "default"])));
                       setPatternOpen(true);
                     }}>套用整周模式</Button>
                     <Button
                       type="primary"
                       loading={busy}
-                      disabled={!changedCount}
+                      disabled={!changedCount || editingLocked}
                       onClick={() => void save()}
                     >
                       保存草稿{changedCount ? `（${changedCount}项）` : ""}
@@ -323,7 +335,7 @@ export default function WeekendDuty() {
                 <Checkbox
                   checked={visibleMembers.length > 0 && visibleSelected === visibleMembers.length}
                   indeterminate={visibleSelected > 0 && visibleSelected < visibleMembers.length}
-                  disabled={!visibleMembers.length || busy}
+                  disabled={!visibleMembers.length || editingLocked}
                   onChange={(event) => setSelected((current) => {
                     const next = new Set(current);
                     visibleMembers.forEach((member) => {
@@ -337,14 +349,14 @@ export default function WeekendDuty() {
                 </Checkbox>
                 <span>已选 {selected.size} 人 · {selectedDays.size} 天</span>
                 {selected.size > 0 && (
-                  <Button size="small" onClick={() => setSelected(new Set())}>清空人员</Button>
+                  <Button size="small" disabled={editingLocked} onClick={() => setSelected(new Set())}>清空人员</Button>
                 )}
               </div>
               <div className="attendance-bulk-actions">
                 <span>对所选日期</span>
-                <Button disabled={!selected.size || !selectedDays.size} onClick={() => setSelectedDaysState("work")}>设为上班</Button>
-                <Button disabled={!selected.size || !selectedDays.size} onClick={() => setSelectedDaysState("rest")}>设为休息</Button>
-                <Button disabled={!selected.size || !selectedDays.size} onClick={() => setSelectedDaysState(null)}>恢复默认</Button>
+                <Button disabled={editingLocked || !selected.size || !selectedDays.size} onClick={() => setSelectedDaysState("work")}>设为上班</Button>
+                <Button disabled={editingLocked || !selected.size || !selectedDays.size} onClick={() => setSelectedDaysState("rest")}>设为休息</Button>
+                <Button disabled={editingLocked || !selected.size || !selectedDays.size} onClick={() => setSelectedDaysState(null)}>恢复默认</Button>
               </div>
             </div>
           )}
@@ -363,6 +375,7 @@ export default function WeekendDuty() {
                   <thead>
                     <tr>
                       <th className="weekly-select-col"><Checkbox
+                        disabled={editingLocked}
                         checked={visibleMembers.length > 0 && visibleSelected === visibleMembers.length}
                         indeterminate={visibleSelected > 0 && visibleSelected < visibleMembers.length}
                         aria-label="全选筛选结果"
@@ -379,7 +392,7 @@ export default function WeekendDuty() {
                           <small>{day.format("MM/DD")} · {index < 5 ? "默认上班" : "待安排"}</small>
                           <Checkbox
                             checked={selectedDays.has(index)}
-                            disabled={busy}
+                            disabled={editingLocked}
                             aria-label={`选择${dayNames[index]}`}
                             onChange={(event) => setSelectedDays((current) => {
                               const next = new Set(current);
@@ -397,7 +410,7 @@ export default function WeekendDuty() {
                       <tr key={member.id}>
                         <td className="weekly-select-col"><Checkbox
                           checked={selected.has(member.id)}
-                          disabled={busy}
+                          disabled={editingLocked}
                           aria-label={`选择${member.name}`}
                           onChange={(event) => setSelected((current) => {
                             const next = new Set(current);
@@ -422,7 +435,7 @@ export default function WeekendDuty() {
                               <button
                                 type="button"
                                 className={`weekly-state weekly-state--${state} ${isDraft ? "is-draft" : ""}`}
-                                disabled={!editable || busy || leave}
+                                disabled={!editable || editingLocked || leave}
                                 onClick={() => {
                                   const next = state === "work"
                                     ? "rest"

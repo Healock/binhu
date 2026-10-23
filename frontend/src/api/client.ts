@@ -3331,10 +3331,11 @@ export async function changeWeeklySchedule(
   weekStart: string,
   assignments: WeeklyScheduleAssignment[],
   preview = false,
+  requestId = crypto.randomUUID(),
 ): Promise<WeeklyScheduleResult> {
   const { data } = await api.post(
     `/personnel/attendance/week-schedule${preview ? '/preview' : ''}`,
-    { week_start: weekStart, request_id: crypto.randomUUID(), assignments },
+    { week_start: weekStart, request_id: requestId, assignments },
   )
   if (!preview) notifyAttendanceChanged()
   return data
