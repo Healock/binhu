@@ -6,6 +6,7 @@ const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url),
 const listSource = readFileSync(new URL('../src/pages/MobileTaskList.tsx', import.meta.url), 'utf8')
 const tableSource = readFileSync(new URL('../src/components/MobileTaskTable.tsx', import.meta.url), 'utf8')
 const statusSource = readFileSync(new URL('../src/components/QmfFeedbackStatus.tsx', import.meta.url), 'utf8')
+const scanSource = readFileSync(new URL('../src/components/QmfStatusScanControl.tsx', import.meta.url), 'utf8')
 const settingsSource = readFileSync(new URL('../src/pages/SystemSettings.tsx', import.meta.url), 'utf8')
 const detailSource = readFileSync(new URL('../src/pages/MobileTaskDetail.tsx', import.meta.url), 'utf8')
 
@@ -26,9 +27,8 @@ test('全民防反馈扫描接口和七类安全状态已接入', () => {
 })
 
 test('模型三列表同时展示扫描进度、筛选和卡片表格状态', () => {
-  assert.match(listSource, /全量核对全民防反馈/)
-  assert.match(listSource, /import \{[^}]*Modal[^}]*\} from 'antd'/s)
-  assert.match(listSource, /Modal\.confirm\(/)
+  assert.match(scanSource, /全量核对全民防反馈/)
+  assert.match(scanSource, /Modal\.confirm\(/)
   assert.match(listSource, /qmf_feedback_states: qmfFeedbackStates/)
   assert.match(listSource, /<Progress/)
   assert.match(listSource, /<QmfFeedbackStatus status=\{task\.qmf_status\}/)
@@ -44,11 +44,12 @@ test('模型三列表同时展示扫描进度、筛选和卡片表格状态', ()
 })
 
 test('每日扫描设置默认由后台配置并使用上海时区时间', () => {
-  assert.match(settingsSource, /每日反馈扫描/)
-  assert.match(settingsSource, /type="time"/)
-  assert.match(settingsSource, /Asia\/Shanghai/)
-  assert.match(settingsSource, /status_scan_enabled/)
-  assert.match(settingsSource, /status_scan_time/)
+  const schedules = readFileSync(new URL('../src/components/ExternalAcquisitionScheduleControls.tsx', import.meta.url), 'utf8')
+  assert.match(schedules, /全民防每日状态扫描/)
+  assert.match(schedules, /type="time"/)
+  assert.match(schedules, /status_scan_enabled/)
+  assert.match(schedules, /status_scan_time/)
+  assert.match(settingsSource, /每日扫描的启停和执行时间位于“数据上传中心 → 读取外部”/)
 })
 
 test('全民防设置只保留外部只读查询配置', () => {

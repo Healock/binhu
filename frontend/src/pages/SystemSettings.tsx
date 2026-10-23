@@ -5,27 +5,18 @@ import {
   Descriptions,
   Input,
   InputNumber,
-  Progress,
   Radio,
   Select,
-  Switch,
 } from 'antd'
 import {
-  getExternalAcquisitionRun,
-  getLatestExternalAcquisitionRun,
   getQmfConfig,
   getResidencePlatformConfig,
   getSystemConfig,
   updateQmfConfig,
   updateResidencePlatformConfig,
-  startResidencePlatformScan,
   updateSystemConfig,
 } from '../api/client'
-import type {
-  ExternalAcquisitionRun,
-  QmfConfig,
-  ResidencePlatformConfig,
-} from '../api/client'
+import type { QmfConfig, ResidencePlatformConfig } from '../api/client'
 import { Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -47,14 +38,6 @@ const TIMEZONES = [
 ]
 
 type MaintenanceMode = 'off' | 'immediate' | 'scheduled'
-
-const RESIDENCE_RUN_PHASES: Record<string, string> = {
-  queued: '等待执行',
-  starting: '正在启动',
-  preparing: '正在准备任务',
-  querying: '正在查询居住证平台',
-  finished: '处理结束',
-}
 
 function getResidenceReadiness(
   config: ResidencePlatformConfig,
@@ -196,7 +179,6 @@ export default function SystemSettings() {
   const [residencePassword, setResidencePassword] = useState('')
   const [savingResidence, setSavingResidence] = useState(false)
   const [residenceMsg, setResidenceMsg] = useState('')
-  const [residenceRun, setResidenceRun] = useState<ExternalAcquisitionRun | null>(null)
 
   useEffect(() => {
     Promise.all([getSystemConfig(), getQmfConfig(), getResidencePlatformConfig()])
@@ -233,41 +215,6 @@ export default function SystemSettings() {
       .catch(() => setTimezoneMsg('系统设置加载失败，请稍后重试'))
       .finally(() => setLoading(false))
   }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    void getLatestExternalAcquisitionRun('residence_full_scan', { passive: true })
-      .then(run => {
-        if (!cancelled) {
-          setResidenceRun(current => (
-            !run || (current && current.id > run.id) ? current : run
-          ))
-        }
-      })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!residenceRun || !['queued', 'running'].includes(residenceRun.status)) return
-    let cancelled = false
-    const refresh = () => {
-      void getExternalAcquisitionRun(residenceRun.id, { passive: true })
-        .then(run => {
-          if (!cancelled) {
-            setResidenceRun(current => current?.id === run.id ? run : current)
-          }
-        })
-        .catch(() => undefined)
-    }
-    const timer = window.setInterval(refresh, 2500)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [residenceRun?.id, residenceRun?.status])
 
   const handleSaveTimezone = async () => {
     setSavingTimezone(true)
@@ -364,6 +311,7 @@ export default function SystemSettings() {
     setSavingQmf(true)
     setQmfMsg('')
     try {
+      const schedule = await getQmfConfig()
       const result = await updateQmfConfig({
         registration_enabled: false,
         api_base_url: qmfConfig.api_base_url,
@@ -377,8 +325,8 @@ export default function SystemSettings() {
         expected_station_name: qmfConfig.expected_station_name,
         timeout_seconds: qmfConfig.timeout_seconds,
         session_max_seconds: qmfConfig.session_max_seconds,
-        status_scan_enabled: qmfConfig.status_scan_enabled,
-        status_scan_time: qmfConfig.status_scan_time,
+        status_scan_enabled: schedule.status_scan_enabled,
+        status_scan_time: schedule.status_scan_time,
       })
       setQmfConfig(result)
       setQmfPassword('')
@@ -395,37 +343,20 @@ export default function SystemSettings() {
     setSavingResidence(true)
     setResidenceMsg('')
     try {
+      const schedule = await getResidencePlatformConfig()
       const result = await updateResidencePlatformConfig({
-        enabled: residenceConfig.enabled,
+        enabled: schedule.enabled,
         base_url: residenceConfig.base_url,
         login_community_ids: residenceConfig.login_community_ids,
         ...(residencePassword ? { password: residencePassword } : {}),
         timeout_seconds: residenceConfig.timeout_seconds,
-        full_scan_interval_minutes: residenceConfig.full_scan_interval_minutes,
+        full_scan_interval_minutes: schedule.full_scan_interval_minutes,
       })
       setResidenceConfig(result)
       setResidencePassword('')
       setResidenceMsg('居住证平台配置已保存')
     } catch (error: any) {
       setResidenceMsg(error?.response?.data?.detail?.message || error?.response?.data?.detail || '居住证平台配置保存失败')
-    } finally {
-      setSavingResidence(false)
-    }
-  }
-
-  const handleResidenceScan = async () => {
-    setSavingResidence(true)
-    setResidenceMsg('')
-    try {
-      const result = await startResidencePlatformScan()
-      setResidenceRun(result.run)
-      setResidenceMsg(
-        result.reused
-          ? `查询任务 #${result.run.id} 已在运行，继续显示原任务进度`
-          : `查询任务 #${result.run.id} 已进入后台队列，可离开本页面继续运行`,
-      )
-    } catch (error: any) {
-      setResidenceMsg(error?.response?.data?.detail || '重新查询启动失败')
     } finally {
       setSavingResidence(false)
     }
@@ -551,39 +482,7 @@ export default function SystemSettings() {
               message={qmfConfig.configured ? '全民防只读查询已配置' : '只读查询配置尚未完整'}
               description="腾讯表和全民防真实登记均已下线；此处凭据只用于受控的外部只读查询。密码保存后不再显示。"
             />
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">每日反馈扫描</span>
-                <div className="flex min-h-9 items-center gap-3">
-                  <Switch
-                    checked={qmfConfig.status_scan_enabled}
-                    onChange={value => setQmfConfig(current => current ? {
-                      ...current,
-                      status_scan_enabled: value,
-                    } : current)}
-                    disabled={savingQmf}
-                  />
-                  <span className="text-sm text-[var(--app-text-secondary)]">
-                    {qmfConfig.status_scan_enabled ? '已开启' : '已关闭'}
-                  </span>
-                </div>
-                <p className="settings-field__hint text-xs text-[var(--app-text-secondary)]">
-                  每日只扫描新增或变化任务，以及超过 7 天未成功核对的任务；默认关闭。
-                </p>
-              </div>
-              <label className="settings-field text-sm text-[var(--app-text-strong)]">
-                <span className="settings-field__label font-medium">每日执行时间（Asia/Shanghai）</span>
-                <Input
-                  type="time"
-                  value={qmfConfig.status_scan_time}
-                  onChange={event => setQmfConfig(current => current ? {
-                    ...current,
-                    status_scan_time: event.target.value,
-                  } : current)}
-                  disabled={savingQmf}
-                />
-              </label>
-            </div>
+            <Alert type="info" showIcon message="自动读取计划统一在数据上传中心管理" description="每日扫描的启停和执行时间位于“数据上传中心 → 读取外部”。" />
             <div className="grid gap-4 md:grid-cols-2">
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
                 <span className="settings-field__label font-medium">HTTP 接口地址</span>
@@ -726,19 +625,7 @@ export default function SystemSettings() {
               description="完整账号在社区管理中加密保存；系统设置只选择后台登录使用的社区。网页无需人工填写验证码。"
             />
             <div className="grid gap-4 md:grid-cols-2">
-              <div className="settings-field">
-                <span className="settings-field__label text-sm font-medium text-[var(--app-text-strong)]">自动查询开关</span>
-                <div className="flex min-h-9 items-center gap-3">
-                  <Switch
-                    checked={residenceConfig.enabled}
-                    onChange={value => setResidenceConfig(current => current ? { ...current, enabled: value } : current)}
-                    disabled={savingResidence}
-                  />
-                  <span className="text-sm text-[var(--app-text-secondary)]">
-                    {residenceConfig.enabled ? '已开启' : '已关闭'}
-                  </span>
-                </div>
-              </div>
+              <Alert className="md:col-span-2" type="info" showIcon message="自动查询计划统一在数据上传中心管理" description="居住证查询的启停和全量查询间隔位于“数据上传中心 → 读取外部”。" />
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
                 <span className="settings-field__label font-medium">接口地址</span>
                 <Input
@@ -779,20 +666,6 @@ export default function SystemSettings() {
                 />
               </label>
               <label className="settings-field text-sm text-[var(--app-text-strong)]">
-                <span className="settings-field__label font-medium">全量查询间隔（分钟）</span>
-                <InputNumber
-                  min={5}
-                  max={1440}
-                  value={residenceConfig.full_scan_interval_minutes}
-                  onChange={value => setResidenceConfig(current => current ? {
-                    ...current,
-                    full_scan_interval_minutes: Number(value || 30),
-                  } : current)}
-                  className="w-full"
-                  disabled={savingResidence}
-                />
-              </label>
-              <label className="settings-field text-sm text-[var(--app-text-strong)]">
                 <span className="settings-field__label font-medium">统一登录密码</span>
                 <Input.Password
                   value={residencePassword}
@@ -816,50 +689,7 @@ export default function SystemSettings() {
             </div>
             <div className="settings-actions flex flex-wrap gap-2">
               <Button type="primary" loading={savingResidence} onClick={handleSaveResidence}>保存配置</Button>
-              <Button
-                loading={savingResidence}
-                disabled={
-                  !residenceConfig.session_ready
-                  || residenceRun?.status === 'queued'
-                  || residenceRun?.status === 'running'
-                }
-                onClick={handleResidenceScan}
-              >
-                {residenceRun?.status === 'queued' || residenceRun?.status === 'running'
-                  ? '查询进行中'
-                  : '重新查询全部任务'}
-              </Button>
             </div>
-            {residenceRun && (
-              <div className="settings-field rounded-lg border border-[var(--app-border)] px-4 py-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-[var(--app-text-strong)]">
-                    最近查询任务 #{residenceRun.id}
-                  </span>
-                  <span className="text-xs text-[var(--app-text-secondary)]">
-                    {RESIDENCE_RUN_PHASES[residenceRun.phase] || residenceRun.phase}
-                  </span>
-                </div>
-                <Progress
-                  className="mt-2"
-                  percent={residenceRun.progress ?? 0}
-                  size="small"
-                  status={
-                    residenceRun.status === 'failed' || residenceRun.status === 'interrupted'
-                      ? 'exception'
-                      : residenceRun.status === 'success' || residenceRun.status === 'warning'
-                        ? 'success'
-                        : 'active'
-                  }
-                  format={() => residenceRun.total !== null
-                    ? `${residenceRun.current}/${residenceRun.total}`
-                    : '准备中'}
-                />
-                <div className="mt-1 text-xs leading-5 text-[var(--app-text-secondary)]">
-                  {residenceRun.error_message || residenceRun.message || '等待后台更新进度'}
-                </div>
-              </div>
-            )}
             <Descriptions
               size="small"
               colon={false}
@@ -872,7 +702,7 @@ export default function SystemSettings() {
                 {
                   key: 'timing',
                   label: '自动查询时机',
-                  children: `每 ${residenceConfig.full_scan_interval_minutes} 分钟重新查询全部流口指令核查对象`,
+                  children: '启停与执行间隔在数据上传中心管理',
                 },
               ]}
             />

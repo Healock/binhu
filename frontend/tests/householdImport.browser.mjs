@@ -45,8 +45,7 @@ try {
       }
       return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
     })
-    await page.goto(`${origin}/registry`, { waitUntil: 'domcontentloaded', timeout: 60000 })
-    await page.getByRole('tab', { name: '数据导入', exact: true }).click()
+    await page.goto(`${origin}/data-upload?tab=files&panel=registry`, { waitUntil: 'domcontentloaded', timeout: 60000 })
     await page.setViewportSize({ width, height })
     await page.locator('input[type=file]').setInputFiles({
       name: '居住房屋全量_标准.xlsx',

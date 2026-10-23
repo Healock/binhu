@@ -45,8 +45,7 @@ try {
       }
       return send({ data: [], total: 0, unread_count: 0 })
     })
-    await page.goto(`${origin}/registry`)
-    await page.getByRole('tab', { name: '数据导入', exact: true }).click()
+    await page.goto(`${origin}/data-upload?tab=files&panel=registry`)
     if (!certificate) {
       await page.locator('input[type=file]').setInputFiles({ name: 'synthetic.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('mocked preview') })
       await page.getByRole('button', { name: '预览户号表', exact: true }).click()

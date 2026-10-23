@@ -8,7 +8,6 @@ import type { ReactNode } from 'react'
 import { DownloadOutlined, EllipsisOutlined, FileImageOutlined, FilterFilled, PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import AppTable from '../components/AppTable'
-import PropertyAnnotationImport from '../components/PropertyAnnotationImport'
 import HouseholdImportFiles from '../components/HouseholdImportFiles'
 import type { ResponsiveColumns } from '../components/responsiveTable'
 import ExternalDataPanel from '../components/ExternalDataPanel'
@@ -31,6 +30,7 @@ import {
   type WatchCategory,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
+import { useNavigate } from 'react-router-dom'
 import { downloadBlob } from '../utils/fileDownload'
 import { registryVisitText } from '../utils/registryVisit'
 
@@ -101,11 +101,12 @@ function issuePayloadText(row: RegistryImportIssue, ...keys: string[]) {
   return ''
 }
 
-export default function RegistryManagement() {
+export default function RegistryManagement({ importCenterMode = false }: { importCenterMode?: boolean }) {
   const layoutRef = useRef<HTMLDivElement>(null)
   const responsiveLayout = useResponsiveLayout(layoutRef)
   const { user, systemTimezone } = useAuth()
-  const [tab, setTab] = useState<TabKey>('properties')
+  const [tab, setTab] = useState<TabKey>(importCenterMode ? 'imports' : 'properties')
+  const navigate = useNavigate()
   const [properties, setProperties] = useState<RegistryProperty[]>([])
   const [people, setPeople] = useState<RegistryPerson[]>([])
   const [organizations, setOrganizations] = useState<RegistryOrganization[]>([])
@@ -142,7 +143,6 @@ export default function RegistryManagement() {
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importPreview, setImportPreview] = useState<any>(null)
   const [importing, setImporting] = useState(false)
-  const [certificateStarting, setCertificateStarting] = useState(false)
   const [certificateRun, setCertificateRun] = useState<RegistryCertificateSourceRun | null>(null)
   const [communities, setCommunities] = useState<Array<{ id: number; name: string }>>([])
   const [loading, setLoading] = useState(false)
@@ -527,33 +527,6 @@ export default function RegistryManagement() {
       }
     } finally {
       setImporting(false)
-    }
-  }
-
-  const startCertificateSource = async () => {
-    setCertificateStarting(true)
-    try {
-      const run = await registryApi.startCertificateSourceRun()
-      applyCertificateRun(run)
-      message.success(run.reused ? '已有告知书读取任务正在运行' : '告知书读取任务已开始，可以离开页面后再回来查看')
-    } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '告知书读取任务启动失败')
-    } finally {
-      setCertificateStarting(false)
-    }
-  }
-
-  const retryCertificateSource = async (restart: boolean) => {
-    if (!certificateRun) return
-    setCertificateStarting(true)
-    try {
-      const run = await registryApi.retryCertificateSourceRun(certificateRun.id, restart)
-      applyCertificateRun(run)
-      message.success(restart ? '已从第一页重新读取告知书' : '已从已保存进度继续读取告知书')
-    } catch (reason: any) {
-      message.error(reason?.response?.data?.detail || '告知书读取任务恢复失败')
-    } finally {
-      setCertificateStarting(false)
     }
   }
 
@@ -1153,7 +1126,6 @@ export default function RegistryManagement() {
     )}
     {canManage && tab === 'properties' && <>
       <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportRegistryRecords(true)}>导出小区标注</Button>
-      <PropertyAnnotationImport onChanged={load} />
     </>}
     {canManage && tab === 'properties' && selectedPropertyIds.length > 0 && (
       <Popconfirm
@@ -1169,18 +1141,7 @@ export default function RegistryManagement() {
     {canManage && tab === 'organizations' && <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('organization')}>新增机构</Button>}
     {canReview && tab === 'imports' && <>
       <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览户号表</Button>
-      {!certificateRunActive && certificateRun?.status !== 'failed' && <Button onClick={() => void startCertificateSource()} loading={certificateStarting}>读取告知书</Button>}
       {certificateRunActive && <Button loading disabled>{certificatePhaseLabel}</Button>}
-      {certificateRun?.status === 'failed' && <>
-        {certificateRun.error_code !== 'source_changed' && <Button onClick={() => void retryCertificateSource(false)} loading={certificateStarting}>继续读取</Button>}
-        <Popconfirm
-          title="确认从第一页重新读取告知书？"
-          description="已保存的分页进度会被清除，但不会影响上一次成功的导入预览。"
-          onConfirm={() => void retryCertificateSource(true)}
-        >
-          <Button loading={certificateStarting}>重新读取</Button>
-        </Popconfirm>
-      </>}
       {(importPreview?.status === 'preview' || (importPreview?.source_type === 'household' && importPreview.status === 'partially_imported')) && <Button onClick={() => void confirmImport()} loading={importing}>
         {importPreview.source_type === 'certificate' ? '确认挂载告知书' : importPreview.status === 'partially_imported' ? '继续导入正常数据' : '确认导入正常数据'}
       </Button>}
@@ -1219,10 +1180,10 @@ export default function RegistryManagement() {
 
   return (
     <div ref={layoutRef} className="registry-management-layout">
-      <PageHeader title="辖区档案" description="长期维护辖区房屋、房东、业主、中介和租房平台关系；业务数据只进入待审核变更。" />
+      <PageHeader title={importCenterMode ? '上传文件' : '辖区档案'} description={importCenterMode ? '户号表与小区标注工作簿在此预览并按权限确认导入。' : '长期维护辖区房屋、房东、业主、中介和租房平台关系；业务数据只进入待审核变更。'} />
       {error && <Alert type="error" showIcon message={error} />}
       <Panel>
-        <Tabs
+        {!importCenterMode && <Tabs
           activeKey={tab}
           onChange={value => {
             setTab(value as TabKey)
@@ -1248,10 +1209,10 @@ export default function RegistryManagement() {
             ...(canManage ? [{ key: 'merges', label: '合并历史' }] : []),
             ...(canReview ? [{ key: 'candidates', label: '待审核变更' }, { key: 'conflicts', label: '冲突处理' }] : []),
             { key: 'issues', label: '问题数据核查' },
-            ...(canReview ? [{ key: 'imports', label: '数据导入' }] : []),
           ]}
-        />
+        />}
         <div className="registry-management__content">
+          {!importCenterMode && canReview && <Button className="mb-3" onClick={() => navigate('/data-upload?tab=files&panel=registry')}>前往数据上传中心</Button>}
           {tab !== 'imports' && <ListToolbar
             filters={toolbarFilters}
             notice={toolbarNotice}
