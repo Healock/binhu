@@ -1473,3 +1473,150 @@ async def ensure_workflow_schema(cur) -> None:
             24,
         ),
     )
+
+    # PR-B1 通用流程内核。流程版本和运行时完全独立于旧 work_order_* 表；
+    # nodes_json 是有序数组，执行器按数组顺序推进，不解析 edges。
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS form_definitions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(80) NOT NULL UNIQUE,
+            name VARCHAR(200) NOT NULL,
+            description VARCHAR(1000) NOT NULL DEFAULT '',
+            current_version_id BIGINT DEFAULT NULL,
+            enabled TINYINT(1) NOT NULL DEFAULT 0,
+            created_by BIGINT DEFAULT NULL,
+            updated_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_form_definition_enabled (enabled, code)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS form_versions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            form_definition_id BIGINT NOT NULL,
+            version_no INT UNSIGNED NOT NULL,
+            schema_json JSON NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'draft',
+            published_by BIGINT DEFAULT NULL,
+            published_at DATETIME DEFAULT NULL,
+            created_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_form_version (form_definition_id, version_no),
+            INDEX idx_form_version_status (form_definition_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS process_definitions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(80) NOT NULL UNIQUE,
+            name VARCHAR(200) NOT NULL,
+            description VARCHAR(1000) NOT NULL DEFAULT '',
+            form_definition_id BIGINT DEFAULT NULL,
+            module_id VARCHAR(80) NOT NULL DEFAULT '',
+            default_due_hours INT UNSIGNED DEFAULT NULL,
+            enabled TINYINT(1) NOT NULL DEFAULT 0,
+            current_version_id BIGINT DEFAULT NULL,
+            created_by BIGINT DEFAULT NULL,
+            updated_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_process_definition_enabled (enabled, code)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS process_versions (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            process_definition_id BIGINT NOT NULL,
+            version_no INT UNSIGNED NOT NULL,
+            nodes_json JSON NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'draft',
+            published_by BIGINT DEFAULT NULL,
+            published_at DATETIME DEFAULT NULL,
+            created_by BIGINT DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_process_version (process_definition_id, version_no),
+            INDEX idx_process_version_status (process_definition_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS process_instances (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            instance_no VARCHAR(50) NOT NULL UNIQUE,
+            process_definition_id BIGINT NOT NULL,
+            process_version_id BIGINT NOT NULL,
+            title VARCHAR(200) NOT NULL,
+            description TEXT NOT NULL,
+            requester_user_id BIGINT NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'running',
+            current_node_key VARCHAR(100) NOT NULL DEFAULT '',
+            form_data JSON NOT NULL,
+            revision_no INT UNSIGNED NOT NULL DEFAULT 1,
+            submitted_at DATETIME DEFAULT NULL,
+            completed_at DATETIME DEFAULT NULL,
+            cancelled_at DATETIME DEFAULT NULL,
+            cancel_reason VARCHAR(500) NOT NULL DEFAULT '',
+            version_no INT UNSIGNED NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_process_instance_requester (requester_user_id, created_at),
+            INDEX idx_process_instance_status (status, updated_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS process_tasks (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            instance_id BIGINT NOT NULL,
+            node_key VARCHAR(100) NOT NULL,
+            node_name VARCHAR(200) NOT NULL,
+            task_order INT UNSIGNED NOT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'pending',
+            assignees JSON NOT NULL,
+            primary_assignee_user_id BIGINT DEFAULT NULL,
+            escalation_stage INT UNSIGNED NOT NULL DEFAULT 0,
+            due_at DATETIME DEFAULT NULL,
+            decision VARCHAR(30) NOT NULL DEFAULT '',
+            decision_note VARCHAR(2000) NOT NULL DEFAULT '',
+            decided_by BIGINT DEFAULT NULL,
+            decided_at DATETIME DEFAULT NULL,
+            returned_at DATETIME DEFAULT NULL,
+            revision_no INT UNSIGNED NOT NULL DEFAULT 1,
+            version_no INT UNSIGNED NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_process_task_queue (status, due_at, task_order),
+            INDEX idx_process_task_instance (instance_id, task_order),
+            INDEX idx_process_task_assignee (primary_assignee_user_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS process_events (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            instance_id BIGINT NOT NULL,
+            task_id BIGINT DEFAULT NULL,
+            event_type VARCHAR(60) NOT NULL,
+            actor_user_id BIGINT DEFAULT NULL,
+            from_status VARCHAR(30) NOT NULL DEFAULT '',
+            to_status VARCHAR(30) NOT NULL DEFAULT '',
+            detail_json JSON NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_process_event_instance (instance_id, created_at),
+            INDEX idx_process_event_task (task_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
+    await cur.execute("""
+        CREATE TABLE IF NOT EXISTS process_attachments (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            instance_id BIGINT NOT NULL,
+            task_id BIGINT DEFAULT NULL,
+            file_id CHAR(36) NOT NULL UNIQUE,
+            storage_key VARCHAR(500) NOT NULL,
+            sha256 CHAR(64) NOT NULL,
+            classification VARCHAR(50) NOT NULL DEFAULT 'ordinary',
+            retention_until DATETIME DEFAULT NULL,
+            deleted_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_process_attachment_instance (instance_id, deleted_at),
+            INDEX idx_process_attachment_retention (retention_until, deleted_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)

@@ -75,7 +75,7 @@ class HelpDocsCursor:
 def test_all_builtin_help_documents_are_publishable():
     documents = load_builtin_help_documents()
 
-    assert len(documents) == 20
+    assert len(documents) == 21
     assert len({document.slug for document in documents}) == len(documents)
     assert documents == sorted(documents, key=lambda item: (item.sort_order, item.slug))
     for document in documents:
