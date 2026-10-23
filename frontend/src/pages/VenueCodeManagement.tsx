@@ -34,6 +34,7 @@ import {
 import { downloadBlob, downloadUrl } from '../utils/fileDownload'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
+import useSystemTime from '../hooks/useSystemTime'
 import AuthenticatedImage from '../components/AuthenticatedImage'
 import { resolveRuntimeApiUrl } from '../utils/apiEnvironment'
 import { readVenueErrorPayload, venueRegistrationErrorMessage } from '../utils/venueRegistration'
@@ -80,6 +81,7 @@ function DrinkingReportDetail({ detail, timezone, onExport }: { detail: Drinking
 
 export default function VenueCodeManagement() {
   const { user, systemTimezone } = useAuth()
+  const formatSystemTime = useSystemTime()
   const canManage = Boolean(user?.permissions.includes('venue.manage'))
   const canExport = Boolean(user?.permissions.includes('venue.export'))
   const [venues, setVenues] = useState<VenueCodeItem[]>([])
@@ -332,7 +334,7 @@ export default function VenueCodeManagement() {
             { title: '身份证号', dataIndex: 'identity_number' },
             { title: '手机号', dataIndex: 'phone' },
             { title: '地址', dataIndex: 'address' },
-            { title: '登记时间', dataIndex: 'submitted_at' },
+            { title: '登记时间', dataIndex: 'submitted_at', render: formatSystemTime },
             {
               title: '照片',
               dataIndex: 'photo',
