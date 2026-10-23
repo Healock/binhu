@@ -28,6 +28,7 @@ const http = require('node:http')
 const https = require('node:https')
 const { ElectronUpdateController } = require('./updater')
 const { LocalMacService } = require('./local-mac-service')
+const { randomUUID } = require('node:crypto')
 
 const root = path.resolve(__dirname, '..', '..', '..')
 const configPath = path.join(root, 'config', 'desktop.config.json')
@@ -37,6 +38,7 @@ const smokeTest = process.argv.includes('--smoke-test')
 let updateController = null
 let upgradeInfo = null
 let localMacService = null
+const activeSaveFiles = new Map()
 
 function probeResidenceUrl(baseUrl, pathName) {
   let base
@@ -329,6 +331,51 @@ ipcMain.handle('desktop:save-file', async (event, payload) => {
   if (result.canceled || !result.filePath) return false
   await fs.promises.writeFile(result.filePath, Buffer.from(data))
   return true
+})
+ipcMain.handle('desktop:save-file-begin', async (event, payload) => {
+  const filename = typeof payload?.filename === 'string' ? payload.filename : '下载文件'
+  const safeName = path.basename(filename).replace(/[\\/:*?"<>|]/g, '_') || '下载文件'
+  const extension = path.extname(safeName).slice(1)
+  const options = {
+    title: '保存导出文件',
+    defaultPath: path.join(app.getPath('downloads'), safeName),
+    filters: extension ? [{ name: extension.toUpperCase(), extensions: [extension] }] : [],
+  }
+  const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow()
+  const result = parent
+    ? await dialog.showSaveDialog(parent, options)
+    : await dialog.showSaveDialog(options)
+  if (result.canceled || !result.filePath) return null
+  const tempPath = `${result.filePath}.binhu-part-${process.pid}-${Date.now()}`
+  const handle = randomUUID()
+  activeSaveFiles.set(handle, { tempPath, targetPath: result.filePath })
+  return handle
+})
+ipcMain.handle('desktop:save-file-chunk', async (_event, payload) => {
+  const handle = typeof payload?.handle === 'string' ? payload.handle : ''
+  const data = payload?.data
+  const target = activeSaveFiles.get(handle)
+  if (!target || (!Array.isArray(data) && !Buffer.isBuffer(data) && !(data instanceof Uint8Array))) {
+    throw new Error('下载文件分块无效')
+  }
+  const bytes = Buffer.from(data)
+  if (bytes.length > 256 * 1024) throw new Error('下载文件分块超过大小限制')
+  if (payload?.append) await fs.promises.appendFile(target.tempPath, bytes)
+  else await fs.promises.writeFile(target.tempPath, bytes)
+})
+ipcMain.handle('desktop:save-file-finish', async (_event, payload) => {
+  const handle = typeof payload?.handle === 'string' ? payload.handle : ''
+  const target = activeSaveFiles.get(handle)
+  if (!target) throw new Error('下载文件句柄无效')
+  activeSaveFiles.delete(handle)
+  await fs.promises.rename(target.tempPath, target.targetPath)
+})
+ipcMain.handle('desktop:save-file-cancel', async (_event, payload) => {
+  const handle = typeof payload?.handle === 'string' ? payload.handle : ''
+  const target = activeSaveFiles.get(handle)
+  if (!target) return
+  activeSaveFiles.delete(handle)
+  await fs.promises.rm(target.tempPath, { force: true })
 })
 ipcMain.handle('desktop:get-update-status', () => updateController?.snapshot() || null)
 ipcMain.handle('desktop:get-upgrade-info', () => upgradeInfo)

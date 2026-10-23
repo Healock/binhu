@@ -194,19 +194,14 @@ export function getVenueVisitPhotoUrl(visitId: number): string {
 export async function exportVenueVisits(params: Record<string, unknown> = {}): Promise<Blob> {
   return (await api.get('/venue-visits/export', { params, responseType: 'blob' })).data
 }
-export async function exportVenueVisitsZip(
-  params: Record<string, unknown> = {},
-  onProgress?: (percent: number | null) => void,
-): Promise<Blob> {
-  return (await api.get('/venue-visits/export-zip', {
-    params,
-    responseType: 'blob',
-    timeout: 10 * 60 * 1000,
-    onDownloadProgress: event => {
-      const total = event.total
-      onProgress?.(total && total > 0 ? Math.min(100, Math.round(event.loaded * 100 / total)) : null)
-    },
-  })).data
+export function getVenueVisitsZipUrl(params: Record<string, unknown> = {}): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') query.set(key, String(value))
+  }
+  const encoded = query.toString()
+  const suffix = encoded ? `?${encoded}` : ''
+  return `/api/venue-visits/export-zip${suffix}`
 }
 export async function deleteVenueVisit(id: number): Promise<void> {
   await api.delete(`/venue-visits/${id}`)

@@ -70,6 +70,10 @@ export interface ClientUpdateBridge {
 export interface DesktopBridge extends ClientUpdateBridge {
   target?: 'win7' | 'win10'
   saveFile: (filename: string, data: number[]) => Promise<boolean>
+  beginSaveFile?: (filename: string) => Promise<string | null>
+  writeSaveFileChunk?: (handle: string, data: number[], append: boolean) => Promise<void>
+  finishSaveFile?: (handle: string) => Promise<void>
+  cancelSaveFile?: (handle: string) => Promise<void>
   openOffline: () => Promise<void>
   minimize: () => Promise<void>
   toggleMaximize: () => Promise<boolean>
@@ -150,6 +154,10 @@ export function resolveDesktopBridge(): DesktopBridge | null {
   return {
     target: 'win10',
     saveFile: (filename, data) => invoke<boolean>('save_file', { filename, data }),
+    beginSaveFile: filename => invoke<string | null>('save_file_begin', { filename }),
+    writeSaveFileChunk: (handle, data, append) => invoke<void>('save_file_chunk', { handle, data, append }),
+    finishSaveFile: handle => invoke<void>('save_file_finish', { handle }),
+    cancelSaveFile: handle => invoke<void>('save_file_cancel', { handle }),
     openOffline: () => invoke<void>('open_offline'),
     minimize: () => invoke<void>('window_minimize'),
     toggleMaximize: () => invoke<boolean>('window_toggle_maximize'),

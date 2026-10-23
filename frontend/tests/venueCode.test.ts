@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { exportVenueVisitsZip, getVenueVisitPhotoUrl, resolveVenueCodeQrImageUrl } from '../src/api/client.ts'
+import { getVenueVisitsZipUrl, getVenueVisitPhotoUrl, resolveVenueCodeQrImageUrl } from '../src/api/client.ts'
 import { readVenueErrorPayload, venueRegistrationErrorMessage } from '../src/utils/venueRegistration.ts'
 
 test('场所登记按状态和内容类型安全解析错误响应', async () => {
@@ -85,17 +85,17 @@ test('场所登记支持按条件查询并导出包含照片的 ZIP', () => {
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
   assert.match(page, /姓名、身份证号、手机号、地址/)
   assert.match(page, /DatePicker.RangePicker/)
-  assert.match(page, /exportVenueVisitsZip\(visitFilters, setExportProgress\)/)
+  assert.match(page, /downloadUrl\(/)
+  assert.match(page, /getVenueVisitsZipUrl\(visitFilters\)/)
   assert.match(page, /mode="multiple"/)
   assert.match(page, /name="venue_ids"/)
   assert.match(page, /场所留空表示导出全部场所/)
   assert.match(page, /<Progress percent=\{exportProgress \?\? 0\}/)
   assert.match(page, /loading=\{exportingVisits\}/)
   assert.match(page, /导出查询结果（ZIP）/)
-  assert.match(client, /api.get\('\/venue-visits\/export-zip'/)
-  assert.match(client, /timeout: 10 \* 60 \* 1000/)
-  assert.match(client, /onDownloadProgress/)
-  assert.equal(typeof exportVenueVisitsZip, 'function')
+  assert.match(client, /return `\/api\/venue-visits\/export-zip/)
+  assert.match(client, /URLSearchParams/)
+  assert.equal(getVenueVisitsZipUrl({ venue_ids: '1,2', keyword: '餐饮' }).includes('venue_ids=1%2C2'), true)
 })
 
 test('遗留本地登记组件也把照片作为必填并防止空文件崩溃', () => {

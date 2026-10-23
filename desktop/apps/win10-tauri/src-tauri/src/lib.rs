@@ -1,15 +1,16 @@
 use std::{
+    collections::HashMap,
     fs,
     io::{Read, Write},
     net::TcpListener,
     path::PathBuf,
     process::Command,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ const DESKTOP_CONFIG: &str = include_str!("../../../../config/desktop.config.jso
 const UPDATE_URL: &str = "https://47.100.44.36/updates/win10-x64/";
 const POLICY_URL: &str = "https://47.100.44.36/updates/win10-x64/policy.stable.json";
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+static SAVE_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(windows)]
 pub fn ensure_windows_shortcuts() {
@@ -1015,13 +1017,20 @@ fn window_close(window: tauri::WebviewWindow) {
     window.close().ok();
 }
 
-#[tauri::command]
-fn save_file(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+#[derive(Deserialize, Serialize)]
+struct SaveFileHandle {
+    temp_path: String,
+    target_path: String,
+}
+
+#[derive(Default)]
+struct SaveFileRuntimeState(Mutex<HashMap<String, SaveFileHandle>>);
+
+fn choose_save_file(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
     filename: String,
-    data: Vec<u8>,
-) -> Result<bool, String> {
+) -> Result<Option<SaveFileHandle>, String> {
     let safe_name = PathBuf::from(filename)
         .file_name()
         .and_then(|value| value.to_str())
@@ -1039,7 +1048,7 @@ fn save_file(
     let mut dialog = rfd::FileDialog::new()
         .set_title("保存导出文件")
         .set_file_name(&safe_name)
-        .set_parent(&window);
+        .set_parent(window);
     if let Ok(directory) = app.path().download_dir() {
         dialog = dialog.set_directory(directory);
     }
@@ -1047,10 +1056,128 @@ fn save_file(
         dialog = dialog.add_filter(extension.to_uppercase(), &[extension]);
     }
     let Some(target) = dialog.save_file() else {
+        return Ok(None);
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let temp_path = target.with_file_name(format!(
+        ".{}.binhu-part-{}-{}",
+        target
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("download"),
+        std::process::id(),
+        nonce
+    ));
+    Ok(Some(SaveFileHandle {
+        temp_path: temp_path.to_string_lossy().into_owned(),
+        target_path: target.to_string_lossy().into_owned(),
+    }))
+}
+
+#[tauri::command]
+fn save_file(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    data: Vec<u8>,
+) -> Result<bool, String> {
+    let Some(handle) = choose_save_file(&app, &window, filename)? else {
         return Ok(false);
     };
-    fs::write(target, data).map_err(|error| error.to_string())?;
+    fs::write(&handle.temp_path, data).map_err(|error| error.to_string())?;
+    if let Err(error) = fs::rename(&handle.temp_path, &handle.target_path) {
+        let _ = fs::remove_file(&handle.temp_path);
+        return Err(error.to_string());
+    }
     Ok(true)
+}
+
+#[tauri::command]
+fn save_file_begin(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    state: State<'_, SaveFileRuntimeState>,
+) -> Result<Option<String>, String> {
+    let Some(handle) = choose_save_file(&app, &window, filename)? else {
+        return Ok(None);
+    };
+    fs::File::create(&handle.temp_path).map_err(|error| error.to_string())?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let id = format!(
+        "{}-{}-{}",
+        std::process::id(),
+        nonce,
+        SAVE_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    state
+        .0
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(id.clone(), handle);
+    Ok(Some(id))
+}
+
+#[tauri::command]
+fn save_file_chunk(
+    state: State<'_, SaveFileRuntimeState>,
+    handle: String,
+    data: Vec<u8>,
+    append: bool,
+) -> Result<(), String> {
+    if data.len() > 256 * 1024 {
+        return Err("下载文件分块超过大小限制".to_string());
+    }
+    let handles = state.0.lock().map_err(|error| error.to_string())?;
+    let handle = handles
+        .get(&handle)
+        .ok_or_else(|| "下载文件句柄无效".to_string())?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if append {
+        options.append(true);
+    } else {
+        options.create(true).truncate(true);
+    }
+    let mut file = options
+        .open(&handle.temp_path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(&data).map_err(|error| error.to_string())?;
+    file.flush().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_file_finish(state: State<'_, SaveFileRuntimeState>, handle: String) -> Result<(), String> {
+    let handle = state
+        .0
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(&handle)
+        .ok_or_else(|| "下载文件句柄无效".to_string())?;
+    fs::rename(&handle.temp_path, &handle.target_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_file_cancel(state: State<'_, SaveFileRuntimeState>, handle: String) -> Result<(), String> {
+    let Some(handle) = state
+        .0
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(&handle)
+    else {
+        return Ok(());
+    };
+    match fs::remove_file(&handle.temp_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -1223,6 +1350,7 @@ pub fn run(restarted: bool) {
     tauri::Builder::default()
         .manage(UpdateRuntimeState::default())
         .manage(LocalMacRuntimeState::default())
+        .manage(SaveFileRuntimeState::default())
         .setup(move |app| {
             let handle = app.handle().clone();
             initialize_upgrade_info(&handle, restarted);
@@ -1246,6 +1374,10 @@ pub fn run(restarted: bool) {
             window_is_maximized,
             window_close,
             save_file,
+            save_file_begin,
+            save_file_chunk,
+            save_file_finish,
+            save_file_cancel,
             get_update_status,
             get_upgrade_info,
             acknowledge_upgrade,

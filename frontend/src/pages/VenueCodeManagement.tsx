@@ -7,7 +7,7 @@ import {
   createVenueCode,
   deleteVenueCode,
   deleteVenueVisit,
-  exportVenueVisitsZip,
+  getVenueVisitsZipUrl,
   getVenueVisitPhotoUrl,
   getVenueCloudStatus,
   pullVenueCloudNow,
@@ -31,7 +31,7 @@ import {
   type DrinkingFormCode,
   getDrinkingReport,
 } from '../api/client'
-import { downloadBlob } from '../utils/fileDownload'
+import { downloadBlob, downloadUrl } from '../utils/fileDownload'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
 import AuthenticatedImage from '../components/AuthenticatedImage'
@@ -150,10 +150,13 @@ export default function VenueCodeManagement() {
     setExportingVisits(true)
     setExportProgress(0)
     try {
-      const blob = await exportVenueVisitsZip(visitFilters, setExportProgress)
-      await downloadBlob(blob, `场所登记-${new Date().toISOString().slice(0, 10)}.zip`)
-      setExportProgress(100)
-      message.success('登记查询结果已导出')
+      const result = await downloadUrl(
+        getVenueVisitsZipUrl(visitFilters),
+        `场所登记-${new Date().toISOString().slice(0, 10)}.zip`,
+        setExportProgress,
+      )
+      if (result === 'cancelled') return
+      message.success(result === 'saved' ? '登记查询结果已保存' : '已开始下载，请在浏览器下载列表查看')
     } catch (reason: unknown) {
       message.error(apiErrorMessage(reason, '压缩包导出失败'))
     } finally {
@@ -314,7 +317,7 @@ export default function VenueCodeManagement() {
             {canExport && <Button icon={<DownloadOutlined />} loading={exportingVisits} disabled={exportingVisits} onClick={exportZip}>导出查询结果（ZIP）</Button>}
           </div>
           {exportingVisits && <div className="grid max-w-xl gap-1" role="status" aria-live="polite">
-            <span className="text-xs text-[var(--app-text-secondary)]">正在生成并下载 ZIP；场所留空表示导出全部场所。请勿重复点击。</span>
+            <span className="text-xs text-[var(--app-text-secondary)]">正在生成并下载 ZIP；桌面端显示传输进度，网页端请在浏览器下载列表查看。场所留空表示导出全部场所。</span>
             <Progress percent={exportProgress ?? 0} status="active" size="small" />
           </div>}
         </div>
