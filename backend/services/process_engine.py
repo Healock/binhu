@@ -11,9 +11,6 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
-import aiomysql
-
-from database import db_manager
 from services.workflow_support import platform_schema, workflow_notification
 
 
@@ -351,18 +348,17 @@ class ProcessEngine:
         )
 
     async def _position_order(self) -> list[str]:
-        """岗位顺序配置属于 OnlineData，不使用当前 WorkflowData 游标。"""
-        pool = db_manager.get_pool("online_data")
-        async with pool.acquire() as conn:
-            # DomainRoutingCursor intentionally routes _system_config reads
-            # after the platform-domain switch. This setting is owned by
-            # OnlineData for B1, so use a raw cursor on the explicit pool.
-            async with conn.cursor(aiomysql.Cursor) as cur:
-                await cur.execute(
-                    "SELECT config_value FROM _system_config WHERE config_key=%s",
-                    (POSITION_ORDER_CONFIG,),
-                )
-                row = await cur.fetchone()
+        """读取平台域中的岗位顺序配置。
+
+        ``_system_config`` 在 PLATFORM_DOMAIN_ACTIVE 开启时由域路由改写到
+        PlatformData；继续使用当前工作流游标可以让查询与事务保持同一请求
+        生命周期，也避免从另一个连接池跨域读取。
+        """
+        await self.cur.execute(
+            "SELECT config_value FROM _system_config WHERE config_key=%s",
+            (POSITION_ORDER_CONFIG,),
+        )
+        row = await self.cur.fetchone()
         return parse_json(row[0], []) if row else []
 
     async def start(self, *, process_version_id: int, requester_user_id: int,

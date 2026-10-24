@@ -1,4 +1,4 @@
-"""Opt-in integration coverage for OnlineData/PlatformData/WorkflowData routing.
+"""Opt-in integration coverage for PlatformData/WorkflowData routing.
 
 Run only with dedicated database schemas whose names all end in ``_test``.
 The suite creates and removes its fixture process rows, but leaves the schema
@@ -8,6 +8,7 @@ in place for repeatable runs.
 from __future__ import annotations
 
 import os
+import json
 import uuid
 from datetime import datetime, timedelta
 
@@ -17,7 +18,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from config import settings
-from database import DomainRoutingCursor, db_manager
+from database import DomainRoutingCursor
 from services.domain_schema import ensure_workflow_schema
 from services.process_engine import ProcessEngine, POSITION_ORDER_CONFIG
 
@@ -45,7 +46,7 @@ def _require_isolated_databases() -> None:
         pytest.fail("integration requires PLATFORM_DOMAIN_ACTIVE=true to exercise split-domain routing")
 
 
-async def _create_platform_fixtures(cur) -> tuple[int, int, int]:
+async def _create_platform_fixtures(cur) -> tuple[int, int, int, int, int, int, int]:
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS _users (
             id BIGINT PRIMARY KEY,
@@ -81,20 +82,31 @@ async def _create_platform_fixtures(cur) -> tuple[int, int, int]:
         ) ENGINE=InnoDB
     """)
     member_id = int(uuid.uuid4().int % 2_000_000_000) + 1
+    peer_member_id = member_id + 1
+    manager_member_id = member_id + 2
     user_id = member_id + 2_000_000_001
+    peer_user_id = user_id + 1
+    manager_user_id = user_id + 2
     department_id = member_id + 4_000_000_001
     await cur.execute(
-        "INSERT INTO _grid_members (id,position,status) VALUES (%s,'组员','在岗')", (member_id,)
+        "INSERT INTO _grid_members (id,position,status) VALUES "
+        "(%s,'组员','在岗'),(%s,'组员','在岗'),(%s,'组长','在岗')",
+        (member_id, peer_member_id, manager_member_id),
     )
     await cur.execute(
-        "INSERT INTO _users (id,member_id,role) VALUES (%s,%s,'user'),(%s,NULL,'admin')",
-        (user_id, member_id, user_id + 1),
+        "INSERT INTO _users (id,member_id,role) VALUES "
+        "(%s,%s,'user'),(%s,%s,'user'),(%s,%s,'user'),(%s,NULL,'admin')",
+        (user_id, member_id, peer_user_id, peer_member_id,
+         manager_user_id, manager_member_id, user_id + 3),
     )
     await cur.execute(
-        "INSERT INTO _grid_member_department_links (member_id,department_id) VALUES (%s,%s)",
-        (member_id, department_id),
+        "INSERT INTO _grid_member_department_links (member_id,department_id) VALUES "
+        "(%s,%s),(%s,%s),(%s,%s)",
+        (member_id, department_id, peer_member_id, department_id,
+         manager_member_id, department_id),
     )
-    return user_id, member_id, department_id
+    return (user_id, member_id, department_id, peer_user_id, manager_user_id,
+            peer_member_id, manager_member_id)
 
 
 @pytest.mark.asyncio
@@ -116,15 +128,14 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
     online_pool = await aiomysql.create_pool(db=settings.MYSQL_ONLINE_DATA_DB, **pool_options)
     platform_pool = await aiomysql.create_pool(db=settings.MYSQL_PLATFORM_DB, **pool_options)
     workflow_pool = await aiomysql.create_pool(db=settings.MYSQL_WORKFLOW_DB, **pool_options)
-    previous_online_pool = db_manager._pools.get("online_data")
-    db_manager._pools["online_data"] = online_pool
-    process_code = f"mysql_b1_{uuid.uuid4().hex[:16]}"
-    process_id = None
+    process_ids = []
     fixture_user_id = fixture_member_id = None
+    peer_user_id = manager_user_id = None
+    peer_member_id = manager_member_id = None
     prior_config = None
     config_existed = False
     try:
-        async with online_pool.acquire() as conn:
+        async with platform_pool.acquire() as conn:
             async with conn.cursor(aiomysql.Cursor) as cur:
                 await cur.execute("""
                     CREATE TABLE IF NOT EXISTS _system_config (
@@ -141,11 +152,17 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
                     "INSERT INTO _system_config (config_key,config_value) VALUES (%s,'[]') "
                     "ON DUPLICATE KEY UPDATE config_value='[]'", (POSITION_ORDER_CONFIG,),
                 )
+                (fixture_user_id, fixture_member_id, _, peer_user_id, manager_user_id,
+                 peer_member_id, manager_member_id) = await _create_platform_fixtures(cur)
             await conn.commit()
 
-        async with platform_pool.acquire() as conn:
+        async with online_pool.acquire() as conn:
             async with conn.cursor(aiomysql.Cursor) as cur:
-                fixture_user_id, fixture_member_id, _ = await _create_platform_fixtures(cur)
+                await cur.execute("SHOW TABLES LIKE '_system_config'")
+                if await cur.fetchone() is not None:
+                    await cur.execute("SELECT config_value FROM _system_config WHERE config_key=%s",
+                                      (POSITION_ORDER_CONFIG,))
+                    assert await cur.fetchone() is None
             await conn.commit()
 
         async with workflow_pool.acquire() as conn:
@@ -160,7 +177,10 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
             await conn.begin()
             async with conn.cursor() as cur:
                 engine = ProcessEngine(cur)
-                process_id = await engine.create_process(code=process_code, name="跨库超时集成测试")
+                process_id = await engine.create_process(
+                    code=f"mysql_b1_empty_{uuid.uuid4().hex[:12]}", name="跨库空岗位顺序集成测试"
+                )
+                process_ids.append(process_id)
                 version_id = await engine.publish_process(process_id, [{
                     "node_key": "approval",
                     "name": "审批",
@@ -197,8 +217,67 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
                 await cur.execute("SELECT status FROM process_instances WHERE id=%s", (instance_id,))
                 assert (await cur.fetchone())[0] == "admin_hold"
             await conn.commit()
+
+        async with platform_pool.acquire() as conn:
+            async with conn.cursor(aiomysql.Cursor) as cur:
+                await cur.execute(
+                    "UPDATE _system_config SET config_value=%s WHERE config_key=%s",
+                    (json.dumps(["组员", "组长"], ensure_ascii=False), POSITION_ORDER_CONFIG),
+                )
+            await conn.commit()
+
+        async with workflow_pool.acquire() as conn:
+            await conn.begin()
+            async with conn.cursor() as cur:
+                engine = ProcessEngine(cur)
+                process_id = await engine.create_process(
+                    code=f"mysql_b1_nonempty_{uuid.uuid4().hex[:12]}", name="跨库岗位顺序集成测试"
+                )
+                process_ids.append(process_id)
+                version_id = await engine.publish_process(process_id, [{
+                    "node_key": "approval",
+                    "name": "审批",
+                    "assignee_type": "指定成员",
+                    "assignee_params": {"user_id": fixture_user_id},
+                    "timeout_hours": 1,
+                }])
+                instance = await engine.start(
+                    process_version_id=version_id,
+                    requester_user_id=fixture_user_id,
+                    title="跨库岗位顺序集成测试",
+                    form_data={"synthetic": True},
+                    now=now - timedelta(hours=4),
+                )
+                position_instance_id = instance["id"]
+            await conn.commit()
+
+        async with workflow_pool.acquire() as conn:
+            await conn.begin()
+            async with conn.cursor() as cur:
+                assert await ProcessEngine(cur).advance_timeouts(now=now - timedelta(hours=2)) == 1
+                await cur.execute(
+                    "SELECT escalation_stage,status,assignees FROM process_tasks WHERE instance_id=%s",
+                    (position_instance_id,),
+                )
+                stage, status, assignees = await cur.fetchone()
+                assert (stage, status, json.loads(assignees)) == (1, "pending", [fixture_user_id, peer_user_id])
+            await conn.commit()
+
+        async with workflow_pool.acquire() as conn:
+            await conn.begin()
+            async with conn.cursor() as cur:
+                assert await ProcessEngine(cur).advance_timeouts(now=now) == 1
+                await cur.execute(
+                    "SELECT escalation_stage,status,assignees FROM process_tasks WHERE instance_id=%s",
+                    (position_instance_id,),
+                )
+                stage, status, assignees = await cur.fetchone()
+                assert (stage, status, json.loads(assignees)) == (
+                    2, "pending", [fixture_user_id, peer_user_id, manager_user_id]
+                )
+            await conn.commit()
     finally:
-        if process_id is not None:
+        for process_id in process_ids:
             async with workflow_pool.acquire() as conn:
                 async with conn.cursor(aiomysql.Cursor) as cur:
                     await cur.execute("SELECT id FROM process_instances WHERE process_definition_id=%s",
@@ -217,15 +296,19 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
         if fixture_user_id is not None:
             async with platform_pool.acquire() as conn:
                 async with conn.cursor(aiomysql.Cursor) as cur:
-                    await cur.execute("DELETE FROM _notifications WHERE user_id IN (%s,%s)",
-                                      (fixture_user_id, fixture_user_id + 1))
-                    await cur.execute("DELETE FROM _users WHERE id IN (%s,%s)",
-                                      (fixture_user_id, fixture_user_id + 1))
-                    await cur.execute("DELETE FROM _grid_member_department_links WHERE member_id=%s",
-                                      (fixture_member_id,))
-                    await cur.execute("DELETE FROM _grid_members WHERE id=%s", (fixture_member_id,))
+                    user_ids = (fixture_user_id, peer_user_id, manager_user_id, fixture_user_id + 3)
+                    member_ids = (fixture_member_id, peer_member_id, manager_member_id)
+                    await cur.execute(
+                        "DELETE FROM _notifications WHERE user_id IN (%s,%s,%s,%s)", user_ids
+                    )
+                    await cur.execute("DELETE FROM _users WHERE id IN (%s,%s,%s,%s)", user_ids)
+                    await cur.execute(
+                        "DELETE FROM _grid_member_department_links WHERE member_id IN (%s,%s,%s)",
+                        member_ids,
+                    )
+                    await cur.execute("DELETE FROM _grid_members WHERE id IN (%s,%s,%s)", member_ids)
                 await conn.commit()
-        async with online_pool.acquire() as conn:
+        async with platform_pool.acquire() as conn:
             async with conn.cursor(aiomysql.Cursor) as cur:
                 if config_existed:
                     await cur.execute("UPDATE _system_config SET config_value=%s WHERE config_key=%s",
@@ -234,10 +317,6 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
                     await cur.execute("DELETE FROM _system_config WHERE config_key=%s",
                                       (POSITION_ORDER_CONFIG,))
             await conn.commit()
-        if previous_online_pool is None:
-            db_manager._pools.pop("online_data", None)
-        else:
-            db_manager._pools["online_data"] = previous_online_pool
         online_pool.close()
         platform_pool.close()
         workflow_pool.close()
