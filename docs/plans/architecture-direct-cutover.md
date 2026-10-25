@@ -3,8 +3,10 @@
 ## 当前 PR 实施范围
 
 本 PR 只建立任务元数据投影域的应用侧切换状态合同。默认配置仍使用
-MySQL；`ARCHITECTURE_UPGRADE_ENABLED` 默认关闭，Flink 读取适配器尚未接入时
-即使配置了 Flink 也会报告 `not_ready`，并保留 MySQL 回退。地址匹配、日报、
+MySQL；`ARCHITECTURE_UPGRADE_ENABLED` 默认关闭。bootstrap 中的 `ready` 只表示
+请求的新读取路径已具备切换条件，不表示 MySQL 健康，也不表示架构升级已完成；
+默认关闭时状态为 `disabled`、`ready=false`。Flink 读取适配器尚未接入时即使配置了
+Flink 也会报告 `not_ready`，实际权威读取路径仍是 MySQL。地址匹配、日报、
 研判、业务写入、归档和外部平台调用不在本 PR 的切换范围内。
 
 连接池问题作为架构切换后的 Staging 复测项保留，不在本 PR 中伪装成已解决。
@@ -12,7 +14,7 @@ MySQL；`ARCHITECTURE_UPGRADE_ENABLED` 默认关闭，Flink 读取适配器尚�
 ## 目的
 
 本合同用于已完成 Staging 双轨对账的第一个派生域（任务元数据投影/计数）。
-它把切换压缩为一次受控切换，保留数据库备份和 Python Worker 回滚能力。
+它定义切换前的状态和边界；当前尚未接入真实读取适配器，不宣称已经具备运行时回退。
 
 本合同不覆盖业务写入、地址匹配、人工确认、研判、日报、归档或外部平台调用。
 这些路径继续使用本地 MySQL 业务真相和现有 Python 路径，直到各自有独立的对账证据。

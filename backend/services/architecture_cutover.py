@@ -19,7 +19,10 @@ class CutoverState:
     enabled: bool
     domain: str
     read_source: str
-    fallback_enabled: bool
+    fallback_configured: bool
+    authoritative_path: str
+    adapter_ready: bool
+    active: bool
     ready: bool
     status: str
     reason: str
@@ -29,7 +32,10 @@ class CutoverState:
             "enabled": self.enabled,
             "domain": self.domain,
             "read_source": self.read_source,
-            "fallback_enabled": self.fallback_enabled,
+            "fallback_configured": self.fallback_configured,
+            "authoritative_path": self.authoritative_path,
+            "adapter_ready": self.adapter_ready,
+            "active": self.active,
             "ready": self.ready,
             "status": self.status,
             "reason": self.reason,
@@ -39,16 +45,16 @@ class CutoverState:
 def get_cutover_state(settings: Any) -> CutoverState:
     """Return a safe, non-sensitive description of the configured cutover.
 
-    A Flink read source is intentionally reported as unavailable until an
-    application adapter is added.  Callers must keep using MySQL when
-    ``ready`` is false; no environment can turn this into an implicit switch.
+    ``ready`` describes readiness of the requested new architecture path, not
+    health of the legacy MySQL path. The application remains on MySQL until a
+    real read adapter is installed and explicitly activated.
     """
     enabled = bool(getattr(settings, "ARCHITECTURE_UPGRADE_ENABLED", False))
     domain = str(getattr(settings, "ARCHITECTURE_UPGRADE_DOMAIN", "") or "").strip()
     read_source = str(
         getattr(settings, "ARCHITECTURE_UPGRADE_READ_SOURCE", "") or ""
     ).strip().lower()
-    fallback_enabled = bool(
+    fallback_configured = bool(
         getattr(settings, "ARCHITECTURE_UPGRADE_FALLBACK_ENABLED", True)
     )
     if domain != SUPPORTED_DOMAIN:
@@ -56,7 +62,10 @@ def get_cutover_state(settings: Any) -> CutoverState:
             enabled=enabled,
             domain=domain,
             read_source=read_source,
-            fallback_enabled=fallback_enabled,
+            fallback_configured=fallback_configured,
+            authoritative_path="mysql",
+            adapter_ready=False,
+            active=False,
             ready=False,
             status="invalid",
             reason="unsupported_domain",
@@ -66,18 +75,37 @@ def get_cutover_state(settings: Any) -> CutoverState:
             enabled=enabled,
             domain=domain,
             read_source=read_source,
-            fallback_enabled=fallback_enabled,
+            fallback_configured=fallback_configured,
+            authoritative_path="mysql",
+            adapter_ready=False,
+            active=False,
             ready=False,
             status="invalid",
             reason="unsupported_read_source",
         )
-    if not enabled or read_source == "mysql":
+    if not enabled:
         return CutoverState(
             enabled=enabled,
             domain=domain,
             read_source=read_source,
-            fallback_enabled=fallback_enabled,
-            ready=True,
+            fallback_configured=fallback_configured,
+            authoritative_path="mysql",
+            adapter_ready=False,
+            active=False,
+            ready=False,
+            status="disabled",
+            reason="upgrade_disabled",
+        )
+    if read_source == "mysql":
+        return CutoverState(
+            enabled=enabled,
+            domain=domain,
+            read_source=read_source,
+            fallback_configured=fallback_configured,
+            authoritative_path="mysql",
+            adapter_ready=False,
+            active=False,
+            ready=False,
             status="mysql",
             reason="authoritative_mysql_path",
         )
@@ -85,7 +113,10 @@ def get_cutover_state(settings: Any) -> CutoverState:
         enabled=enabled,
         domain=domain,
         read_source=read_source,
-        fallback_enabled=fallback_enabled,
+        fallback_configured=fallback_configured,
+        authoritative_path="mysql",
+        adapter_ready=False,
+        active=False,
         ready=False,
         status="not_ready",
         reason="flink_read_adapter_not_installed",

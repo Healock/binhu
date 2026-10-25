@@ -63,10 +63,10 @@ async def get_app_bootstrap(
         client_version,
     )
     minimum_versions = minimum_supported_versions()
-    architecture = get_cutover_state(settings)
+    architecture = get_cutover_state(settings) if user is not None else None
 
     response.headers["Cache-Control"] = "no-store"
-    return {
+    payload = {
         "server_version": APP_VERSION,
         "environment": settings.APP_ENVIRONMENT,
         "environment_id": settings.APP_ENVIRONMENT,
@@ -122,6 +122,8 @@ async def get_app_bootstrap(
                 settings.CLIENT_WRITE_IDENTIFICATION_REQUIRED
             ),
         },
-        "architecture_upgrade": architecture.as_dict(),
         "client": compatibility,
     }
+    if architecture is not None:
+        payload["architecture_upgrade"] = architecture.as_dict()
+    return payload
