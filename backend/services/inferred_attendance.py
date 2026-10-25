@@ -89,12 +89,15 @@ def build_suggestions(
             )
             official = status["state"]
             item_evidence = evidence.get((target, member["id"]), {})
-            visit_count = int(item_evidence.get("visit_count", 0) or 0)
+            raw_visit_count = int(item_evidence.get("visit_count", 0) or 0)
             communities = sorted(
                 str(value).strip()
                 for value in item_evidence.get("communities", [])
                 if str(value).strip()
             )
+            visit_count = raw_visit_count if communities else 0
+            # A visit without a formal community cannot safely support a
+            # person-level attendance suggestion.
             has_evidence = visit_count > 0
             if has_evidence:
                 evidence_days += 1
@@ -226,7 +229,7 @@ async def load_suggestions(cur, *, start_date: date, end_date: date) -> dict[str
         if not member:
             continue
         community_name = str(community or "").strip()
-        if community_name and community_name not in member["communities"]:
+        if not community_name or community_name not in member["communities"]:
             continue
         key = (business_date, member["id"])
         bucket = evidence.setdefault(

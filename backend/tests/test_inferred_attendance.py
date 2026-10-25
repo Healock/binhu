@@ -62,6 +62,19 @@ class InferredAttendanceTests(unittest.TestCase):
         self.assertEqual(row["suggestion_state"], "needs_confirmation")
         self.assertEqual(output["summary"]["needs_confirmation"], 1)
 
+    def test_empty_community_evidence_cannot_produce_personal_proposal(self):
+        output = result(
+            members=[member()],
+            evidence={(DAY, 1): {"visit_count": 1, "communities": [" "]}},
+        )
+        row = output["rows"][0]
+        self.assertEqual(row["official_status"], "unassigned")
+        self.assertIsNone(row["inferred_status"])
+        self.assertEqual(row["suggestion_state"], "needs_confirmation")
+        self.assertEqual(row["evidence_summary"]["visit_count"], 0)
+        self.assertEqual(output["summary"]["evidence_days"], 0)
+        self.assertEqual(output["summary"]["suggested_person_days"], 0)
+
     def test_leave_has_priority_and_visit_is_a_conflict(self):
         output = result(
             members=[member()],
