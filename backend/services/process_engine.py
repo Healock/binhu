@@ -192,7 +192,7 @@ class ProcessEngine:
         return int(self.cur.lastrowid)
 
     async def publish_form(self, form_definition_id: int, schema: dict[str, Any],
-                           published_by: int | None = None) -> int:
+                           published_by: int | None = None, *, publish: bool = True) -> int:
         if not isinstance(schema, dict):
             raise ProcessValidationError("表单 schema 必须是 JSON 对象")
         await self.cur.execute("SELECT id FROM form_definitions WHERE id=%s FOR UPDATE", (form_definition_id,))
@@ -204,16 +204,19 @@ class ProcessEngine:
             (form_definition_id,),
         )
         version_no = int((await self.cur.fetchone())[0]) + 1
+        status = "published" if publish else "draft"
         await self.cur.execute(
             "INSERT INTO form_versions (form_definition_id,version_no,schema_json,status,published_by,published_at) "
-            "VALUES (%s,%s,%s,'published',%s,UTC_TIMESTAMP())",
-            (form_definition_id, version_no, payload, published_by),
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (form_definition_id, version_no, payload, status, published_by if publish else None,
+             datetime.utcnow() if publish else None),
         )
         version_id = int(self.cur.lastrowid)
-        await self.cur.execute(
-            "UPDATE form_definitions SET current_version_id=%s,enabled=1,updated_by=%s WHERE id=%s",
-            (version_id, published_by, form_definition_id),
-        )
+        if publish:
+            await self.cur.execute(
+                "UPDATE form_definitions SET current_version_id=%s,enabled=1,updated_by=%s WHERE id=%s",
+                (version_id, published_by, form_definition_id),
+            )
         return version_id
 
     async def create_process(self, *, code: str, name: str, description: str = "",
@@ -230,7 +233,7 @@ class ProcessEngine:
         return int(self.cur.lastrowid)
 
     async def publish_process(self, process_definition_id: int, nodes: Any,
-                              published_by: int | None = None) -> int:
+                              published_by: int | None = None, *, publish: bool = True) -> int:
         normalized = validate_nodes(nodes)
         await self.cur.execute(
             "SELECT id FROM process_definitions WHERE id=%s FOR UPDATE", (process_definition_id,)
@@ -243,16 +246,19 @@ class ProcessEngine:
         )
         version_no = int((await self.cur.fetchone())[0]) + 1
         payload = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        status = "published" if publish else "draft"
         await self.cur.execute(
             "INSERT INTO process_versions (process_definition_id,version_no,nodes_json,status,published_by,published_at) "
-            "VALUES (%s,%s,%s,'published',%s,UTC_TIMESTAMP())",
-            (process_definition_id, version_no, payload, published_by),
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (process_definition_id, version_no, payload, status, published_by if publish else None,
+             datetime.utcnow() if publish else None),
         )
         version_id = int(self.cur.lastrowid)
-        await self.cur.execute(
-            "UPDATE process_definitions SET current_version_id=%s, enabled=1, updated_by=%s WHERE id=%s",
-            (version_id, published_by, process_definition_id),
-        )
+        if publish:
+            await self.cur.execute(
+                "UPDATE process_definitions SET current_version_id=%s, enabled=1, updated_by=%s WHERE id=%s",
+                (version_id, published_by, process_definition_id),
+            )
         return version_id
 
     async def _version(self, version_id: int) -> tuple[int, list[dict[str, Any]]]:

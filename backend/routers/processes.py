@@ -43,10 +43,25 @@ class FormDefinitionPayload(BaseModel):
 
 class FormVersionPayload(BaseModel):
     form_schema: dict[str, Any]
+    publish: bool = True
 
 
 class ProcessVersionPayload(BaseModel):
     nodes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    publish: bool = True
+
+
+class FormDefinitionUpdatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+
+
+class ProcessDefinitionUpdatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    form_definition_id: int | None = Field(default=None, gt=0)
+    module_id: str = Field(default="", max_length=80)
+    default_due_hours: int | None = Field(default=None, ge=1, le=8760)
 
 
 class ProcessStartPayload(BaseModel):
@@ -97,7 +112,7 @@ async def publish_form_version(form_definition_id: int, payload: FormVersionPayl
         await conn.begin()
         async with conn.cursor() as cur:
             version_id = await ProcessEngine(cur).publish_form(
-                form_definition_id, payload.form_schema, int(user["id"]),
+                form_definition_id, payload.form_schema, int(user["id"]), publish=payload.publish,
             )
         await conn.commit()
     except ProcessValidationError as exc:
@@ -106,7 +121,87 @@ async def publish_form_version(form_definition_id: int, payload: FormVersionPayl
     except Exception as exc:
         await conn.rollback()
         raise HTTPException(409, "表单版本发布失败") from exc
-    return {"id": version_id, "form_definition_id": form_definition_id, "status": "published"}
+    return {"id": version_id, "form_definition_id": form_definition_id,
+            "status": "published" if payload.publish else "draft"}
+
+
+@router.get("/forms")
+async def list_form_definitions(conn=Depends(get_workflow_db),
+                                user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id,code,name,description,current_version_id,enabled,created_at,updated_at "
+            "FROM form_definitions ORDER BY id"
+        )
+        rows = await cur.fetchall()
+    return {"data": [
+        {"id": int(row[0]), "code": row[1], "name": row[2], "description": row[3],
+         "current_version_id": row[4], "enabled": bool(row[5]),
+         "created_at": row[6], "updated_at": row[7]}
+        for row in rows
+    ]}
+
+
+@router.get("/forms/{form_definition_id}")
+async def get_form_definition(form_definition_id: int, conn=Depends(get_workflow_db),
+                              user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id,code,name,description,current_version_id,enabled FROM form_definitions WHERE id=%s",
+            (form_definition_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "表单定义不存在")
+        await cur.execute(
+            "SELECT id,version_no,schema_json,status,published_by,published_at,created_at "
+            "FROM form_versions WHERE form_definition_id=%s ORDER BY version_no DESC",
+            (form_definition_id,),
+        )
+        versions = await cur.fetchall()
+    return {
+        "id": int(row[0]), "code": row[1], "name": row[2], "description": row[3],
+        "current_version_id": row[4], "enabled": bool(row[5]),
+        "versions": [{"id": int(item[0]), "version_no": item[1],
+                       "schema": json.loads(item[2]) if isinstance(item[2], str) else item[2],
+                       "status": item[3], "published_by": item[4],
+                       "published_at": item[5], "created_at": item[6]} for item in versions],
+    }
+
+
+@router.put("/forms/{form_definition_id}")
+async def update_form_definition(form_definition_id: int, payload: FormDefinitionUpdatePayload,
+                                 conn=Depends(get_workflow_db),
+                                 user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT id FROM form_definitions WHERE id=%s FOR UPDATE", (form_definition_id,))
+            if not await cur.fetchone():
+                raise ProcessValidationError("表单定义不存在")
+            await cur.execute(
+                "UPDATE form_definitions SET name=%s,description=%s,updated_by=%s WHERE id=%s",
+                (payload.name, payload.description, int(user["id"]), form_definition_id),
+            )
+        await conn.commit()
+    except ProcessValidationError as exc:
+        await conn.rollback()
+        raise _error(exc) from exc
+    except Exception as exc:
+        await conn.rollback()
+        raise HTTPException(409, "表单定义保存失败") from exc
+    return {"id": form_definition_id, "updated": True}
+
+
+@router.post("/forms/{form_definition_id}/disable")
+async def disable_form_definition(form_definition_id: int, conn=Depends(get_workflow_db),
+                                  user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute("UPDATE form_definitions SET enabled=0 WHERE id=%s", (form_definition_id,))
+    return {"id": form_definition_id, "enabled": False}
 
 
 @router.get("/definitions")
@@ -159,7 +254,7 @@ async def publish_process_version(process_definition_id: int, payload: ProcessVe
         validate_nodes(payload.nodes)
         async with conn.cursor() as cur:
             version_id = await ProcessEngine(cur).publish_process(
-                process_definition_id, payload.nodes, int(user["id"]),
+                process_definition_id, payload.nodes, int(user["id"]), publish=payload.publish,
             )
         await conn.commit()
     except ProcessValidationError as exc:
@@ -168,7 +263,72 @@ async def publish_process_version(process_definition_id: int, payload: ProcessVe
     except Exception as exc:
         await conn.rollback()
         raise HTTPException(409, "流程版本发布失败") from exc
-    return {"id": version_id, "process_definition_id": process_definition_id, "status": "published"}
+    return {"id": version_id, "process_definition_id": process_definition_id,
+            "status": "published" if payload.publish else "draft"}
+
+
+@router.get("/definitions/{process_definition_id}")
+async def get_process_definition(process_definition_id: int, conn=Depends(get_workflow_db),
+                                 user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id,code,name,description,form_definition_id,module_id,default_due_hours,enabled,current_version_id "
+            "FROM process_definitions WHERE id=%s", (process_definition_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "流程定义不存在")
+        await cur.execute(
+            "SELECT id,version_no,nodes_json,status,published_by,published_at,created_at "
+            "FROM process_versions WHERE process_definition_id=%s ORDER BY version_no DESC",
+            (process_definition_id,),
+        )
+        versions = await cur.fetchall()
+    return {
+        "id": int(row[0]), "code": row[1], "name": row[2], "description": row[3],
+        "form_definition_id": row[4], "module_id": row[5], "default_due_hours": row[6],
+        "enabled": bool(row[7]), "current_version_id": row[8],
+        "versions": [{"id": int(item[0]), "version_no": item[1],
+                       "nodes": json.loads(item[2]) if isinstance(item[2], str) else item[2],
+                       "status": item[3], "published_by": item[4],
+                       "published_at": item[5], "created_at": item[6]} for item in versions],
+    }
+
+
+@router.put("/definitions/{process_definition_id}")
+async def update_process_definition(process_definition_id: int, payload: ProcessDefinitionUpdatePayload,
+                                    conn=Depends(get_workflow_db),
+                                    user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT id FROM process_definitions WHERE id=%s FOR UPDATE", (process_definition_id,))
+            if not await cur.fetchone():
+                raise ProcessValidationError("流程定义不存在")
+            await cur.execute(
+                "UPDATE process_definitions SET name=%s,description=%s,form_definition_id=%s,module_id=%s,"
+                "default_due_hours=%s,updated_by=%s WHERE id=%s",
+                (payload.name, payload.description, payload.form_definition_id, payload.module_id,
+                 payload.default_due_hours, int(user["id"]), process_definition_id),
+            )
+        await conn.commit()
+    except ProcessValidationError as exc:
+        await conn.rollback()
+        raise _error(exc) from exc
+    except Exception as exc:
+        await conn.rollback()
+        raise HTTPException(409, "流程定义保存失败") from exc
+    return {"id": process_definition_id, "updated": True}
+
+
+@router.post("/definitions/{process_definition_id}/disable")
+async def disable_process_definition(process_definition_id: int, conn=Depends(get_workflow_db),
+                                     user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
+    del user
+    async with conn.cursor() as cur:
+        await cur.execute("UPDATE process_definitions SET enabled=0 WHERE id=%s", (process_definition_id,))
+    return {"id": process_definition_id, "enabled": False}
 
 
 @router.post("/instances")
