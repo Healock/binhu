@@ -1,8 +1,9 @@
 """Fail-closed state for the first Kafka/Flink/Redis cutover domain.
 
-The event pipeline currently proves metadata projection only in isolated
-Development/Staging environments.  This module exposes that boundary to the
-application without pretending that a Flink read adapter already exists.
+The event pipeline currently proves metadata projection only in the isolated
+Development environment. Staging acceptance is still pending. This module
+exposes that boundary to the application without pretending that a Flink read
+adapter already exists.
 """
 from __future__ import annotations
 
