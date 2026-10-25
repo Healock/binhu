@@ -4,6 +4,11 @@
   gap: 16px;
   min-width: 0;
 }
+.attendance-suggestion-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .attendance-month-controls,
 .attendance-legend {
   display: flex;

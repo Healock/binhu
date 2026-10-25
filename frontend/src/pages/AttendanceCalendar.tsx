@@ -6,6 +6,7 @@ import {
   Drawer,
   Empty,
   Input,
+  List,
   Modal,
   Pagination,
   Select,
@@ -19,6 +20,7 @@ import {
   getAttendanceCalendar,
   getAttendanceHistory,
   getAttendanceOptions,
+  getAttendanceSuggestions,
   formatUTCTime,
   type AttendanceCalendarData,
   type AttendanceHistoryItem,
@@ -26,6 +28,7 @@ import {
   type LeaveChange,
   type ScheduleChange,
   type CalendarLeave,
+  type AttendanceSuggestions,
 } from "../api/client";
 import { PageHeader, ListToolbar, Panel } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
@@ -64,6 +67,11 @@ const historyLabels = {
   corrected: "已更正",
   revoked: "已撤销",
   inactive: "已失效",
+};
+const suggestionLabels: Record<string, string> = {
+  suggested_work: "系统建议上班",
+  leave_conflict: "请假冲突",
+  needs_confirmation: "待确认",
 };
 
 export default function AttendanceCalendar() {
@@ -113,6 +121,10 @@ export default function AttendanceCalendar() {
   );
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [suggestionOpen, setSuggestionOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<AttendanceSuggestions | null>(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [suggestionError, setSuggestionError] = useState("");
   const [drag, setDrag] = useState<{
     span: AttendanceSpan;
     mode: "move" | "start" | "end";
@@ -163,6 +175,23 @@ export default function AttendanceCalendar() {
       if (seq === requestSeq.current) setLoading(false);
     }
   }, [gridStart, gridEnd, selectedKey, allowed]);
+  const loadSuggestions = useCallback(async () => {
+    if (!editable) return;
+    setSuggestionLoading(true);
+    setSuggestionError("");
+    try {
+      const data = await getAttendanceSuggestions(
+        first,
+        dayjs(first).endOf("month").format("YYYY-MM-DD"),
+      );
+      setSuggestions(data);
+    } catch (e) {
+      setSuggestionError(errorText(e));
+      setSuggestions(null);
+    } finally {
+      setSuggestionLoading(false);
+    }
+  }, [editable, first]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -403,6 +432,16 @@ export default function AttendanceCalendar() {
         description="工作安排与请假区间；不代表实际打卡到岗。周一至周五默认上班。"
         actions={
           <>
+            {editable && (
+              <Button
+                onClick={() => {
+                  setSuggestionOpen(true);
+                  void loadSuggestions();
+                }}
+              >
+                系统建议在岗
+              </Button>
+            )}
             <Button onClick={() => navigate("/grid-members")}>人员管理</Button>
             <Button onClick={() => navigate("/grid-members/weekend-duty")}>
               双休日备勤
@@ -834,6 +873,55 @@ export default function AttendanceCalendar() {
           )}
         </div>
       </Panel>
+      <Drawer
+        open={suggestionOpen}
+        title={`${month.slice(0, 7)} 系统建议在岗`}
+        width="min(96vw, 760px)"
+        onClose={() => setSuggestionOpen(false)}
+      >
+        <div className="attendance-content">
+          <Alert
+            type="info"
+            message="这是只读建议，不会修改正式排班。正式排班和请假优先；管理员仍需在排班页面明确调整。"
+          />
+          {suggestionError && <Alert type="error" message={suggestionError} />}
+          {suggestionLoading ? (
+            <Spin />
+          ) : suggestions ? (
+            <>
+              <div className="attendance-suggestion-summary">
+                <Tag color="blue">正式在岗人日 {suggestions.summary.official_person_days}</Tag>
+                <Tag color="green">建议补充 {suggestions.summary.suggested_person_days}</Tag>
+                <Tag color="orange">请假冲突 {suggestions.summary.leave_conflicts}</Tag>
+                <Tag>待确认 {suggestions.summary.needs_confirmation}</Tag>
+              </div>
+              <Alert type="warning" message={suggestions.online_evidence_note} />
+              <List
+                size="small"
+                bordered
+                dataSource={suggestions.rows.filter((row) =>
+                  ["suggested_work", "leave_conflict", "needs_confirmation"].includes(
+                    row.suggestion_state,
+                  ),
+                )}
+                locale={{ emptyText: "本月没有需要处理的建议" }}
+                renderItem={(row) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={`${row.date} ${row.member_name}`}
+                      description={
+                        row.evidence_summary.visit_count
+                          ? `正式状态：${ATTENDANCE_LABELS[row.official_status]}；${suggestionLabels[row.suggestion_state]}；走访 ${row.evidence_summary.visit_count} 条`
+                          : `正式状态：${ATTENDANCE_LABELS[row.official_status]}；${suggestionLabels[row.suggestion_state]}`
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            </>
+          ) : null}
+        </div>
+      </Drawer>
       <Drawer
         open={Boolean(dayDetail)}
         title={`${dayDetail} · 全部安排`}
