@@ -5483,6 +5483,9 @@ export const processApi = {
   async tasks(params: Record<string, unknown> = {}) {
     return (await api.get('/processes/tasks', { ...activeRequest, params })).data
   },
+  async adminHolds() {
+    return (await api.get('/processes/tasks', { ...activeRequest, params: { scope: 'all', status: 'admin_hold' } })).data
+  },
   async instances(params: Record<string, unknown> = {}) {
     return (await api.get('/processes/instances', { ...activeRequest, params })).data
   },

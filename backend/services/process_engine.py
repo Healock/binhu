@@ -339,6 +339,10 @@ class ProcessEngine:
         task_id = int(self.cur.lastrowid)
         await self._event(instance_id, task_id, "task_created", requester, "", "pending",
                           {"node_key": node["node_key"], "assignees": assignees})
+        await self._notify_users(
+            instance_id, assignees, event_key="task_created", title="新的流程待办",
+            content=f"流程节点“{node['name']}”已分配给你，请及时处理。",
+        )
         return task_id
 
     async def _notify_admins(self, instance_id: int, content: str) -> None:
@@ -351,6 +355,13 @@ class ProcessEngine:
             self.cur, user_ids=admins, ticket_id=instance_id,
             event_key=f"process_admin_{instance_id}", title="流程需要管理员介入",
             content=content, severity="warning",
+        )
+
+    async def _notify_users(self, instance_id: int, user_ids: Iterable[int], *, event_key: str,
+                            title: str, content: str, severity: str = "info") -> None:
+        await workflow_notification(
+            self.cur, user_ids=_unique_ids(user_ids), ticket_id=instance_id,
+            event_key=event_key, title=title, content=content, severity=severity,
         )
 
     async def _position_order(self) -> list[str]:
@@ -606,6 +617,10 @@ class ProcessEngine:
                                        (json.dumps(merged), next_stage, due, task_id))
                 await self._event(int(instance_id), int(task_id), "task_escalated", None, "pending", "pending",
                                   {"stage": next_stage, "added_assignees": candidates})
+                await self._notify_users(
+                    int(instance_id), candidates, event_key="task_escalated", title="流程超时升级",
+                    content=f"流程节点“{node['name']}”已超时并升级到你，请及时处理。", severity="warning",
+                )
             elif next_stage >= 2:
                 await self.cur.execute("UPDATE process_tasks SET status='admin_hold',revision_no=revision_no+1 WHERE id=%s", (task_id,))
                 await self.cur.execute("UPDATE process_instances SET status='admin_hold' WHERE id=%s", (instance_id,))
@@ -621,6 +636,11 @@ class ProcessEngine:
                 )
                 await self._event(int(instance_id), int(task_id), "same_position_window_opened", None,
                                   "pending", "pending", {"stage": 1, "added_assignees": []})
+                await self._notify_users(
+                    int(instance_id), parse_json(assignees_json, []), event_key="task_timeout",
+                    title="流程超时提醒", content=f"流程节点“{node['name']}”已超时，请及时处理。",
+                    severity="warning",
+                )
             changed += 1
         return changed
 
