@@ -5443,6 +5443,72 @@ export const workflowApi = {
   },
 }
 
+export const processApi = {
+  async forms() {
+    return (await api.get('/processes/forms', activeRequest)).data as { data: any[] }
+  },
+  async form(id: number) {
+    return (await api.get(`/processes/forms/${id}`, activeRequest)).data
+  },
+  async createForm(payload: Record<string, unknown>) {
+    return (await api.post('/processes/forms', payload)).data
+  },
+  async updateForm(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/processes/forms/${id}`, payload)).data
+  },
+  async publishFormVersion(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/forms/${id}/versions`, payload)).data
+  },
+  async disableForm(id: number) {
+    return (await api.post(`/processes/forms/${id}/disable`)).data
+  },
+  async definitions() {
+    return (await api.get('/processes/definitions', activeRequest)).data as { data: any[] }
+  },
+  async definition(id: number) {
+    return (await api.get(`/processes/definitions/${id}`, activeRequest)).data
+  },
+  async createDefinition(payload: Record<string, unknown>) {
+    return (await api.post('/processes/definitions', payload)).data
+  },
+  async updateDefinition(id: number, payload: Record<string, unknown>) {
+    return (await api.put(`/processes/definitions/${id}`, payload)).data
+  },
+  async publishProcessVersion(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/definitions/${id}/versions`, payload)).data
+  },
+  async disableDefinition(id: number) {
+    return (await api.post(`/processes/definitions/${id}/disable`)).data
+  },
+  async tasks(params: Record<string, unknown> = {}) {
+    return (await api.get('/processes/tasks', { ...activeRequest, params })).data
+  },
+  async adminHolds() {
+    return (await api.get('/processes/tasks', { ...activeRequest, params: { scope: 'all', status: 'admin_hold' } })).data
+  },
+  async instances(params: Record<string, unknown> = {}) {
+    return (await api.get('/processes/instances', { ...activeRequest, params })).data
+  },
+  async instance(id: number) {
+    return (await api.get(`/processes/instances/${id}`, activeRequest)).data
+  },
+  async start(payload: Record<string, unknown>) {
+    return (await api.post('/processes/instances', payload)).data
+  },
+  async decideTask(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/tasks/${id}/decision`, payload)).data
+  },
+  async resubmit(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/instances/${id}/resubmit`, payload)).data
+  },
+  async adminIntervention(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/instances/${id}/admin-intervention`, payload)).data
+  },
+  async members() {
+    return (await api.get('/grid-members', { ...activeRequest, params: { page: 1, page_size: 200 } })).data
+  },
+}
+
 export interface AddressAnnotationOptions {
   manual_unmatched_reason?: string
   items: Array<{ id: number; name: string; community_id: number; community_name: string; detail_address?: string }>
