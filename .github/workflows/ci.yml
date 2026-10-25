@@ -71,6 +71,7 @@ jobs:
       - name: Run process engine split-domain integration test
         env:
           APP_ENVIRONMENT: development
+          SESSION_COOKIE_NAME: binhu_dev_session
           MYSQL_HOST: 127.0.0.1
           MYSQL_PORT: "3306"
           MYSQL_USER: root
