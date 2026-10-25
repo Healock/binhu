@@ -865,7 +865,7 @@ def wake_residence_lookup_scheduler(*, force_full_scan: bool = False) -> None:
     _wake_event.set()
 
 
-async def run_residence_lookup_scheduler() -> None:
+async def run_residence_lookup_scheduler(*, allow_full_scan: bool = True) -> None:
     global _force_full_scan_requested
     next_full_scan_at = 0.0
     while True:
@@ -876,6 +876,8 @@ async def run_residence_lookup_scheduler() -> None:
             force_full_scan = _force_full_scan_requested
             _force_full_scan_requested = False
             full_scan_due = bool(
+                allow_full_scan
+                and
                 config.session_ready
                 and (force_full_scan or time.monotonic() >= next_full_scan_at)
             )

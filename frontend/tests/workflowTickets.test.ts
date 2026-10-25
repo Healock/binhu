@@ -40,8 +40,8 @@ test('数据上传中心移除自购自住名单入口并拆分文件与外部�
   assert.doesNotMatch(pageSource, /自购自住人员|自购自住名单|importModelThreeSelfOwnedRoster/)
   assert.match(pageSource, /label: '上传文件'/)
   assert.match(pageSource, /label: '读取外部'/)
-  assert.match(pageSource, /ExternalAcquisitionScheduleControls/)
-  assert.match(pageSource, /canManageResidence && <Panel title="自动任务编排"/)
+  assert.match(pageSource, /ExternalAcquisitionWorkbench/)
+  assert.match(pageSource, /自动任务默认关闭/)
   assert.doesNotMatch(pageSource, /canManageSchedules/)
 })
 

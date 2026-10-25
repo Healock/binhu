@@ -475,6 +475,7 @@ async def commit_rows(
     replace_range: bool = True,
     source_type: str = "manual_source",
     source_run_id: int | None = None,
+    manage_transaction: bool = True,
 ) -> dict[str, Any]:
     """Commit a validated snapshot through the existing XLSX import rules."""
     import asyncio
@@ -518,6 +519,7 @@ async def commit_rows(
                 batch_id=batch_id,
                 parsed=parsed,
                 replace_range=replace_range,
+                manage_transaction=manage_transaction,
             )
         else:
             parsed = await asyncio.to_thread(parse_star_rating_workbook, content, timezone_name)
@@ -528,6 +530,7 @@ async def commit_rows(
                 batch_id=batch_id,
                 parsed=parsed,
                 replace_range=replace_range,
+                manage_transaction=manage_transaction,
             )
         return result
     except VisitWorkbookError as exc:

@@ -717,7 +717,7 @@ async def get_venue_cloud_status() -> dict[str, Any]:
     }
 
 
-async def run_venue_cloud_scheduler() -> None:
+async def run_venue_cloud_scheduler(*, allow_automatic_pull: bool = False) -> None:
     if not cloud_enabled():
         while True:
             await asyncio.sleep(3600)
@@ -738,11 +738,15 @@ async def run_venue_cloud_scheduler() -> None:
                 await process_outbox_once(client)
                 await process_public_form_outbox_once(client)
                 now = asyncio.get_running_loop().time()
-                fallback_due = settings.VENUE_CLOUD_PULL_ENABLED and now >= next_safety_pull
+                fallback_due = allow_automatic_pull and settings.VENUE_CLOUD_PULL_ENABLED and now >= next_safety_pull
                 # Serialize operator-triggered refreshes with the scheduler so
                 # a manual action cannot race a lease claimed by this worker.
                 async with _manual_pull_lock:
-                    pull_stats = await wait_for_and_drain(client, fallback_due=fallback_due)
+                    pull_stats = (
+                        await wait_for_and_drain(client, fallback_due=fallback_due)
+                        if allow_automatic_pull
+                        else _empty_pull_stats()
+                    )
                 if fallback_due:
                     next_safety_pull = asyncio.get_running_loop().time() + 300
                 cloud_status = validate_status_response(
@@ -769,7 +773,7 @@ async def run_venue_cloud_scheduler() -> None:
                     last_pull_reason_codes=pull_stats["reason_codes"],
                 )
                 consecutive_failures = 0
-                if not settings.VENUE_CLOUD_PULL_ENABLED:
+                if not allow_automatic_pull or not settings.VENUE_CLOUD_PULL_ENABLED:
                     await asyncio.sleep(idle_delay)
             except asyncio.CancelledError:
                 raise

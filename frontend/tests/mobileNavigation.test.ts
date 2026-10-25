@@ -553,10 +553,12 @@ test('数据上传中心移除手动走访和星级上传入口', () => {
 
 test('外部来源只保留上传中心统一触发入口并识别权限组超级管理员', () => {
   const source = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
+  const workbench = readFileSync(new URL('../src/components/ExternalAcquisitionWorkbench.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /permission_groups\?\.some\(group => group\.code === 'super_admin'\)/)
   assert.match(source, /permission_group\?\.code === 'super_admin'/)
-  assert.equal((source.match(/onClick=\{\(\) => void handleQmfSync\(\)\}/g) || []).length, 1)
+  assert.match(workbench, /runExternalAcquisitionSource/)
+  assert.match(workbench, /getExternalAcquisitionCatalog/)
   assert.doesNotMatch(source, /title="全民防只读扫描"/)
 })
 

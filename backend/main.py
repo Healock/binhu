@@ -67,7 +67,6 @@ from services.property_annotation_exports import (
     recover_interrupted_exports,
     stop_annotation_export_tasks,
 )
-from services.registry_certificate_scheduler import run_registry_certificate_scheduler
 from services.police_dispatch_publish_jobs import (
     recover_interrupted_police_publish_runs,
     stop_police_publish_tasks,
@@ -78,10 +77,13 @@ from services.fullchain_archive_jobs import (
 )
 from services.qmf_status_scan import (
     recover_status_scans,
-    run_status_scan_scheduler,
     stop_status_scan_tasks,
 )
 from services.external_acquisition_jobs import recover_interrupted_jobs, stop_external_acquisition_tasks
+from services.external_acquisition_scheduler import (
+    run_external_acquisition_scheduler,
+    stop_external_acquisition_scheduler,
+)
 from routers.external_acquisition import router as external_acquisition_router
 from routers.venue_codes import router as venue_public_router, admin_router as venue_admin_router
 from services.presence import run_presence_cleanup_scheduler
@@ -167,15 +169,18 @@ async def lifespan(app: FastAPI):
     recovered_external_jobs = await recover_interrupted_jobs()
     if recovered_external_jobs:
         print(f"[EXTERNAL] 已关闭 {recovered_external_jobs} 个外部获取遗留任务")
+    external_acquisition_task = asyncio.create_task(run_external_acquisition_scheduler())
     backup_scheduler_task = asyncio.create_task(run_backup_scheduler())
     workflow_scheduler_task = asyncio.create_task(run_workflow_scheduler())
-    certificate_scheduler_task = asyncio.create_task(run_registry_certificate_scheduler())
-    qmf_status_scan_scheduler_task = asyncio.create_task(run_status_scan_scheduler())
     presence_cleanup_task = asyncio.create_task(run_presence_cleanup_scheduler())
-    residence_lookup_task = asyncio.create_task(run_residence_lookup_scheduler())
+    # Pending residence rows are still drained by the legacy worker, but its
+    # full-scan clock is owned by the unified external-acquisition scheduler.
+    residence_lookup_task = asyncio.create_task(run_residence_lookup_scheduler(allow_full_scan=False))
     unverifiable_review_task = asyncio.create_task(run_unverifiable_review_scheduler())
     venue_cleanup_task = asyncio.create_task(run_venue_cleanup_scheduler())
     local_report_task = asyncio.create_task(run_local_report_scheduler())
+    # Keep outbox/reconcile processing here; scheduled cloud pulls are owned by
+    # the unified source scheduler to avoid duplicate pulls.
     venue_cloud_task = asyncio.create_task(run_venue_cloud_scheduler())
     performance_sampler_task = asyncio.create_task(run_performance_sampler())
     online_projection_task = asyncio.create_task(run_online_projection_worker())
@@ -186,8 +191,6 @@ async def lifespan(app: FastAPI):
     finally:
         backup_scheduler_task.cancel()
         workflow_scheduler_task.cancel()
-        certificate_scheduler_task.cancel()
-        qmf_status_scan_scheduler_task.cancel()
         presence_cleanup_task.cancel()
         residence_lookup_task.cancel()
         unverifiable_review_task.cancel()
@@ -198,14 +201,11 @@ async def lifespan(app: FastAPI):
         online_projection_task.cancel()
         online_summary_task.cancel()
         txdocs_statistics_task.cancel()
+        external_acquisition_task.cancel()
         with suppress(asyncio.CancelledError):
             await backup_scheduler_task
         with suppress(asyncio.CancelledError):
             await workflow_scheduler_task
-        with suppress(asyncio.CancelledError):
-            await certificate_scheduler_task
-        with suppress(asyncio.CancelledError):
-            await qmf_status_scan_scheduler_task
         with suppress(asyncio.CancelledError):
             await presence_cleanup_task
         with suppress(asyncio.CancelledError):
@@ -226,6 +226,8 @@ async def lifespan(app: FastAPI):
             await online_summary_task
         with suppress(asyncio.CancelledError):
             await txdocs_statistics_task
+        with suppress(asyncio.CancelledError):
+            await external_acquisition_task
         await stop_online_summary_update_processing()
         await stop_txdocs_usage_tasks()
         await stop_backup_tasks()
@@ -235,6 +237,7 @@ async def lifespan(app: FastAPI):
         await stop_fullchain_archive_tasks()
         await stop_status_scan_tasks()
         await stop_external_acquisition_tasks()
+        await stop_external_acquisition_scheduler()
         await stop_mac_compat_server()
         await close_db()
 

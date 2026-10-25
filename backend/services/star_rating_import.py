@@ -508,6 +508,7 @@ async def import_star_rating_workbook(
     batch_id: int,
     parsed: ParsedStarRatingWorkbook,
     replace_range: bool = False,
+    manage_transaction: bool = True,
 ) -> dict[str, Any]:
     issues = list(parsed.issues)
     inserted_rows = 0
@@ -546,7 +547,8 @@ async def import_star_rating_workbook(
             "message": "没有可关联的有效星级评定记录",
         }
 
-    await conn.begin()
+    if manage_transaction:
+        await conn.begin()
     try:
         communities, community_lookup = await _load_community_lookup(conn)
         for rating in parsed.rows:
@@ -750,9 +752,11 @@ async def import_star_rating_workbook(
                     batch_id,
                 ),
             )
-        await conn.commit()
+        if manage_transaction:
+            await conn.commit()
     except Exception:
-        await conn.rollback()
+        if manage_transaction:
+            await conn.rollback()
         raise
 
     matched_rows = inserted_rows + updated_rows + unchanged_rows
