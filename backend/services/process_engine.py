@@ -347,6 +347,20 @@ class ProcessEngine:
             content=content, severity="warning",
         )
 
+    async def _position_order(self) -> list[str]:
+        """读取平台域中的岗位顺序配置。
+
+        ``_system_config`` 在 PLATFORM_DOMAIN_ACTIVE 开启时由域路由改写到
+        PlatformData；继续使用当前工作流游标可以让查询与事务保持同一请求
+        生命周期，也避免从另一个连接池跨域读取。
+        """
+        await self.cur.execute(
+            "SELECT config_value FROM _system_config WHERE config_key=%s",
+            (POSITION_ORDER_CONFIG,),
+        )
+        row = await self.cur.fetchone()
+        return parse_json(row[0], []) if row else []
+
     async def start(self, *, process_version_id: int, requester_user_id: int,
                     title: str, description: str = "", form_data: dict[str, Any] | None = None,
                     now=None) -> dict[str, Any]:
@@ -492,9 +506,7 @@ class ProcessEngine:
                     candidates = _unique_ids(x[0] for x in await self.cur.fetchall())
             elif int(stage) >= 1:
                 # 岗位顺序表是独立配置；空表按 D8 直接挂起。
-                await self.cur.execute("SELECT config_value FROM _system_config WHERE config_key=%s", (POSITION_ORDER_CONFIG,))
-                cfg = await self.cur.fetchone()
-                order = parse_json(cfg[0], []) if cfg else []
+                order = await self._position_order()
                 promotion_source = int(primary) if primary else 0
                 if int(stage) >= 2:
                     await self.cur.execute(

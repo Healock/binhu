@@ -6,12 +6,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.process_engine import ProcessEngine, ProcessValidationError, validate_nodes
 from services.process_engine import resolve_assignees
+from routers import processes as processes_router
 
 
 def test_nodes_are_a_sequence_and_only_single_is_executable():
@@ -190,7 +192,7 @@ class _MemoryCursor:
                            and self.member_positions.get(peer_member_id) == position]
             self._all = [(user_id,) for user_id in sorted(account_ids)]
         elif query.startswith("SELECT config_value FROM _system_config"):
-            self._one = (json.dumps(self.position_order),) if self.position_order else None
+            self._one = (json.dumps(self.position_order),)
         elif query.startswith("SELECT detail_json FROM process_events"):
             matches = [event for event in self.events if event["task"] == params[0]
                        and event["type"] == "task_escalated"]
@@ -229,14 +231,48 @@ class _MemoryCursor:
 
 
 class _Connection:
-    def __init__(self):
-        self.cursor_value = _MemoryCursor()
+    def __init__(self, cursor=None):
+        self.cursor_value = cursor or _MemoryCursor()
 
-    def cursor(self):
+    def cursor(self, *_args):
         return _CursorContext(self.cursor_value)
 
     async def commit(self):
         pass
+
+
+@pytest.mark.asyncio
+async def test_create_process_definition_rolls_back_validation_errors(monkeypatch):
+    class InvalidDefinitionEngine:
+        def __init__(self, _cursor):
+            pass
+
+        async def create_process(self, **_kwargs):
+            raise ProcessValidationError("invalid definition")
+
+    class Connection:
+        def __init__(self):
+            self.rollbacks = 0
+
+        async def begin(self):
+            pass
+
+        def cursor(self):
+            return _CursorContext(object())
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    conn = Connection()
+    monkeypatch.setattr(processes_router, "ProcessEngine", InvalidDefinitionEngine)
+    with pytest.raises(HTTPException) as exc:
+        await processes_router.create_process_definition(
+            processes_router.ProcessDefinitionPayload(code="bad_definition", name="invalid"),
+            conn=conn,
+            user={"id": 7},
+        )
+    assert exc.value.status_code == 422
+    assert conn.rollbacks == 1
 
 
 @pytest.mark.asyncio

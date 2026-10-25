@@ -142,6 +142,7 @@ async def create_process_definition(payload: ProcessDefinitionPayload,
             )
         await conn.commit()
     except ProcessValidationError as exc:
+        await conn.rollback()
         raise _error(exc) from exc
     except Exception as exc:
         await conn.rollback()
