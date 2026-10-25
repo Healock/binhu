@@ -17,6 +17,7 @@ from services.client_compatibility import (
     evaluate_client_compatibility,
     minimum_supported_versions,
 )
+from services.architecture_cutover import get_cutover_state
 from services.maintenance import load_maintenance_config, maintenance_status
 
 
@@ -62,6 +63,7 @@ async def get_app_bootstrap(
         client_version,
     )
     minimum_versions = minimum_supported_versions()
+    architecture = get_cutover_state(settings)
 
     response.headers["Cache-Control"] = "no-store"
     return {
@@ -120,5 +122,6 @@ async def get_app_bootstrap(
                 settings.CLIENT_WRITE_IDENTIFICATION_REQUIRED
             ),
         },
+        "architecture_upgrade": architecture.as_dict(),
         "client": compatibility,
     }

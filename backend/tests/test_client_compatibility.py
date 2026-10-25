@@ -201,6 +201,8 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             payload["feature_flags"]["client_write_identification_required"]
         )
+        self.assertEqual(payload["architecture_upgrade"]["status"], "mysql")
+        self.assertTrue(payload["architecture_upgrade"]["ready"])
         self.assertEqual(response.headers["Cache-Control"], "no-store")
 
 

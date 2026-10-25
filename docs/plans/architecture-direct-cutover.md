@@ -1,5 +1,14 @@
 # Kafka/Flink/Redis 直接切换合同
 
+## 当前 PR 实施范围
+
+本 PR 只建立任务元数据投影域的应用侧切换状态合同。默认配置仍使用
+MySQL；`ARCHITECTURE_UPGRADE_ENABLED` 默认关闭，Flink 读取适配器尚未接入时
+即使配置了 Flink 也会报告 `not_ready`，并保留 MySQL 回退。地址匹配、日报、
+研判、业务写入、归档和外部平台调用不在本 PR 的切换范围内。
+
+连接池问题作为架构切换后的 Staging 复测项保留，不在本 PR 中伪装成已解决。
+
 ## 目的
 
 本合同用于已完成 Staging 双轨对账的第一个派生域（任务元数据投影/计数）。
