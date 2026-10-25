@@ -222,7 +222,7 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
             async with conn.cursor(aiomysql.Cursor) as cur:
                 await cur.execute(
                     "UPDATE _system_config SET config_value=%s WHERE config_key=%s",
-                    (json.dumps(["组员", "组长"], ensure_ascii=False), POSITION_ORDER_CONFIG),
+                    (json.dumps(["组长", "组员"], ensure_ascii=False), POSITION_ORDER_CONFIG),
                 )
             await conn.commit()
 
