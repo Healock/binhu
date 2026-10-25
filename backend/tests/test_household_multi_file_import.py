@@ -286,12 +286,13 @@ def test_multi_file_route_has_same_import_permission_as_single_file():
 
 
 class IdentityConnection(Connection):
-    def __init__(self, *, sources, properties=(), newer_ids=(), previous_count=0):
+    def __init__(self, *, sources, properties=(), newer_ids=(), previous_count=0, pending_issues=()):
         super().__init__()
         self.sources = sources
         self.properties = properties
         self.newer_ids = newer_ids
         self.previous_count = previous_count
+        self.pending_issues = pending_issues
 
     async def fetchone(self):
         if self.sql.startswith("SELECT status, imported_count FROM"):
@@ -302,6 +303,8 @@ class IdentityConnection(Connection):
         if self.sql.startswith("SELECT id, source_ref, payload_json"):
             return [(index, f"source-{index}", json.dumps(payload)) for index, payload, entity_id in self.sources
                     if entity_id is None or "entity_id IS NULL" not in self.sql]
+        if self.sql.startswith("SELECT source_ref, reason FROM registry_import_issues"):
+            return list(self.pending_issues)
         if self.sql.startswith("SELECT id, community_id, street"):
             return self.properties
         if self.sql.startswith("SELECT DISTINCT entity_id"):
@@ -365,7 +368,10 @@ async def test_existing_household_identity_conflict_never_changes_status(confirm
 
 @pytest.mark.asyncio
 async def test_matching_household_updates_correct_property_and_counts(confirmation_dependencies):
-    conn = IdentityConnection(sources=[(1, row("a", household_status="未注销"), None)], properties=[existing_property()])
+    conn = IdentityConnection(
+        sources=[(1, row("a", household_status="未注销", updated_at="2026-02-01T09:00:00"), None)],
+        properties=[existing_property(updated_at="2026-01-01 09:00:00")],
+    )
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
     assert result["updated_count"] == 1 and result["inserted_count"] == 0
     _, values = next((sql, values) for sql, values in conn.calls if sql.startswith("UPDATE registry_properties SET"))
@@ -557,11 +563,75 @@ async def test_stale_batch_does_not_cancel_archives_before_rejection(confirmatio
 @pytest.mark.parametrize("incoming_time", ["2026-01-01T09:00:00", None])
 async def test_older_or_undated_source_cannot_overwrite_newer_property(confirmation_dependencies, incoming_time):
     conn = IdentityConnection(
-        sources=[(1, row("a", updated_at=incoming_time), None)],
+        sources=[(1, row("a", updated_at=incoming_time, household_status="未注销"), None)],
         properties=[existing_property(updated_at="2026-02-01 09:00:00")],
     )
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
     assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("incoming_time", ["2026-01-01T09:00:00", None])
+async def test_identical_older_or_undated_source_relinks_and_resolves_retryable_pending_issue(confirmation_dependencies, incoming_time):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at=incoming_time), None)],
+        properties=[existing_property(updated_at="2026-02-01 09:00:00")],
+        pending_issues=[("source-1", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 1 and result["updated_count"] == 0
+    assert any(values == (42, 1) for sql, values in conn.calls if sql.startswith("UPDATE registry_source_records SET"))
+    assert any(sql.startswith("UPDATE registry_import_issues SET status='resolved'") for sql, _ in conn.calls)
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_retryable_pending_issue_with_changed_older_snapshot_stays_pending(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-01-01T09:00:00", household_status="未注销"), None)],
+        properties=[existing_property(updated_at="2026-02-01 09:00:00")],
+        pending_issues=[("source-1", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert any(sql.startswith("UPDATE registry_import_issues SET entity_key=") for sql, _ in conn.calls)
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_missing_current_timestamp_with_changed_snapshot_stays_pending(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", household_status="未注销"), None)],
+        properties=[existing_property(updated_at=None)],
+        pending_issues=[("source-1", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert any(sql.startswith("UPDATE registry_import_issues SET entity_key=") for sql, _ in conn.calls)
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_duplicate_issue_remains_blocked(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a"), None)],
+        properties=[existing_property()],
+        pending_issues=[("source-1", "同社区同地址有不同户号，无法证明注销后重新登记的沿革，需核对来源状态及更新时间")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
+    assert not any(sql.startswith("UPDATE registry_import_issues SET") for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_community_is_still_blocked(monkeypatch, confirmation_dependencies):
+    monkeypatch.setattr(extended, "_household_import_community", AsyncMock(return_value=None))
+    conn = IdentityConnection(sources=[(1, row("a"), None)], properties=[existing_property()])
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    assert result["imported_count"] == 0 and result["updated_count"] == 0
+    assert any(sql.startswith("INSERT INTO registry_import_issues") for sql, _ in conn.calls)
     assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
 
 
