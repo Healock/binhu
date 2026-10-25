@@ -3417,6 +3417,7 @@ export interface VisitSummaryReport {
     history_started_on: string | null
     legacy_history_incomplete: boolean
     worked_while_off: number
+    worked_while_leave: number
     unknown_participant_days: number
   }
   overview: {

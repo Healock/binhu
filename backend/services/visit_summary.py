@@ -466,6 +466,7 @@ async def get_visit_summary(
             "legacy_history_incomplete"
         ],
         "worked_while_off": attendance["worked_while_off"],
+        "worked_while_leave": attendance["worked_while_leave"],
         "unknown_participant_days": attendance[
             "unknown_participant_days"
         ],

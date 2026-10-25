@@ -582,11 +582,22 @@ export default function VisitSummary() {
       {summaryReport?.scope_message && (
         <Alert type="info" showIcon message={summaryReport.scope_message} />
       )}
-      {summaryReport && summaryReport.attendance.worked_while_off > 0 && (
+      {summaryReport && (
+        summaryReport.attendance.worked_while_off > 0
+        || summaryReport.attendance.worked_while_leave > 0
+      ) && (
         <Alert
           type="info"
           showIcon
-          message={`发现 ${summaryReport.attendance.worked_while_off} 个人日虽排休或请假但有真实走访，系统已按实际出勤计入`}
+          message={[
+            summaryReport.attendance.worked_while_off > 0
+              ? `发现 ${summaryReport.attendance.worked_while_off} 个排休日走访异常，未计入在岗人日`
+              : '',
+            summaryReport.attendance.worked_while_leave > 0
+              ? `发现 ${summaryReport.attendance.worked_while_leave} 个请假期间走访异常，未计入在岗人日`
+              : '',
+            '请核对出勤安排后重新查询',
+          ].filter(Boolean).join('；')}
         />
       )}
 
