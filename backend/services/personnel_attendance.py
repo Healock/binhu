@@ -431,16 +431,26 @@ def allocate_person_days(
     allocations: dict[str, Decimal] = defaultdict(Decimal)
     total_person_days = Decimal(0)
     worked_while_off = 0
+    worked_while_leave = 0
     unknown_participant_days = 0
     members = context["members"]
 
     for target_date in iter_dates(start_date, end_date):
         for name, member in members.items():
             visits = daily_visits.get((target_date, name), {})
-            on_duty = is_member_on_duty(member, target_date, context)
+            status = resolve_day(
+                member,
+                target_date,
+                context.get("daily", {}),
+                context["periods"].get(member["id"], []),
+                context.get("weekend_duty_positions", DEFAULT_WEEKEND_DUTY_POSITIONS),
+            )
+            on_duty = status["state"] == "work"
             if visits and not on_duty:
-                on_duty = True
-                worked_while_off += 1
+                if status["state"] in {"leave", "long_term_leave"}:
+                    worked_while_leave += 1
+                else:
+                    worked_while_off += 1
             if not on_duty:
                 continue
             total_person_days += Decimal(1)
@@ -476,5 +486,6 @@ def allocate_person_days(
         "history_started_on": context["history_started_on"],
         "legacy_history_incomplete": context["legacy_history_incomplete"],
         "worked_while_off": worked_while_off,
+        "worked_while_leave": worked_while_leave,
         "unknown_participant_days": unknown_participant_days,
     }
