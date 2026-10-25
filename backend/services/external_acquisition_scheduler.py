@@ -229,8 +229,17 @@ async def _run_claimed(schedule: dict[str, Any]) -> None:
         run, _ = await run_registered_source(key, None, schedule.get("params") or {}, schedule_id=int(schedule["id"]), trigger_source="scheduled")
         long_running_reported = False
         elapsed = 0
+        missing_polls = 0
         while True:
             current = await get_job(int(run["id"]))
+            if current is None:
+                missing_polls += 1
+                if missing_polls >= 3:
+                    await mark_schedule_result(int(schedule["id"]), "failed", "source_run_missing")
+                    await notify_schedule_failure(key, int(run.get("id") or 0), "source_run_missing")
+                    return
+            else:
+                missing_polls = 0
             if current and current.get("status") not in {"queued", "running"}:
                 run = current
                 break

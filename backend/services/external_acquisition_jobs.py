@@ -230,6 +230,22 @@ async def get_job_metadata(run_id: int) -> dict[str, Any] | None:
     return {"kind": str(row[0]), "status": str(row[1]), "payload": payload, "schedule_id": int(row[3]) if row[3] is not None else None}
 
 
+async def _sync_schedule_terminal(run_id: int, status: str, error_code: str | None = None) -> None:
+    """Publish a terminal run state to its schedule without holding the run connection."""
+    pool = db_manager.get_pool("online_data")
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT schedule_id FROM _external_acquisition_runs WHERE id=%s",
+                (run_id,),
+            )
+            row = await cur.fetchone()
+    if row and row[0] is not None:
+        from services.external_acquisition_registry import mark_schedule_result
+
+        await mark_schedule_result(int(row[0]), status, error_code)
+
+
 async def latest_job(kind: str) -> dict[str, Any] | None:
     from services.external_acquisition_registry import SOURCE_ALIASES
     canonical = SOURCE_ALIASES.get(kind, kind)
@@ -260,6 +276,7 @@ async def _execute(run_id: int, runner: Callable[[JobContext], Awaitable[dict[st
                     "error_code='cancelled',error_message='服务关闭或任务被取消',finished_at=UTC_TIMESTAMP() WHERE id=%s",
                     (run_id,),
                 )
+        await _sync_schedule_terminal(run_id, "interrupted", "cancelled")
         raise
     except Exception as exc:  # noqa: BLE001 - safe public summary
         async with pool.acquire() as conn:
@@ -270,6 +287,7 @@ async def _execute(run_id: int, runner: Callable[[JobContext], Awaitable[dict[st
                     "safety_gate_code=%s,finished_at=UTC_TIMESTAMP() WHERE id=%s",
                     (type(exc).__name__[:60], _safe_error_message(exc), "runner_exception", run_id),
                 )
+        await _sync_schedule_terminal(run_id, "failed", "runner_exception")
         return
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -282,6 +300,7 @@ async def _execute(run_id: int, runner: Callable[[JobContext], Awaitable[dict[st
                 (status, _safe_json(_safe_result(result)), str(result.get("message", "已完成"))[:500],
                  auto_commit_status, gate_code, run_id),
             )
+    await _sync_schedule_terminal(run_id, status, gate_code)
 
 
 async def recover_interrupted_jobs() -> int:
