@@ -205,9 +205,14 @@ async def update_form_definition(form_definition_id: int, payload: FormDefinitio
 @router.post("/forms/{form_definition_id}/disable")
 async def disable_form_definition(form_definition_id: int, conn=Depends(get_workflow_db),
                                   user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
-    del user
-    async with conn.cursor() as cur:
-        await cur.execute("UPDATE form_definitions SET enabled=0 WHERE id=%s", (form_definition_id,))
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute("UPDATE form_definitions SET enabled=0,updated_by=%s WHERE id=%s", (int(user["id"]), form_definition_id))
+        await conn.commit()
+    except Exception as exc:
+        await conn.rollback()
+        raise HTTPException(409, "表单停用失败") from exc
     return {"id": form_definition_id, "enabled": False}
 
 
@@ -332,9 +337,14 @@ async def update_process_definition(process_definition_id: int, payload: Process
 @router.post("/definitions/{process_definition_id}/disable")
 async def disable_process_definition(process_definition_id: int, conn=Depends(get_workflow_db),
                                      user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
-    del user
-    async with conn.cursor() as cur:
-        await cur.execute("UPDATE process_definitions SET enabled=0 WHERE id=%s", (process_definition_id,))
+    try:
+        await conn.begin()
+        async with conn.cursor() as cur:
+            await cur.execute("UPDATE process_definitions SET enabled=0,updated_by=%s WHERE id=%s", (int(user["id"]), process_definition_id))
+        await conn.commit()
+    except Exception as exc:
+        await conn.rollback()
+        raise HTTPException(409, "流程停用失败") from exc
     return {"id": process_definition_id, "enabled": False}
 
 

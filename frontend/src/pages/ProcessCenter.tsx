@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Timeline, Upload, message,
+  Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, Tag, Timeline, message,
 } from 'antd'
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { PageHeader, Panel } from '../components/ui'
@@ -14,7 +14,7 @@ function control(field: any, people: any[]) {
   if (field.type === 'number') return <InputNumber className="w-full" />
   if (field.type === 'select') return <Select options={(field.options || []).map((item: string) => ({ value: item, label: item }))} />
   if (field.type === 'person') return <Select showSearch optionFilterProp="label" options={people.map(item => ({ value: item.account?.id || item.id, label: item.name }))} />
-  if (field.type === 'attachment') return <Upload beforeUpload={() => false} maxCount={field.max_items || 5} accept="image/*"><Button>选择照片</Button></Upload>
+  if (field.type === 'attachment') return <Alert type="info" showIcon message="照片材料暂不可提交" description="流程附件上传接口尚未启用，请先完成其他字段；照片控件上线后再选择材料。" />
   return <Input maxLength={field.max_length} type={field.type === 'date' || field.type === 'datetime' ? field.type : 'text'} />
 }
 

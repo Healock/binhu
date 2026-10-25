@@ -11,7 +11,9 @@ from fastapi import HTTPException
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
-from services.process_engine import ProcessEngine, ProcessValidationError, validate_nodes
+from services.process_engine import (
+    ProcessEngine, ProcessValidationError, validate_form_data, validate_form_schema, validate_nodes,
+)
 from services.process_engine import resolve_assignees
 from routers import processes as processes_router
 
@@ -39,6 +41,30 @@ def test_workflow_domain_schema_contains_the_eight_b1_tables():
     assert "process_version_id BIGINT NOT NULL" in source
     assert "file_id CHAR(36) NOT NULL UNIQUE" in source
     assert "sha256 CHAR(64) NOT NULL" in source
+
+
+def test_b2_form_schema_supports_required_enum_and_attachment_limits():
+    schema = {"fields": [
+        {"key": "reason", "name": "reason", "label": "事由", "type": "text", "required": True, "max_length": 20},
+        {"key": "kind", "name": "kind", "label": "类型", "type": "select", "required": True, "options": ["甲", "乙"]},
+        {"key": "photos", "name": "photos", "label": "照片", "type": "attachment", "max_items": 2},
+        {"key": "notice", "name": "notice", "label": "提示", "type": "static", "content": "说明"},
+    ]}
+    assert validate_form_schema(schema) == schema
+    assert validate_form_data(schema, {"reason": "测试", "kind": "甲", "photos": []})["kind"] == "甲"
+    with pytest.raises(ProcessValidationError, match="必填字段"):
+        validate_form_data(schema, {"kind": "甲", "photos": []})
+    with pytest.raises(ProcessValidationError, match="枚举"):
+        validate_form_data(schema, {"reason": "测试", "kind": "丙", "photos": []})
+    with pytest.raises(ProcessValidationError, match="数量上限"):
+        validate_form_data(schema, {"reason": "测试", "kind": "甲", "photos": [1, 2, 3]})
+    with pytest.raises(ProcessValidationError, match="附件字段.*不能设为必填"):
+        validate_form_schema({
+            "fields": [{
+                "key": "photos", "name": "photos", "label": "照片", "type": "attachment",
+                "required": True, "max_items": 2,
+            }],
+        })
 
 
 @pytest.mark.asyncio
@@ -107,7 +133,7 @@ class _MemoryCursor:
         self._one, self._all = None, []
         if query.startswith("INSERT INTO process_definitions"):
             id_ = self._id()
-            self.processes[id_] = {"code": params[0], "enabled": 0}
+            self.processes[id_] = {"code": params[0], "enabled": 0, "form_definition_id": params[3]}
         elif query.startswith("SELECT id FROM process_definitions"):
             self._one = (params[0],) if params[0] in self.processes else None
         elif query.startswith("SELECT COALESCE(MAX(version_no),0) FROM process_versions"):
@@ -123,6 +149,9 @@ class _MemoryCursor:
             v = self.versions.get(params[0])
             enabled = self.processes[v["process_id"]]["enabled"] if v else False
             self._one = (v["process_id"], json.dumps(v["nodes"]), v["status"], enabled) if v else None
+        elif query.startswith("SELECT definition.form_definition_id,form_definition.current_version_id"):
+            process = self.processes.get(params[0])
+            self._one = (process.get("form_definition_id"), None, None) if process else None
         elif query.startswith("INSERT INTO process_instances"):
             id_ = self._id()
             self.instances[id_] = {"no": params[0], "process_id": params[1], "version_id": params[2],
@@ -144,6 +173,9 @@ class _MemoryCursor:
         elif query.startswith("SELECT process_version_id,requester_user_id,form_data,status FROM process_instances"):
             i = self.instances.get(params[0])
             self._one = (i["version_id"], i["requester"], json.dumps(i["form_data"]), i["status"]) if i else None
+        elif query.startswith("SELECT process_definition_id FROM process_instances"):
+            i = self.instances.get(params[0])
+            self._one = (i["process_id"],) if i else None
         elif query.startswith("SELECT definition.default_due_hours FROM process_instances"):
             self._one = (None,)
         elif query.startswith("UPDATE process_tasks SET status='completed'"):
@@ -337,8 +369,8 @@ async def test_position_sequence_escalates_same_task_one_rank_per_timeout_then_h
     cursor.member_positions[13] = "中队长"
     cursor.department_peers[11] = [20]
     cursor.member_positions[20] = "组长"
-    cursor.promotion_candidates[(11, "组员")] = [12]
-    cursor.user_member_ids = {101: 11, 102: 12, 120: 20}
+    cursor.promotion_candidates[(11, "中队长")] = [13]
+    cursor.user_member_ids = {101: 11, 102: 13, 120: 20}
     async with conn.cursor() as cur:
         engine = ProcessEngine(cur)
         definition = await engine.create_process(code="fake_position_order", name="岗位序列假流程")
@@ -350,7 +382,7 @@ async def test_position_sequence_escalates_same_task_one_rank_per_timeout_then_h
         instance = await engine.start(process_version_id=version, requester_user_id=3,
                                       title="假流程", now=now - timedelta(hours=3))
         task_id = next(iter(cursor.tasks))
-        cursor.position_order = ["组员", "组长", "中队长"]
+        cursor.position_order = ["中队长", "组长", "组员"]
         await engine.advance_timeouts(now=now - timedelta(hours=1))
         assert cursor.tasks[task_id]["assignees"] == [101, 120]
         cursor.tasks[task_id]["due"] = now - timedelta(seconds=1)
