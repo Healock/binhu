@@ -65,6 +65,13 @@ def test_b2_form_schema_supports_required_enum_and_attachment_limits():
                 "required": True, "max_items": 2,
             }],
         })
+    with pytest.raises(ProcessValidationError, match="唯一"):
+        validate_form_schema({
+            "fields": [
+                {"key": "same", "name": "单位职务", "label": "单位职务", "type": "text"},
+                {"key": "same", "name": "单位职务", "label": "单位职务", "type": "text"},
+            ],
+        })
 
 
 @pytest.mark.asyncio
