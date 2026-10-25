@@ -12,7 +12,7 @@ os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
 
 from services.process_engine import (
-    ProcessEngine, ProcessValidationError, validate_form_data, validate_form_schema, validate_nodes,
+    ProcessEngine, ProcessValidationError, resolve_form_defaults, validate_form_data, validate_form_schema, validate_nodes,
 )
 from services.process_engine import resolve_assignees
 from routers import processes as processes_router
@@ -65,6 +65,53 @@ def test_b2_form_schema_supports_required_enum_and_attachment_limits():
                 "required": True, "max_items": 2,
             }],
         })
+
+
+def test_drinking_report_is_a_data_only_two_node_definition():
+    definition = json.loads(
+        (Path(__file__).resolve().parents[1] / "process_definitions" / "drinking_report.json").read_text(encoding="utf-8")
+    )
+    validate_form_schema(definition["form"]["schema"])
+    nodes = validate_nodes(definition["process"]["nodes"])
+    assert [node["node_type"] for node in nodes] == ["start", "approval"]
+    assert nodes[1]["assignee_type"] == "表单联系人字段"
+    assert nodes[1]["assignee_params"] == {"field": "direct_leader"}
+    assert sum(field["name"] == "单位职务" for field in definition["form"]["schema"]["fields"]) == 2
+    leader_field = next(field for field in definition["form"]["schema"]["fields"] if field["key"] == "direct_leader")
+    assert all("selection" not in rule for rule in leader_field["default_params"]["rules"])
+
+
+@pytest.mark.asyncio
+async def test_organization_supervisor_default_is_declarative():
+    class DefaultsCursor:
+        def __init__(self):
+            self.one = None
+            self.all = []
+
+        async def execute(self, query, params=()):
+            if query.startswith("SELECT member.id,member.position,COALESCE"):
+                self.one = (11, "组员", "发起人")
+            elif query.startswith("SELECT link.department_id,department.parent_id"):
+                self.all = [(101, 201)]
+            elif query.startswith("SELECT DISTINCT account.id FROM _grid_member_department_links"):
+                self.all = [(901,)]
+            else:
+                raise AssertionError(query)
+
+        async def fetchone(self):
+            return self.one
+
+        async def fetchall(self):
+            return self.all
+
+    cursor = DefaultsCursor()
+    defaults = await resolve_form_defaults(cursor, 701, {
+        "fields": [{
+            "key": "direct_leader", "type": "person", "default_source": "organization_supervisor",
+            "default_params": {"rules": [{"requester_positions": ["组员"], "scope": "same_department", "target_positions": ["组长"]}]},
+        }],
+    })
+    assert defaults == {"direct_leader": 901}
     with pytest.raises(ProcessValidationError, match="唯一"):
         validate_form_schema({
             "fields": [
@@ -72,6 +119,37 @@ def test_b2_form_schema_supports_required_enum_and_attachment_limits():
                 {"key": "same", "name": "单位职务", "label": "单位职务", "type": "text"},
             ],
         })
+
+
+@pytest.mark.asyncio
+async def test_organization_supervisor_does_not_choose_ambiguous_default():
+    class AmbiguousDefaultsCursor:
+        async def execute(self, query, params=()):
+            if query.startswith("SELECT member.id,member.position,COALESCE"):
+                self.one = (11, "片长", "发起人")
+            elif query.startswith("SELECT link.department_id,department.parent_id"):
+                self.all = [(101, 201)]
+            elif query.startswith("SELECT DISTINCT account.id FROM _grid_member_department_links"):
+                self.all = [(901,), (902,), (903,)]
+            else:
+                raise AssertionError(query)
+
+        async def fetchone(self):
+            return self.one
+
+        async def fetchall(self):
+            return self.all
+
+    defaults = await resolve_form_defaults(AmbiguousDefaultsCursor(), 701, {
+        "fields": [{
+            "key": "direct_leader", "type": "person", "default_source": "organization_supervisor",
+            "default_params": {"rules": [{
+                "requester_positions": ["片长"], "scope": "parent_department",
+                "target_positions": ["所队领导", "中队长"], "selection": "first",
+            }]},
+        }],
+    })
+    assert defaults == {}
 
 
 @pytest.mark.asyncio
@@ -180,6 +258,9 @@ class _MemoryCursor:
         elif query.startswith("SELECT process_version_id,requester_user_id,form_data,status FROM process_instances"):
             i = self.instances.get(params[0])
             self._one = (i["version_id"], i["requester"], json.dumps(i["form_data"]), i["status"]) if i else None
+        elif query.startswith("SELECT process_version_id FROM process_instances WHERE id="):
+            i = self.instances.get(params[0])
+            self._one = (i["version_id"],) if i else None
         elif query.startswith("SELECT process_definition_id FROM process_instances"):
             i = self.instances.get(params[0])
             self._one = (i["process_id"],) if i else None
@@ -339,6 +420,26 @@ async def test_two_json_processes_run_without_process_specific_code():
             assert cursor.instances[instance["id"]]["version_id"] == version
         assert [item["type"] for item in cursor.events].count("instance_submitted") == 2
         assert len(cursor.tasks) == 2
+
+
+@pytest.mark.asyncio
+async def test_start_node_auto_passes_to_the_first_approval_task():
+    conn = _Connection()
+    cursor = conn.cursor_value
+    async with conn.cursor() as cur:
+        engine = ProcessEngine(cur)
+        definition = await engine.create_process(code="fake_start", name="数据流程")
+        version = await engine.publish_process(definition, [
+            {"node_type": "start", "node_key": "submit", "name": "发起", "assignee_type": "发起人本人",
+             "assignee_params": {}, "multi_mode": "single", "empty_policy": "hold_and_notify", "timeout_hours": 1},
+            {"node_key": "approval", "name": "审批", "assignee_type": "指定成员",
+             "assignee_params": {"user_id": 11}, "timeout_hours": 1},
+        ])
+        result = await engine.start(process_version_id=version, requester_user_id=3, title="数据流程")
+        assert result["id"] in cursor.instances
+        assert len(cursor.tasks) == 1
+        assert next(iter(cursor.tasks.values()))["node"] == "approval"
+        assert any(event["type"] == "process_started" for event in cursor.events)
 
 
 @pytest.mark.asyncio
