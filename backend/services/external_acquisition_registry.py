@@ -384,8 +384,15 @@ async def claim_due_schedule() -> dict[str, Any] | None:
         try:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    SCHEDULE_SELECT + " WHERE enabled=1 AND next_run_at IS NOT NULL "
-                    "AND next_run_at<=UTC_TIMESTAMP() ORDER BY next_run_at LIMIT 1 FOR UPDATE SKIP LOCKED"
+                    SCHEDULE_SELECT + " WHERE enabled=1 AND ("
+                    "(next_run_at IS NOT NULL AND next_run_at<=UTC_TIMESTAMP() "
+                    " AND COALESCE(last_status,'')<>'running') OR "
+                    "(last_status='running' AND last_run_at IS NOT NULL "
+                    " AND last_run_at<DATE_SUB(UTC_TIMESTAMP(), INTERVAL 15 MINUTE) "
+                    " AND NOT EXISTS (SELECT 1 FROM _external_acquisition_runs r "
+                    "   WHERE r.schedule_id=_external_acquisition_schedules.id "
+                    "   AND r.status IN ('queued','running')))) "
+                    "ORDER BY COALESCE(next_run_at,last_run_at) LIMIT 1 FOR UPDATE SKIP LOCKED"
                 )
                 row = await cur.fetchone()
                 if not row:

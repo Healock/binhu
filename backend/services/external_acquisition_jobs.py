@@ -59,6 +59,20 @@ def _safe_result(value: Any, *, depth: int = 0) -> Any:
     return str(value)[:200]
 
 
+def _kind_variants(kind: str) -> list[str]:
+    """Return the canonical kind and every legacy spelling for its lease."""
+    from services.external_acquisition_registry import SOURCE_ALIASES
+
+    canonical = SOURCE_ALIASES.get(kind, kind)
+    return [canonical, *[alias for alias, target in SOURCE_ALIASES.items() if target == canonical]]
+
+
+def _has_incompatible_semantics(requested: str, active: str) -> bool:
+    """Preview/confirmation jobs must never be reused as auto-commit jobs."""
+    preview_kinds = {"visit_source_preview", "visit_source_confirm"}
+    return (requested in preview_kinds) != (active in preview_kinds)
+
+
 def _public(row: tuple | None) -> dict[str, Any] | None:
     if not row:
         return None
@@ -145,21 +159,25 @@ async def create_job(kind: str, requested_by: int | None, payload: dict[str, Any
             # but a source-wide lease is also required: a manual run and a
             # scheduled run must not update the same source concurrently.
             await cur.execute(
-                "SELECT id FROM _external_acquisition_runs "
-                "WHERE kind=%s AND status IN ('queued','running') "
+                "SELECT id,kind FROM _external_acquisition_runs "
+                "WHERE kind IN (" + ",".join(["%s"] * len(_kind_variants(kind))) + ") "
+                "AND status IN ('queued','running') "
                 "ORDER BY id DESC LIMIT 1 FOR UPDATE",
-                (kind,),
+                tuple(_kind_variants(kind)),
             )
             active = await cur.fetchone()
             if active:
+                if _has_incompatible_semantics(kind, str(active[1])):
+                    await conn.rollback()
+                    raise RuntimeError("source_busy")
                 await conn.commit()
                 existing_run = await get_job(int(active[0]))
                 return (existing_run or {}, True)
             if dedupe_key:
                 await cur.execute(
-                    "SELECT id FROM _external_acquisition_runs WHERE kind=%s AND dedupe_key=%s "
+                    "SELECT id FROM _external_acquisition_runs WHERE kind IN (" + ",".join(["%s"] * len(_kind_variants(kind))) + ") AND dedupe_key=%s "
                     "AND status IN ('queued','running') ORDER BY id DESC LIMIT 1",
-                    (kind, dedupe_key),
+                    (*_kind_variants(kind), dedupe_key),
                 )
                 existing = await cur.fetchone()
                 if existing:
@@ -196,26 +214,26 @@ async def get_job_metadata(run_id: int) -> dict[str, Any] | None:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT kind,payload_json,schedule_id FROM _external_acquisition_runs WHERE id=%s",
+                "SELECT kind,status,payload_json,schedule_id FROM _external_acquisition_runs WHERE id=%s",
                 (run_id,),
             )
             row = await cur.fetchone()
     if not row:
         return None
-    payload = row[1]
+    payload = row[2]
     if isinstance(payload, (bytes, bytearray)):
         payload = payload.decode("utf-8", errors="replace")
     try:
         payload = json.loads(payload or "{}") if isinstance(payload, str) else (payload or {})
     except (TypeError, ValueError):
         payload = {}
-    return {"kind": str(row[0]), "payload": payload, "schedule_id": int(row[2]) if row[2] is not None else None}
+    return {"kind": str(row[0]), "status": str(row[1]), "payload": payload, "schedule_id": int(row[3]) if row[3] is not None else None}
 
 
 async def latest_job(kind: str) -> dict[str, Any] | None:
     from services.external_acquisition_registry import SOURCE_ALIASES
     canonical = SOURCE_ALIASES.get(kind, kind)
-    kinds = [canonical, *[alias for alias, target in SOURCE_ALIASES.items() if target == canonical]]
+    kinds = _kind_variants(kind)
     pool = db_manager.get_pool("online_data")
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -271,11 +289,25 @@ async def recover_interrupted_jobs() -> int:
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
+                "SELECT DISTINCT schedule_id FROM _external_acquisition_runs "
+                "WHERE status IN ('queued','running') AND schedule_id IS NOT NULL"
+            )
+            schedule_ids = [int(row[0]) for row in await cur.fetchall()]
+            await cur.execute(
                 "UPDATE _external_acquisition_runs SET status='interrupted',phase='interrupted',"
                 "error_code='service_restarted',error_message='服务重启，任务未继续执行',finished_at=UTC_TIMESTAMP() "
                 "WHERE status IN ('queued','running')"
             )
-            return int(cur.rowcount or 0)
+            run_count = int(cur.rowcount or 0)
+            if schedule_ids:
+                placeholders = ",".join(["%s"] * len(schedule_ids))
+                await cur.execute(
+                    f"UPDATE _external_acquisition_schedules SET last_status='interrupted',"
+                    f"last_error_code='service_restarted' WHERE id IN ({placeholders})",
+                    tuple(schedule_ids),
+                )
+            await conn.commit()
+            return run_count
 
 
 async def stop_external_acquisition_tasks() -> None:

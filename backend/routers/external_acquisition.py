@@ -62,24 +62,37 @@ async def external_catalog(user: dict = Depends(get_current_user), conn=Depends(
     schedules = {item["source_key"]: item for item in await list_schedules(conn)}
     result = []
     for definition in SOURCE_DEFINITIONS:
-        latest = await latest_job(definition.key)
+        accessible = can_access_source(user, definition)
+        latest = await latest_job(definition.key) if accessible else None
         result.append({
             "source_key": definition.key, "name": definition.name,
             "category": definition.category, "description": definition.description,
             "permission": definition.permission,
-            "accessible": can_access_source(user, definition),
+            "accessible": accessible,
             "supports_manual": definition.supports_manual,
             "supports_schedule": definition.supports_schedule,
             "supports_auto_commit": definition.supports_auto_commit,
             "params_schema": definition.params_schema,
-            "schedule": schedules.get(definition.key), "latest_run": latest,
+            # Do not disclose schedule timing or run history for a source the
+            # current account cannot inspect.
+            "schedule": schedules.get(definition.key) if accessible else None,
+            "latest_run": latest if accessible else None,
         })
     return {"data": result}
 
 
 @router.get("/schedules")
-async def external_schedules(_user: dict = Depends(get_current_user), conn=Depends(get_db)):
-    return {"data": await list_schedules(conn)}
+async def external_schedules(user: dict = Depends(get_current_user), conn=Depends(get_db)):
+    schedules = await list_schedules(conn)
+    visible = []
+    for schedule in schedules:
+        try:
+            definition = source_definition(str(schedule["source_key"]))
+        except ValueError:
+            continue
+        if can_access_source(user, definition):
+            visible.append(schedule)
+    return {"data": visible}
 
 
 @router.put("/schedules/{source_key}")
@@ -142,10 +155,7 @@ async def run_external_schedule(source_key: str, payload: RunRequest, request: R
 @router.get("/schedules/{source_key}/runs")
 async def external_schedule_runs(source_key: str, limit: int = Query(20, ge=1, le=100),
                                  user: dict = Depends(get_current_user)):
-    # Run history is an aggregate status view.  Ordinary administrators may
-    # inspect it even when they cannot trigger or edit the source.
-    del user
-    _ensure_known_source(source_key)
+    _ensure_source_access(source_key, user)
     from database import db_manager
     pool = db_manager.get_pool("online_data")
     async with pool.acquire() as conn:
@@ -174,6 +184,10 @@ async def retry_external_run(run_id: int, request: Request, user: dict = Depends
         raise HTTPException(404, "外部获取任务不存在")
     source_key = str(metadata["kind"])
     _ensure_source_access(source_key, user)
+    if metadata.get("status") not in {"failed", "interrupted"}:
+        raise HTTPException(409, "只有失败或中断的运行可以重试")
+    if source_key in {"visit_source_preview", "visit_source_confirm"}:
+        raise HTTPException(409, "走访来源预览/确认必须继续使用原有人工确认流程，不能转为自动提交")
     try:
         run, reused = await run_registered_source(
             source_key, int(user["id"]), metadata.get("payload") or {},
@@ -181,6 +195,8 @@ async def retry_external_run(run_id: int, request: Request, user: dict = Depends
         )
     except ValueError as exc:
         raise HTTPException(422, {"code": "invalid_source_params", "message": str(exc)}) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
     await record_admin_audit(
         user, "external_acquisition.run.retry", target_type="external_run",
         target_name=str(run_id), detail={"source_key": source_key,

@@ -98,7 +98,7 @@ export default function ExternalAcquisitionWorkbench() {
   if (!catalog.length) return <Empty description="当前没有可用的外部来源" />
   const grouped = catalog.reduce<Record<string, ExternalAcquisitionCatalogItem[]>>((all, item) => { ;(all[item.category] ||= []).push(item); return all }, {})
 
-  return <div className="grid min-h-0 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+  return <div className="external-acquisition-workbench grid min-h-0 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
     <aside className={`${selectedKey ? 'hidden lg:grid' : 'grid'} content-start gap-4 rounded-md border border-[var(--app-border)] p-3`}><div><strong>来源目录</strong><div className="mt-1 text-xs text-[var(--app-text-secondary)]">选择来源后在右侧工作台操作</div></div>
       {Object.entries(grouped).map(([category, items]) => <section key={category} className="grid gap-2"><div className="text-xs font-medium text-[var(--app-text-secondary)]">{category}</div>{items.map(item => <button key={item.source_key} type="button" onClick={() => choose(item.source_key)} className={`grid gap-1 rounded-md border p-3 text-left transition ${selectedKey === item.source_key ? 'border-[var(--app-primary)] bg-[var(--app-surface-muted)]' : 'border-[var(--app-border)]'}`}><div className="flex items-center justify-between gap-2"><strong className="truncate">{item.name}</strong>{item.schedule?.enabled && <Tag color="blue">已启用</Tag>}</div><div className="text-xs text-[var(--app-text-secondary)]">{runLabel(item.latest_run)}{item.latest_run?.finished_at ? ` · ${formatUTCTime(item.latest_run.finished_at, systemTimezone)}` : ''}</div>{item.schedule?.next_run_at && <div className="text-xs text-[var(--app-text-secondary)]">下次：{formatUTCTime(item.schedule.next_run_at, systemTimezone)}</div>}</button>)}</section>)}
     </aside>

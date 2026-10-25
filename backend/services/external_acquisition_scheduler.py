@@ -227,18 +227,21 @@ async def _run_claimed(schedule: dict[str, Any]) -> None:
     key = str(schedule["source_key"])
     try:
         run, _ = await run_registered_source(key, None, schedule.get("params") or {}, schedule_id=int(schedule["id"]), trigger_source="scheduled")
-        completed = False
-        for _ in range(720):
+        long_running_reported = False
+        elapsed = 0
+        while True:
             current = await get_job(int(run["id"]))
             if current and current.get("status") not in {"queued", "running"}:
                 run = current
-                completed = True
                 break
+            elapsed += 1
+            if elapsed == 720 and not long_running_reported:
+                # Keep the schedule leased while the source runner is still
+                # alive.  A failed status here would allow a second process to
+                # start the same source and could overwrite a later success.
+                await mark_schedule_result(int(schedule["id"]), "running", "source_run_long_running")
+                long_running_reported = True
             await asyncio.sleep(1)
-        if not completed:
-            await mark_schedule_result(int(schedule["id"]), "failed", "source_run_timeout")
-            await notify_schedule_failure(key, int(run.get("id") or 0), "source_run_timeout")
-            return
         status = str(run.get("status") or "failed")
         if status in {"failed", "warning"}:
             code = str(run.get("safety_gate_code") or run.get("error_code") or "source_run_failed")
