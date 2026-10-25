@@ -1,6 +1,6 @@
 """人员出勤历史和双休日备勤 API。"""
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -27,6 +27,7 @@ from services.attendance_schedule import (
     load_periods,
     resolve_day,
     schedule_mutation,
+    weekly_schedule_mutation,
     leave_mutation,
     ready,
 )
@@ -76,6 +77,57 @@ class WeekendDutyUpdate(BaseModel):
         if len(member_ids) != len(set(member_ids)):
             raise ValueError("同一人员不能重复排班")
         return self
+
+
+class WeeklyScheduleDay(BaseModel):
+    date: date
+    state: Literal["work", "rest"] | None = None
+
+
+class WeeklyScheduleAssignment(BaseModel):
+    member_id: int = Field(gt=0)
+    expected_version: int = Field(ge=0)
+    days: list[WeeklyScheduleDay] = Field(min_length=1, max_length=7)
+
+    @model_validator(mode="after")
+    def distinct_days(self):
+        dates = [item.date for item in self.days]
+        if len(dates) != len(set(dates)):
+            raise ValueError("同一人员的日期不能重复")
+        return self
+
+
+class WeeklyScheduleUpdate(BaseModel):
+    week_start: date
+    request_id: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    assignments: list[WeeklyScheduleAssignment] = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_week(self):
+        if self.week_start.weekday() != 0:
+            raise ValueError("周起始日期必须是周一")
+        member_ids = [item.member_id for item in self.assignments]
+        if len(member_ids) != len(set(member_ids)):
+            raise ValueError("同一人员不能重复提交")
+        if any(
+            day.date < self.week_start or day.date > self.week_start + timedelta(days=6)
+            for assignment in self.assignments
+            for day in assignment.days
+        ):
+            raise ValueError("排班日期必须位于所选周内")
+        return self
+
+    model_config = {"extra": "forbid"}
+
+
+async def run_weekly_schedule(
+    data: WeeklyScheduleUpdate, user: dict, conn, preview: bool
+):
+    payload = data.model_dump()
+    payload["expected_versions"] = {
+        item.member_id: item.expected_version for item in data.assignments
+    }
+    return await weekly_schedule_mutation(conn, payload, int(user["id"]), preview=preview)
 
 
 @router.get("/weekend-duty")
@@ -306,6 +358,24 @@ async def commit_schedule(
     conn=Depends(get_db),
 ):
     return await schedule_mutation(conn, data.model_dump(), int(user["id"]))
+
+
+@router.post("/week-schedule/preview")
+async def preview_week_schedule(
+    data: WeeklyScheduleUpdate,
+    user=Depends(require_permission(ATTENDANCE_MANAGE)),
+    conn=Depends(get_db),
+):
+    return await run_weekly_schedule(data, user, conn, preview=True)
+
+
+@router.post("/week-schedule")
+async def commit_week_schedule(
+    data: WeeklyScheduleUpdate,
+    user=Depends(require_permission(ATTENDANCE_MANAGE)),
+    conn=Depends(get_db),
+):
+    return await run_weekly_schedule(data, user, conn, preview=False)
 
 
 @router.post("/leave/preview")

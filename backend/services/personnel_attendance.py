@@ -156,7 +156,7 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
     member_ids = [member["id"] for member in members]
     periods = await list_attendance_periods(
         cur,
-        start_date=saturday,
+        start_date=week_start,
         end_date=sunday,
         member_ids=member_ids,
     )
@@ -191,6 +191,25 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
         exempt = len(unavailable) == 2
         assignment = assignments.get(member["id"], [])
         recorded = member["id"] in recorded_member_ids
+        week_days = []
+        for offset in range(7):
+            target_date = week_start + timedelta(days=offset)
+            status = resolve_day(
+                member,
+                target_date,
+                daily,
+                member_periods,
+                duty_positions,
+            )
+            week_days.append(
+                {
+                    "date": target_date.isoformat(),
+                    "state": status["state"],
+                    "source": status["source"],
+                    "scheduled": (member["id"], target_date) in daily,
+                    "conflict": status["conflict"],
+                }
+            )
         complete = all(label in unavailable or (member["id"], day) in daily for label,day in (("saturday",saturday),("sunday",sunday)))
         if not complete:
             unassigned_count += 1
@@ -198,6 +217,7 @@ async def get_weekend_board(cur, requested_date: date) -> dict[str, Any]:
             {
                 **member,
                 "duty_days": assignment,
+                "week_days": week_days,
                 "attendance_revision": versions.get(member["id"], 0),
                 "recorded": recorded,
                 "complete": complete,

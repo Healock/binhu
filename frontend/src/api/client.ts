@@ -3190,6 +3190,15 @@ export function exportGridMembersUrl(): string {
 }
 
 export type WeekendDutyDay = 'saturday' | 'sunday'
+export type WeeklyScheduleState = 'work' | 'rest' | 'unassigned' | 'leave' | 'long_term_leave'
+
+export interface WeeklyScheduleDay {
+  date: string
+  state: WeeklyScheduleState
+  source: string
+  scheduled: boolean
+  conflict: boolean
+}
 
 export interface WeekendDutyMember {
   id: number
@@ -3205,6 +3214,7 @@ export interface WeekendDutyMember {
   unavailable_days: WeekendDutyDay[]
   exempt: boolean
   absence_reason: string
+  week_days: WeeklyScheduleDay[]
 }
 
 export interface WeekendDutyBoard {
@@ -3295,6 +3305,39 @@ export async function saveWeekendDuty(
     assignments,
   })
   notifyAttendanceChanged()
+  return data
+}
+
+export interface WeeklyScheduleAssignment {
+  member_id: number
+  expected_version: number
+  days: Array<{ date: string; state: 'work' | 'rest' | null }>
+}
+
+export interface WeeklyScheduleResult {
+  changes: Array<{
+    member_id: number
+    date: string
+    before: WeeklyScheduleState
+    after: WeeklyScheduleState
+  }>
+  skipped: Array<{ member_id: number; date: string }>
+  versions: Record<string, number>
+  preview: boolean
+  message: string
+}
+
+export async function changeWeeklySchedule(
+  weekStart: string,
+  assignments: WeeklyScheduleAssignment[],
+  preview = false,
+  requestId = crypto.randomUUID(),
+): Promise<WeeklyScheduleResult> {
+  const { data } = await api.post(
+    `/personnel/attendance/week-schedule${preview ? '/preview' : ''}`,
+    { week_start: weekStart, request_id: requestId, assignments },
+  )
+  if (!preview) notifyAttendanceChanged()
   return data
 }
 
