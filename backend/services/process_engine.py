@@ -475,6 +475,61 @@ class ProcessEngine:
                           {"form_snapshot": form_data})
         return {"instance_id": instance_id, "task_id": task_id, "status": "running"}
 
+    async def admin_intervene(self, *, instance_id: int, actor_user_id: int,
+                              assignee_user_id: int | None = None,
+                              terminate: bool = False, note: str = "", now=None) -> dict[str, Any]:
+        """Release an admin-held task to one user or terminate the instance."""
+        now = now or datetime.utcnow()
+        await self.cur.execute(
+            "SELECT id,node_key,status,assignees FROM process_tasks "
+            "WHERE instance_id=%s AND status='admin_hold' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+            (instance_id,),
+        )
+        task = await self.cur.fetchone()
+        if not task:
+            raise ProcessValidationError("流程当前没有等待管理员处理的任务")
+        if terminate:
+            await self.cur.execute(
+                "UPDATE process_tasks SET status='terminated',decision='terminate',decision_note=%s,"
+                "decided_by=%s,decided_at=%s,revision_no=revision_no+1 WHERE id=%s",
+                (note, actor_user_id, now, int(task[0])),
+            )
+            await self.cur.execute(
+                "UPDATE process_instances SET status='terminated',cancelled_at=%s,cancel_reason=%s,"
+                "current_node_key='' WHERE id=%s", (now, note, instance_id),
+            )
+            await self._event(instance_id, int(task[0]), "admin_terminated", actor_user_id,
+                              "admin_hold", "terminated", {"note": note})
+            return {"instance_id": instance_id, "task_id": int(task[0]), "status": "terminated"}
+        if not assignee_user_id or int(assignee_user_id) <= 0:
+            raise ProcessValidationError("放行时必须指定新的处理人")
+        await self.cur.execute("SELECT id FROM _users WHERE id=%s", (int(assignee_user_id),))
+        if not await self.cur.fetchone():
+            raise ProcessValidationError("指定的处理人不存在")
+        await self.cur.execute(
+            "SELECT process_version_id FROM process_instances WHERE id=%s FOR UPDATE", (instance_id,)
+        )
+        instance_row = await self.cur.fetchone()
+        if not instance_row:
+            raise ProcessValidationError("流程实例不存在")
+        _, nodes = await self._version(int(instance_row[0]))
+        node = next((item for item in nodes if item["node_key"] == task[1]), None)
+        due = now + timedelta(hours=int((node or {}).get("timeout_hours") or 24))
+        await self.cur.execute(
+            "UPDATE process_tasks SET status='pending',assignees=%s,primary_assignee_user_id=%s,"
+            "due_at=%s,decision='',decision_note='',decided_by=NULL,decided_at=NULL,"
+            "revision_no=revision_no+1 WHERE id=%s",
+            (json.dumps([int(assignee_user_id)]), int(assignee_user_id), due, int(task[0])),
+        )
+        await self.cur.execute(
+            "UPDATE process_instances SET status='running',current_node_key=%s,revision_no=revision_no+1 WHERE id=%s",
+            (task[1], instance_id),
+        )
+        await self._event(instance_id, int(task[0]), "admin_released", actor_user_id,
+                          "admin_hold", "running", {"assignee_user_id": int(assignee_user_id), "note": note})
+        return {"instance_id": instance_id, "task_id": int(task[0]), "status": "running",
+                "assignee_user_id": int(assignee_user_id)}
+
     async def advance_timeouts(self, *, now=None) -> int:
         now = now or datetime.utcnow()
         await self.cur.execute(

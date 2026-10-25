@@ -5480,6 +5480,30 @@ export const processApi = {
   async disableDefinition(id: number) {
     return (await api.post(`/processes/definitions/${id}/disable`)).data
   },
+  async tasks(params: Record<string, unknown> = {}) {
+    return (await api.get('/processes/tasks', { ...activeRequest, params })).data
+  },
+  async instances(params: Record<string, unknown> = {}) {
+    return (await api.get('/processes/instances', { ...activeRequest, params })).data
+  },
+  async instance(id: number) {
+    return (await api.get(`/processes/instances/${id}`, activeRequest)).data
+  },
+  async start(payload: Record<string, unknown>) {
+    return (await api.post('/processes/instances', payload)).data
+  },
+  async decideTask(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/tasks/${id}/decision`, payload)).data
+  },
+  async resubmit(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/instances/${id}/resubmit`, payload)).data
+  },
+  async adminIntervention(id: number, payload: Record<string, unknown>) {
+    return (await api.post(`/processes/instances/${id}/admin-intervention`, payload)).data
+  },
+  async members() {
+    return (await api.get('/grid-members', { ...activeRequest, params: { page: 1, page_size: 200 } })).data
+  },
 }
 
 export interface AddressAnnotationOptions {
