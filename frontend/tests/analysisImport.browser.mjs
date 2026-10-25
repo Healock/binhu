@@ -28,7 +28,7 @@ async function upload(body, code = 200) {
 }
 try {
   await page.goto(`${origin}/tests/analysisImport.fixture.html`)
-  await page.getByRole('button', { name: '导入研判结果', exact: true }).waitFor()
+  await page.getByRole('button', { name: '选择研判结果工作簿', exact: true }).waitFor()
   const panel = page.getByRole('region', { name: '研判导入结果' })
   await upload({ success_count: 0, failed_count: 1, success: [], failed: [{ row: 2, reason: { message: '任务版本已变化，请重新导出', private_body: 'must-not-render' } }] })
   await panel.getByText('第 2 行', { exact: true }).waitFor()
@@ -36,18 +36,17 @@ try {
   assert.equal(await page.getByText('must-not-render').count(), 0)
   for (const [width, height] of [[1024,640], [1280,720], [390,844]]) for (const dark of [false,true]) {
     await page.setViewportSize({width,height}); await page.evaluate(v => window.setFixtureTheme(v), dark)
-    await panel.getByRole('button', { name: '重新导入修正后的文件' }).scrollIntoViewIfNeeded()
-    await panel.getByRole('button', { name: '重新导入修正后的文件' }).click({ trial: true })
+    await page.getByRole('button', { name: '选择研判结果工作簿', exact: true }).scrollIntoViewIfNeeded()
+    await page.getByRole('button', { name: '选择研判结果工作簿', exact: true }).click({ trial: true })
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'page must not overflow horizontally')
     await page.screenshot({ path: `${out}/${width}-${dark}.png`, fullPage: true })
   }
-  await panel.getByRole('button', { name: '关闭结果' }).click(); assert.equal(await panel.count(), 0)
   await upload({ success_count: 0, failed_count: 0, success: [], failed: [] })
   await panel.getByText('没有导入任何研判结果', { exact: true }).waitFor()
   await upload({ detail: { code: 'synthetic' } }, 503)
   await panel.getByText('导入未完成', { exact: true }).waitFor()
   await upload({ success_count: 1, failed_count: 0, success: [{ row: 2, task: 'synthetic', state: 'initial_extension' }], failed: [] })
-  await panel.getByText('已填写的研判结果已导入', { exact: true }).waitFor()
+  await panel.getByText('研判结果已导入', { exact: true }).waitFor()
   assert.deepEqual(errors, [])
   writeFileSync(`${out}/result.json`, JSON.stringify({ passed: true, submissions, errors }, null, 2))
   console.log('PASS import row diagnostics, structured error, blank decisions, transport error, retry, close, responsive themes')

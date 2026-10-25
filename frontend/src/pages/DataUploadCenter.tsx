@@ -4,57 +4,52 @@ import {
   Button,
   Modal,
   Progress,
-  Upload,
+  Tabs,
 } from 'antd'
-import type { UploadFile, UploadProps } from 'antd'
-import { UploadOutlined } from '@ant-design/icons'
 import PoliceDispatchPanel from '../components/PoliceDispatchPanel'
+import PropertyAnnotationImport from '../components/PropertyAnnotationImport'
+import VisitSourcePanel from '../components/VisitSourcePanel'
+import VenueCloudPullControl from '../components/VenueCloudPullControl'
+import CodeSummaryFetchControl from '../components/CodeSummaryFetchControl'
+import ExternalAcquisitionScheduleControls from '../components/ExternalAcquisitionScheduleControls'
+import AnalysisImportPanel from '../components/AnalysisImportPanel'
+import QmfStatusScanControl from '../components/QmfStatusScanControl'
+import RegistryManagement from './RegistryManagement'
+import TxDocsMonitorSettings from './TxDocsMonitorSettings'
 import { PageHeader, Panel } from '../components/ui'
 import { useAuth } from '../context/AuthContext'
+import { useSearchParams } from 'react-router-dom'
 import {
   formatUTCTime,
   getExternalAcquisitionRun,
   getLatestExternalAcquisitionRun,
-  getLatestModelThreeSelfOwnedRoster,
-  importModelThreeSelfOwnedRoster,
   startQmfSourceSync,
   startResidencePlatformScan,
   registryApi,
-  type SelfOwnedRosterResult,
 } from '../api/client'
-
-const MAX_SELF_OWNED_ZIP_BYTES = 100 * 1024 * 1024
-
-function selectedUploadFile(file: File & { uid: string }): UploadFile {
-  return {
-    uid: file.uid,
-    name: file.name,
-    size: file.size,
-    type: file.type,
-    status: 'done',
-    originFileObj: file,
-  }
-}
-
 
 export default function DataUploadCenter() {
   const { user, systemTimezone } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = searchParams.get('tab') === 'external' ? 'external' : 'files'
+  const activePanel = searchParams.get('panel')
   const canManagePoliceDispatch = Boolean(user?.permissions.includes('police.dispatch.manage'))
   const canManageQmfSource = Boolean(user?.permissions.includes('sync.trigger'))
+  const canManageQmfScan = Boolean(user?.permissions.includes('qmf.registration.execute'))
   const canManageCertificates = Boolean(user?.permissions.includes('registry.import.manage'))
+  const canManageProperties = Boolean(user?.permissions.includes('registry.property.manage'))
+  const canManageAnalysis = Boolean(user?.permissions.includes('online.task.manage'))
+  const canManageVisits = Boolean(user?.permissions.includes('visit.source.manage'))
+  const canManageVenue = Boolean(user?.permissions.includes('venue.manage'))
   const canManageResidence = user?.role === 'super_admin'
     || user?.permission_groups?.some(group => group.code === 'super_admin')
     || user?.permission_group?.code === 'super_admin'
-  const canUseUploadCenter = canManagePoliceDispatch || canManageQmfSource || canManageCertificates || canManageResidence
+  const canUseUploadCenter = canManagePoliceDispatch || canManageQmfSource || canManageQmfScan || canManageCertificates
+    || canManageResidence || canManageProperties || canManageAnalysis || canManageVisits || canManageVenue
   const [qmfRun, setQmfRun] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
   const [qmfLoading, setQmfLoading] = useState(false)
   const [certificateRun, setCertificateRun] = useState<Awaited<ReturnType<typeof registryApi.latestCertificateSourceRun>>['data']>(null)
   const [residenceRun, setResidenceRun] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
-  const [selfOwnedFile, setSelfOwnedFile] = useState<File | null>(null)
-  const [selfOwnedFileList, setSelfOwnedFileList] = useState<UploadFile[]>([])
-  const [selfOwnedResult, setSelfOwnedResult] = useState<SelfOwnedRosterResult | null>(null)
-  const [selfOwnedLoading, setSelfOwnedLoading] = useState(false)
-  const [selfOwnedError, setSelfOwnedError] = useState('')
 
   const loadQmfRun = async () => {
     if (!canManageQmfSource) return
@@ -82,10 +77,6 @@ export default function DataUploadCenter() {
     return () => window.clearInterval(timer)
   }, [residenceRun?.id, residenceRun?.status])
   useEffect(() => {
-    if (!canManageQmfSource) return
-    void getLatestModelThreeSelfOwnedRoster().then(setSelfOwnedResult).catch(() => undefined)
-  }, [canManageQmfSource])
-  useEffect(() => {
     if (!canManageQmfSource || !qmfRun || !['queued', 'running'].includes(qmfRun.status)) return
     const timer = window.setInterval(() => {
       void getExternalAcquisitionRun(qmfRun.id).then(setQmfRun).catch(() => undefined)
@@ -109,62 +100,25 @@ export default function DataUploadCenter() {
     try { setCertificateRun(await registryApi.startCertificateSourceRun()) } catch (error: any) { Modal.error({ title: '责任告知书读取启动失败', content: error?.response?.data?.detail || '请稍后重试' }) }
   }
 
+  const handleCertificateRetry = async (restart: boolean) => {
+    if (!certificateRun) return
+    try {
+      setCertificateRun(await registryApi.retryCertificateSourceRun(certificateRun.id, restart))
+    } catch (error: any) {
+      Modal.error({ title: '责任告知书读取恢复失败', content: error?.response?.data?.detail || '请稍后重试' })
+    }
+  }
+
   const handleResidenceRead = async () => {
     try { const response = await startResidencePlatformScan(); setResidenceRun(response.run) } catch (error: any) { Modal.error({ title: '居住证读取启动失败', content: error?.response?.data?.detail || '请稍后重试' }) }
   }
 
-  const beforeSelfOwnedUpload: UploadProps['beforeUpload'] = file => {
-    setSelfOwnedError('')
-    setSelfOwnedResult(null)
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      setSelfOwnedError('自购自住名单只支持 ZIP 文件')
-      return Upload.LIST_IGNORE
-    }
-    if (file.size > MAX_SELF_OWNED_ZIP_BYTES) {
-      setSelfOwnedError('自购自住名单 ZIP 不能超过 100MB')
-      return Upload.LIST_IGNORE
-    }
-    setSelfOwnedFile(file)
-    setSelfOwnedFileList([selectedUploadFile(file)])
-    return false
-  }
-
-  const handleSelfOwnedImport = async () => {
-    if (!selfOwnedFile) return
-    setSelfOwnedLoading(true)
-    setSelfOwnedError('')
-    try {
-      setSelfOwnedResult(await importModelThreeSelfOwnedRoster(selfOwnedFile))
-      setSelfOwnedFile(null)
-      setSelfOwnedFileList([])
-    } catch (error: any) {
-      const status = error?.response?.status
-      const timedOut = error?.code === 'ECONNABORTED'
-        || error?.code === 'ETIMEDOUT'
-        || status === 408
-        || status === 504
-      const uploadError = status === 413
-        ? '自购自住名单 ZIP 超过服务器上传限制，请联系管理员检查网关配置'
-        : timedOut
-          ? '自购自住名单上传或处理超时；已先查询最近一次结果，请勿重复上传相同文件'
-          : error?.response?.data?.detail || '自购自住名单导入失败，请稍后重试'
-      if (timedOut && canManageQmfSource) {
-        void getLatestModelThreeSelfOwnedRoster().then(setSelfOwnedResult).catch(() => undefined)
-      }
-      setSelfOwnedError(
-        uploadError,
-      )
-    } finally {
-      setSelfOwnedLoading(false)
-    }
-  }
-
   return (
     <div className="app-page min-w-0">
-      <PageHeader
+      {activePanel !== 'registry' && <PageHeader
         title="数据上传中心"
-        description="集中处理全链条下发文件和照片批次，并查看处理进度"
-      />
+        description="统一管理业务文件导入与外部只读数据读取"
+      />}
 
       {!canUseUploadCenter && (
         <Alert
@@ -175,8 +129,44 @@ export default function DataUploadCenter() {
         />
       )}
 
-      {(canManageCertificates || canManageResidence || canManageQmfSource) && (
-        <Panel title="外部数据读取调度" description="责任告知书、居住证和全民防读取统一显示任务进度；各来源仍按原有权限和只读边界执行。">
+      {activePanel !== 'registry' && <Tabs
+        activeKey={activeTab}
+        onChange={tab => {
+          const next = new URLSearchParams(searchParams)
+          if (tab === 'files') next.delete('tab')
+          else next.set('tab', tab)
+          setSearchParams(next, { replace: true })
+        }}
+        items={[
+          { key: 'files', label: '上传文件' },
+          { key: 'external', label: '读取外部' },
+        ]}
+      />}
+
+      {activePanel === 'registry' && activeTab === 'files' && canManageCertificates && (
+        <div className="grid gap-3">
+          <Button className="justify-self-start" onClick={() => setSearchParams({ tab: 'files' }, { replace: true })}>返回上传文件</Button>
+          <RegistryManagement importCenterMode />
+        </div>
+      )}
+      {activePanel === 'analysis' && activeTab === 'files' && canManageAnalysis && (
+        <div className="grid gap-3">
+          <Button className="justify-self-start" onClick={() => setSearchParams({ tab: 'files' }, { replace: true })}>返回上传文件</Button>
+          <Panel title="研判结果工作簿"><AnalysisImportPanel /></Panel>
+        </div>
+      )}
+      {activePanel === 'txdocs' && activeTab === 'external' && canManageResidence && (
+        <div className="grid gap-3">
+          <Button className="justify-self-start" onClick={() => setSearchParams({ tab: 'external' }, { replace: true })}>返回读取外部</Button>
+          <TxDocsMonitorSettings />
+        </div>
+      )}
+
+      {activePanel !== 'registry' && activePanel !== 'txdocs' && activeTab === 'external' && (canManageCertificates || canManageResidence || canManageQmfSource || canManageQmfScan || canManageVisits || canManageVenue) && (
+        <div className="grid gap-4">
+        {canManageResidence && <Panel title="自动任务编排" description="仅管理已有安全调度的启停和周期；凭据仍在系统设置中维护。"><ExternalAcquisitionScheduleControls /></Panel>}
+        {canManageResidence && <Panel title="腾讯只读统计监控" description="该通道只产生去正文的变化统计，不导入本地任务，也不向腾讯写回。"><Button onClick={() => setSearchParams({ tab: 'external', panel: 'txdocs' })}>管理监控目标和间隔</Button></Panel>}
+        <Panel title="外部数据读取" description="从统一入口查看来源任务并发起已有的只读读取流程；各来源权限、确认和运行边界不变。">
           <div className="grid gap-3 md:grid-cols-3">
             {canManageCertificates && <div className="rounded-lg border border-[var(--app-border)] p-3">
               <div className="flex items-center justify-between gap-2"><strong>责任告知书</strong><Button size="small" type="primary" onClick={() => void handleCertificateRead()} disabled={Boolean(certificateRun && ['pending', 'running'].includes(certificateRun.status))}>读取</Button></div>
@@ -189,72 +179,33 @@ export default function DataUploadCenter() {
               </div>}
               {certificateRun?.preview?.progress?.status_counts && <div className="mt-1 text-xs">状态：{Object.entries(certificateRun.preview.progress.status_counts).map(([key, value]) => `${key} ${value}`).join(' · ')}</div>}
             </div>}
+            {canManageCertificates && certificateRun?.status === 'failed' && <div className="flex flex-wrap gap-2 rounded-md border border-[var(--app-border)] p-3">
+              {certificateRun.error_code !== 'source_changed' && <Button onClick={() => void handleCertificateRetry(false)}>继续读取</Button>}
+              <Button onClick={() => Modal.confirm({ title: '从第一页重新读取告知书？', content: '已保存分页进度会被清除，不影响上一次成功的预览。', okText: '重新读取', cancelText: '取消', onOk: () => handleCertificateRetry(true) })}>从头重读</Button>
+            </div>}
             {canManageResidence && <div className="rounded-lg border border-[var(--app-border)] p-3"><div className="flex items-center justify-between gap-2"><strong>居住证平台</strong><Button size="small" type="primary" onClick={() => void handleResidenceRead()} disabled={Boolean(residenceRun && ['queued', 'running'].includes(residenceRun.status))}>读取</Button></div><div className="mt-2 text-xs text-[var(--app-text-secondary)]">{residenceRun?.message || '尚未读取'}</div>{residenceRun?.progress !== null && residenceRun && <Progress percent={residenceRun.progress || 0} size="small" />}</div>}
             {canManageQmfSource && <div className="rounded-lg border border-[var(--app-border)] p-3"><div className="flex items-center justify-between gap-2"><strong>全民防平台</strong><Button size="small" type="primary" loading={qmfLoading} onClick={() => void handleQmfSync()} disabled={Boolean(qmfRun && ['queued', 'running'].includes(qmfRun.status))}>读取</Button></div><div className="mt-2 text-xs text-[var(--app-text-secondary)]">{qmfRun?.message || '尚未读取'}</div>{qmfRun?.progress !== null && qmfRun && <Progress percent={qmfRun.progress || 0} size="small" status={qmfRun.status === 'failed' ? 'exception' : qmfRun.status === 'success' || qmfRun.status === 'warning' ? 'success' : 'active'} />}{qmfRun?.created_at && <div className="mt-2 text-xs text-[var(--app-text-secondary)]">最近任务：{qmfRun.status === 'success' ? '已完成' : qmfRun.status === 'warning' ? '完成但有提醒' : qmfRun.status === 'failed' ? '失败' : qmfRun.status === 'running' ? '处理中' : '排队中'} · {formatUTCTime(qmfRun.created_at, systemTimezone)}</div>}{qmfRun?.error_message && <Alert className="mt-2" type="error" showIcon message={qmfRun.error_message} />}{qmfRun?.result && <div className="mt-2 flex flex-wrap gap-3 text-xs text-[var(--app-text-secondary)]"><span>读取 {qmfRun.result.record_count ?? 0} 条</span><span>有效 {qmfRun.result.valid_count ?? 0} 条</span><span>社区未匹配 {qmfRun.result.unresolved_count ?? 0} 条</span><span>来源问题 {qmfRun.result.issue_count ?? 0} 条</span></div>}</div>}
           </div>
         </Panel>
+        {canManageVisits && <>
+          <Panel title="平安码与管家码" description="按业务日期读取外部来源并更新本地快照；读取失败会保留最近成功快照。"><CodeSummaryFetchControl /></Panel>
+          <VisitSourcePanel />
+        </>}
+        {canManageQmfScan && <Panel title="全民防反馈状态核对" description="对已完成模型三任务执行受控只读核对；扫描结果继续显示在模型三任务列表。"><QmfStatusScanControl /></Panel>}
+        {canManageVenue && <Panel title="场所云端饮酒报备" description="读取云端待处理队列并写入本地业务库；云端仅作数据来源。"><VenueCloudPullControl /></Panel>}
+        </div>
       )}
 
-      {canManageQmfSource && (
-        <Panel
-          title="辖区资产：自购自住人员"
-          description="用于维护辖区内自购自住房屋居住人员基础资料。姓名、身份证号和个人联系电话会进入受权限保护的人员档案，并自动挂上“自购自住”标签；当前及后续匹配的模型三空白或无法核实结果会填为“近期返吴”，不会调用全民防写入接口。"
-        >
-          <Upload
-            accept=".zip"
-            maxCount={1}
-            fileList={selfOwnedFileList}
-            beforeUpload={beforeSelfOwnedUpload}
-            onRemove={() => {
-              setSelfOwnedFile(null)
-              setSelfOwnedFileList([])
-              setSelfOwnedError('')
-            }}
-            disabled={selfOwnedLoading}
-          >
-            <Button icon={<UploadOutlined />} disabled={selfOwnedLoading}>选择自购自住名单 ZIP</Button>
-          </Upload>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              type="primary"
-              loading={selfOwnedLoading}
-              disabled={!selfOwnedFile || selfOwnedLoading}
-              onClick={() => void handleSelfOwnedImport()}
-            >导入并更新平台核查结果</Button>
-            <span className="text-xs text-[var(--app-text-secondary)]">按居民证号去重，原始 ZIP 不落库；匹配使用身份 HMAC</span>
-          </div>
-          {selfOwnedError && <Alert className="mt-3" type="error" showIcon message={selfOwnedError} />}
-          {selfOwnedResult && (
-            <div className="mt-3 rounded-lg border border-[var(--app-border)] p-3 text-sm">
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {selfOwnedResult.upgraded && <span className="font-medium text-blue-600">旧批次已按新规则补齐</span>}
-                <span>文件 {selfOwnedResult.workbook_count} 个</span>
-                <span>记录 {selfOwnedResult.total_rows} 条</span>
-                <span>有效 {selfOwnedResult.valid_rows} 条</span>
-                <span>无效 {selfOwnedResult.invalid_rows} 条</span>
-                <span>重复 {selfOwnedResult.duplicate_rows} 条</span>
-                {selfOwnedResult.registry_people_created !== undefined && (
-                  <span>新增人员档案 {selfOwnedResult.registry_people_created} 条</span>
-                )}
-                {selfOwnedResult.registry_people_reused !== undefined && (
-                  <span>复用人员档案 {selfOwnedResult.registry_people_reused} 条</span>
-                )}
-                {selfOwnedResult.registry_phones_created !== undefined && (
-                  <span>补充联系电话 {selfOwnedResult.registry_phones_created} 条</span>
-                )}
-                {selfOwnedResult.tag_assignments_created !== undefined && (
-                  <span>新增自购自住标签 {selfOwnedResult.tag_assignments_created} 条</span>
-                )}
-                <span>命中模型三 {selfOwnedResult.matched_tasks} 条</span>
-                <span className="font-medium text-green-600">已填近期返吴 {selfOwnedResult.updated_tasks} 条</span>
-                <span>保留原结果 {selfOwnedResult.skipped_tasks} 条</span>
-              </div>
-            </div>
-          )}
-        </Panel>
-      )}
-
-      <PoliceDispatchPanel enabled={canManagePoliceDispatch} />
+      {!(activePanel === 'registry' && canManageCertificates) && !(activePanel === 'analysis' && canManageAnalysis) && activeTab === 'files' && <div className="grid gap-4">
+        <PoliceDispatchPanel enabled={canManagePoliceDispatch} />
+        {canManageAnalysis && <Panel title="结构化研判结果" description="导入平台导出的待研判工作簿，服务端会逐行核对任务状态与版本。">
+          <Button onClick={() => setSearchParams({ tab: 'files', panel: 'analysis' })}>导入研判结果</Button>
+        </Panel>}
+        {canManageCertificates && <Panel title="房屋档案导入" description="户号表预览、告知书关联确认和问题核查使用档案导入权限。">
+          <Button type="primary" onClick={() => setSearchParams({ tab: 'files', panel: 'registry' })}>打开房屋档案导入</Button>
+        </Panel>}
+        {canManageProperties && <Panel title="小区标注工作簿" description="导入标注建议后逐项确认；地址和社区原值不会被工作簿修改。"><PropertyAnnotationImport onChanged={async () => undefined} /></Panel>}
+      </div>}
     </div>
   )
 }

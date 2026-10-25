@@ -96,7 +96,11 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         label: '数据上传中心',
         shortLabel: '数据上传',
         icon: 'data_upload',
-        anyPermissions: ['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage'],
+        anyPermissions: [
+          'police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage',
+          'registry.import.manage', 'registry.property.manage',
+          'online.task.manage', 'sync.trigger', 'qmf.registration.execute', 'visit.source.manage', 'venue.manage',
+        ],
         roles: ['super_admin', 'admin'],
         moduleId: 'community_police',
       },

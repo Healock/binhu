@@ -2,13 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, DatePicker, Empty, Input, Select, Spin, Table, Tabs, Tag, message } from 'antd'
 import AppTable from '../components/AppTable'
 import dayjs, { type Dayjs } from 'dayjs'
-import { ReloadOutlined } from '@ant-design/icons'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { PageHeader, Panel } from '../components/ui'
 import ExternalDataPanel from '../components/ExternalDataPanel'
 import { useAuth } from '../context/AuthContext'
 import {
-  fetchCodeSummaries,
   formatDateInTimezone,
   formatUTCTime,
   getCodeSummary,
@@ -117,6 +115,7 @@ function exportTable(report: CodeSummaryReport, source: CodeSummarySource) {
 
 export default function CodeSummary() {
   const { user, systemTimezone } = useAuth()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const today = formatDateInTimezone(new Date(), systemTimezone)
   const initialStart = searchParams.get('start') || today
@@ -125,7 +124,6 @@ export default function CodeSummary() {
   const [source, setSource] = useState<CodeSummarySource>(searchParams.get('source') === 'manager' ? 'manager' : 'peace')
   const [report, setReport] = useState<CodeSummaryReport | null>(null)
   const [loading, setLoading] = useState(false)
-  const [fetching, setFetching] = useState(false)
   const [fetchJob, setFetchJob] = useState<import('../api/client').ExternalAcquisitionRun | null>(null)
   const [error, setError] = useState('')
   const [locationReport, setLocationReport] = useState<CodeSummaryLocationReport | null>(null)
@@ -216,39 +214,6 @@ export default function CodeSummary() {
     setSearchParams(next, { replace: true })
   }, [endDate, setSearchParams, source, startDate])
 
-  const handleFetch = async () => {
-    if (rangeDays(startDate, endDate) > MAX_CODE_SUMMARY_DAYS) {
-      setError(`单次最多获取 ${MAX_CODE_SUMMARY_DAYS} 天，请拆分日期范围后再获取`)
-      return
-    }
-    setFetching(true)
-    setError('')
-    try {
-      const result = await fetchCodeSummaries(startDate, endDate)
-      setFetchJob(result.run)
-      const poll = async (): Promise<void> => {
-        const current = await getExternalAcquisitionRun(result.run.id)
-        setFetchJob(current)
-        if (current.status === 'queued' || current.status === 'running') {
-          window.setTimeout(() => void poll(), 1500)
-          return
-        }
-        const items = current.result?.results || []
-        const failed = items.filter((item: any) => item.status === 'failed')
-        const warning = items.filter((item: any) => item.status === 'warning')
-        if (failed.length) message.warning('部分来源获取失败，旧快照已保留')
-        else if (warning.length) message.info('数据已更新，但存在质量提醒')
-        else if (current.status === 'success') message.success('平安码、管家码数据已更新')
-        await load()
-        setFetching(false)
-      }
-      void poll()
-    } catch (reason: any) {
-      setFetching(false)
-      setError(apiErrorMessage(reason, '码数据获取失败，旧快照未改变'))
-    }
-  }
-
   const handleExport = async () => {
     if (rangeDays(startDate, endDate) > MAX_CODE_SUMMARY_DAYS) {
       message.warning(`单次最多导出 ${MAX_CODE_SUMMARY_DAYS} 天，请拆分日期范围后再导出`)
@@ -307,7 +272,7 @@ export default function CodeSummary() {
       <ExternalDataPanel
         title="平安码与管家码数据获取"
         description="来源数据只在服务器端读取；获取失败不会覆盖已保存的每日快照。"
-        actions={canFetch ? <><Button type="primary" icon={<ReloadOutlined />} loading={fetching} onClick={() => void handleFetch()}>自动获取平安码管家码数据</Button><Button onClick={() => void handleExport()}>导出 XLSX</Button></> : <Button onClick={() => void handleExport()}>导出 XLSX</Button>}
+        actions={canFetch ? <><Button onClick={() => navigate('/data-upload?tab=external')}>前往数据上传中心读取</Button><Button onClick={() => void handleExport()}>导出 XLSX</Button></> : <Button onClick={() => void handleExport()}>导出 XLSX</Button>}
         controls={<label><span>业务日期范围</span><RangePicker
           value={range}
           allowClear={false}

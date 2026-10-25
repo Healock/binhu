@@ -41,7 +41,7 @@ try {
     })
     return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
   })
-  await page.goto(`${origin}/visit-summary?start=2026-10-10&end=2026-10-10`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await page.goto(`${origin}/data-upload?tab=external`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
   await page.waitForTimeout(1500)
   mkdirSync('artifacts/source-range-picker', { recursive: true })
   const refreshSession = async () => {
@@ -77,7 +77,9 @@ try {
     await page.keyboard.press('Escape')
   }
   await exercise(page.locator('.external-data-panel__controls .ant-picker'), 'source')
-  await exercise(page.locator('.ant-picker').nth(1), 'summary')
+  await page.goto(`${origin}/visit-summary?start=2026-10-10&end=2026-10-10`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await page.waitForTimeout(1500)
+  await exercise(page.locator('.ant-picker').first(), 'summary')
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ width, height, dark, sessionReads, result: 'passed' }))
   await page.close()

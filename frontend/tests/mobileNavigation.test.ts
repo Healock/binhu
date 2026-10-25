@@ -234,6 +234,17 @@ test('数据上传中心只出现在管理员和超级管理员导航中', () =>
   )
 })
 
+test('只有系统设置或人员标签权限不能单独进入数据上传中心', () => {
+  for (const permission of ['system.manage', 'registry.watch.manage']) {
+    const config = defaultMobileDockConfig('member', [permission])
+    assert.equal(
+      config.groups.some(group => group.items.includes('data_upload')),
+      false,
+      permission,
+    )
+  }
+})
+
 test('工作日志只出现在管理员和超级管理员导航中', () => {
   const member = defaultMobileDockConfig('member')
   const admin = defaultMobileDockConfig('admin')
@@ -485,14 +496,16 @@ test('帮助中心对所有登录用户开放并显示独立侧边栏图标', ()
 
 test('平安码管家码汇总页面和导航接入', () => {
   const page = readFileSync(new URL('../src/pages/CodeSummary.tsx', import.meta.url), 'utf8')
+  const upload = readFileSync(new URL('../src/components/CodeSummaryFetchControl.tsx', import.meta.url), 'utf8')
   const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
   const navigation = readFileSync(new URL('../src/navigation/mobileNavigation.ts', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
 
-  assert.match(page, /自动获取平安码管家码数据/)
+  assert.match(page, /前往数据上传中心读取/)
+  assert.match(upload, /读取平安码与管家码/)
   assert.match(page, /平安码/)
   assert.match(page, /管家码/)
-  assert.match(page, /RangePicker/)
+  assert.match(upload, /RangePicker/)
   assert.match(app, /path="\/code-summary"/)
   assert.match(navigation, /id: 'code_summary'/)
   assert.match(client, /api\.post\('\/code-summaries\/fetch'/)

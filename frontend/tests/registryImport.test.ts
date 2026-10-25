@@ -207,7 +207,8 @@ test('问题数据核查说明外部修正原因并显示字段和错误值', ()
   assert.match(pageSource, /registry-issue-evidence__value/)
   assert.doesNotMatch(pageSource, /标记已核查/)
   assert.doesNotMatch(pageSource, /reviewImportIssue/)
-  assert.match(pageSource, /key: 'imports', label: '数据导入'/)
+  assert.doesNotMatch(pageSource, /key: 'imports', label: '数据导入'/)
+  assert.match(pageSource, /前往数据上传中心/)
 })
 
 test('房屋档案突出显示责任书状态和责任关系', () => {

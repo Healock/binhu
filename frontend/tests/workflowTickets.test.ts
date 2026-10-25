@@ -31,19 +31,36 @@ test('数据上传中心不再提供照片批次上传', () => {
   assert.doesNotMatch(pageSource, /照片 ZIP|photo-imports/)
 })
 
-test('自购自住名单上传遵守后端大小限制并明确提示网关拒绝', () => {
+test('数据上传中心移除自购自住名单入口并拆分文件与外部读取', () => {
   const pageSource = readFileSync(
     new URL('../src/pages/DataUploadCenter.tsx', import.meta.url),
     'utf8',
   )
 
-  assert.match(pageSource, /MAX_SELF_OWNED_ZIP_BYTES = 100 \* 1024 \* 1024/)
-  assert.match(pageSource, /file\.size > MAX_SELF_OWNED_ZIP_BYTES/)
-  assert.match(pageSource, /自购自住名单 ZIP 不能超过 100MB/)
-  assert.match(pageSource, /const status = error\?\.response\?\.status/)
-  assert.match(pageSource, /自购自住名单 ZIP 超过服务器上传限制/)
-  assert.match(pageSource, /error\?\.code === 'ECONNABORTED'/)
-  assert.match(pageSource, /自购自住名单上传或处理超时/)
+  assert.doesNotMatch(pageSource, /自购自住人员|自购自住名单|importModelThreeSelfOwnedRoster/)
+  assert.match(pageSource, /label: '上传文件'/)
+  assert.match(pageSource, /label: '读取外部'/)
+  assert.match(pageSource, /ExternalAcquisitionScheduleControls/)
+  assert.match(pageSource, /canManageResidence && <Panel title="自动任务编排"/)
+  assert.doesNotMatch(pageSource, /canManageSchedules/)
+})
+
+test('外部来源读取入口集中到数据上传中心', () => {
+  const registry = readFileSync(new URL('../src/pages/RegistryManagement.tsx', import.meta.url), 'utf8')
+  const visit = readFileSync(new URL('../src/pages/VisitSummary.tsx', import.meta.url), 'utf8')
+  const code = readFileSync(new URL('../src/pages/CodeSummary.tsx', import.meta.url), 'utf8')
+  const venue = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  const settings = readFileSync(new URL('../src/pages/SystemSettings.tsx', import.meta.url), 'utf8')
+  const dashboard = readFileSync(new URL('../src/pages/Dashboard.tsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(registry, /label: '数据导入'/)
+  assert.match(registry, /前往数据上传中心/)
+  assert.doesNotMatch(visit, /VisitSourcePanel/)
+  assert.doesNotMatch(code, /fetchCodeSummaries\(/)
+  assert.match(code, /前往数据上传中心读取/)
+  assert.doesNotMatch(venue, /pullVenueCloudNow\(/)
+  assert.doesNotMatch(settings, /每日反馈扫描|自动查询开关|重新查询全部任务/)
+  assert.doesNotMatch(dashboard, /配置外部监控|panel=txdocs/)
 })
 
 test('历史照片批次修复入口已退役', () => {

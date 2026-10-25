@@ -133,10 +133,12 @@ test('二维码管理提供饮酒报备创建、查询、双签详情和单份 P
 
 test('登记记录支持多选场所筛选，饮酒报备提供云端拉取刷新', () => {
   const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
+  const pullControl = readFileSync(new URL('../src/components/VenueCloudPullControl.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
   assert.match(page, /name="venue_ids" label="场所"/)
   assert.match(page, /values\.venue_ids\?\.length \? values\.venue_ids\.join\(','\)/)
-  assert.match(page, /pullVenueCloudNow\(\)/)
-  assert.match(page, /已拉取 .*饮酒报备并入库|当前没有可处理的云端登记/)
+  assert.doesNotMatch(page, /pullVenueCloudNow\(/)
+  assert.match(pullControl, /pullVenueCloudNow\(\)/)
+  assert.match(pullControl, /已拉取 .*饮酒报备并入库|当前没有可处理的云端登记/)
   assert.match(client, /api\.post\('\/venue-cloud\/pull'/)
 })
