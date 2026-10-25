@@ -82,6 +82,10 @@ HOUSEHOLD_IMPORT_MAX_ROWS = 100000
 HOUSEHOLD_RETRYABLE_ISSUE_REASONS = frozenset({
     "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖",
 })
+HOUSEHOLD_RETRYABLE_ISSUE_TYPES = frozenset({
+    "household_community_unresolved",
+})
+HOUSEHOLD_FULL_SNAPSHOT_SUPERSEDE_NOTE = "已由更新的全量户号表确认替代"
 
 
 class OrganizationSearch(BaseModel):
@@ -2312,7 +2316,6 @@ async def _preview_household_rows(request, rows, classified, file_hash, file_nam
     return result
 
 
-@router.post("/imports/households/{batch_id}/confirm")
 async def confirm_household_import(
     batch_id: int,
     request: Request,
@@ -2322,6 +2325,7 @@ async def confirm_household_import(
     await conn.begin()
     imported = 0
     inserted = updated = 0
+    superseded_issue_count = 0
     try:
         async with conn.cursor() as cur:
             await cur.execute("SELECT status, imported_count FROM registry_source_batches WHERE id=%s AND source_type='household' FOR UPDATE", (batch_id,))
@@ -2332,6 +2336,20 @@ async def confirm_household_import(
                 await conn.rollback()
                 return {"batch_id": batch_id, "status": "imported", "imported_count": 0, "idempotent": True}
             previous_imported = int(batch[1])
+            # Household workbooks are complete snapshots.  Once this batch is
+            # being confirmed, older pending household issues no longer
+            # describe the current source and must leave the active queue.
+            # Keep the rows as superseded evidence instead of deleting audit
+            # history.  Restrict the update to older batches so a delayed
+            # confirmation can never hide a newer snapshot's issues.
+            await cur.execute(
+                "UPDATE registry_import_issues SET status='superseded',review_note=%s,"
+                "reviewed_by=NULL,reviewed_at=UTC_TIMESTAMP() "
+                "WHERE source_type='household' AND status='pending' "
+                "AND (batch_id IS NULL OR batch_id<%s)",
+                (HOUSEHOLD_FULL_SNAPSHOT_SUPERSEDE_NOTE, batch_id),
+            )
+            superseded_issue_count = int(cur.rowcount or 0)
             # Active identity mappings are read-only in this PR.  Importing a
             # later household snapshot must still target the current archive,
             # otherwise a historical household number can recreate a second
@@ -2346,20 +2364,27 @@ async def confirm_household_import(
             )
             records = await cur.fetchall()
             await cur.execute(
-                "SELECT source_ref, reason FROM registry_import_issues "
+                "SELECT source_ref, issue_type, reason FROM registry_import_issues "
                 "WHERE batch_id=%s AND status='pending'",
                 (batch_id,),
             )
             pending_issues = await cur.fetchall()
             retryable_issue_refs = {
                 str(source_ref)
-                for source_ref, reason in pending_issues
+                for source_ref, issue_type, reason in pending_issues
                 if str(reason or "") in HOUSEHOLD_RETRYABLE_ISSUE_REASONS
+                or str(issue_type or "") in HOUSEHOLD_RETRYABLE_ISSUE_TYPES
             }
             blocked_refs = {
                 str(source_ref)
-                for source_ref, reason in pending_issues
+                for source_ref, issue_type, reason in pending_issues
                 if str(reason or "") not in HOUSEHOLD_RETRYABLE_ISSUE_REASONS
+                and str(issue_type or "") not in HOUSEHOLD_RETRYABLE_ISSUE_TYPES
+            }
+            retryable_issue_types = {
+                str(source_ref): str(issue_type or "")
+                for source_ref, issue_type, _reason in pending_issues
+                if str(source_ref) in retryable_issue_refs
             }
             import_rows: list[tuple[int, str, dict]] = []
             superseded_source_refs: dict[str, list[int]] = {}
@@ -2396,19 +2421,44 @@ async def confirm_household_import(
                         community_cache[community_name] = None
                 resolved_community = community_cache[community_name]
                 if resolved_community is None:
-                    unresolved_community_issues.append((
-                        batch_id,
-                        ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED,
-                        "household",
-                        source_ref,
+                    issue_values = (
                         normalize_address(payload.get("address")) or source_ref,
                         json.dumps(_issue_payload(payload), ensure_ascii=False),
                         "所属社区无法唯一对应到启用的正式社区或别名，需人工核对",
-                    ))
+                        batch_id,
+                        ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED,
+                        source_ref,
+                    )
+                    if retryable_issue_types.get(str(source_ref)) == ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED:
+                        await cur.execute(
+                            "UPDATE registry_import_issues SET entity_key=%s, payload_json=%s, reason=%s, "
+                            "review_note='', reviewed_by=NULL, reviewed_at=NULL "
+                            "WHERE batch_id=%s AND issue_type=%s AND source_type='household' "
+                            "AND source_ref=%s AND status='pending'",
+                            issue_values,
+                        )
+                    else:
+                        unresolved_community_issues.append((
+                            batch_id,
+                            ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED,
+                            "household",
+                            source_ref,
+                            normalize_address(payload.get("address")) or source_ref,
+                            json.dumps(_issue_payload(payload), ensure_ascii=False),
+                            "所属社区无法唯一对应到启用的正式社区或别名，需人工核对",
+                        ))
                     continue
                 community_id, canonical_name = resolved_community
                 address = normalize_text(payload.get("address"))
                 resolved_rows.append((record_id, source_ref, payload, community_id, canonical_name, normalize_address(address)))
+                if retryable_issue_types.get(str(source_ref)) == ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED:
+                    await cur.execute(
+                        "UPDATE registry_import_issues SET status='resolved', "
+                        "review_note='社区别名已解析，已重新进入确认流程', reviewed_by=NULL, reviewed_at=UTC_TIMESTAMP() "
+                        "WHERE batch_id=%s AND issue_type=%s AND source_type='household' "
+                        "AND source_ref=%s AND status='pending'",
+                        (batch_id, ISSUE_HOUSEHOLD_COMMUNITY_UNRESOLVED, source_ref),
+                    )
             await _bulk_insert_import_issues(cur, unresolved_community_issues)
 
             # A reused household number may describe a different property over
@@ -2821,16 +2871,99 @@ async def confirm_household_import(
         "total_imported_count": previous_imported + imported,
         "idempotent": False,
         "pending_issue_count": pending_issue_count,
+        "superseded_issue_count": superseded_issue_count,
     }
     await record_admin_audit(
         user,
         "registry.household_import.confirm",
         target_type="registry_source_batch",
         target_name=str(batch_id),
-        detail={"imported_count": imported, "pending_issue_count": pending_issue_count},
-        **request_audit_fields(request),
+        detail={
+            "imported_count": imported,
+            "pending_issue_count": pending_issue_count,
+            "superseded_issue_count": superseded_issue_count,
+        },
+        **(request_audit_fields(request) if request is not None else {}),
     )
     return result
+
+
+@router.post("/imports/households/{batch_id}/confirm")
+async def start_household_import(
+    batch_id: int,
+    request: Request,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+    conn=Depends(get_registry_db),
+):
+    """Queue confirmation so large household workbooks do not block HTTP."""
+    from services.household_import_jobs import (
+        get_household_import_job,
+        launch_household_import_job,
+        public_household_import_job,
+    )
+
+    await conn.begin()
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id,status,confirm_status,confirm_phase,confirm_processed_count,confirm_total_count,"
+                "confirm_error_code,confirm_error_message,confirm_result_json,confirm_started_at,"
+                "confirm_finished_at,confirm_updated_at FROM registry_source_batches "
+                "WHERE id=%s AND source_type='household' FOR UPDATE",
+                (batch_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(404, "户号表导入批次不存在")
+            if str(row[1]) == "imported":
+                await conn.rollback()
+                return {
+                    "batch_id": batch_id,
+                    "status": "imported",
+                    "confirm_status": "completed",
+                    "result": {"batch_id": batch_id, "status": "imported", "imported_count": 0, "idempotent": True},
+                }
+            if str(row[2]) in {"queued", "running"}:
+                await conn.rollback()
+                return public_household_import_job(row)
+            await cur.execute(
+                "SELECT candidate_count FROM registry_source_batches "
+                "WHERE id=%s AND source_type='household'",
+                (batch_id,),
+            )
+            candidate_row = await cur.fetchone()
+            candidate_count = int(candidate_row[0] or 0) if candidate_row else 0
+            await cur.execute(
+                "UPDATE registry_source_batches SET confirm_status='queued',confirm_phase='queued',"
+                "confirm_requested_by=%s,confirm_processed_count=0,confirm_total_count=%s,"
+                "confirm_error_code='',confirm_error_message='',confirm_result_json=NULL,"
+                "confirm_started_at=NULL,confirm_finished_at=NULL,confirm_updated_at=UTC_TIMESTAMP() "
+                "WHERE id=%s",
+                (user["id"], candidate_count, batch_id),
+            )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    launch_household_import_job(batch_id, int(user["id"]))
+    job = await get_household_import_job(batch_id)
+    if not job:
+        raise HTTPException(503, "户号表确认任务创建失败")
+    return job
+
+
+@router.get("/imports/households/{batch_id}/confirm")
+async def household_import_status(
+    batch_id: int,
+    user: dict = Depends(require_permission(REGISTRY_IMPORT_MANAGE)),
+):
+    del user
+    from services.household_import_jobs import get_household_import_job
+
+    job = await get_household_import_job(batch_id)
+    if not job:
+        raise HTTPException(404, "户号表确认任务不存在")
+    return job
 
 
 @router.post("/imports/certificates/preview")

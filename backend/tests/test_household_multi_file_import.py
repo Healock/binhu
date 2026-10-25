@@ -303,7 +303,7 @@ class IdentityConnection(Connection):
         if self.sql.startswith("SELECT id, source_ref, payload_json"):
             return [(index, f"source-{index}", json.dumps(payload)) for index, payload, entity_id in self.sources
                     if entity_id is None or "entity_id IS NULL" not in self.sql]
-        if self.sql.startswith("SELECT source_ref, reason FROM registry_import_issues"):
+        if self.sql.startswith("SELECT source_ref, issue_type, reason FROM registry_import_issues"):
             return list(self.pending_issues)
         if self.sql.startswith("SELECT id, community_id, street"):
             return self.properties
@@ -330,6 +330,24 @@ async def test_reregistered_house_reuses_property_id(confirmation_dependencies):
     assert result["updated_count"] == 1 and result["inserted_count"] == 0
     update = next(values for sql, values in conn.calls if sql.startswith("UPDATE registry_properties SET"))
     assert update[-1] == 42 and update[5] == "NEW"
+
+
+@pytest.mark.asyncio
+async def test_full_household_confirmation_supersedes_older_pending_issues(confirmation_dependencies):
+    conn = IdentityConnection(
+        sources=[(1, row("a", updated_at="2026-01-01"), None)],
+        properties=[existing_property(updated_at="2020-01-01")],
+    )
+    result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
+    cleanup = next(
+        (sql, values)
+        for sql, values in conn.calls
+        if sql.startswith("UPDATE registry_import_issues SET status='superseded'")
+    )
+    assert "source_type='household'" in cleanup[0]
+    assert "batch_id<%s" in cleanup[0]
+    assert cleanup[1][0] == extended.HOUSEHOLD_FULL_SNAPSHOT_SUPERSEDE_NOTE
+    assert result["superseded_issue_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -577,7 +595,7 @@ async def test_identical_older_or_undated_source_relinks_and_resolves_retryable_
     conn = IdentityConnection(
         sources=[(1, row("a", updated_at=incoming_time), None)],
         properties=[existing_property(updated_at="2026-02-01 09:00:00")],
-        pending_issues=[("source-1", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
+        pending_issues=[("source-1", "household_duplicate", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
     )
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
     assert result["imported_count"] == 1 and result["updated_count"] == 0
@@ -591,7 +609,7 @@ async def test_retryable_pending_issue_with_changed_older_snapshot_stays_pending
     conn = IdentityConnection(
         sources=[(1, row("a", updated_at="2026-01-01T09:00:00", household_status="未注销"), None)],
         properties=[existing_property(updated_at="2026-02-01 09:00:00")],
-        pending_issues=[("source-1", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
+        pending_issues=[("source-1", "household_duplicate", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
     )
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
     assert result["imported_count"] == 0 and result["updated_count"] == 0
@@ -604,7 +622,7 @@ async def test_missing_current_timestamp_with_changed_snapshot_stays_pending(con
     conn = IdentityConnection(
         sources=[(1, row("a", household_status="未注销"), None)],
         properties=[existing_property(updated_at=None)],
-        pending_issues=[("source-1", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
+        pending_issues=[("source-1", "household_duplicate", "现有档案的来源更新时间更晚或本次缺少更新时间，不能用旧快照覆盖")],
     )
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
     assert result["imported_count"] == 0 and result["updated_count"] == 0
@@ -617,12 +635,20 @@ async def test_non_retryable_duplicate_issue_remains_blocked(confirmation_depend
     conn = IdentityConnection(
         sources=[(1, row("a"), None)],
         properties=[existing_property()],
-        pending_issues=[("source-1", "同社区同地址有不同户号，无法证明注销后重新登记的沿革，需核对来源状态及更新时间")],
+        pending_issues=[("source-1", "household_duplicate", "同社区同地址有不同户号，无法证明注销后重新登记的沿革，需核对来源状态及更新时间")],
     )
     result = await extended.confirm_household_import(10, None, {"id": 7}, conn)
     assert result["imported_count"] == 0 and result["updated_count"] == 0
     assert not any(sql.startswith("UPDATE registry_properties SET") for sql, _ in conn.calls)
-    assert not any(sql.startswith("UPDATE registry_import_issues SET") for sql, _ in conn.calls)
+    assert any(
+        sql.startswith("UPDATE registry_import_issues SET status='superseded'")
+        and "batch_id<%s" in sql
+        for sql, _ in conn.calls
+    )
+    assert not any(
+        sql.startswith("UPDATE registry_import_issues SET entity_key=")
+        for sql, _ in conn.calls
+    )
 
 
 @pytest.mark.asyncio

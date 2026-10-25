@@ -440,6 +440,17 @@ async def ensure_registry_schema(cur) -> None:
         cur, "registry_source_batches", "certificate_full_snapshot",
         "TINYINT(1) NOT NULL DEFAULT 0",
     )
+    await _ensure_column(cur, "registry_source_batches", "confirm_status", "VARCHAR(20) NOT NULL DEFAULT ''")
+    await _ensure_column(cur, "registry_source_batches", "confirm_phase", "VARCHAR(30) NOT NULL DEFAULT ''")
+    await _ensure_column(cur, "registry_source_batches", "confirm_requested_by", "BIGINT DEFAULT NULL")
+    await _ensure_column(cur, "registry_source_batches", "confirm_processed_count", "INT UNSIGNED NOT NULL DEFAULT 0")
+    await _ensure_column(cur, "registry_source_batches", "confirm_total_count", "INT UNSIGNED NOT NULL DEFAULT 0")
+    await _ensure_column(cur, "registry_source_batches", "confirm_error_code", "VARCHAR(60) NOT NULL DEFAULT ''")
+    await _ensure_column(cur, "registry_source_batches", "confirm_error_message", "VARCHAR(255) NOT NULL DEFAULT ''")
+    await _ensure_column(cur, "registry_source_batches", "confirm_result_json", "JSON DEFAULT NULL")
+    await _ensure_column(cur, "registry_source_batches", "confirm_started_at", "DATETIME DEFAULT NULL")
+    await _ensure_column(cur, "registry_source_batches", "confirm_finished_at", "DATETIME DEFAULT NULL")
+    await _ensure_column(cur, "registry_source_batches", "confirm_updated_at", "DATETIME DEFAULT NULL")
     await cur.execute("""
         CREATE TABLE IF NOT EXISTS registry_source_records (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,

@@ -358,6 +358,37 @@ async def _registry_certificate_jobs() -> list[dict[str, Any]]:
     ]
 
 
+async def _registry_household_jobs() -> list[dict[str, Any]]:
+    rows = await _rows("registry", f"""
+        SELECT id,confirm_status,confirm_phase,confirm_processed_count,confirm_total_count,
+               created_at,confirm_started_at,confirm_finished_at,confirm_updated_at
+        FROM registry_source_batches
+        WHERE source_type='household' AND confirm_status<>''
+          AND (confirm_status IN ('queued','running')
+               OR confirm_updated_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {RECENT_WINDOW_MINUTES} MINUTE))
+        ORDER BY (confirm_status IN ('queued','running')) DESC,
+                 COALESCE(confirm_updated_at,created_at) DESC
+        LIMIT {MAX_ITEMS_PER_SOURCE}
+    """)
+    return [
+        _item(
+            source="registry_household",
+            source_id=row[0],
+            category="数据导入",
+            title="户号表确认导入",
+            status=row[1],
+            phase=row[2],
+            current=row[3],
+            total=row[4] or None,
+            created_at=row[5],
+            started_at=row[6],
+            finished_at=row[7],
+            updated_at=row[8],
+        )
+        for row in rows
+    ]
+
+
 async def _qmf_jobs() -> list[dict[str, Any]]:
     scan_rows = await _rows("online_data", f"""
         SELECT id,status,total_count,processed_count,created_at,
@@ -452,6 +483,7 @@ async def build_admin_task_queue() -> dict[str, Any]:
         ("下发任务发布", _dispatch_publish_jobs),
         ("全链条归档", _archive_jobs),
         ("责任告知书读取", _registry_certificate_jobs),
+        ("户号表确认导入", _registry_household_jobs),
         ("全民防任务", _qmf_jobs),
         ("走访导入", _visit_import_jobs),
         ("数据库备份", _backup_jobs),
