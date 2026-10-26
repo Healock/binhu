@@ -3561,6 +3561,78 @@ export interface ExternalAcquisitionRun {
   created_at?: string | null
   started_at?: string | null
   finished_at?: string | null
+  schedule_id?: number | null
+  trigger_source?: string
+  auto_commit_status?: string | null
+  safety_gate_code?: string | null
+}
+
+export interface ExternalAcquisitionSchedule {
+  id: number
+  source_key: string
+  enabled: boolean
+  cron_expr: string
+  timezone: string
+  params: Record<string, any>
+  next_run_at: string | null
+  last_run_at: string | null
+  last_status: string | null
+  last_error_code: string | null
+  revision: number
+  updated_by: number | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ExternalAcquisitionCatalogItem {
+  source_key: string
+  name: string
+  category: string
+  description: string
+  permission: string | null
+  accessible: boolean
+  supports_manual: boolean
+  supports_schedule: boolean
+  supports_auto_commit: boolean
+  params_schema: string
+  schedule: ExternalAcquisitionSchedule | null
+  latest_run: ExternalAcquisitionRun | null
+}
+
+export async function getExternalAcquisitionCatalog(): Promise<ExternalAcquisitionCatalogItem[]> {
+  return (await api.get('/external-acquisition/catalog', passiveRequest)).data.data
+}
+
+export async function getExternalAcquisitionSchedules(): Promise<ExternalAcquisitionSchedule[]> {
+  return (await api.get('/external-acquisition/schedules', passiveRequest)).data.data
+}
+
+export async function updateExternalAcquisitionSchedule(sourceKey: string, payload: {
+  enabled: boolean
+  cron_expr: string
+  timezone: string
+  params: Record<string, any>
+  revision: number
+}): Promise<ExternalAcquisitionSchedule> {
+  return (await api.put(`/external-acquisition/schedules/${encodeURIComponent(sourceKey)}`, payload, activeRequest)).data.data
+}
+
+export async function runExternalAcquisitionSource(sourceKey: string, params: Record<string, any> = {}): Promise<{
+  data: ExternalAcquisitionRun
+  reused: boolean
+}> {
+  return (await api.post(`/external-acquisition/schedules/${encodeURIComponent(sourceKey)}/run`, { params }, { ...activeRequest, timeout: 30_000 })).data
+}
+
+export async function getExternalAcquisitionRuns(sourceKey: string, limit = 20): Promise<ExternalAcquisitionRun[]> {
+  return (await api.get(`/external-acquisition/schedules/${encodeURIComponent(sourceKey)}/runs`, { ...passiveRequest, params: { limit } })).data.data
+}
+
+export async function retryExternalAcquisitionRun(runId: number): Promise<{
+  data: ExternalAcquisitionRun
+  reused: boolean
+}> {
+  return (await api.post(`/external-acquisition/runs/${runId}/retry`, {}, { ...activeRequest, timeout: 30_000 })).data
 }
 
 export async function getExternalAcquisitionRun(

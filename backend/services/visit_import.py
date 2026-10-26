@@ -847,6 +847,7 @@ async def import_parsed_workbook(
     batch_id: int,
     parsed: ParsedVisitWorkbook,
     replace_range: bool = False,
+    manage_transaction: bool = True,
 ) -> dict[str, Any]:
     issues = list(parsed.issues)
     inserted_rows = 0
@@ -914,7 +915,8 @@ async def import_parsed_workbook(
             "message": "没有可入库的有效走访记录",
         }
 
-    await conn.begin()
+    if manage_transaction:
+        await conn.begin()
     try:
         if replace_range and parsed.start_date and parsed.end_date:
             incoming_keys = {row.row_key for row in parsed.rows}
@@ -1144,9 +1146,11 @@ async def import_parsed_workbook(
                     batch_id,
                 ),
             )
-        await conn.commit()
+        if manage_transaction:
+            await conn.commit()
     except Exception:
-        await conn.rollback()
+        if manage_transaction:
+            await conn.rollback()
         raise
 
     return {

@@ -147,7 +147,12 @@ async def preview_source(
         await record_admin_audit(user, "visit_source.preview", target_type="visit_source", target_name=payload.source, result="success" if all(item["status"] != "failed" for item in data) else "failed", detail={"run_ids": [item["id"] for item in data]}, **request_audit_fields(request))
         return {"data": data, "requires_confirmation": any(item["status"] == "pending_confirmation" for item in data), "message": "预览已生成"}
 
-    job, reused = await create_job("visit_source_preview", int(user["id"]), {"source": payload.source, "start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat()}, runner, dedupe_key=f"{payload.source}:{payload.start_date}:{payload.end_date}")
+    try:
+        job, reused = await create_job("visit_source_preview", int(user["id"]), {"source": payload.source, "start_date": payload.start_date.isoformat(), "end_date": payload.end_date.isoformat()}, runner, dedupe_key=f"{payload.source}:{payload.start_date}:{payload.end_date}")
+    except RuntimeError as exc:
+        if str(exc) == "source_busy":
+            raise HTTPException(status_code=409, detail="走访来源当前已有其他读取任务运行") from exc
+        raise
     return {"run": job, "reused": reused}
 
 

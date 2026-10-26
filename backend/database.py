@@ -51,6 +51,7 @@ from services.online_projection_jobs import ensure_online_projection_job_schema
 from services.online_summary_updates import ensure_online_summary_update_schema
 from services.txdocs_statistics_monitor import ensure_txdocs_statistics_schema
 from services.module_registry import ensure_function_module_schema
+from services.external_acquisition_registry import ensure_external_acquisition_schema
 
 # 数据库名称映射
 DB_NAMES = {
@@ -1264,6 +1265,7 @@ async def ensure_online_editor_schema(cur) -> None:
             INDEX idx_external_runs_dedupe (kind, dedupe_key, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    await ensure_external_acquisition_schema(cur)
 
 
 async def ensure_police_dispatch_schema(cur) -> None:

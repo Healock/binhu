@@ -16,6 +16,7 @@ const registrationDetailSource = readFileSync(
 const settingsSource = readFileSync(new URL('../src/pages/SystemSettings.tsx', import.meta.url), 'utf8')
 const scheduleSource = readFileSync(new URL('../src/components/ExternalAcquisitionScheduleControls.tsx', import.meta.url), 'utf8')
 const uploadCenterSource = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
+const workbenchSource = readFileSync(new URL('../src/components/ExternalAcquisitionWorkbench.tsx', import.meta.url), 'utf8')
 const communitiesSource = readFileSync(new URL('../src/pages/Communities.tsx', import.meta.url), 'utf8')
 const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
 const taskQueueSource = readFileSync(new URL('../src/components/AdminTaskQueueFloat.tsx', import.meta.url), 'utf8')
@@ -88,9 +89,10 @@ test('residence lookup scope supports multiple communities without exposing cred
 
 test('manual residence scan is a tracked background job with passive progress polling', () => {
   assert.match(apiSource, /startResidencePlatformScan[\s\S]*run: ExternalAcquisitionRun[\s\S]*reused: boolean/)
-  assert.match(uploadCenterSource, /getLatestExternalAcquisitionRun\('residence_full_scan'\)/)
-  assert.match(uploadCenterSource, /getExternalAcquisitionRun\(residenceRun\.id\)/)
-  assert.match(uploadCenterSource, /startResidencePlatformScan/)
+  assert.match(uploadCenterSource, /ExternalAcquisitionWorkbench/)
+  assert.match(workbenchSource, /getExternalAcquisitionCatalog/)
+  assert.match(workbenchSource, /getExternalAcquisitionRuns/)
+  assert.match(apiSource, /runExternalAcquisitionSource/)
   assert.match(taskQueueSource, /querying: '正在查询'/)
   assert.doesNotMatch(settingsSource, /result\.queued_count/)
 })

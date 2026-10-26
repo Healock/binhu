@@ -45,7 +45,16 @@ def _values_from_row(row: tuple, columns: list[str]) -> dict[str, str]:
     }
 
 
-async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
+async def _sync_rows(ctx: JobContext, result: dict[str, Any], *, require_complete: bool = False) -> dict[str, Any]:
+    if require_complete and (result.get("unresolved_count") or result.get("issue_count")):
+        return {
+            "status": "failed",
+            "message": "来源存在未匹配或异常记录，已保留旧本地快照",
+            "auto_commit_status": "skipped",
+            "safety_gate_code": "source_incomplete",
+            "unresolved_count": int(result.get("unresolved_count") or 0),
+            "issue_count": int(result.get("issue_count") or 0),
+        }
     parser = get_parser(MODEL_THREE_PARSER)
     pool = db_manager.get_pool("online_data")
     rows = [parser.normalize_source_row(row) for row in (result.get("rows") or [])]
@@ -189,11 +198,11 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def run_qmf_source_sync(ctx: JobContext) -> dict[str, Any]:
+async def run_qmf_source_sync(ctx: JobContext, *, require_complete: bool = False) -> dict[str, Any]:
     await ctx.update(phase="读取全民防", current=0, total=None, message="正在读取全民防未核查任务")
     result = await fetch_pending_rows()
     pool = db_manager.get_pool("online_data")
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             result = await resolve_rows(cur, result)
-    return await _sync_rows(ctx, result)
+    return await _sync_rows(ctx, result, require_complete=require_complete)

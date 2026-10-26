@@ -26,11 +26,17 @@ try {
     if (url.pathname === '/api/auth/me' || url.pathname === '/api/auth/activity') {
     if (url.pathname.endsWith('/me')) sessionReads += 1
     return send({ user: {
-      id: 1, username: 'synthetic-viewer', display_name: '合成测试账号', role: 'user',
+      id: 1, username: 'synthetic-viewer', display_name: '合成测试账号', role: 'super_admin',
       available_modules: ['common', 'community_police'],
       permissions: ['visit.summary.view', 'visit.source.manage'], preferences: { theme_mode: dark ? 'dark' : 'light' },
     } })
     }
+    if (url.pathname === '/api/external-acquisition/catalog') return send({ data: [
+      { source_key: 'visit_source', name: '走访与星级来源', category: '外部读取', description: '合成测试来源', permission: 'visit.source.manage', accessible: true, supports_manual: true, supports_schedule: true, supports_auto_commit: true, params_schema: 'date_range',
+        schedule: { id: 1, source_key: 'visit_source', enabled: false, cron_expr: '0 2 * * *', timezone: 'Asia/Shanghai', params: {}, revision: 1 }, latest_run: null },
+    ] })
+    if (url.pathname === '/api/external-acquisition/schedules/visit_source/runs') return send({ data: [] })
+    if (url.pathname === '/api/admin/task-queue') return send({ active_count: 0, running_count: 0, queued_count: 0, attention_count: 0, unavailable_sources: [], items: [] })
     if (url.pathname === '/api/visits/sources/status') return send({ business_date: '2026-10-10', latest_attempts: {}, current_sources: {} })
     if (url.pathname === '/api/visits/coverage') return send({ missing_dates: [], missing_date_count: 0 })
     if (url.pathname === '/api/visits/summary') return send({
@@ -41,7 +47,7 @@ try {
     })
     return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
   })
-  await page.goto(`${origin}/data-upload?tab=external`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await page.goto(`${origin}/data-upload?tab=external&source=visit_source`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
   await page.waitForTimeout(1500)
   mkdirSync('artifacts/source-range-picker', { recursive: true })
   const refreshSession = async () => {
@@ -76,7 +82,13 @@ try {
     assert.deepEqual(await picker.locator('input').evaluateAll(inputs => inputs.map(input => input.value)), ['2026-09-15', '2026-10-03'])
     await page.keyboard.press('Escape')
   }
-  await exercise(page.locator('.external-data-panel__controls .ant-picker'), 'source')
+  const sourceDates = page.locator('.external-acquisition-workbench input[type="date"]')
+  assert.equal(await sourceDates.count(), 2, 'visit source workbench exposes start and end date inputs')
+  await sourceDates.nth(0).fill('2026-09-15')
+  await refreshSession()
+  assert.equal(await sourceDates.nth(0).inputValue(), '2026-09-15', 'refresh must retain source range draft')
+  await sourceDates.nth(1).fill('2026-10-03')
+  await page.screenshot({ path: `artifacts/source-range-picker/source-${width}-${height}-${dark ? 'dark' : 'light'}.png` })
   await page.goto(`${origin}/visit-summary?start=2026-10-10&end=2026-10-10`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
   await page.waitForTimeout(1500)
   await exercise(page.locator('.ant-picker').first(), 'summary')

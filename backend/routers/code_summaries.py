@@ -279,13 +279,15 @@ async def _commit_source(
     user_id: int,
     payload: DateRangeRequest,
     result: dict,
+    manage_transaction: bool = True,
 ) -> tuple[int, str]:
     status = "warning" if (
         result["excluded_count"]
         or result["unclassified_count"]
         or result.get("invalid_time_count", 0)
     ) else "success"
-    await conn.begin()
+    if manage_transaction:
+        await conn.begin()
     try:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -347,10 +349,12 @@ async def _commit_source(
                         item["duplicate_removed_count"], CLASSIFIER_VERSION,
                     ),
                 )
-        await conn.commit()
+        if manage_transaction:
+            await conn.commit()
         return run_id, status
     except Exception:
-        await conn.rollback()
+        if manage_transaction:
+            await conn.rollback()
         raise
 
 
