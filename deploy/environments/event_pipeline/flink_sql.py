@@ -67,6 +67,25 @@ CREATE TABLE dev_online_source_projection (
  'connector' = 'jdbc',
  'url' = 'jdbc:mysql://{config["MYSQL_HOST"]}:3306/{config["MYSQL_DATABASE"]}?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
  'table-name' = 'dev_online_source_projection', 'username' = '{config["MYSQL_USER"]}',
+CREATE TABLE dev_online_summary_projection (
+ run_id VARCHAR(80), business_date DATE, event_type VARCHAR(40),
+ event_count BIGINT, task_count BIGINT, changed_field_count BIGINT,
+ PRIMARY KEY (run_id, business_date, event_type) NOT ENFORCED
+) WITH (
+ 'connector' = 'jdbc',
+ 'url' = 'jdbc:mysql://{config["MYSQL_HOST"]}:3306/{config["MYSQL_DATABASE"]}?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
+ 'table-name' = 'dev_online_summary_projection', 'username' = '{config["MYSQL_USER"]}',
+ 'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
+ 'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
+);
+CREATE TABLE dev_online_summary_projection (
+ run_id VARCHAR(80), business_date DATE, event_type VARCHAR(40),
+ event_count BIGINT, task_count BIGINT, changed_field_count BIGINT,
+ PRIMARY KEY (run_id, business_date, event_type) NOT ENFORCED
+) WITH (
+ 'connector' = 'jdbc',
+ 'url' = 'jdbc:mysql://{config["MYSQL_HOST"]}:3306/{config["MYSQL_DATABASE"]}?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
+ 'table-name' = 'dev_online_summary_projection', 'username' = '{config["MYSQL_USER"]}',
  'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
@@ -101,4 +120,10 @@ SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),
  MAX_BY(event_type, revision)
 FROM dev_unique_events
 GROUP BY run_id, task_id, source_id;
+INSERT INTO dev_online_summary_projection
+SELECT run_id, CAST(SUBSTRING(`timestamp`, 1, 10) AS DATE), event_type,
+ COUNT(DISTINCT event_id), COUNT(DISTINCT CONCAT(task_id, ':', CAST(source_id AS STRING))),
+ SUM(changed_field_count)
+FROM dev_unique_events
+GROUP BY run_id, CAST(SUBSTRING(`timestamp`, 1, 10) AS DATE), event_type;
 """

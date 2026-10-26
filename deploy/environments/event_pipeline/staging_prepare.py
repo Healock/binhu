@@ -140,6 +140,25 @@ CREATE TABLE dev_online_source_projection_python (
  task_graph_revision BIGINT NOT NULL, watch_snapshot_revision BIGINT NOT NULL,
  last_event_type VARCHAR(40) NOT NULL,
  PRIMARY KEY (run_id,task_id,source_id)
+CREATE TABLE dev_online_summary_projection (
+ run_id VARCHAR(80) NOT NULL, business_date DATE NOT NULL, event_type VARCHAR(40) NOT NULL,
+ event_count BIGINT NOT NULL, task_count BIGINT NOT NULL, changed_field_count BIGINT NOT NULL,
+ PRIMARY KEY (run_id,business_date,event_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_online_summary_projection_python (
+ run_id VARCHAR(80) NOT NULL, business_date DATE NOT NULL, event_type VARCHAR(40) NOT NULL,
+ event_count BIGINT NOT NULL, task_count BIGINT NOT NULL, changed_field_count BIGINT NOT NULL,
+ PRIMARY KEY (run_id,business_date,event_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_online_summary_projection (
+ run_id VARCHAR(80) NOT NULL, business_date DATE NOT NULL, event_type VARCHAR(40) NOT NULL,
+ event_count BIGINT NOT NULL, task_count BIGINT NOT NULL, changed_field_count BIGINT NOT NULL,
+ PRIMARY KEY (run_id,business_date,event_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_online_summary_projection_python (
+ run_id VARCHAR(80) NOT NULL, business_date DATE NOT NULL, event_type VARCHAR(40) NOT NULL,
+ event_count BIGINT NOT NULL, task_count BIGINT NOT NULL, changed_field_count BIGINT NOT NULL,
+ PRIMARY KEY (run_id,business_date,event_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE TABLE dev_task_metadata_python_events (
  event_id CHAR(36) NOT NULL,
