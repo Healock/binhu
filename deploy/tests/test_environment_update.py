@@ -203,6 +203,16 @@ class EnvironmentUpdateTests(unittest.TestCase):
                                 environment, artifact, root / 'image', image['artifact_id'], evidence)
                         self.assertEqual(read_configuration(target), original)
                         self.assertTrue((evidence / 'failure.json').exists())
+                        failure_report = json.loads((evidence / 'failure.json').read_text())
+                        expected_phase = {'backup': 'backup', 'health': 'health'}[failure]
+                        self.assertEqual(expected_phase, failure_report['phase'])
+                        self.assertIn(failure_report['reason'], {
+                            'environment_update_runtime_failed',
+                            'environment_update_validation_failed',
+                            'environment_candidate_health_failed',
+                        })
+                        self.assertIsInstance(failure_report['started_at'], int)
+                        self.assertEqual(failure_report['rollback'], failure_report['rollback_status'])
                     backup.assert_called_once()
                 updates = [arguments for arguments in calls if 'up' in arguments]
                 self.assertEqual(len(updates), {'none': 1, 'backup': 0, 'health': 2}[failure])
