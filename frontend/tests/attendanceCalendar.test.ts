@@ -68,3 +68,14 @@ test("周排班确认期间冻结草稿并在提交重试时复用请求编号",
   assert.match(client, /requestId = crypto\.randomUUID\(\)/);
   assert.match(client, /request_id: requestId, assignments/);
 });
+
+test("系统建议在岗使用只读接口并明确区分正式排班", () => {
+  const page = readFileSync(new URL("../src/pages/AttendanceCalendar.tsx", import.meta.url), "utf8");
+  const client = readFileSync(new URL("../src/api/client.ts", import.meta.url), "utf8");
+
+  assert.match(client, /getAttendanceSuggestions/);
+  assert.match(client, /\/personnel\/attendance\/suggestions/);
+  assert.match(page, /系统建议在岗/);
+  assert.match(page, /suggestion_state/);
+  assert.match(page, /不会修改正式排班/);
+});

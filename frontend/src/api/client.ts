@@ -5615,6 +5615,44 @@ export interface AttendanceCalendarData {
   members: Array<{ id: number; name: string; position: string; attendance_revision: number }>
   days: AttendanceDay[]; leaves?: CalendarLeave[]
 }
+export type AttendanceSuggestionState =
+  | 'official_work'
+  | 'official_rest'
+  | 'official_leave'
+  | 'suggested_work'
+  | 'leave_conflict'
+  | 'needs_confirmation'
+export interface AttendanceSuggestionRow {
+  date: string
+  member_id: number
+  member_name: string
+  communities: string[]
+  official_status: AttendanceState
+  inferred_status: AttendanceState | null
+  suggestion_state: AttendanceSuggestionState
+  evidence_summary: {
+    visit_count: number
+    communities: string[]
+    online_rows_not_personalized: number
+  }
+}
+export interface AttendanceSuggestions {
+  start_date: string
+  end_date: string
+  source: string
+  read_only: boolean
+  rows: AttendanceSuggestionRow[]
+  summary: {
+    member_days: number
+    official_person_days: number
+    suggested_person_days: number
+    evidence_days: number
+    leave_conflicts: number
+    needs_confirmation: number
+    online_rows_not_personalized: number
+  }
+  online_evidence_note: string
+}
 export interface ScheduleChange {
   request_id: string; member_ids: number[]; expected_versions: Record<number, number>
   start_date: string; end_date: string; state: 'work' | 'rest'; reason: string
@@ -5636,6 +5674,11 @@ export async function getAttendanceCalendar(start: string, end: string, ids: num
   const params = new URLSearchParams({ start_date: start, end_date: end })
   ids.forEach(id => params.append('member_ids', String(id)))
   return (await api.get(`/personnel/attendance/calendar?${params}`)).data
+}
+export async function getAttendanceSuggestions(start: string, end: string): Promise<AttendanceSuggestions> {
+  return (await api.get('/personnel/attendance/suggestions', {
+    params: { start_date: start, end_date: end },
+  })).data
 }
 export async function changeAttendance(kind: 'schedule' | 'leave', payload: ScheduleChange | LeaveChange, preview = false): Promise<AttendancePreview> {
   const result = (await api.post(`/personnel/attendance/${kind}${preview ? '/preview' : ''}`, payload)).data

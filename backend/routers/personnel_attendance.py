@@ -36,6 +36,7 @@ from services.personnel_positions import (
     WEEKEND_DUTY_POSITION_CONFIG_KEY,
     get_configured_positions,
 )
+from services.inferred_attendance import load_suggestions
 
 router = APIRouter(
     prefix="/api/personnel/attendance",
@@ -177,6 +178,34 @@ async def read_attendance_status(
         "complete": not missing_weeks,
         "missing_week_starts": [week_start.isoformat() for week_start in missing_weeks],
     }
+
+
+@router.get("/suggestions")
+async def read_attendance_suggestions(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    user: dict = Depends(require_permission(ATTENDANCE_MANAGE)),
+    conn=Depends(get_db),
+):
+    """Return a read-only attendance proposal for administrators.
+
+    Suggestions never update the formal schedule.  The frontend must label
+    ``suggested_work`` separately from an explicit ``work`` assignment.
+    """
+    del user
+    if start_date > end_date:
+        raise HTTPException(400, "起始日期不能晚于结束日期")
+    if (end_date - start_date).days + 1 > 31:
+        raise HTTPException(400, "系统建议查询区间不能超过 31 天")
+    async with conn.cursor() as cur:
+        try:
+            return await load_suggestions(
+                cur,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
 
 @router.put("/weekend-duty")

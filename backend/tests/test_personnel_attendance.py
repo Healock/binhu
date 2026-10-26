@@ -14,6 +14,7 @@ from deps import require_admin
 from routers.personnel_attendance import (
     WeekendAssignment,
     WeekendDutyUpdate,
+    read_attendance_suggestions,
     read_attendance_status,
     router as attendance_router,
 )
@@ -305,6 +306,24 @@ class PersonnelAttendanceRouteTests(unittest.IsolatedAsyncioTestCase):
             await read_attendance_status(
                 start_date=date(2026, 8, 2),
                 end_date=date(2026, 8, 1),
+                conn=None,
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_suggestions_reject_invalid_range_before_query(self):
+        with self.assertRaises(HTTPException) as raised:
+            await read_attendance_suggestions(
+                start_date=date(2026, 8, 2),
+                end_date=date(2026, 8, 1),
+                conn=None,
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_suggestions_reject_long_range_before_query(self):
+        with self.assertRaises(HTTPException) as raised:
+            await read_attendance_suggestions(
+                start_date=date(2026, 1, 1),
+                end_date=date(2026, 2, 1),
                 conn=None,
             )
         self.assertEqual(raised.exception.status_code, 400)
