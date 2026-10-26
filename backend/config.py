@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     REGISTRY_FEATURE_ENABLED: bool = False
     WORKFLOW_FEATURE_ENABLED: bool = False
 
+    # The Kafka/Flink/Redis cutover is deliberately opt-in and scoped to the
+    # first derived domain.  The application remains on the authoritative
+    # MySQL read path until a matching runtime adapter is installed.
+    ARCHITECTURE_UPGRADE_ENABLED: bool = False
+    ARCHITECTURE_UPGRADE_DOMAIN: str = "task_metadata"
+    ARCHITECTURE_UPGRADE_READ_SOURCE: str = "mysql"
+    ARCHITECTURE_UPGRADE_FALLBACK_ENABLED: bool = True
+
     # Native client compatibility. Keep 0.0.0 until the first supported
     # Windows/Android releases adopt the version headers.
     WINDOWS_MIN_SUPPORTED_VERSION: str = "0.0.0"
