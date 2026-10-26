@@ -51,8 +51,12 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
                 self.addCleanup(conn.close)
                 conn.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
                 conn.executescript(f"""
-                    CREATE TABLE {schema}._grid_members(id INT,name TEXT,position TEXT);
-                    INSERT INTO {schema}._grid_members VALUES(1,'合成人员','组员');
+                    CREATE TABLE {schema}._grid_members(
+                        id INT,name TEXT,position TEXT,status TEXT,
+                        leave_start_date DATE,leave_end_date DATE
+                    );
+                    INSERT INTO {schema}._grid_members
+                    VALUES(1,'合成人员','组员','在岗',NULL,NULL);
                     CREATE TABLE {schema}._grid_member_department_links(member_id INT,department_id INT,sort_order INT);
                     INSERT INTO {schema}._grid_member_department_links VALUES(1,2,0);
                     CREATE TABLE {schema}._departments(id INT,community_id INT,department_type TEXT);
@@ -78,7 +82,10 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
                         return self.raw.fetchone()
 
                 cur = ReportCursor()
-                self.assertEqual(await get_active_members(cur, "2026-10-19"), [])
+                self.assertEqual(
+                    await get_active_members(cur, "2026-10-19"),
+                    [("合成社区", "合成人员")],
+                )
                 self.assertEqual(await get_active_members(cur, "2026-10-20"), [])
                 self.assertEqual(await get_active_members(cur, "2026-10-21"), [("合成社区", "合成人员")])
                 context = await get_attendance_context(
@@ -146,15 +153,19 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             [("社区乙", "李四", 0, 0, 0, 0, 0, 0, 0)],
         )
 
-    async def test_active_member_query_uses_canonical_daily_context(self):
-        from datetime import date
-        from unittest.mock import patch
-        context=dict(members={'合成人员':dict(id=1,name='合成人员',communities=['合成社区'],position='组员')},
-                     periods={},daily={(1,date(2026,7,28)):'rest'})
-        with patch('services.personnel_attendance.get_attendance_context',AsyncMock(return_value=context)) as loader:
-            result=await get_active_members(MagicMock(),'2026-07-28')
-        self.assertEqual(result,[])
-        self.assertEqual(loader.await_args.kwargs['start_date'],date(2026,7,28))
+    async def test_active_member_count_is_not_filtered_by_weekend_schedule(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchall = AsyncMock(return_value=[("合成社区", "合成人员")])
+
+        result = await get_active_members(cursor, "2026-10-25")
+
+        sql, params = cursor.execute.await_args.args
+        self.assertIn("department.department_type='community'", sql)
+        self.assertIn("g.position IN ('组长', '组员')", sql)
+        self.assertNotIn("_personnel_work_schedule", sql)
+        self.assertEqual(params, ("2026-10-25",) * 3)
+        self.assertEqual(result, [("合成社区", "合成人员")])
 
     async def test_old_report_is_completed_without_losing_real_rows(self):
         cursor = MagicMock()

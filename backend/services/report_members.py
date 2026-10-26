@@ -5,8 +5,10 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 import unicodedata
 
+from services.grid_member_status import active_member_sql
 from services.personnel_positions import (
     get_eligible_online_personnel,
+    personnel_table,
 )
 
 
@@ -123,13 +125,46 @@ async def get_active_members(
     cur,
     as_of_date: str,
 ) -> list[tuple[str, str]]:
-    """读取指定日期实际在岗的网格员，返回（社区，姓名）。"""
-    from datetime import date
-    from services.personnel_attendance import get_attendance_context, is_member_on_duty
-    target = date.fromisoformat(as_of_date)
-    context = await get_attendance_context(cur, start_date=target, end_date=target, selected_positions={'组长','组员'})
-    return [(community,m['name']) for m in context['members'].values()
-            if is_member_on_duty(m,target,context) for community in m['communities']]
+    """读取指定日期在岗名册中的网格员，返回（社区，姓名）。
+
+    周末排班决定的是“在岗人日”，不是人员是否属于当日名册。把排班
+    状态用于这里会导致查询区间结束于周末且尚未排班时，网格员人数被
+    错误计算为 0。
+    """
+    member_table = personnel_table("_grid_members")
+    link_table = personnel_table("_grid_member_department_links")
+    department_table = personnel_table("_departments")
+    community_table = personnel_table("_communities")
+    history_table = personnel_table("_personnel_attendance_history")
+    active_condition = active_member_sql(
+        "g",
+        attendance_history_table=history_table,
+    )
+    await cur.execute(
+        f"""
+        SELECT
+            TRIM(community.name),
+            TRIM(g.name)
+        FROM {member_table} AS g
+        JOIN {link_table} AS link
+          ON link.member_id=g.id
+        JOIN {department_table} AS department
+          ON department.id=link.department_id
+         AND department.department_type='community'
+        JOIN {community_table} AS community
+          ON community.id=department.community_id
+        WHERE TRIM(g.name) <> ''
+          AND TRIM(community.name) <> ''
+          AND g.position IN ('组长', '组员')
+          AND {active_condition}
+        ORDER BY community.name, g.name
+        """,
+        (as_of_date, as_of_date, as_of_date),
+    )
+    return [
+        (str(community).strip(), str(name).strip())
+        for community, name in await cur.fetchall()
+    ]
 
 
 
