@@ -13,5 +13,8 @@ case "${parts[0]:-}" in
     [[ ${#parts[@]} -eq 3 ]] || exit 64
     [[ "${parts[1]}" =~ ^dev-update-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{64}$ ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-application-gateway "${parts[0]}" "${parts[1]}" "${parts[2]}" ;;
-  *) echo 'fixed Dev application prepare/measure/apply/accept contract required' >&2; exit 64 ;;
+  restore-services)
+    [[ ${#parts[@]} -eq 2 && "${parts[1]}" =~ ^dev-restore-[0-9a-f]{16}$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-dev-application-gateway restore-services "${parts[1]}" ;;
+  *) echo 'fixed Dev application promotion and restore contract required' >&2; exit 64 ;;
 esac

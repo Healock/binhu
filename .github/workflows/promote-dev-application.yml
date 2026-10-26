@@ -8,10 +8,10 @@ on:
         description: Fixed Dev application action
         required: true
         type: choice
-        options: [prepare, measure, reconcile, apply, accept]
+        options: [prepare, measure, reconcile, apply, accept, restore-services]
       run_id:
         description: dev-update plus 16 lowercase hex characters
-        required: true
+        required: false
         type: string
       commit:
         description: Exact origin/main commit for prepare
@@ -19,7 +19,7 @@ on:
         type: string
       artifact_id:
         description: Exact immutable artifact ID, or auto to bind the bundle built in this run
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -45,10 +45,11 @@ jobs:
           ARTIFACT_ID: ${{ inputs.artifact_id }}
         run: |
           set -euo pipefail
-          [[ "$RUN_ID" =~ ^dev-update-[0-9a-f]{16}$ ]]
           case "$ACTION" in
-            prepare) [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && ( "$ARTIFACT_ID" == auto || "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ) ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
-            measure|reconcile|apply|accept) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
+            prepare) [[ "$RUN_ID" =~ ^dev-update-[0-9a-f]{16}$ && "$COMMIT" =~ ^[0-9a-f]{40}$ && ( "$ARTIFACT_ID" == auto || "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ) ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
+            measure|reconcile|apply|accept) [[ "$RUN_ID" =~ ^dev-update-[0-9a-f]{16}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
+            restore-services) [[ "$RUN_ID" =~ ^dev-restore-[0-9a-f]{16}$ && -z "$ARTIFACT_ID" ]] ;;
+            *) exit 64 ;;
           esac
       - name: Build exact artifact for prepare
         if: inputs.action == 'prepare'
@@ -92,4 +93,5 @@ jobs:
           case "$ACTION" in
             prepare) version="$(git show "$COMMIT:VERSION" | tr -d '\r\n')"; cat "$RUNNER_TEMP/artifact.tar.gz" | "${app[@]}" "prepare $RUN_ID $COMMIT $version ${ARTIFACT_ID_BOUND:-$ARTIFACT_ID}" ;;
             measure|reconcile|apply|accept) "${app[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
+            restore-services) "${app[@]}" "restore-services $RUN_ID" ;;
           esac
