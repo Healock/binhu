@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('binhuDesktop', {
   writeSaveFileChunk: (handle, data, append) => ipcRenderer.invoke('desktop:save-file-chunk', { handle, data, append }),
   finishSaveFile: (handle) => ipcRenderer.invoke('desktop:save-file-finish', { handle }),
   cancelSaveFile: (handle) => ipcRenderer.invoke('desktop:save-file-cancel', { handle }),
-  appVersion: '0.31.22',
+  appVersion: '0.32.0',
   getConfig: () => ipcRenderer.invoke('desktop:get-config'),
   openOnline: () => ipcRenderer.invoke('desktop:open-online'),
   openOffline: () => ipcRenderer.invoke('desktop:open-offline'),
