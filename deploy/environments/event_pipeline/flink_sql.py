@@ -57,6 +57,19 @@ CREATE TABLE dev_task_metadata (
  'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
+CREATE TABLE dev_online_source_projection (
+ run_id VARCHAR(80), task_id VARCHAR(96), source_id BIGINT, revision BIGINT,
+ event_count BIGINT, address_match_revision BIGINT, community_revision BIGINT,
+ assignment_revision BIGINT, task_graph_revision BIGINT,
+ watch_snapshot_revision BIGINT, last_event_type VARCHAR(40),
+ PRIMARY KEY (run_id, task_id, source_id) NOT ENFORCED
+) WITH (
+ 'connector' = 'jdbc',
+ 'url' = 'jdbc:mysql://{config["MYSQL_HOST"]}:3306/{config["MYSQL_DATABASE"]}?autoReconnect=true&maxReconnects=3&initialTimeout=2&tcpKeepAlive=true&connectTimeout=5000&socketTimeout=15000',
+ 'table-name' = 'dev_online_source_projection', 'username' = '{config["MYSQL_USER"]}',
+ 'password' = '{password}', 'sink.buffer-flush.interval' = '1 s',
+ 'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
+);
 CREATE VIEW dev_unique_events AS
 SELECT schema_version, event_id, event_type, task_id, source_id, revision,
        operation_id, MAX(CARDINALITY(changed_fields)) AS changed_field_count,
@@ -76,6 +89,16 @@ SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),
  SUM(CASE WHEN event_type='task.reviewed' THEN 1 ELSE 0 END),
  SUM(CASE WHEN event_type='task.archived' THEN 1 ELSE 0 END),
  SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)
+FROM dev_unique_events
+GROUP BY run_id, task_id, source_id;
+INSERT INTO dev_online_source_projection
+SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),
+ MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'address') THEN revision ELSE 0 END),
+ MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'community') THEN revision ELSE 0 END),
+ MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'inspector') THEN revision ELSE 0 END),
+ MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'task_graph') THEN revision ELSE 0 END),
+ MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'person_tags') THEN revision ELSE 0 END),
+ MAX_BY(event_type, revision)
 FROM dev_unique_events
 GROUP BY run_id, task_id, source_id;
 """

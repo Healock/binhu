@@ -123,6 +123,24 @@ CREATE TABLE dev_task_metadata_python (
  deleted_count BIGINT NOT NULL,
  PRIMARY KEY (run_id,task_id,source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_online_source_projection (
+ run_id VARCHAR(80) NOT NULL, task_id VARCHAR(96) NOT NULL,
+ source_id BIGINT NOT NULL, revision BIGINT NOT NULL,
+ event_count BIGINT NOT NULL, address_match_revision BIGINT NOT NULL,
+ community_revision BIGINT NOT NULL, assignment_revision BIGINT NOT NULL,
+ task_graph_revision BIGINT NOT NULL, watch_snapshot_revision BIGINT NOT NULL,
+ last_event_type VARCHAR(40) NOT NULL,
+ PRIMARY KEY (run_id,task_id,source_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE TABLE dev_online_source_projection_python (
+ run_id VARCHAR(80) NOT NULL, task_id VARCHAR(96) NOT NULL,
+ source_id BIGINT NOT NULL, revision BIGINT NOT NULL,
+ event_count BIGINT NOT NULL, address_match_revision BIGINT NOT NULL,
+ community_revision BIGINT NOT NULL, assignment_revision BIGINT NOT NULL,
+ task_graph_revision BIGINT NOT NULL, watch_snapshot_revision BIGINT NOT NULL,
+ last_event_type VARCHAR(40) NOT NULL,
+ PRIMARY KEY (run_id,task_id,source_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE TABLE dev_task_metadata_python_events (
  event_id CHAR(36) NOT NULL,
  run_id VARCHAR(80) NOT NULL, task_id VARCHAR(96) NOT NULL,
