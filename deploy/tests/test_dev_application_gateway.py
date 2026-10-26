@@ -77,6 +77,145 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('binhu-dev-application-gateway', source)
         self.assertNotIn('staging', source.lower())
 
+    def test_restore_model_is_development_only_and_fixed(self):
+        self.assertTrue(gateway.RESTORE_RE.fullmatch('dev-restore-' + 'a' * 16))
+        self.assertIsNone(gateway.RESTORE_RE.fullmatch('dev-update-' + 'a' * 16))
+        compose = {
+            'name': 'binhu-development',
+            'services': {
+                name: {'labels': {'binhu.environment': 'development'}, 'networks': ['internal']}
+                for name in ('environment-mysql', 'redis', 'backend')
+            },
+            'networks': {'internal': {'name': 'binhu-development_internal'}},
+        }
+        compose['services']['backend'].update({
+            'env_file': ['backend.env'],
+            'depends_on': {'environment-mysql': {'condition': 'service_healthy'}},
+        })
+        env = 'APP_ENVIRONMENT=development\nMYSQL_HOST=environment-mysql\n'
+        gateway._validate_restore_model(
+            {'environment': 'development', 'project': 'binhu-development'}, compose, env,
+        )
+        with self.assertRaisesRegex(ValueError, 'dev_restore_identity_invalid'):
+            gateway._validate_restore_model(
+                {'environment': 'staging', 'project': 'binhu-staging'}, compose, env,
+            )
+        compose['services']['evil'] = compose['services']['redis']
+        with self.assertRaisesRegex(ValueError, 'dev_restore_identity_invalid'):
+            gateway._validate_restore_model(
+                {'environment': 'development', 'project': 'binhu-development'}, compose, env,
+            )
+
+    def test_restore_services_uses_fixed_sequence_and_is_idempotent(self):
+        compose = {
+            'name': 'binhu-development',
+            'services': {
+                name: {'labels': {'binhu.environment': 'development'}, 'networks': ['internal']}
+                for name in ('environment-mysql', 'redis', 'backend')
+            },
+            'networks': {'internal': {'name': 'binhu-development_internal'}},
+        }
+        compose['services']['backend'].update({
+            'env_file': ['backend.env'],
+            'depends_on': {'environment-mysql': {'condition': 'service_healthy'}},
+        })
+        states = {
+            service: {'status': 'exited', 'exit_code': 0, 'oom_killed': False,
+                      'finished_at': '2026-10-08T11:00:00Z', 'restart_count': 0,
+                      'image': 'sha256:' + 'a' * 64, 'health': 'unhealthy'}
+            for service in ('environment-mysql', 'redis', 'backend')
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'development'
+            root.mkdir()
+            evidence = Path(tmp) / 'evidence'
+            with (patch.object(gateway, 'EVIDENCE_ROOT', evidence),
+                  patch.object(gateway, 'root_for', return_value=root),
+                  patch.object(gateway, 'read_configuration', return_value=(
+                      {'environment': 'development', 'project': 'binhu-development', 'version': '0.30.25'},
+                      compose, 'APP_ENVIRONMENT=development\nMYSQL_HOST=environment-mysql\n')),
+                  patch.object(gateway, '_inspect_restore_containers', side_effect=[states, states, states]),
+                  patch.object(gateway, '_wait_restore_mysql'),
+                  patch.object(gateway, '_wait_restore_backend'),
+                  patch.object(gateway, '_run_restore_command') as run,
+                  patch.object(gateway, '_audit'), patch.object(gateway, '_alert')):
+                result = gateway.restore_services('dev-restore-' + 'a' * 16)
+                self.assertTrue(result['health'])
+                commands = [call.args[0][4:] for call in run.call_args_list]
+                self.assertEqual([
+                    ['config', '--quiet'],
+                    ['up', '-d', 'environment-mysql'],
+                    ['up', '-d', 'redis'],
+                    ['up', '-d', 'backend'],
+                ], commands)
+                with self.assertRaisesRegex(ValueError, 'Dev restore evidence already exists'):
+                    gateway.restore_services('dev-restore-' + 'a' * 16)
+                self.assertEqual(4, run.call_count)
+
+    def test_restore_services_failure_preserves_fixed_evidence(self):
+        compose = {
+            'name': 'binhu-development',
+            'services': {
+                name: {'labels': {'binhu.environment': 'development'}, 'networks': ['internal']}
+                for name in ('environment-mysql', 'redis', 'backend')
+            },
+            'networks': {'internal': {'name': 'binhu-development_internal'}},
+        }
+        compose['services']['backend'].update({
+            'env_file': ['backend.env'],
+            'depends_on': {'environment-mysql': {'condition': 'service_healthy'}},
+        })
+        states = {'environment-mysql': {'status': 'exited', 'health': 'unhealthy'},
+                  'redis': {'status': 'exited', 'health': None},
+                  'backend': {'status': 'exited', 'health': None}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'development'
+            root.mkdir()
+            with (patch.object(gateway, 'EVIDENCE_ROOT', Path(tmp) / 'evidence'),
+                  patch.object(gateway, 'root_for', return_value=root),
+                  patch.object(gateway, 'read_configuration', return_value=(
+                      {'environment': 'development', 'project': 'binhu-development', 'version': '0.30.25'},
+                      compose, 'APP_ENVIRONMENT=development\nMYSQL_HOST=environment-mysql\n')),
+                  patch.object(gateway, '_inspect_restore_containers', return_value=states),
+                  patch.object(gateway, '_run_restore_command', side_effect=RuntimeError('dev_restore_compose_failed')),
+                  patch.object(gateway, '_audit'), patch.object(gateway, '_alert')):
+                with self.assertRaisesRegex(RuntimeError, 'dev_restore_compose_failed'):
+                    gateway.restore_services('dev-restore-' + 'b' * 16)
+            failure = json.loads((Path(tmp) / 'evidence' / ('dev-restore-' + 'b' * 16) / 'failure.json').read_text())
+            self.assertEqual('dev_restore_compose_failed', failure['reason'])
+            self.assertNotIn('password', json.dumps(failure).lower())
+
+    def test_restore_services_missing_container_preserves_failure_evidence(self):
+        compose = {
+            'name': 'binhu-development',
+            'services': {
+                name: {'labels': {'binhu.environment': 'development'}, 'networks': ['internal']}
+                for name in ('environment-mysql', 'redis', 'backend')
+            },
+            'networks': {'internal': {'name': 'binhu-development_internal'}},
+        }
+        compose['services']['backend'].update({
+            'env_file': ['backend.env'],
+            'depends_on': {'environment-mysql': {'condition': 'service_healthy'}},
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'development'
+            root.mkdir()
+            run_id = 'dev-restore-' + 'c' * 16
+            with (patch.object(gateway, 'EVIDENCE_ROOT', Path(tmp) / 'evidence'),
+                  patch.object(gateway, 'root_for', return_value=root),
+                  patch.object(gateway, 'read_configuration', return_value=(
+                      {'environment': 'development', 'project': 'binhu-development', 'version': '0.30.25'},
+                      compose, 'APP_ENVIRONMENT=development\nMYSQL_HOST=environment-mysql\n')),
+                  patch.object(gateway, '_inspect_restore_containers',
+                               side_effect=ValueError('dev_restore_container_missing')),
+                  patch.object(gateway, '_audit'), patch.object(gateway, '_alert')):
+                with self.assertRaisesRegex(ValueError, 'dev_restore_container_missing'):
+                    gateway.restore_services(run_id)
+            failure = json.loads((Path(tmp) / 'evidence' / run_id / 'failure.json').read_text())
+            self.assertEqual('dev_restore_container_missing', failure['reason'])
+            self.assertNotIn('containers', failure)
+
     def test_manifest_rejects_non_development_or_missing_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -126,7 +265,10 @@ class DevApplicationGatewayTests(unittest.TestCase):
 
     def test_workflow_has_fixed_four_actions_and_dev_secrets(self):
         workflow = (ROOT / '.github/workflows/promote-dev-application.yml').read_text()
-        self.assertIn('options: [prepare, measure, reconcile, apply, accept]', workflow)
+        self.assertIn('        options: [prepare, measure, reconcile, apply, accept, restore-services]', workflow)
+        self.assertIn('        required: false\n        type: string\n\npermissions:', workflow)
+        self.assertIn('^dev-restore-[0-9a-f]{16}$', workflow)
+        self.assertNotIn('[[ "$RUN_ID" =~ ^dev-update-[0-9a-f]{16}$ ]]', workflow)
         self.assertIn('BINHU_DEV_APP_SSH_KEY', workflow)
         self.assertIn('binhu-dev-app-deploy@', workflow)
         self.assertIn('ARTIFACT_ID_BOUND', workflow)
@@ -141,6 +283,7 @@ class DevApplicationGatewayTests(unittest.TestCase):
         wrapper = (ROOT / 'deploy/environments/binhu-dev-application-gateway').read_text()
         update = (ROOT / 'deploy/environments/update.py').read_text()
         self.assertIn('measure|reconcile|apply|accept', wrapper)
+        self.assertIn('restore-services', wrapper)
         self.assertIn('reconcile_development', update)
         self.assertIn("'containers_or_volumes_changed': False", update)
         self.assertIn("'added_disabled_flags': added_disabled_flags", update)
@@ -148,7 +291,7 @@ class DevApplicationGatewayTests(unittest.TestCase):
 
     def test_install_sudo_contract_covers_every_fixed_action(self):
         script = (ROOT / 'deploy/environments/install-dev-application-gateway.sh').read_text()
-        for action in ('status', 'prepare', 'measure', 'reconcile', 'apply', 'accept'):
+        for action in ('status', 'prepare', 'measure', 'reconcile', 'apply', 'accept', 'restore-services'):
             self.assertIn(
                 f'/usr/local/libexec/binhu-dev-application-gateway {action}',
                 script,

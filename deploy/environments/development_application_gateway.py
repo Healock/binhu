@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import subprocess
 import sys
 import tarfile
 import time
@@ -17,13 +18,15 @@ import time
 from .artifact import verify_artifact, write_json
 from .image import build_image, verify_image
 from .runtime import root_for
-from .update import health, measure_development, apply_development, read_configuration, reconcile_development
+from .update import (health, measure_development, apply_development, read_configuration,
+                     reconcile_development, parse_environment)
 
 
 BASE = Path("/var/lib/binhu-dev-application")
 AUDIT_ROOT = Path("/var/log/binhu-dev-application-gateway")
 EVIDENCE_ROOT = Path("/srv/deploy-backups/environment-triad")
 RUN_RE = re.compile(r"dev-update-([0-9a-f]{16})")
+RESTORE_RE = re.compile(r"dev-restore-([0-9a-f]{16})")
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 VERSION_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 ARTIFACT_RE = re.compile(r"[0-9a-f]{64}")
@@ -44,6 +47,11 @@ OPERATION_FAILURE_CODES = {
     "environment_backend_override_invalid",
     "environment_static_mount_unreviewed",
     "environment_update_resources_insufficient",
+    "dev_restore_identity_invalid",
+    "dev_restore_container_missing",
+    "dev_restore_compose_failed",
+    "dev_restore_mysql_unhealthy",
+    "dev_restore_backend_unhealthy",
 }
 CONTROL_COMMIT = Path('/usr/local/libexec/binhu-dev-application/control-commit')
 
@@ -115,6 +123,152 @@ def _run_root(run_id: str) -> Path:
     if root.parent != BASE / "candidates" or root.is_symlink():
         refuse("Dev application candidate path invalid")
     return root
+
+
+def _restore_evidence(run_id: str) -> Path:
+    if not RESTORE_RE.fullmatch(run_id):
+        refuse("fixed Dev restore run id required")
+    path = EVIDENCE_ROOT / run_id
+    if path.parent != EVIDENCE_ROOT or path.is_symlink() or path.exists():
+        refuse("Dev restore evidence already exists")
+    return path
+
+
+def _validate_restore_model(manifest: dict, compose: dict, env_text: str) -> None:
+    """Validate the one Dev Compose model before any service is started."""
+    values = parse_environment(env_text)
+    if (manifest.get("environment") != "development"
+            or manifest.get("project") != "binhu-development"
+            or compose.get("name") != "binhu-development"
+            or values.get("APP_ENVIRONMENT") != "development"
+            or values.get("MYSQL_HOST") != "environment-mysql"):
+        raise ValueError("dev_restore_identity_invalid")
+    services = compose.get("services", {})
+    if set(services) != {"environment-mysql", "redis", "backend"}:
+        raise ValueError("dev_restore_identity_invalid")
+    for service in services.values():
+        labels = service.get("labels", {})
+        if (labels.get("binhu.environment") != "development"
+                or service.get("networks") != ["internal"]
+                or service.get("network_mode")
+                or service.get("privileged")):
+            raise ValueError("dev_restore_identity_invalid")
+    backend = services["backend"]
+    if (backend.get("env_file") != ["backend.env"]
+            or backend.get("depends_on", {}).get("environment-mysql", {}).get("condition")
+            != "service_healthy"):
+        raise ValueError("dev_restore_identity_invalid")
+    if compose.get("networks", {}).get("internal", {}).get("name") != "binhu-development_internal":
+        raise ValueError("dev_restore_identity_invalid")
+
+
+def _inspect_restore_containers() -> dict:
+    names = {
+        "environment-mysql": "binhu-development-environment-mysql-1",
+        "redis": "binhu-development-redis-1",
+        "backend": "binhu-development-backend-1",
+    }
+    result = subprocess.run(
+        ["docker", "inspect", *names.values()], capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode:
+        raise ValueError("dev_restore_container_missing")
+    try:
+        containers = {item["Name"].lstrip("/"): item for item in json.loads(result.stdout)}
+        states = {}
+        for service, name in names.items():
+            item = containers[name]
+            state = item["State"]
+            labels = item.get("Config", {}).get("Labels", {})
+            if (labels.get("com.docker.compose.project") != "binhu-development"
+                    or labels.get("com.docker.compose.service") != service
+                    or labels.get("binhu.environment") != "development"):
+                raise ValueError("dev_restore_identity_invalid")
+            health_state = state.get("Health", {}).get("Status") if state.get("Health") else None
+            states[service] = {
+                "status": state.get("Status"), "exit_code": state.get("ExitCode"),
+                "oom_killed": bool(state.get("OOMKilled")), "finished_at": state.get("FinishedAt"),
+                "restart_count": item.get("RestartCount"), "image": item.get("Image"),
+                "health": health_state,
+            }
+        return states
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError("dev_restore_container_missing") from None
+
+
+def _run_restore_command(arguments: list[str]) -> None:
+    result = subprocess.run(arguments, capture_output=True, text=True, timeout=180)
+    if result.returncode:
+        raise RuntimeError("dev_restore_compose_failed")
+
+
+def _wait_restore_mysql() -> None:
+    for _ in range(45):
+        state = _inspect_restore_containers()["environment-mysql"]
+        if state["status"] == "running" and state["health"] == "healthy":
+            return
+        time.sleep(2)
+    raise ValueError("dev_restore_mysql_unhealthy")
+
+
+def _wait_restore_backend(version: str) -> None:
+    for _ in range(45):
+        try:
+            health("development", version)
+            return
+        except (OSError, ValueError):
+            time.sleep(2)
+    raise ValueError("dev_restore_backend_unhealthy")
+
+
+def restore_services(run_id: str) -> dict:
+    """Restore only the fixed Dev application Compose services."""
+    evidence = _restore_evidence(run_id)
+    root = root_for("development")
+    manifest, compose, env_text = read_configuration(root)
+    _validate_restore_model(manifest, compose, env_text)
+    # The fixed evidence root is normally provisioned by installation, but
+    # create it defensively so a fresh host records failures instead of
+    # masking them with a filesystem error.
+    evidence.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    evidence.mkdir(mode=0o700)
+    before = None
+    try:
+        before = _inspect_restore_containers()
+        write_json(evidence / "before.json", {"environment": "development", "containers": before})
+        _run_restore_command(["docker", "compose", "-f", str(root / "compose.json"),
+                              "config", "--quiet"])
+        _run_restore_command(["docker", "compose", "-f", str(root / "compose.json"),
+                              "up", "-d", "environment-mysql"])
+        _wait_restore_mysql()
+        _run_restore_command(["docker", "compose", "-f", str(root / "compose.json"),
+                              "up", "-d", "redis"])
+        _run_restore_command(["docker", "compose", "-f", str(root / "compose.json"),
+                              "up", "-d", "backend"])
+        _wait_restore_backend(manifest["version"])
+        after = _inspect_restore_containers()
+        result = {"environment": "development", "run_id": run_id,
+                  "started_services": ["environment-mysql", "redis", "backend"],
+                  "health": True, "before": before, "after": after}
+        write_json(evidence / "result.json", result)
+        _audit("restore-services", run_id=run_id, outcome="passed")
+        return result
+    except Exception as error:
+        reason = _operation_failure_code(error)
+        try:
+            after = _inspect_restore_containers()
+        except Exception:
+            after = None
+        payload = {"environment": "development", "run_id": run_id,
+                   "reason": reason, "error_type": type(error).__name__}
+        if before is not None:
+            payload["before"] = before
+        if after is not None:
+            payload["after"] = after
+        write_json(evidence / "failure.json", payload)
+        _audit("restore-services", run_id=run_id, outcome="failed", details={"reason": reason})
+        _alert("restore-services", run_id, reason)
+        raise
 
 
 def _read_manifest(run_id: str) -> tuple[Path, dict]:
@@ -311,7 +465,7 @@ def main() -> None:
     with (BASE / "gateway.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         action = sys.argv[1] if len(sys.argv) > 1 else "invalid"
-        run_id = sys.argv[2] if len(sys.argv) > 2 and RUN_RE.fullmatch(sys.argv[2]) else ""
+        run_id = sys.argv[2] if len(sys.argv) > 2 and (RUN_RE.fullmatch(sys.argv[2]) or RESTORE_RE.fullmatch(sys.argv[2])) else ""
         try:
             if sys.argv[1:] == ["status"]:
                 result = status()
@@ -321,6 +475,8 @@ def main() -> None:
                 result = {"measure": measure, "reconcile": reconcile, "apply": apply}[sys.argv[1]](sys.argv[2], sys.argv[3])
             elif len(sys.argv) == 4 and sys.argv[1] == "accept":
                 result = accept(sys.argv[2], sys.argv[3])
+            elif len(sys.argv) == 3 and sys.argv[1] == "restore-services":
+                result = restore_services(sys.argv[2])
             else:
                 refuse()
             if action == "status":
@@ -330,7 +486,7 @@ def main() -> None:
             if action != "prepare":
                 reason = _operation_failure_code(error)
                 _audit(action, run_id=run_id, outcome="failed", details={"reason": reason})
-                if run_id:
+                if run_id and action != "restore-services":
                     root = _run_root(run_id)
                     if root.is_dir() and not root.is_symlink():
                         write_json(root / f"{action}-failure-{time.time_ns()}.json", {

@@ -37,6 +37,7 @@ binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-applicati
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway reconcile *
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway apply *
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway accept *
+binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway restore-services *
 EOF
 chmod 0440 /etc/sudoers.d/binhu-dev-application
 visudo -cf /etc/sudoers.d/binhu-dev-application >/dev/null
