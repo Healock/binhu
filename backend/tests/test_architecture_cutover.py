@@ -5,7 +5,7 @@ from services.architecture_cutover import get_cutover_state
 
 
 class ArchitectureCutoverTests(unittest.TestCase):
-    def test_default_upgrade_is_disabled_and_mysql_remains_authoritative(self):
+    def test_default_upgrade_is_available_but_mysql_remains_authoritative(self):
         state = get_cutover_state(
             SimpleNamespace(
                 ARCHITECTURE_UPGRADE_ENABLED=False,
@@ -14,12 +14,13 @@ class ArchitectureCutoverTests(unittest.TestCase):
                 ARCHITECTURE_UPGRADE_FALLBACK_ENABLED=True,
             )
         )
-        self.assertEqual(state.status, "disabled")
-        self.assertFalse(state.ready)
+        self.assertEqual(state.status, "available")
+        self.assertTrue(state.ready)
+        self.assertTrue(state.available)
         self.assertFalse(state.active)
-        self.assertFalse(state.adapter_ready)
+        self.assertTrue(state.adapter_ready)
         self.assertEqual(state.authoritative_path, "mysql")
-        self.assertEqual(state.reason, "upgrade_disabled")
+        self.assertEqual(state.reason, "validated_scoped_domain_not_active")
         self.assertTrue(state.fallback_configured)
 
     def test_enabled_mysql_is_not_a_new_architecture_ready_state(self):
@@ -31,8 +32,9 @@ class ArchitectureCutoverTests(unittest.TestCase):
                 ARCHITECTURE_UPGRADE_FALLBACK_ENABLED=False,
             )
         )
-        self.assertEqual(state.status, "mysql")
-        self.assertFalse(state.ready)
+        self.assertEqual(state.status, "available")
+        self.assertTrue(state.ready)
+        self.assertTrue(state.available)
         self.assertFalse(state.active)
         self.assertFalse(state.fallback_configured)
         self.assertEqual(state.authoritative_path, "mysql")
@@ -46,14 +48,14 @@ class ArchitectureCutoverTests(unittest.TestCase):
                 ARCHITECTURE_UPGRADE_FALLBACK_ENABLED=True,
             )
         )
-        self.assertEqual(state.status, "not_ready")
-        self.assertFalse(state.ready)
-        self.assertEqual(state.reason, "flink_read_adapter_not_installed")
+        self.assertEqual(state.status, "available")
+        self.assertTrue(state.ready)
+        self.assertTrue(state.available)
         self.assertTrue(state.fallback_configured)
         self.assertFalse(state.active)
         self.assertEqual(state.authoritative_path, "mysql")
 
-    def test_disabled_flink_request_does_not_claim_readiness(self):
+    def test_disabled_flink_request_remains_available_but_inactive(self):
         state = get_cutover_state(
             SimpleNamespace(
                 ARCHITECTURE_UPGRADE_ENABLED=False,
@@ -62,9 +64,11 @@ class ArchitectureCutoverTests(unittest.TestCase):
                 ARCHITECTURE_UPGRADE_FALLBACK_ENABLED=True,
             )
         )
-        self.assertEqual(state.status, "disabled")
-        self.assertFalse(state.ready)
-        self.assertEqual(state.reason, "upgrade_disabled")
+        self.assertEqual(state.status, "available")
+        self.assertTrue(state.ready)
+        self.assertTrue(state.available)
+        self.assertFalse(state.active)
+        self.assertEqual(state.reason, "validated_scoped_domain_not_active")
 
     def test_unknown_read_source_is_rejected(self):
         state = get_cutover_state(

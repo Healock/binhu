@@ -201,8 +201,9 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             payload["feature_flags"]["client_write_identification_required"]
         )
-        self.assertEqual(payload["architecture_upgrade"]["status"], "disabled")
-        self.assertFalse(payload["architecture_upgrade"]["ready"])
+        self.assertEqual(payload["architecture_upgrade"]["status"], "available")
+        self.assertTrue(payload["architecture_upgrade"]["ready"])
+        self.assertTrue(payload["architecture_upgrade"]["available"])
         self.assertEqual(payload["architecture_upgrade"]["authoritative_path"], "mysql")
         self.assertFalse(payload["architecture_upgrade"]["active"])
         self.assertNotIn("fallback_enabled", payload["architecture_upgrade"])
