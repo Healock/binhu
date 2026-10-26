@@ -79,6 +79,88 @@ class StagingEventPipelineComposeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "staging_network_address_pool_exhausted"):
                 staging_control._run(["docker", "network", "create"])
 
+
+class StagingArchitectureSwitchTests(unittest.TestCase):
+    def _candidate(self, directory: str, *, started: bool = True) -> tuple[Path, dict]:
+        root = Path(directory) / "candidate"
+        (root / "evidence").mkdir(parents=True)
+        manifest = {
+            "environment": "staging",
+            "run_id": RUN_ID,
+            "project": "binhu-staging-event-pipeline-stg-20260920-01",
+            "started": started,
+            "acceptance": "pending",
+        }
+        (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return root, manifest
+
+    def test_switch_requires_an_applied_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, manifest = self._candidate(directory, started=False)
+            with patch.object(staging_control, "_load", return_value=(root, manifest, {})), \
+                    patch.object(staging_control, "_compose") as compose:
+                with self.assertRaisesRegex(ValueError, "must be applied"):
+                    staging_control.switch(RUN_ID)
+            compose.assert_not_called()
+
+    def test_switch_stops_python_worker_and_records_flink_as_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, manifest = self._candidate(directory)
+            ps_calls = 0
+
+            def compose(_root, *args, **_kwargs):
+                nonlocal ps_calls
+                if args and args[0] == "ps":
+                    ps_calls += 1
+                    state = "running" if ps_calls == 1 else "exited (0)"
+                    return subprocess.CompletedProcess(args, 0, json.dumps({
+                        "Service": "python-metadata-worker", "State": state,
+                    }))
+                return subprocess.CompletedProcess(args, 0, "")
+
+            with patch.object(staging_control, "_load", return_value=(root, manifest, {})), \
+                    patch.object(staging_control.flink_submission, "FlinkRest"), \
+                    patch.object(staging_control.flink_submission, "partition_active_jobs",
+                                 return_value=([{"jid": "a" * 32}], [])), \
+                    patch.object(staging_control.flink_submission, "wait_for_runtime",
+                                 return_value={"run_id": RUN_ID}), \
+                    patch.object(staging_control, "_compose", side_effect=compose):
+                result = staging_control.switch(RUN_ID)
+
+            self.assertEqual(result["active_engine"], "flink")
+            self.assertTrue(result["python_worker_stopped"])
+            self.assertEqual(result["business_writes"], "mysql_outbox")
+            updated = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            self.assertTrue(updated["architecture"]["active"])
+            self.assertEqual(updated["architecture"]["projection_engine"], "flink")
+            self.assertEqual(updated["architecture"]["application_read_source"], "mysql")
+            evidence = list((root / "evidence").glob("switch-*/switch.json"))
+            self.assertEqual(len(evidence), 1)
+
+    def test_switch_failure_keeps_fixed_diagnostic_and_does_not_expose_details(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, manifest = self._candidate(directory)
+            class Client:
+                def overview(self):
+                    return []
+
+            client = Client()
+            with patch.object(staging_control, "_load", return_value=(root, manifest, {})), \
+                    patch.object(staging_control.flink_submission, "FlinkRest", return_value=client), \
+                    patch.object(staging_control.flink_submission, "partition_active_jobs",
+                                 return_value=([{"jid": "b" * 32}], [])), \
+                    patch.object(staging_control.flink_submission, "wait_for_runtime",
+                                 side_effect=ValueError("private response body")), \
+                    patch.object(staging_control, "_compose") as compose:
+                with self.assertRaisesRegex(ValueError, "private response body"):
+                    staging_control.switch(RUN_ID)
+            compose.assert_not_called()
+            evidence = list((root / "evidence").glob("switch-*/switch-failure.json"))
+            self.assertEqual(len(evidence), 1)
+            text = evidence[0].read_text(encoding="utf-8")
+            self.assertIn('"error_code": "staging_architecture_switch_failed"', text)
+            self.assertNotIn("private response body", text)
+
     def test_complete_model_is_isolated_and_bounded(self):
         spec = staging_compose.compose(images(), RUN_ID)
         self.assertEqual(spec["name"], "binhu-staging-event-pipeline-stg-20260920-01")
@@ -543,10 +625,10 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         gateway = (root / "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
         self.assertIn("binhu-staging-deploy", installer)
         self.assertIn("^STG-[0-9]{8}-[0-9]{2}$", wrapper)
-        self.assertIn('in {"measure", "apply", "sample", "rollback"}', gateway)
+        self.assertIn('in {"measure", "apply", "switch", "sample", "rollback"}', gateway)
         self.assertIn('sys.argv[1] == "run"', gateway)
         self.assertIn('sys.argv[1] == "verify"', gateway)
-        self.assertIn("measure|apply|run|sample|rollback", wrapper)
+        self.assertIn("measure|apply|switch|run|sample|rollback", wrapper)
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
         self.assertNotIn("binhu-production", wrapper + gateway + installer)

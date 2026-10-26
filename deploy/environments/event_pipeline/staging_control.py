@@ -477,6 +477,7 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
     try:
         verified = flink_submission.wait_for_runtime(
             client, run_id, lambda: _consumer_group(project, identity["consumer_group"]), timeout=180,
+            expected_sinks=identity["sinks"],
         )
     except ValueError as error:
         _write_flink_failure(evidence, run_id, "runtime_validation", error)
@@ -583,6 +584,19 @@ def rollback(run_id: str) -> dict[str, Any]:
     healthy = str(worker.get("State", "")).lower() == "running"
     if not healthy:
         raise ValueError("Staging Python worker did not recover")
+    architecture = manifest.get("architecture")
+    if isinstance(architecture, dict) and architecture.get("domain") == "task_metadata":
+        manifest["architecture"] = {
+            **architecture,
+            "active": False,
+            "projection_engine": "python",
+            "previous_engine": "flink",
+            "application_read_source": "mysql",
+        }
+        manifest["acceptance"] = "pending"
+        (root / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
     return {
         "environment": "staging", "run_id": run_id, "production_data": False,
         "status": "passed", "python_worker_restored": True,
@@ -592,14 +606,148 @@ def rollback(run_id: str) -> dict[str, Any]:
     }
 
 
+def _switch_error_code(error: BaseException) -> str:
+    """Return a bounded, non-sensitive code for switch evidence."""
+    code = getattr(error, "code", None) or str(error)
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", str(code)):
+        return "staging_architecture_switch_failed"
+    return str(code)
+
+
+def _write_switch_failure(evidence: Path, error: BaseException, phase: str,
+                          rollback_attempted: bool, rollback_succeeded: bool,
+                          flink_cancelled: bool) -> None:
+    payload: dict[str, Any] = {
+        "environment": "staging",
+        "phase": phase,
+        "status": "failed",
+        "error_type": type(error).__name__,
+        "error_code": _switch_error_code(error),
+        "rollback_attempted": rollback_attempted,
+        "rollback_succeeded": rollback_succeeded,
+        "flink_cancelled": flink_cancelled,
+    }
+    diagnostic = getattr(error, "diagnostic", None)
+    if callable(diagnostic):
+        details = diagnostic()
+        if isinstance(details, dict):
+            for key in ("stage", "endpoint", "http_status"):
+                if key in details:
+                    payload[key] = details[key]
+    (evidence / "switch-failure.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+    )
+
+
+def _worker_state(root: Path, *, include_stopped: bool = True) -> str:
+    args = ["ps"]
+    if include_stopped:
+        args.append("-a")
+    args += ["--format", "json"]
+    states = _json_array_or_lines(_compose(root, *args).stdout)
+    worker = next((item for item in states
+                   if item.get("Service") == "python-metadata-worker"), None)
+    if worker is None:
+        raise ValueError("Staging Python metadata worker missing")
+    return str(worker.get("State", "")).lower()
+
+
+def switch(run_id: str) -> dict[str, Any]:
+    """Activate Flink for the validated task-metadata projection only."""
+    root, manifest, _ = _load(run_id)
+    if manifest.get("started") is not True:
+        raise ValueError("Staging event pipeline must be applied before switch")
+    evidence_root = root / "evidence"
+    evidence_root.mkdir(mode=0o700, exist_ok=True)
+    evidence = Path(tempfile.mkdtemp(prefix="switch-", dir=evidence_root))
+    project = manifest["project"]
+    pipeline_sql = root / "pipeline.sql"
+    identity = (
+        flink_submission.validate_sql_identity(pipeline_sql.read_text(encoding="utf-8"), run_id)
+        if pipeline_sql.is_file()
+        else {"sinks": sorted(flink_submission.EXPECTED_SINKS)}
+    )
+    phase = "flink_identity"
+    worker_stopped = False
+    rollback_attempted = False
+    rollback_succeeded = False
+    flink_cancelled = False
+    current: list[dict[str, Any]] = []
+    try:
+        client = flink_submission.FlinkRest(_container(project, "jobmanager"))
+        current, foreign = flink_submission.partition_active_jobs(client.overview(), run_id)
+        if foreign:
+            raise ValueError("foreign Staging Flink job found")
+        if len(current) != 1:
+            raise ValueError("Staging Flink metadata job is not uniquely running")
+        phase = "flink_runtime"
+        flink_submission.wait_for_runtime(
+            client, run_id, lambda: _consumer_group(project, f"{run_id}-flink"), timeout=60,
+            expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
+        )
+        phase = "python_worker_stop"
+        previous_worker_state = _worker_state(root)
+        if not previous_worker_state.startswith("running"):
+            raise ValueError("Staging Python metadata worker is not running")
+        _compose(root, "stop", "python-metadata-worker")
+        worker_stopped = True
+        worker_state = _worker_state(root)
+        if not (worker_state.startswith("exited") or worker_state.startswith("stopped")):
+            raise ValueError("Staging Python metadata worker did not stop")
+        payload = {
+            "environment": "staging", "run_id": run_id, "domain": "task_metadata",
+            "active_engine": "flink", "previous_engine": "python",
+            "python_worker_stopped": True,
+            "previous_worker_state": previous_worker_state,
+            "worker_state": worker_state,
+            "flink_job_id": str(current[0].get("jid", "")),
+            "flink_runtime_verified": True, "application_read_source": "mysql",
+            "business_writes": "mysql_outbox",
+            "production_data": False, "status": "passed",
+        }
+        (evidence / "switch.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
+        manifest.update({
+            "architecture": {"domain": "task_metadata", "available": True, "active": True,
+                              "projection_engine": "flink", "previous_engine": "python",
+                              "application_read_source": "mysql",
+                              "evidence": str(evidence / "switch.json")},
+            "acceptance": "pending",
+        })
+        (root / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
+        return payload
+    except BaseException as error:
+        if worker_stopped:
+            rollback_attempted = True
+            try:
+                if current:
+                    client.cancel(str(current[0].get("jid", "")))
+                    flink_cancelled = True
+                _compose(root, "start", "python-metadata-worker")
+                rollback_succeeded = flink_cancelled and _worker_state(root).startswith("running")
+            except BaseException:
+                rollback_succeeded = False
+        if worker_stopped and not rollback_succeeded:
+            # Preserve the evidence even when recovery itself failed.  The
+            # gateway caller must inspect switch-failure.json before retrying.
+            rollback_succeeded = False
+        _write_switch_failure(
+            evidence, error, phase, rollback_attempted, rollback_succeeded, flink_cancelled,
+        )
+        raise
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("measure", "apply", "sample", "rollback"))
+    parser.add_argument("action", choices=("measure", "apply", "switch", "sample", "rollback"))
     parser.add_argument("--run-id", required=True)
     args = parser.parse_args()
     try:
-        action = {"measure": measure, "apply": apply, "sample": metrics_sample,
-                  "rollback": rollback}[args.action]
+        action = {"measure": measure, "apply": apply, "switch": switch,
+                  "sample": metrics_sample, "rollback": rollback}[args.action]
         print(json.dumps(action(args.run_id), sort_keys=True))
     except Exception:
         raise SystemExit("Staging event-pipeline control refused; inspect private evidence") from None

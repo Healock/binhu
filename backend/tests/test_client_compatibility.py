@@ -201,7 +201,25 @@ class ClientCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             payload["feature_flags"]["client_write_identification_required"]
         )
+        self.assertEqual(payload["architecture_upgrade"]["status"], "available")
+        self.assertTrue(payload["architecture_upgrade"]["ready"])
+        self.assertTrue(payload["architecture_upgrade"]["available"])
+        self.assertEqual(payload["architecture_upgrade"]["authoritative_path"], "mysql")
+        self.assertFalse(payload["architecture_upgrade"]["active"])
+        self.assertNotIn("fallback_enabled", payload["architecture_upgrade"])
         self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    async def test_bootstrap_omits_architecture_state_for_anonymous_clients(self):
+        response = Response()
+        payload = await get_app_bootstrap(
+            response=response,
+            client_platform=None,
+            client_version=None,
+            user=None,
+            conn=FakeConnection(),
+        )
+        self.assertFalse(payload["authenticated"])
+        self.assertNotIn("architecture_upgrade", payload)
 
 
 if __name__ == "__main__":

@@ -293,8 +293,11 @@ def control(run_id: str, action: str) -> None:
         fail("prepared Staging candidate required")
     result = run_module(run_id, action)
     manifest = json.loads(((CANDIDATES / run_id) / "manifest.json").read_text(encoding="utf-8"))
-    if action == "apply":
-        manifest.update({"started": True, "acceptance": "pending"})
+    if action in {"apply", "switch"}:
+        if action == "apply":
+            manifest.update({"started": True, "acceptance": "pending"})
+        else:
+            manifest.update({"acceptance": "pending"})
         current = STATE / "current.json"
         current.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         current.chmod(0o600)
@@ -428,7 +431,7 @@ def main() -> None:
         status(); return
     if len(sys.argv) == 6 and sys.argv[1] == "prepare":
         prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]); return
-    if len(sys.argv) == 3 and sys.argv[1] in {"measure", "apply", "sample", "rollback"}:
+    if len(sys.argv) == 3 and sys.argv[1] in {"measure", "apply", "switch", "sample", "rollback"}:
         control(sys.argv[2], sys.argv[1]); return
     if len(sys.argv) == 3 and sys.argv[1] == "run":
         seed(sys.argv[2]); return

@@ -72,6 +72,7 @@ from services.work_activity import (
     record_work_activity,
 )
 from services.domain_events import enqueue_event
+from services.derived_projection_adapter import read_derived_projection, selected_engine
 from services.task_assignment_responsibility import (
     capture_first_assignment,
     migrate_responsibility_row_key,
@@ -2081,6 +2082,47 @@ async def list_writeback_audit(
             params + [page_size, (page - 1) * page_size],
         )
         rows = await cur.fetchall()
+        projection_engine = "mysql"
+        projection_status = "authoritative"
+        projection_hints: dict[str, dict[str, Any]] = {}
+        if (
+            settings.APP_ENVIRONMENT in {"development", "staging"}
+            and str(getattr(settings, "ARCHITECTURE_UPGRADE_DOMAIN", "")) == "online_source"
+        ):
+            configured_engine = selected_engine(
+                settings.APP_ENVIRONMENT,
+                read_source=getattr(settings, "ARCHITECTURE_UPGRADE_READ_SOURCE", "mysql"),
+            )
+            run_id = str(getattr(settings, "ARCHITECTURE_UPGRADE_RUN_ID", "") or "").strip()
+            database = str(
+                getattr(settings, "ARCHITECTURE_UPGRADE_DERIVED_DATABASE", "") or ""
+            ).strip()
+            if configured_engine == "flink" and run_id and database:
+                projection_engine = "flink"
+                for row in rows:
+                    if row[5] is None:
+                        continue
+                    try:
+                        hint = await read_derived_projection(
+                            cur,
+                            environment=settings.APP_ENVIRONMENT,
+                            run_id=run_id,
+                            task_id=str(row[0]),
+                            source_id=int(row[5]),
+                            engine="flink",
+                            database=database,
+                        )
+                    except Exception:
+                        if not getattr(settings, "ARCHITECTURE_UPGRADE_FALLBACK_ENABLED", True):
+                            raise HTTPException(status_code=503, detail="派生投影暂不可用") from None
+                        projection_status = "mysql_fallback"
+                        break
+                    if hint is not None:
+                        projection_hints[str(row[0])] = hint
+                else:
+                    projection_status = "flink_freshness_checked"
+            elif configured_engine == "flink":
+                projection_status = "mysql_fallback_missing_contract"
     return {
         "data": [
             {
@@ -2417,6 +2459,11 @@ async def _projection_query(
                         parser.community_value(values),
                         values.get("核查人"),
                     )
+                ),
+                "__projection_engine": projection_engine,
+                "__projection_status": projection_status,
+                "__projection_revision": (
+                    projection_hints.get(str(row[0]), {}).get("revision")
                 ),
             })
             data.append(record)

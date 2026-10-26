@@ -42,7 +42,7 @@ import PublicProfile from './pages/PublicProfile'
 import RoleDashboard from './pages/RoleDashboard'
 import RegistryManagement from './pages/RegistryManagement'
 import VenueCodeManagement, { PublicVenuePage } from './pages/VenueCodeManagement'
-import WorkflowTickets from './pages/WorkflowTickets'
+import ProcessCenter from './pages/ProcessCenter'
 import AnalysisWorkbench from './pages/AnalysisWorkbench'
 import WorkflowConfig from './pages/WorkflowConfig'
 import FunctionModulesSettings from './pages/FunctionModulesSettings'
@@ -197,7 +197,7 @@ function App() {
               </Route>
               <Route path="/watch-people" element={<Navigate to="/registry" replace />} />
               <Route element={<ProtectedRoute requireModule="workflow" requirePermission="workflow.ticket.view" />}>
-                <Route path="/workflow" element={<WorkflowTickets />} />
+                <Route path="/workflow" element={<ProcessCenter />} />
               </Route>
               {/* 用户管理仅超管 */}
               <Route element={<ProtectedRoute requireModule="platform_admin" requirePermission="user.manage" />}>

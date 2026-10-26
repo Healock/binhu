@@ -211,12 +211,30 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
             await conn.begin()
             async with conn.cursor() as cur:
                 assert await ProcessEngine(cur).advance_timeouts(now=now) == 1
-                await cur.execute("SELECT escalation_stage,status FROM process_tasks WHERE instance_id=%s",
+                await cur.execute("SELECT id,escalation_stage,status FROM process_tasks WHERE instance_id=%s",
                                   (instance_id,))
-                assert await cur.fetchone() == (1, "admin_hold")
+                held_task_id, held_stage, held_status = await cur.fetchone()
+                assert (held_stage, held_status) == (1, "admin_hold")
                 await cur.execute("SELECT status FROM process_instances WHERE id=%s", (instance_id,))
                 assert (await cur.fetchone())[0] == "admin_hold"
             await conn.commit()
+
+        async with workflow_pool.acquire() as conn:
+            await conn.begin()
+            async with conn.cursor() as cur:
+                terminated = await ProcessEngine(cur).admin_intervene(
+                    instance_id=instance_id, actor_user_id=fixture_user_id + 3,
+                    terminate=True, note="集成测试管理员终止", now=now + timedelta(hours=1),
+                )
+                assert terminated["status"] == "terminated"
+            await conn.commit()
+        async with platform_pool.acquire() as conn:
+            async with conn.cursor(aiomysql.Cursor) as cur:
+                await cur.execute(
+                    "SELECT COUNT(*) FROM _notifications WHERE user_id=%s AND category=%s",
+                    (fixture_user_id, "workflow_admin_terminated"),
+                )
+                assert (await cur.fetchone())[0] == 1
 
         async with platform_pool.acquire() as conn:
             async with conn.cursor(aiomysql.Cursor) as cur:
@@ -276,6 +294,56 @@ async def test_mysql_split_domains_advance_empty_position_order_to_admin_hold():
                     2, "pending", [fixture_user_id, peer_user_id, manager_user_id]
                 )
             await conn.commit()
+
+        async with workflow_pool.acquire() as conn:
+            await conn.begin()
+            async with conn.cursor() as cur:
+                # The next timeout exhausts the configured sequence and must
+                # hold the same task for an administrator.
+                assert await ProcessEngine(cur).advance_timeouts(now=now + timedelta(hours=2)) == 1
+                await cur.execute(
+                    "SELECT id,escalation_stage,status FROM process_tasks WHERE instance_id=%s",
+                    (position_instance_id,),
+                )
+                task_id, stage, status = await cur.fetchone()
+                assert (stage, status) == (2, "admin_hold")
+                await cur.execute("SELECT status FROM process_instances WHERE id=%s", (position_instance_id,))
+                assert (await cur.fetchone())[0] == "admin_hold"
+                released = await ProcessEngine(cur).admin_intervene(
+                    instance_id=position_instance_id, actor_user_id=fixture_user_id + 3,
+                    assignee_user_id=manager_user_id, note="集成测试管理员放行",
+                    now=now + timedelta(hours=3),
+                )
+                assert released["status"] == "running"
+                await cur.execute("SELECT status,assignees FROM process_tasks WHERE id=%s", (task_id,))
+                task_status, released_assignees = await cur.fetchone()
+                assert (task_status, json.loads(released_assignees)) == ("pending", [manager_user_id])
+                completed = await ProcessEngine(cur).decide(
+                    task_id=task_id, actor_user_id=manager_user_id, decision="complete",
+                    note="集成测试完成", now=now + timedelta(hours=4),
+                )
+                assert completed["status"] == "completed"
+                await cur.execute("SELECT status,completed_at FROM process_instances WHERE id=%s", (position_instance_id,))
+                instance_status, completed_at = await cur.fetchone()
+                assert instance_status == "completed"
+                assert completed_at is not None
+                await cur.execute(
+                    "SELECT event_type FROM process_events WHERE instance_id=%s ORDER BY id",
+                    (position_instance_id,),
+                )
+                event_types = [row[0] for row in await cur.fetchall()]
+                assert "task_escalated" in event_types
+                assert "admin_intervention_required" in event_types
+                assert "admin_released" in event_types
+                assert "task_decided" in event_types
+            await conn.commit()
+        async with platform_pool.acquire() as conn:
+            async with conn.cursor(aiomysql.Cursor) as cur:
+                await cur.execute(
+                    "SELECT COUNT(*) FROM _notifications WHERE user_id=%s AND category=%s",
+                    (manager_user_id, "workflow_admin_released"),
+                )
+                assert (await cur.fetchone())[0] == 1
     finally:
         for process_id in process_ids:
             async with workflow_pool.acquire() as conn:

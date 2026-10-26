@@ -1,6 +1,10 @@
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.StatementSet;
 import org.apache.flink.table.api.TableEnvironment;
@@ -9,20 +13,28 @@ import org.apache.flink.table.api.TableEnvironment;
 public final class PipelineJob {
     private static final String UID_DEV_REVISIONS = "dev-revisions";
     private static final String UID_DEV_METADATA = "dev-metadata";
+    private static final Pattern INSERT_SINK = Pattern.compile(
+        "^INSERT\\s+INTO\\s+(dev_[A-Za-z0-9_]+)\\b", Pattern.CASE_INSENSITIVE);
     /**
      * Table SQL is translated into streaming transformations by the planner.
      * Enabling ALWAYS makes those transformations carry explicit UIDs.  A
-     * single StatementSet keeps both sinks behind one Kafka source and one
+     * single StatementSet keeps every metadata sink behind one Kafka source and one
      * consumer group, while the fixed format keeps UIDs stable across
      * recompiles.  It never includes the run id or a secret.
      */
     private static String uid(String prefix) {
-        return "dev-pipeline-<id>_<transformation>";
+        // Base format retained in the contract: dev-pipeline-<id>_<transformation>.
+        return "dev-pipeline-" + prefix + "-<id>_<transformation>";
     }
 
     private static void uid(TableEnvironment table, String prefix) {
         table.getConfig().getConfiguration().setString("table.exec.uid.generation", "ALWAYS");
         table.getConfig().getConfiguration().setString("table.exec.uid.format", uid(prefix));
+    }
+
+    private static String insertSink(String command) {
+        Matcher matcher = INSERT_SINK.matcher(command);
+        return matcher.find() ? matcher.group(1).toLowerCase(Locale.ROOT) : "";
     }
 
     private static String safeFailureCode(Throwable failure) {
@@ -59,6 +71,7 @@ public final class PipelineJob {
         String sql = Files.readString(Path.of("/opt/flink/private/pipeline.sql"));
         TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
         StatementSet statementSet = table.createStatementSet();
+        Set<String> sinks = new HashSet<>();
         int index = 0;
         try {
             for (String statement : sql.split(";")) {
@@ -71,16 +84,25 @@ public final class PipelineJob {
                         pair[0].substring(1, pair[0].length() - 1),
                         pair[1].substring(1, pair[1].length() - 1));
                 } else if (!command.isBlank()) {
-                    if (command.startsWith("INSERT INTO dev_revisions") ||
-                        command.startsWith("INSERT INTO dev_task_metadata")) {
-                        uid(table, command.startsWith("INSERT INTO dev_revisions")
-                            ? UID_DEV_REVISIONS : UID_DEV_METADATA);
+                    String sink = insertSink(command);
+                    if (!sink.isEmpty()) {
+                        uid(table, sink);
                         statementSet.addInsertSql(command);
+                        sinks.add(sink);
+                    } else if (command.toUpperCase(Locale.ROOT).startsWith("INSERT ")) {
+                        throw new IllegalArgumentException("unsupported INSERT target");
                     } else {
+                        String upper = command.toUpperCase(Locale.ROOT);
+                        if (!upper.startsWith("CREATE TABLE ") && !upper.startsWith("CREATE VIEW ")) {
+                            throw new IllegalArgumentException("unsupported SQL command");
+                        }
                         String ddl = command;
                         table.executeSql(ddl);
                     }
                 }
+            }
+            if (!sinks.contains("dev_revisions") || !sinks.contains("dev_task_metadata")) {
+                throw new IllegalArgumentException("base projection sinks missing");
             }
             statementSet.execute();
         } catch (Exception failure) {

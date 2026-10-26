@@ -1,4 +1,5 @@
-"""Render a bounded, isolated Dev or Staging metadata aggregation job."""
+"""Render the single Kafka source / multi-sink Flink projection job."""
+from .projection_definitions import flink_sql as projection_flink_sql
 from .runtime import configuration
 
 
@@ -7,7 +8,7 @@ def render(environ):
     run = config["RUN_ID"]
     environment = config["APP_ENVIRONMENT"]
     checkpoint_scope = "dev" if environment == "development" else "staging"
-    password = config["MYSQL_PASSWORD"]  # Validated hex; saved only server-private.
+    password = config["MYSQL_PASSWORD"]
     return f"""SET 'execution.checkpointing.interval' = '10 s';
 SET 'execution.checkpointing.mode' = 'EXACTLY_ONCE';
 SET 'execution.checkpointing.externalized-checkpoint-retention' = 'RETAIN_ON_CANCELLATION';
@@ -42,7 +43,6 @@ FROM dev_events
 WHERE environment = '{environment}' AND run_id = '{run}'
  AND schema_version = 1 AND source_id > 0 AND revision >= 0
 GROUP BY run_id, task_id, source_id;
-
 CREATE TABLE dev_task_metadata (
  run_id VARCHAR(80), task_id VARCHAR(96), source_id BIGINT, revision BIGINT,
  event_count BIGINT, changed_field_count BIGINT,
@@ -60,7 +60,8 @@ CREATE TABLE dev_task_metadata (
 CREATE VIEW dev_unique_events AS
 SELECT schema_version, event_id, event_type, task_id, source_id, revision,
        operation_id, MAX(CARDINALITY(changed_fields)) AS changed_field_count,
-       `timestamp`, environment, run_id
+       `timestamp`, environment, run_id,
+       MAX_BY(changed_fields, revision) AS changed_fields
 FROM dev_events
 WHERE environment = '{environment}' AND run_id = '{run}'
   AND schema_version = 1 AND source_id > 0 AND revision >= 0
@@ -78,4 +79,8 @@ SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),
  SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)
 FROM dev_unique_events
 GROUP BY run_id, task_id, source_id;
+{projection_flink_sql(config)}
 """
+
+
+__all__ = ["render"]

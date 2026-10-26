@@ -25,6 +25,10 @@ ASSIGNEE_TYPES = {
 }
 POSITION_ORDER_CONFIG = "process_position_order"
 MAX_REJECTIONS = 3
+FORM_FIELD_TYPES = {
+    "text", "textarea", "number", "date", "datetime", "select",
+    "person", "attachment", "static", "group",
+}
 
 
 class ProcessValidationError(ValueError):
@@ -43,6 +47,87 @@ def parse_json(value: Any, default: Any) -> Any:
         except (TypeError, ValueError):
             return default
     return default
+
+
+def validate_form_schema(schema: Any) -> dict[str, Any]:
+    if not isinstance(schema, dict) or not isinstance(schema.get("fields"), list):
+        raise ProcessValidationError("表单 schema 必须包含 fields 数组")
+    seen: set[str] = set()
+
+    def visit(fields: list[Any]) -> None:
+        for raw in fields:
+            if not isinstance(raw, dict):
+                raise ProcessValidationError("表单字段必须是对象")
+            field_type = str(raw.get("type") or "").strip()
+            if field_type not in FORM_FIELD_TYPES:
+                raise ProcessValidationError(f"不支持的表单控件类型：{field_type or '空'}")
+            key = str(raw.get("key") or raw.get("name") or "").strip()
+            if field_type not in {"static", "group"}:
+                if not key or key in seen:
+                    raise ProcessValidationError("表单字段 key 必须唯一且不能为空")
+                seen.add(key)
+            if field_type == "select":
+                options = raw.get("options")
+                if not isinstance(options, list) or not options or any(not str(item).strip() for item in options):
+                    raise ProcessValidationError(f"下拉字段 {key} 必须配置非空 options")
+            for limit_name in ("max_length", "max_items"):
+                if raw.get(limit_name) is not None and (
+                    not isinstance(raw[limit_name], int) or raw[limit_name] < 1
+                ):
+                    raise ProcessValidationError(f"{key} 的 {limit_name} 必须是正整数")
+            if field_type == "attachment" and raw.get("max_items") is None:
+                raise ProcessValidationError(f"附件字段 {key} 必须配置 max_items")
+            if field_type == "attachment" and raw.get("required"):
+                raise ProcessValidationError("当前附件上传尚未启用，附件字段不能设为必填")
+            if field_type == "group":
+                children = raw.get("children") or raw.get("fields")
+                if not isinstance(children, list):
+                    raise ProcessValidationError(f"分组字段 {key or '未命名'} 必须包含 children")
+                visit(children)
+    visit(schema["fields"])
+    return schema
+
+
+def validate_form_data(schema: dict[str, Any], data: Any) -> dict[str, Any]:
+    validate_form_schema(schema)
+    if not isinstance(data, dict):
+        raise ProcessValidationError("表单数据必须是 JSON 对象")
+
+    def visit(fields: list[Any], values: dict[str, Any]) -> None:
+        for field in fields:
+            field_type = str(field.get("type") or "")
+            if field_type == "static":
+                continue
+            if field_type == "group":
+                nested = values.get(field.get("key") or field.get("name"), values)
+                if not isinstance(nested, dict):
+                    raise ProcessValidationError(f"分组 {field.get('label') or field.get('key')} 数据必须是对象")
+                visit(field.get("children") or field.get("fields") or [], nested)
+                continue
+            key = str(field.get("key") or field.get("name") or "")
+            value = values.get(key)
+            empty = value is None or value == "" or value == []
+            if field.get("required") and empty:
+                raise ProcessValidationError(f"请填写必填字段：{field.get('label') or key}")
+            if empty:
+                continue
+            if field_type in {"text", "textarea", "date", "datetime", "select"} and not isinstance(value, str):
+                raise ProcessValidationError(f"字段 {field.get('label') or key} 类型错误")
+            if field_type == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                raise ProcessValidationError(f"字段 {field.get('label') or key} 必须是数字")
+            if field_type == "select" and value not in field.get("options", []):
+                raise ProcessValidationError(f"字段 {field.get('label') or key} 取值不在枚举范围内")
+            if field_type == "person" and not (isinstance(value, int) and value > 0):
+                raise ProcessValidationError(f"字段 {field.get('label') or key} 必须选择人员")
+            if field_type == "attachment":
+                if not isinstance(value, list):
+                    raise ProcessValidationError(f"附件字段 {field.get('label') or key} 必须是数组")
+                if len(value) > int(field.get("max_items") or 0):
+                    raise ProcessValidationError(f"附件字段 {field.get('label') or key} 超过数量上限")
+            if field.get("max_length") and isinstance(value, str) and len(value) > int(field["max_length"]):
+                raise ProcessValidationError(f"字段 {field.get('label') or key} 超过长度上限")
+    visit(schema["fields"], data)
+    return data
 
 
 def validate_nodes(nodes: Any) -> list[dict[str, Any]]:
@@ -72,6 +157,20 @@ def validate_nodes(nodes: Any) -> list[dict[str, Any]]:
         assignee_params = raw.get("assignee_params") or {}
         if not isinstance(assignee_params, dict):
             raise ProcessValidationError("assignee_params 必须是 JSON 对象")
+        if assignee_type == "指定成员" and not (
+            assignee_params.get("user_id") or assignee_params.get("user_ids")
+        ):
+            raise ProcessValidationError("指定成员节点必须配置 user_id 或 user_ids")
+        if assignee_type in {"发起人自选", "表单联系人字段"} and not str(assignee_params.get("field") or "").strip():
+            raise ProcessValidationError(f"{assignee_type}节点必须配置 field")
+        if assignee_type == "岗位" and not str(assignee_params.get("position") or "").strip():
+            raise ProcessValidationError("岗位节点必须配置 position")
+        if assignee_type == "部门主管" and not (
+            assignee_params.get("department_id") and (
+                assignee_params.get("user_ids") or assignee_params.get("user_ids_by_department")
+            )
+        ):
+            raise ProcessValidationError("部门主管节点必须配置 department_id 和候选成员")
         timeout_hours = raw.get("timeout_hours")
         if timeout_hours is not None and (not isinstance(timeout_hours, int) or timeout_hours < 1):
             raise ProcessValidationError("timeout_hours 必须是正整数")
@@ -192,9 +291,8 @@ class ProcessEngine:
         return int(self.cur.lastrowid)
 
     async def publish_form(self, form_definition_id: int, schema: dict[str, Any],
-                           published_by: int | None = None) -> int:
-        if not isinstance(schema, dict):
-            raise ProcessValidationError("表单 schema 必须是 JSON 对象")
+                           published_by: int | None = None, *, publish: bool = True) -> int:
+        validate_form_schema(schema)
         await self.cur.execute("SELECT id FROM form_definitions WHERE id=%s FOR UPDATE", (form_definition_id,))
         if not await self.cur.fetchone():
             raise ProcessValidationError("表单定义不存在")
@@ -204,16 +302,19 @@ class ProcessEngine:
             (form_definition_id,),
         )
         version_no = int((await self.cur.fetchone())[0]) + 1
+        status = "published" if publish else "draft"
         await self.cur.execute(
             "INSERT INTO form_versions (form_definition_id,version_no,schema_json,status,published_by,published_at) "
-            "VALUES (%s,%s,%s,'published',%s,UTC_TIMESTAMP())",
-            (form_definition_id, version_no, payload, published_by),
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (form_definition_id, version_no, payload, status, published_by if publish else None,
+             datetime.utcnow() if publish else None),
         )
         version_id = int(self.cur.lastrowid)
-        await self.cur.execute(
-            "UPDATE form_definitions SET current_version_id=%s,enabled=1,updated_by=%s WHERE id=%s",
-            (version_id, published_by, form_definition_id),
-        )
+        if publish:
+            await self.cur.execute(
+                "UPDATE form_definitions SET current_version_id=%s,enabled=1,updated_by=%s WHERE id=%s",
+                (version_id, published_by, form_definition_id),
+            )
         return version_id
 
     async def create_process(self, *, code: str, name: str, description: str = "",
@@ -230,7 +331,7 @@ class ProcessEngine:
         return int(self.cur.lastrowid)
 
     async def publish_process(self, process_definition_id: int, nodes: Any,
-                              published_by: int | None = None) -> int:
+                              published_by: int | None = None, *, publish: bool = True) -> int:
         normalized = validate_nodes(nodes)
         await self.cur.execute(
             "SELECT id FROM process_definitions WHERE id=%s FOR UPDATE", (process_definition_id,)
@@ -243,16 +344,19 @@ class ProcessEngine:
         )
         version_no = int((await self.cur.fetchone())[0]) + 1
         payload = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        status = "published" if publish else "draft"
         await self.cur.execute(
             "INSERT INTO process_versions (process_definition_id,version_no,nodes_json,status,published_by,published_at) "
-            "VALUES (%s,%s,%s,'published',%s,UTC_TIMESTAMP())",
-            (process_definition_id, version_no, payload, published_by),
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (process_definition_id, version_no, payload, status, published_by if publish else None,
+             datetime.utcnow() if publish else None),
         )
         version_id = int(self.cur.lastrowid)
-        await self.cur.execute(
-            "UPDATE process_definitions SET current_version_id=%s, enabled=1, updated_by=%s WHERE id=%s",
-            (version_id, published_by, process_definition_id),
-        )
+        if publish:
+            await self.cur.execute(
+                "UPDATE process_definitions SET current_version_id=%s, enabled=1, updated_by=%s WHERE id=%s",
+                (version_id, published_by, process_definition_id),
+            )
         return version_id
 
     async def _version(self, version_id: int) -> tuple[int, list[dict[str, Any]]]:
@@ -333,6 +437,10 @@ class ProcessEngine:
         task_id = int(self.cur.lastrowid)
         await self._event(instance_id, task_id, "task_created", requester, "", "pending",
                           {"node_key": node["node_key"], "assignees": assignees})
+        await self._notify_users(
+            instance_id, assignees, event_key="task_created", title="新的流程待办",
+            content=f"流程节点“{node['name']}”已分配给你，请及时处理。",
+        )
         return task_id
 
     async def _notify_admins(self, instance_id: int, content: str) -> None:
@@ -345,6 +453,13 @@ class ProcessEngine:
             self.cur, user_ids=admins, ticket_id=instance_id,
             event_key=f"process_admin_{instance_id}", title="流程需要管理员介入",
             content=content, severity="warning",
+        )
+
+    async def _notify_users(self, instance_id: int, user_ids: Iterable[int], *, event_key: str,
+                            title: str, content: str, severity: str = "info") -> None:
+        await workflow_notification(
+            self.cur, user_ids=_unique_ids(user_ids), ticket_id=instance_id,
+            event_key=event_key, title=title, content=content, severity=severity,
         )
 
     async def _position_order(self) -> list[str]:
@@ -361,11 +476,30 @@ class ProcessEngine:
         row = await self.cur.fetchone()
         return parse_json(row[0], []) if row else []
 
+    async def _validate_process_form(self, process_id: int, data: dict[str, Any]) -> None:
+        await self.cur.execute(
+            "SELECT definition.form_definition_id,form_definition.current_version_id,form_version.schema_json "
+            "FROM process_definitions definition LEFT JOIN form_definitions form_definition "
+            "ON form_definition.id=definition.form_definition_id LEFT JOIN form_versions form_version "
+            "ON form_version.id=form_definition.current_version_id WHERE definition.id=%s",
+            (process_id,),
+        )
+        row = await self.cur.fetchone()
+        if row and row[0] and row[2]:
+            validate_form_data(parse_json(row[2], {}), data)
+
+    async def _validate_process_form_from_instance(self, instance_id: int, data: dict[str, Any]) -> None:
+        await self.cur.execute("SELECT process_definition_id FROM process_instances WHERE id=%s", (instance_id,))
+        row = await self.cur.fetchone()
+        if row:
+            await self._validate_process_form(int(row[0]), data)
+
     async def start(self, *, process_version_id: int, requester_user_id: int,
                     title: str, description: str = "", form_data: dict[str, Any] | None = None,
                     now=None) -> dict[str, Any]:
         process_id, nodes = await self._version(process_version_id)
         data = dict(form_data or {})
+        await self._validate_process_form(process_id, data)
         instance_no = _instance_no()
         await self.cur.execute(
             "INSERT INTO process_instances (instance_no,process_definition_id,process_version_id,title,description,requester_user_id,status,current_node_key,form_data,submitted_at) "
@@ -452,6 +586,7 @@ class ProcessEngine:
         nodes, instance = await self._nodes_for_instance(instance_id)
         if instance["requester"] != int(requester_user_id) or instance["status"] != "returned":
             raise ProcessValidationError("只有被退回的本人可以重提")
+        await self._validate_process_form_from_instance(instance_id, form_data)
         await self.cur.execute(
             "SELECT node_key,task_order FROM process_tasks WHERE instance_id=%s AND status='returned' ORDER BY id DESC LIMIT 1",
             (instance_id,),
@@ -468,6 +603,70 @@ class ProcessEngine:
         await self._event(instance_id, task_id, "task_resubmitted", requester_user_id, "returned", "running",
                           {"form_snapshot": form_data})
         return {"instance_id": instance_id, "task_id": task_id, "status": "running"}
+
+    async def admin_intervene(self, *, instance_id: int, actor_user_id: int,
+                              assignee_user_id: int | None = None,
+                              terminate: bool = False, note: str = "", now=None) -> dict[str, Any]:
+        """Release an admin-held task to one user or terminate the instance."""
+        now = now or datetime.utcnow()
+        await self.cur.execute(
+            "SELECT task.id,task.node_key,task.status,task.assignees,instance.requester_user_id "
+            "FROM process_tasks task JOIN process_instances instance ON instance.id=task.instance_id "
+            "WHERE task.instance_id=%s AND task.status='admin_hold' ORDER BY task.id DESC LIMIT 1 FOR UPDATE",
+            (instance_id,),
+        )
+        task = await self.cur.fetchone()
+        if not task:
+            raise ProcessValidationError("流程当前没有等待管理员处理的任务")
+        if terminate:
+            await self.cur.execute(
+                "UPDATE process_tasks SET status='terminated',decision='terminate',decision_note=%s,"
+                "decided_by=%s,decided_at=%s,revision_no=revision_no+1 WHERE id=%s",
+                (note, actor_user_id, now, int(task[0])),
+            )
+            await self.cur.execute(
+                "UPDATE process_instances SET status='terminated',cancelled_at=%s,cancel_reason=%s,"
+                "current_node_key='' WHERE id=%s", (now, note, instance_id),
+            )
+            await self._event(instance_id, int(task[0]), "admin_terminated", actor_user_id,
+                              "admin_hold", "terminated", {"note": note})
+            await self._notify_users(
+                instance_id, [int(task[4])], event_key="admin_terminated", title="流程已终止",
+                content="管理员已终止你发起的流程，请查看处理说明。", severity="warning",
+            )
+            return {"instance_id": instance_id, "task_id": int(task[0]), "status": "terminated"}
+        if not assignee_user_id or int(assignee_user_id) <= 0:
+            raise ProcessValidationError("放行时必须指定新的处理人")
+        await self.cur.execute("SELECT id FROM _users WHERE id=%s", (int(assignee_user_id),))
+        if not await self.cur.fetchone():
+            raise ProcessValidationError("指定的处理人不存在")
+        await self.cur.execute(
+            "SELECT process_version_id FROM process_instances WHERE id=%s FOR UPDATE", (instance_id,)
+        )
+        instance_row = await self.cur.fetchone()
+        if not instance_row:
+            raise ProcessValidationError("流程实例不存在")
+        _, nodes = await self._version(int(instance_row[0]))
+        node = next((item for item in nodes if item["node_key"] == task[1]), None)
+        due = now + timedelta(hours=int((node or {}).get("timeout_hours") or 24))
+        await self.cur.execute(
+            "UPDATE process_tasks SET status='pending',assignees=%s,primary_assignee_user_id=%s,"
+            "due_at=%s,decision='',decision_note='',decided_by=NULL,decided_at=NULL,"
+            "revision_no=revision_no+1 WHERE id=%s",
+            (json.dumps([int(assignee_user_id)]), int(assignee_user_id), due, int(task[0])),
+        )
+        await self.cur.execute(
+            "UPDATE process_instances SET status='running',current_node_key=%s,revision_no=revision_no+1 WHERE id=%s",
+            (task[1], instance_id),
+        )
+        await self._event(instance_id, int(task[0]), "admin_released", actor_user_id,
+                          "admin_hold", "running", {"assignee_user_id": int(assignee_user_id), "note": note})
+        await self._notify_users(
+            instance_id, [int(assignee_user_id)], event_key="admin_released", title="流程已由管理员放行",
+            content="管理员已将流程挂起节点指派给你，请及时处理。", severity="warning",
+        )
+        return {"instance_id": instance_id, "task_id": int(task[0]), "status": "running",
+                "assignee_user_id": int(assignee_user_id)}
 
     async def advance_timeouts(self, *, now=None) -> int:
         now = now or datetime.utcnow()
@@ -545,6 +744,10 @@ class ProcessEngine:
                                        (json.dumps(merged), next_stage, due, task_id))
                 await self._event(int(instance_id), int(task_id), "task_escalated", None, "pending", "pending",
                                   {"stage": next_stage, "added_assignees": candidates})
+                await self._notify_users(
+                    int(instance_id), candidates, event_key="task_escalated", title="流程超时升级",
+                    content=f"流程节点“{node['name']}”已超时并升级到你，请及时处理。", severity="warning",
+                )
             elif next_stage >= 2:
                 await self.cur.execute("UPDATE process_tasks SET status='admin_hold',revision_no=revision_no+1 WHERE id=%s", (task_id,))
                 await self.cur.execute("UPDATE process_instances SET status='admin_hold' WHERE id=%s", (instance_id,))
@@ -560,6 +763,11 @@ class ProcessEngine:
                 )
                 await self._event(int(instance_id), int(task_id), "same_position_window_opened", None,
                                   "pending", "pending", {"stage": 1, "added_assignees": []})
+                await self._notify_users(
+                    int(instance_id), parse_json(assignees_json, []), event_key="task_timeout",
+                    title="流程超时提醒", content=f"流程节点“{node['name']}”已超时，请及时处理。",
+                    severity="warning",
+                )
             changed += 1
         return changed
 
