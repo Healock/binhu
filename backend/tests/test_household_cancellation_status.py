@@ -80,6 +80,7 @@ class Connection:
     def __init__(self, payload=None, existing=True):
         self.calls = []
         self.sql = ""
+        self.rowcount = 0
         self.payload = payload or {"address": "合成路1号", "community": "合成社区", "housing_type": "个人出租"}
         self.existing = existing
         self.committed = False

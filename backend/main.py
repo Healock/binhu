@@ -63,6 +63,10 @@ from services.registry_certificate_jobs import (
     recover_interrupted_certificate_source_runs,
     stop_certificate_source_tasks,
 )
+from services.household_import_jobs import (
+    recover_interrupted_household_imports,
+    stop_household_import_tasks,
+)
 from services.property_annotation_exports import (
     recover_interrupted_exports,
     stop_annotation_export_tasks,
@@ -151,6 +155,9 @@ async def lifespan(app: FastAPI):
             f"[REGISTRY_CERTIFICATE] 已保留 {interrupted_certificate_runs} 个"
             "服务重启前遗留任务的分页进度"
         )
+    interrupted_household_imports = await recover_interrupted_household_imports()
+    if interrupted_household_imports:
+        print(f"[REGISTRY_HOUSEHOLD] 已标记 {interrupted_household_imports} 个中断的确认任务")
     interrupted_annotation_exports = await recover_interrupted_exports()
     if interrupted_annotation_exports:
         print(f"[REGISTRY] 已中断 {interrupted_annotation_exports} 个小区标注导出任务")
@@ -232,6 +239,7 @@ async def lifespan(app: FastAPI):
         await stop_txdocs_usage_tasks()
         await stop_backup_tasks()
         await stop_certificate_source_tasks()
+        await stop_household_import_tasks()
         await stop_annotation_export_tasks()
         await stop_police_publish_tasks()
         await stop_fullchain_archive_tasks()

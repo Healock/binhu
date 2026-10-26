@@ -18,6 +18,7 @@ import {
   formatUTCTime,
   getGridCommunities,
   registryApi,
+  type HouseholdImportJob,
   type RegistryCertificateSourceRun,
   type RegistryCertificateStatus,
   type RegistryHousingCategory,
@@ -326,6 +327,29 @@ export default function RegistryManagement({ importCenterMode = false }: { impor
     }
   }
 
+  const applyHouseholdJob = async (job: HouseholdImportJob, announce = false) => {
+    const result = job.result || {}
+    setImportPreview((previous: any) => previous ? {
+      ...previous,
+      status: result.status || job.status || previous.status,
+      confirm_status: job.confirm_status,
+      confirm_phase: job.confirm_phase,
+      confirm_processed_count: job.processed_count,
+      confirm_total_count: job.total_count,
+      confirm_error_message: job.error_message,
+      ...(job.confirm_status === 'completed' ? result : {}),
+    } : previous)
+    if (announce && job.confirm_status === 'completed') {
+      message.success(`户号表确认完成：新增 ${Number(result.inserted_count || 0)} 条、更新 ${Number(result.updated_count || 0)} 条；当前批次 ${Number(result.pending_issue_count || 0)} 条需核查，旧批次 ${Number(result.superseded_issue_count || 0)} 条已由本次全量数据替代`)
+    }
+    if (announce && job.confirm_status === 'failed') {
+      message.error(job.error_message || '户号表确认失败，请重新确认')
+    }
+    if (announce && job.confirm_status === 'completed') {
+      await load()
+    }
+  }
+
   useEffect(() => {
     if (!canReview) return
     let cancelled = false
@@ -354,6 +378,25 @@ export default function RegistryManagement({ importCenterMode = false }: { impor
       window.clearInterval(timer)
     }
   }, [certificateRun?.id, certificateRun?.status])
+
+  useEffect(() => {
+    if (!canReview || importPreview?.source_type !== 'household' || !importPreview?.batch_id
+      || !['queued', 'running'].includes(importPreview.confirm_status || '')) return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const job = await registryApi.householdImportStatus(importPreview.batch_id)
+        if (!cancelled) void applyHouseholdJob(job, !['queued', 'running'].includes(job.confirm_status))
+      } catch {
+        // A temporary polling failure does not change the persistent server task.
+      }
+    }
+    const timer = window.setInterval(() => { void poll() }, 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [canReview, importPreview?.batch_id, importPreview?.confirm_status])
 
   const communityOptions = useMemo(() => communities.map(item => ({ value: item.id, label: item.name })), [communities])
 
@@ -532,17 +575,21 @@ export default function RegistryManagement({ importCenterMode = false }: { impor
 
   const confirmImport = async () => {
     if (!importPreview?.batch_id) return
+    if (importPreview.source_type === 'household' && ['queued', 'running'].includes(importPreview.confirm_status || '')) return
     setImporting(true)
     try {
       const certificate = importPreview.source_type === 'certificate'
-      const result = certificate
+      const result: any = certificate
         ? await registryApi.confirmCertificateImport(importPreview.batch_id)
         : await registryApi.confirmHouseholdImport(importPreview.batch_id)
-      message.success(certificate
-        ? `告知书处理完成：新增 ${result.inserted_count || 0} 条，更新 ${result.updated_count || 0} 条，未变化 ${result.unchanged_count || 0} 条；${result.pending_issue_count || 0} 条进入问题核查`
-        : `本次新增 ${result.inserted_count || 0} 条、更新 ${result.updated_count || 0} 条；${result.pending_issue_count || 0} 条问题记录仍保留在核查清单`)
-      setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count, inserted_count: result.inserted_count, updated_count: result.updated_count, pending_issue_count: result.pending_issue_count, comparison: result.comparison || importPreview.comparison })
-      await load()
+      if (certificate) {
+        message.success(`告知书处理完成：新增 ${result.inserted_count || 0} 条，更新 ${result.updated_count || 0} 条，未变化 ${result.unchanged_count || 0} 条；${result.pending_issue_count || 0} 条进入问题核查`)
+        setImportPreview({ ...importPreview, status: result.status, imported_count: result.imported_count, inserted_count: result.inserted_count, updated_count: result.updated_count, pending_issue_count: result.pending_issue_count, comparison: result.comparison || importPreview.comparison })
+        await load()
+      } else {
+        void applyHouseholdJob(result as HouseholdImportJob)
+        message.info('户号表确认已进入后台处理，可留在本页面查看进度')
+      }
     } catch (reason: any) {
       message.error(reason?.response?.data?.detail || '户号表导入失败')
     } finally {
@@ -1110,6 +1157,8 @@ export default function RegistryManagement({ importCenterMode = false }: { impor
               : ''
 
   const comparison = importPreview?.comparison || certificateRun?.preview?.comparison
+  const householdConfirmActive = importPreview?.source_type === 'household'
+    && ['queued', 'running'].includes(importPreview?.confirm_status || '')
   const statusLabels: Record<string, string> = {
     normal_signed: '正常签署',
     not_uploaded: '未上传',
@@ -1142,7 +1191,7 @@ export default function RegistryManagement({ importCenterMode = false }: { impor
     {canReview && tab === 'imports' && <>
       <Button type="primary" onClick={() => void previewImport()} loading={importing} disabled={!importFile}>预览户号表</Button>
       {certificateRunActive && <Button loading disabled>{certificatePhaseLabel}</Button>}
-      {(importPreview?.status === 'preview' || (importPreview?.source_type === 'household' && importPreview.status === 'partially_imported')) && <Button onClick={() => void confirmImport()} loading={importing}>
+      {(importPreview?.status === 'preview' || (importPreview?.source_type === 'household' && importPreview.status === 'partially_imported')) && <Button onClick={() => void confirmImport()} loading={importing || householdConfirmActive} disabled={householdConfirmActive}>
         {importPreview.source_type === 'certificate' ? '确认挂载告知书' : importPreview.status === 'partially_imported' ? '继续导入正常数据' : '确认导入正常数据'}
       </Button>}
     </>}
@@ -1282,19 +1331,30 @@ export default function RegistryManagement({ importCenterMode = false }: { impor
                 ? '断点位置的数据已经变化，为避免页码错位，需要从第一页重新读取。'
                 : '可以点击“继续读取”从已保存分页继续；如来源数据已经大幅调整，也可以选择重新读取。'}
             />}
-            {importPreview ? <Alert type="success" showIcon message={importPreview.source_type === 'certificate'
+            {importPreview ? <Alert type={importPreview.confirm_status === 'failed' ? 'error' : 'success'} showIcon message={importPreview.source_type === 'certificate'
               ? `告知书共 ${importPreview.total_count} 条；新增挂载 ${comparison?.added ?? 0} 条，刷新既有告知书 ${comparison?.updated ?? 0} 条，与现有一致 ${comparison?.unchanged ?? 0} 条，${comparison?.pending_review ?? importPreview.problem_row_count} 条需核查。`
               : `户号表共 ${importPreview.total_count} 条；${importPreview.normal_count} 条可导入；${importPreview.issue_count} 条需核查。`}
-              description={importPreview.status === 'preview'
+              description={importPreview.confirm_status === 'failed'
+                ? (importPreview.confirm_error_message || '后台确认失败，请重新确认')
+                : importPreview.confirm_status === 'queued' || importPreview.confirm_status === 'running'
+                  ? '确认已提交到后台任务，页面可以停留或稍后刷新；服务会继续处理，不需要重复点击。'
+                : importPreview.status === 'preview'
                 ? importPreview.source_type === 'certificate'
                   ? '当前仍是预览状态；同一套房屋只保留一份当前告知书，来源编号或告知人变化都会刷新原记录，确认后才生效。'
-                  : '当前仍是预览状态，确认只处理安全记录，问题记录进入“问题数据核查”。'
+                  : '当前仍是预览状态，确认只处理安全记录；确认成功后，旧户号表的待核查项会由本次全量数据替代，当前批次问题进入“问题数据核查”。'
                 : importPreview.source_type === 'household' && importPreview.status === 'partially_imported'
-                  ? '本批已完成部分导入，可点击“继续导入正常数据”处理剩余安全记录；已成功导入的记录不会重复写入，问题记录仍保留在“问题数据核查”。'
+                  ? '本批已完成部分导入，可点击“继续导入正常数据”处理剩余安全记录；当前批次问题保留在“问题数据核查”，更早户号表的待核查项已由全量数据替代。'
                   : importPreview.source_type === 'household' && importPreview.status === 'imported'
                     ? '本批数据已导入，相同文件不会重复写入。如需更新房屋资料或注销状态，请重新导出最新户号表，预览并确认导入。'
                     : `处理状态：${importPreview.status}`} />
               : <div className="registry-import-empty">请选择户号表进行预览，或读取房东责任告知书来源。</div>}
+            {householdConfirmActive && <Progress
+              percent={importPreview.confirm_total_count ? Math.min(100, Math.round(importPreview.confirm_processed_count * 100 / importPreview.confirm_total_count)) : undefined}
+              status="active"
+              format={() => importPreview.confirm_total_count
+                ? `${importPreview.confirm_processed_count}/${importPreview.confirm_total_count}`
+                : '处理中'}
+            />}
             {importPreview?.source_type === 'household' && importPreview.file_count && <>
               <Space wrap>
                 <span>标准文件：{importPreview.files?.[0]?.file_name || importFile?.name || '户号表'}</span>

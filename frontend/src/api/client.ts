@@ -5024,6 +5024,21 @@ export interface HouseholdImportPreview {
   issue_breakdown?: Record<string, number>
 }
 
+export interface HouseholdImportJob {
+  batch_id: number
+  status: string
+  confirm_status: '' | 'queued' | 'running' | 'completed' | 'failed'
+  confirm_phase: string
+  processed_count: number
+  total_count: number
+  error_code?: string | null
+  error_message?: string | null
+  result?: Partial<HouseholdImportPreview> & Record<string, unknown>
+  started_at?: string | null
+  finished_at?: string | null
+  updated_at?: string | null
+}
+
 export const registryApi = {
   async exportPropertyAnnotations(params: PropertyAnnotationFilters) {
     return (await api.post('/registry/properties/small-community-annotations/export', params, activeRequest)).data as {
@@ -5145,10 +5160,11 @@ export const registryApi = {
   async confirmHouseholdImport(batchId: number) {
     return (await api.post(`/registry/imports/households/${batchId}/confirm`, {}, {
       ...activeRequest,
-      timeout: 300_000,
-    })).data as {
-      batch_id: number; status: string; imported_count: number; idempotent: boolean
-    }
+      timeout: 30_000,
+    })).data as HouseholdImportJob
+  },
+  async householdImportStatus(batchId: number) {
+    return (await api.get(`/registry/imports/households/${batchId}/confirm`, activeRequest)).data as HouseholdImportJob
   },
   async previewCertificateSource() {
     return (await api.post('/registry/imports/certificates/source-preview', {}, {

@@ -41,7 +41,15 @@ try {
       }
       if (url.pathname.endsWith('/households/123/confirm')) {
         confirms.push(url.pathname)
-        return send({ status: 'imported', imported_count: 10, inserted_count: 10, updated_count: 0, pending_issue_count: 0 })
+        return send({
+          batch_id: 123,
+          status: 'preview',
+          confirm_status: 'completed',
+          confirm_phase: 'finished',
+          processed_count: 10,
+          total_count: 10,
+          result: { status: 'imported', imported_count: 10, inserted_count: 10, updated_count: 0, pending_issue_count: 0 },
+        })
       }
       return send({ data: [], items: [], total: 0, unread_count: 0, online_count: 1 })
     })
