@@ -1,5 +1,6 @@
 import unittest
 from deploy.environments.event_pipeline.services.venue_external_projection import project_events
+from deploy.environments.event_pipeline.services.kafka_event_contract import EventContractError
 
 
 def event(event_id, kind):
@@ -14,6 +15,12 @@ class VenueExternalProjectionTests(unittest.TestCase):
         row = project_events([event("00000000-0000-0000-0000-000000000001", "venue.visited"),
                               event("00000000-0000-0000-0000-000000000002", "external.stats.updated")])["dev-venue-1"]
         self.assertEqual((row["venue_visits"], row["external_updates"]), (1, 1))
+
+    def test_reused_event_id_with_different_metadata_is_rejected(self):
+        first = event("00000000-0000-0000-0000-000000000001", "venue.visited")
+        second = {**first, "changed_fields": ["external_stat"]}
+        with self.assertRaisesRegex(EventContractError, "reused"):
+            project_events([first, second])
 
 
 if __name__ == "__main__": unittest.main()

@@ -28,6 +28,14 @@ class DerivedProjectionAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("dev_online_source_projection", query)
         self.assertEqual(params, ("dev-online-source-1", "t_fullchain:42", 42))
 
+    async def test_read_rejects_untrusted_database_identifier(self):
+        with self.assertRaisesRegex(ValueError, "database"):
+            await read_derived_projection(
+                AsyncMock(), environment="development", run_id="dev-online-source-1",
+                task_id="t_fullchain:42", source_id=42, engine="flink",
+                database="bad-name;drop",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

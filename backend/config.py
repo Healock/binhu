@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     ARCHITECTURE_UPGRADE_DOMAIN: str = "task_metadata"
     ARCHITECTURE_UPGRADE_READ_SOURCE: str = "mysql"
     ARCHITECTURE_UPGRADE_FALLBACK_ENABLED: bool = True
+    ARCHITECTURE_UPGRADE_RUN_ID: str = ""
+    ARCHITECTURE_UPGRADE_DERIVED_DATABASE: str = ""
 
     # Native client compatibility. Keep 0.0.0 until the first supported
     # Windows/Android releases adopt the version headers.

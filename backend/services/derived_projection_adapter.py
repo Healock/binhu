@@ -6,6 +6,7 @@ authoritative OnlineData tables and all business writes remain on MySQL.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 
@@ -15,9 +16,13 @@ _TABLES = {
 }
 
 
-def selected_engine(environment: str, *, environ: dict[str, str] | None = None) -> str:
+def selected_engine(
+    environment: str, *, environ: dict[str, str] | None = None,
+    read_source: str | None = None,
+) -> str:
     values = os.environ if environ is None else environ
-    engine = values.get("ONLINE_SOURCE_PROJECTION_ENGINE", "mysql").strip().lower()
+    engine = (read_source or values.get("ONLINE_SOURCE_PROJECTION_ENGINE") or
+              values.get("ARCHITECTURE_UPGRADE_READ_SOURCE", "mysql")).strip().lower()
     if engine == "mysql":
         return "mysql"
     if environment not in {"development", "staging"}:
@@ -35,17 +40,21 @@ async def read_derived_projection(
     task_id: str,
     source_id: int,
     engine: str | None = None,
+    database: str | None = None,
 ) -> dict[str, Any] | None:
     """Read a safe derived row; return ``None`` when the projection lags."""
     selected = engine or selected_engine(environment)
     if selected == "mysql":
         raise ValueError("MySQL authoritative read requires the OnlineData repository")
     table = _TABLES[selected]
+    if database is not None and not re.fullmatch(r"[A-Za-z0-9_]{1,64}", database):
+        raise ValueError("invalid derived projection database")
+    qualified_table = f"`{database}`.`{table}`" if database else f"`{table}`"
     await cur.execute(
         f"SELECT run_id,task_id,source_id,revision,event_count,"
         f"address_match_revision,community_revision,assignment_revision,"
         f"task_graph_revision,watch_snapshot_revision,last_event_type "
-        f"FROM {table} WHERE run_id=%s AND task_id=%s AND source_id=%s",
+        f"FROM {qualified_table} WHERE run_id=%s AND task_id=%s AND source_id=%s",
         (run_id, task_id, source_id),
     )
     row = await cur.fetchone()

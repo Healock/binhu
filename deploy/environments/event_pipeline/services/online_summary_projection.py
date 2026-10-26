@@ -4,17 +4,12 @@ from __future__ import annotations
 from typing import Any
 from collections.abc import Iterable
 
-from .kafka_event_contract import validate_task_event
+from .kafka_event_contract import unique_task_events
 
 
 def project_events(events: Iterable[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
-    seen: set[str] = set()
     result: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for raw in events:
-        event = validate_task_event(raw)
-        if event["event_id"] in seen:
-            continue
-        seen.add(event["event_id"])
+    for event in unique_task_events(events):
         key = (event["run_id"], event["timestamp"][:10], event["event_type"])
         row = result.setdefault(key, {"environment": event["environment"], "run_id": event["run_id"],
             "business_date": key[1], "event_type": key[2], "event_count": 0,

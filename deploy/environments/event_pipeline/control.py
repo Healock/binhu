@@ -76,7 +76,7 @@ def safe_control_failure_detail(error: Exception) -> str:
     """Return only a fixed, non-sensitive Dev control gate reason."""
     detail = str(error)
     if detail in _SAFE_CONTROL_FAILURES or re.fullmatch(
-        r"Flink runtime missing INSERT sink: (?:dev_revisions(?:,dev_task_metadata)?|dev_task_metadata)", detail
+        r"Flink runtime missing INSERT sink: dev_[A-Za-z0-9_]+(?:,dev_[A-Za-z0-9_]+)*", detail
     ) or re.fullmatch(r"flink_rest_http_[0-9]{3}", detail):
         return detail
     return type(error).__name__
@@ -274,7 +274,8 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
         jar_id = client.upload_jar(candidate_jar["container_path"])
         client.run_jar(jar_id)
     verified = flink_submission.wait_for_runtime(
-        client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_group"])
+        client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_group"]),
+        expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
     )
     runtime_path = evidence / "flink-runtime.json"
     runtime_path.write_text(json.dumps({**verified, "identity": identity,
