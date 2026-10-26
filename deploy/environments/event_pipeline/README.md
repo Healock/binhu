@@ -233,6 +233,18 @@ Dev apply 在读取首次作业列表前，会对固定的 `flink_rest_transport
 短暂占用 REST 线程时提前退出；窗口耗尽时保留首个具体的 JobGraph/消费组校验错误，其他 REST
 错误或身份门禁失败仍然停止 apply。
 
+### Staging 投影引擎切换
+
+`apply` 完成后，Staging 仍处于 Python/Flink 双轨状态。只有通过固定 gateway 执行
+`switch <STG-run-id>` 才会切换 `task_metadata` 投影引擎：入口会再次验证当前 run 的
+JobGraph、consumer group 和两个 sink，确认 Python metadata worker 正在运行后停止它，
+并在候选证据目录写入 `switch.json`。切换失败写入独立的 `switch-failure.json`；如果
+worker 已停止，控制器会先取消 Flink job，再尝试恢复 Python worker，避免两个投影引擎
+同时写入。`rollback <STG-run-id>` 取消 Flink 并恢复 Python worker，同时更新 manifest。
+
+该入口只改变投影计算引擎，业务读取仍以 MySQL 为权威，业务写入仍走 MySQL/outbox。
+它不覆盖地址匹配、日报、研判、归档或外部平台调用，也不修改 Production。
+
 ### 固定规模双轨验收
 
 候选完成 `prepare → measure → apply` 且 `current.json` 仍绑定当前运行编号后，
