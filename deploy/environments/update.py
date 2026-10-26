@@ -228,6 +228,20 @@ def check_resources(root):
         raise ValueError('environment_update_resources_insufficient')
 
 
+def update_failure_reason(error):
+    """Return a stable, non-sensitive reason code for update evidence."""
+    message = str(error).split(';', 1)[0].strip()
+    if re.fullmatch(r'environment_[a-z0-9_]+', message):
+        return message
+    if isinstance(error, ValueError):
+        return 'environment_update_validation_failed'
+    if isinstance(error, RuntimeError):
+        return 'environment_update_runtime_failed'
+    if isinstance(error, (OSError, TimeoutError)):
+        return 'environment_update_io_failed'
+    return 'environment_update_failed'
+
+
 def apply_environment(environment, artifact, image_directory, expected_id, evidence):
     import fcntl
     from .database_identity import run as verify_database_identity
@@ -253,6 +267,8 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
         check_resources(root)
         evidence.mkdir(mode=0o700)
         changed = False
+        phase = 'backup'
+        started_at = int(time.time())
         try:
             write_json(evidence / 'before-containers.json', baseline)
             previous = evidence / 'previous'
@@ -266,6 +282,7 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
                 raise ValueError('environment_static_backup_failed')
             write_json(evidence / 'previous-files.json', tree_hashes(previous))
             backup_databases(environment, root, manifest, evidence)
+            phase = 'candidate_prepare'
             releases = root / 'releases'
             if releases.is_symlink():
                 raise ValueError('environment_release_path_invalid')
@@ -291,12 +308,16 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
             if read_configuration(root) != (manifest, compose, env_text):
                 raise ValueError('environment_configuration_drift')
             changed = True
+            phase = 'switch'
             for name in ('backend.env', 'compose.json', 'manifest.json'):
                 replace_file(prepared / name, root / name)
             command(['docker', 'compose', '-f', str(root / 'compose.json'), 'up', '-d', '--no-deps', 'backend'])
+            phase = 'health'
             report = wait_healthy(environment, image['version'])
+            phase = 'database_identity'
             if not verify_database_identity(environment)['all_markers_present']:
                 raise ValueError('environment_database_identity_incomplete')
+            phase = 'running_image'
             backend_id = command(['docker', 'compose', '-f', str(root / 'compose.json'), 'ps', '-q', 'backend']).strip()
             backend = json.loads(command(['docker', 'inspect', backend_id]))[0]
             if (backend['Image'] != image['image_id']
@@ -304,12 +325,13 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
                     or [entry for entry in backend['Config']['Env'] if entry.startswith('APP_VERSION=')]
                     != ['APP_VERSION=' + image['version']]):
                 raise ValueError('environment_running_image_mismatch')
+            phase = 'baseline'
             verify_baseline(baseline, environment)
             report.update({'artifact_id': expected_id, 'image_id': image['image_id'],
                            'commit': image['commit'], 'business_acceptance': False})
             write_json(evidence / 'result.json', report)
             return report
-        except Exception:
+        except Exception as error:
             rollback = 'not_required'
             if changed:
                 try:
@@ -322,8 +344,16 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
                     rollback = 'application_restored_health_verified'
                 except Exception:
                     rollback = 'application_restore_failed'
-            write_json(evidence / 'failure.json', {'error': f'{environment}_update_failed',
-                                                  'rollback': rollback, 'database_restored': False})
+            reason = update_failure_reason(error)
+            write_json(evidence / 'failure.json', {
+                'error': f'{environment}_update_failed',
+                'reason': reason,
+                'phase': phase,
+                'started_at': started_at,
+                'rollback': rollback,
+                'rollback_status': rollback,
+                'database_restored': False,
+            })
             raise RuntimeError(f'{environment}_update_failed; inspect private evidence') from None
 
 
