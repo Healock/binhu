@@ -30,6 +30,8 @@ EVENT_TYPES = frozenset(
         "task.archived",
         "task.created",
         "task.deleted",
+        "venue.visited",
+        "external.stats.updated",
     }
 )
 
@@ -46,6 +48,8 @@ CHANGED_FIELDS = frozenset(
         "person_tags",
         "task_graph",
         "daily_report",
+        "venue_visit",
+        "external_stat",
     }
 )
 
