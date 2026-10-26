@@ -2,11 +2,18 @@
 
 ## 当前 PR 实施范围
 
-本 PR 只建立任务元数据投影域的应用侧切换状态合同。默认配置仍使用
-MySQL；任务元数据域的新架构能力已可用，但当前只在已验证范围内启用，尚未大规模
-应用。bootstrap 用 `available` 表示能力可用，用 `active` 表示业务读取是否已切换；
-默认状态为 `available=true`、`active=false`，当前权威读取路径仍是 MySQL。地址匹配、日报、
-研判、业务写入、归档和外部平台调用不在本 PR 的切换范围内。
+本 PR 为 `task_metadata` 投影域增加真实的 Staging 引擎切换入口。`apply` 先启动
+Python worker 和 Flink 双轨运行；受控 `switch` 会验证当前 run 的 Flink JobGraph、
+consumer group 和两个 sink，随后停止 `python-metadata-worker`，把该投影域的活动引擎
+记录为 Flink。切换证据写入候选的独立 `switch-*` 目录，失败时写入
+`switch-failure.json`，并在已停止 worker 的情况下先取消 Flink job 再恢复 Python worker，
+避免半切换状态。`rollback` 会取消 Flink、恢复 Python worker，并把 manifest 恢复为
+Python 投影引擎。
+
+这次切换只改变投影计算引擎。应用业务读取和业务写入仍分别以 MySQL 和 MySQL/outbox
+为权威；`application_read_source=mysql` 是有意保留的边界，不能把这次投影引擎切换
+误报为全业务读取切换。bootstrap 的 `available/active` 状态合同继续描述应用侧能力，
+地址匹配、日报、研判、归档和外部平台调用不在本 PR 的切换范围内。
 
 连接池问题作为架构切换后的 Staging 复测项保留，不在本 PR 中伪装成已解决。
 
@@ -47,8 +54,9 @@ MySQL；任务元数据域的新架构能力已可用，但当前只在已验证
    和派生存储中无残留。清理失败必须停止后续切换并保留证据。
 5. 记录切换开始时间、完成时间、开关值、smoke 标记/运行号和清理结果。
 
-切换开关必须是单一、可审计的环境配置；默认值必须保持关闭。没有实际业务读取入口时，
-不得把事件管道容器运行或双轨报告当作已经完成切换。
+切换入口必须是固定的 Staging gateway 命令；默认流程保持双轨，只有显式执行
+`switch <STG-run-id>` 才停止 Python worker。没有实际业务读取入口时，不得把本次投影
+引擎切换或双轨报告当作全业务读取切换。
 
 ## 观察和回滚
 
