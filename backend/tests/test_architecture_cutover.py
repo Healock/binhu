@@ -83,6 +83,33 @@ class ArchitectureCutoverTests(unittest.TestCase):
         self.assertFalse(state.ready)
         self.assertEqual(state.reason, "unsupported_read_source")
 
+    def test_online_source_domain_is_supported_for_flink_freshness_gate(self):
+        state = get_cutover_state(
+            SimpleNamespace(
+                ARCHITECTURE_UPGRADE_ENABLED=True,
+                ARCHITECTURE_UPGRADE_DOMAIN="online_source",
+                ARCHITECTURE_UPGRADE_READ_SOURCE="flink",
+                ARCHITECTURE_UPGRADE_FALLBACK_ENABLED=True,
+            )
+        )
+        self.assertTrue(state.available)
+        self.assertTrue(state.ready)
+        self.assertEqual(state.domain, "online_source")
+
+    def test_online_source_reports_active_only_with_runtime_contract(self):
+        state = get_cutover_state(
+            SimpleNamespace(
+                ARCHITECTURE_UPGRADE_ENABLED=True,
+                ARCHITECTURE_UPGRADE_DOMAIN="online_source",
+                ARCHITECTURE_UPGRADE_READ_SOURCE="flink",
+                ARCHITECTURE_UPGRADE_FALLBACK_ENABLED=True,
+                ARCHITECTURE_UPGRADE_RUN_ID="STG-20261026-01",
+                ARCHITECTURE_UPGRADE_DERIVED_DATABASE="Staging_EventPipeline",
+            )
+        )
+        self.assertTrue(state.active)
+        self.assertEqual(state.status, "active")
+
     def test_unknown_domain_is_rejected_without_activation(self):
         state = get_cutover_state(
             SimpleNamespace(

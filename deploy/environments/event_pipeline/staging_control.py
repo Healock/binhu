@@ -477,6 +477,7 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
     try:
         verified = flink_submission.wait_for_runtime(
             client, run_id, lambda: _consumer_group(project, identity["consumer_group"]), timeout=180,
+            expected_sinks=identity["sinks"],
         )
     except ValueError as error:
         _write_flink_failure(evidence, run_id, "runtime_validation", error)
@@ -660,6 +661,12 @@ def switch(run_id: str) -> dict[str, Any]:
     evidence_root.mkdir(mode=0o700, exist_ok=True)
     evidence = Path(tempfile.mkdtemp(prefix="switch-", dir=evidence_root))
     project = manifest["project"]
+    pipeline_sql = root / "pipeline.sql"
+    identity = (
+        flink_submission.validate_sql_identity(pipeline_sql.read_text(encoding="utf-8"), run_id)
+        if pipeline_sql.is_file()
+        else {"sinks": sorted(flink_submission.EXPECTED_SINKS)}
+    )
     phase = "flink_identity"
     worker_stopped = False
     rollback_attempted = False
@@ -676,6 +683,7 @@ def switch(run_id: str) -> dict[str, Any]:
         phase = "flink_runtime"
         flink_submission.wait_for_runtime(
             client, run_id, lambda: _consumer_group(project, f"{run_id}-flink"), timeout=60,
+            expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
         )
         phase = "python_worker_stop"
         previous_worker_state = _worker_state(root)

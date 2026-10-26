@@ -12,6 +12,7 @@ from typing import Any
 
 
 SUPPORTED_DOMAIN = "task_metadata"
+SUPPORTED_DOMAINS = frozenset({"task_metadata", "online_source"})
 SUPPORTED_READ_SOURCES = frozenset({"mysql", "flink"})
 
 
@@ -60,7 +61,7 @@ def get_cutover_state(settings: Any) -> CutoverState:
     fallback_configured = bool(
         getattr(settings, "ARCHITECTURE_UPGRADE_FALLBACK_ENABLED", True)
     )
-    if domain != SUPPORTED_DOMAIN:
+    if domain not in SUPPORTED_DOMAINS:
         return CutoverState(
             enabled=enabled,
             domain=domain,
@@ -88,6 +89,14 @@ def get_cutover_state(settings: Any) -> CutoverState:
             status="invalid",
             reason="unsupported_read_source",
         )
+    runtime_contract_ready = bool(
+        getattr(settings, "ARCHITECTURE_UPGRADE_RUN_ID", "")
+        and getattr(settings, "ARCHITECTURE_UPGRADE_DERIVED_DATABASE", "")
+    )
+    active = bool(
+        enabled and read_source == "flink"
+        and domain == "online_source" and runtime_contract_ready
+    )
     return CutoverState(
         enabled=enabled,
         domain=domain,
@@ -96,10 +105,14 @@ def get_cutover_state(settings: Any) -> CutoverState:
         authoritative_path="mysql",
         available=True,
         adapter_ready=True,
-        active=False,
+        active=active,
         ready=True,
-        status="available",
+        status="active" if active else "available",
         reason=(
+            "active_flink_projection"
+            if active else
+            "flink_runtime_contract_missing"
+            if enabled and read_source == "flink" and domain == "online_source" else
             "validated_scoped_domain_not_active"
             if not enabled or read_source == "mysql"
             else "validated_scoped_domain_pending_read_activation"
@@ -107,4 +120,4 @@ def get_cutover_state(settings: Any) -> CutoverState:
     )
 
 
-__all__ = ["CutoverState", "SUPPORTED_DOMAIN", "get_cutover_state"]
+__all__ = ["CutoverState", "SUPPORTED_DOMAIN", "SUPPORTED_DOMAINS", "get_cutover_state"]

@@ -201,11 +201,11 @@ the Staging health endpoints, and disconnects only connections it created if
 verification fails. Production, Dev, Shadow, volumes, and the existing
 application network are outside this operation.
 
-`PipelineJob` 使用一个 `StatementSet` 把 `dev_revisions` 和
-`dev_task_metadata` 两个 INSERT 分支提交为一个 JobGraph。两个分支共享一个
-Kafka source 和固定的 `<run_id>-flink` consumer group，因此都能看到当前运行编号的
-完整事件流。提交前会校验 SQL 中的环境与运行编号，运行时则以候选的精确 `job.name`
-作为唯一 run 身份；Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
+`PipelineJob` 使用一个 `StatementSet` 把所有 `dev_*` 元数据投影 INSERT 分支提交为
+一个 JobGraph。所有分支共享一个 Kafka source 和固定的 `<run_id>-flink` consumer
+group，因此每个投影都能看到当前运行编号的完整事件流。提交前会校验 SQL 中的环境、
+运行编号和允许的 sink 集合，运行时则以候选的精确 `job.name` 作为唯一 run 身份；
+Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
 Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时包含两个受控
 sink、job name 和 Kafka 消费组完全匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
 提交 JAR 的响应如果在 JobGraph 已被接受后发生传输中断，只按精确 run name

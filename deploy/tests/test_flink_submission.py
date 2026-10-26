@@ -192,6 +192,20 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "consumer group"):
             flink_submission.validate_sql_identity(sql(group_id="dev-stale-flink"), RUN_ID)
 
+    def test_sql_identity_exposes_all_projection_sinks(self):
+        extra = sql() + "INSERT INTO dev_online_source_projection SELECT * FROM dev_events;"
+        identity = flink_submission.parse_sql_identity(extra)
+        self.assertIn("dev_online_source_projection", identity["sinks"])
+        self.assertIn("dev_revisions", identity["sinks"])
+
+    def test_runtime_can_require_an_additional_projection_sink(self):
+        extra = job(sinks=("dev_revisions", "dev_task_metadata", "dev_online_source_projection"))
+        report = flink_submission.validate_runtime(
+            [extra], [f"{RUN_ID}-flink"], RUN_ID,
+            expected_sinks=("dev_revisions", "dev_task_metadata", "dev_online_source_projection"),
+        )
+        self.assertIn("dev_online_source_projection", report["sinks"])
+
     def test_job_graph_rejects_old_run_id_or_non_running_job(self):
         flink_submission.validate_job_graph(job(), RUN_ID)
         with self.assertRaisesRegex(ValueError, "run_id"):

@@ -15,9 +15,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id, topic_for
+from .projection_definitions import BASE_PROJECTION_NAMES, projection_names
 
 
-EXPECTED_SINKS = frozenset(("dev_revisions", "dev_task_metadata"))
+# Kept as a compatibility alias for callers that only need the mandatory base
+# projection.  A rendered pipeline may expose additional metadata sinks.
+EXPECTED_SINKS = BASE_PROJECTION_NAMES
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
 REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
 
@@ -57,7 +60,7 @@ def _one(pattern: str, text: str, label: str) -> str:
     return values.pop()
 
 
-def parse_sql_identity(sql: str) -> dict[str, str]:
+def parse_sql_identity(sql: str) -> dict[str, Any]:
     """Extract only the fixed identity fields needed for the environment fence."""
     if not isinstance(sql, str):
         raise ValueError("Flink SQL is not text")
@@ -73,8 +76,18 @@ def parse_sql_identity(sql: str) -> dict[str, str]:
         raise ValueError("Flink SQL environment filter does not match run identity")
     if topic != topic_for(environment):
         raise ValueError("Flink Kafka topic does not match environment identity")
+    sinks = frozenset(re.findall(
+        r"INSERT\s+INTO\s+(dev_[A-Za-z0-9_]+)\b", sql, flags=re.IGNORECASE,
+    ))
+    allowed = projection_names()
+    if not BASE_PROJECTION_NAMES <= sinks:
+        missing = ",".join(sorted(BASE_PROJECTION_NAMES - sinks))
+        raise ValueError(f"Flink SQL missing INSERT sink: {missing}")
+    if not sinks <= allowed:
+        unknown = ",".join(sorted(sinks - allowed))
+        raise ValueError(f"Flink SQL contains unsupported INSERT sink: {unknown}")
     return {"run_id": run_id, "consumer_group": group, "topic": topic,
-            "environment": environment}
+            "environment": environment, "sinks": sorted(sinks)}
 
 
 def parse_runtime_identity(runtime: str) -> str:
@@ -112,7 +125,10 @@ def _job_text(job: dict[str, Any]) -> str:
     return "\n".join(str(node.get("description", "")) for node in plan.get("nodes", []))
 
 
-def validate_job_graph(job: dict[str, Any], expected_run_id: str) -> dict[str, Any]:
+def validate_job_graph(
+    job: dict[str, Any], expected_run_id: str,
+    expected_sinks: Iterable[str] | None = None,
+) -> dict[str, Any]:
     environment = environment_for_run_id(expected_run_id)
     if job.get("state") != "RUNNING":
         raise FlinkRuntimeValidationError("Flink job is not RUNNING", "job_state")
@@ -128,9 +144,10 @@ def validate_job_graph(job: dict[str, Any], expected_run_id: str) -> dict[str, A
     topic_markers = set(re.findall(r"(?:topic|topics)\s*[=:]\s*['\"]?([A-Za-z0-9._-]+)", text, flags=re.IGNORECASE))
     if topic_markers and topic_markers != {topic_for(environment)}:
         raise FlinkRuntimeValidationError("Flink JobGraph topic does not match environment identity", "job_topic")
-    sinks = {sink for sink in EXPECTED_SINKS if sink in text}
-    if sinks != EXPECTED_SINKS:
-        missing = ",".join(sorted(EXPECTED_SINKS - sinks))
+    required = frozenset(expected_sinks or EXPECTED_SINKS)
+    sinks = {sink for sink in projection_names() if sink in text}
+    if not required <= sinks:
+        missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
     return {"jid": job.get("jid"), "name": job.get("name"), "state": job["state"],
             "sinks": sorted(sinks)}
@@ -157,20 +174,25 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
     return current, stale
 
 
-def validate_runtime(jobs: list[dict[str, Any]], consumer_groups: list[str], expected_run_id: str) -> dict[str, Any]:
+def validate_runtime(
+    jobs: list[dict[str, Any]], consumer_groups: list[str], expected_run_id: str,
+    expected_sinks: Iterable[str] | None = None,
+) -> dict[str, Any]:
     if len(jobs) != 1:
         raise FlinkRuntimeValidationError("Flink runtime must have exactly one matching job", "job_count")
-    job_reports = [validate_job_graph(item, expected_run_id) for item in jobs]
+    required = frozenset(expected_sinks or EXPECTED_SINKS)
+    job_reports = [validate_job_graph(item, expected_run_id, required) for item in jobs]
     sinks = {sink for report in job_reports for sink in report["sinks"]}
-    if sinks != EXPECTED_SINKS:
-        missing = ",".join(sorted(EXPECTED_SINKS - sinks))
+    if not required <= sinks:
+        missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
     expected_group = f"{expected_run_id}-flink"
     if set(consumer_groups) != {expected_group}:
         raise FlinkRuntimeValidationError("Flink consumer group does not match current run", "consumer_group")
     return {"run_id": expected_run_id, "job_count": len(jobs),
             "consumer_group": expected_group,
-            "job_ids": sorted(str(item.get("jid")) for item in jobs)}
+            "job_ids": sorted(str(item.get("jid")) for item in jobs),
+            "sinks": sorted(sinks)}
 
 
 @dataclass
@@ -317,7 +339,11 @@ def wait_for_rest(client: FlinkRest, timeout: float = 60.0) -> list[dict[str, An
         time.sleep(1)
 
 
-def wait_for_runtime(client: FlinkRest, expected_run_id: str, consumer_groups: Callable[[], list[str]], timeout: float = 120.0) -> dict[str, Any]:
+def wait_for_runtime(
+    client: FlinkRest, expected_run_id: str,
+    consumer_groups: Callable[[], list[str]], timeout: float = 120.0,
+    expected_sinks: Iterable[str] | None = None,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last_error: ValueError | None = None
     last_transient: FlinkRestError | None = None
@@ -334,7 +360,9 @@ def wait_for_runtime(client: FlinkRest, expected_run_id: str, consumer_groups: C
         if len(current) == 1:
             try:
                 details = [client.details(str(item["jid"])) for item in current]
-                return validate_runtime(details, consumer_groups(), expected_run_id)
+                return validate_runtime(
+                    details, consumer_groups(), expected_run_id, expected_sinks,
+                )
             except FlinkRestError as exc:
                 if exc.code not in REST_TRANSIENT_CODES:
                     raise

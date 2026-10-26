@@ -30,6 +30,10 @@ EVENT_TYPES = frozenset(
         "task.archived",
         "task.created",
         "task.deleted",
+        "photo.requested",
+        "photo.attached",
+        "venue.visited",
+        "external.stats.updated",
     }
 )
 
@@ -46,6 +50,9 @@ CHANGED_FIELDS = frozenset(
         "person_tags",
         "task_graph",
         "daily_report",
+        "photo_attachment",
+        "venue_visit",
+        "external_stat",
     }
 )
 
@@ -95,6 +102,21 @@ _TIMESTAMP_RE = re.compile(
 
 class EventContractError(ValueError):
     """Raised when an event cannot be represented by the Kafka v1 contract."""
+
+
+def unique_task_events(events):
+    """Yield validated events once and reject conflicting duplicate IDs."""
+    seen: dict[str, str] = {}
+    for raw in events:
+        event = validate_task_event(raw)
+        signature = json.dumps(event, sort_keys=True, separators=(",", ":"))
+        previous = seen.get(event["event_id"])
+        if previous is not None:
+            if previous != signature:
+                raise EventContractError("event id reused with different metadata")
+            continue
+        seen[event["event_id"]] = signature
+        yield event
 
 
 def _invalid(field: str) -> EventContractError:
@@ -305,6 +327,7 @@ __all__ = [
     "partition_key_bytes",
     "partition_key_text",
     "serialize_task_event",
+    "unique_task_events",
     "task_event_partition_key",
     "validate_event",
     "validate_task_event",
