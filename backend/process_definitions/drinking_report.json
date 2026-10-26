@@ -1,0 +1,39 @@
+{
+  "form": {
+    "code": "drinking_report",
+    "name": "饮酒报备",
+    "description": "民警及辅警饮酒报备，提交后由发起人指定的直属领导审批。",
+    "schema": {
+      "fields": [
+        {"key": "reporter_name", "name": "姓名", "label": "姓名", "type": "text", "required": true, "default_source": "requester_display_name", "max_length": 100},
+        {"key": "unit_position", "name": "单位职务", "label": "单位职务", "type": "text", "required": true, "default_source": "requester_position", "max_length": 100},
+        {"key": "unit_position_detail", "name": "单位职务", "label": "单位职务（补充）", "type": "text", "required": true, "max_length": 100},
+        {"key": "drinking_at", "name": "饮酒时间", "label": "饮酒时间", "type": "date", "required": true},
+        {"key": "drinking_place", "name": "饮酒地点", "label": "饮酒地点", "type": "text", "required": true, "max_length": 200},
+        {"key": "reason", "name": "饮酒事由", "label": "饮酒事由", "type": "select", "required": true, "options": ["同学聚会", "家庭聚会", "朋友聚会", "家中饮酒", "红白宴", "升学宴"]},
+        {"key": "travel_method", "name": "出行方式", "label": "出行方式", "type": "select", "required": true, "options": ["公共交通", "他人接送", "自驾", "步行", "其他"]},
+        {"key": "family_phone", "name": "家属电话", "label": "家属电话", "type": "text", "required": true, "max_length": 30},
+        {"key": "inviter", "name": "请客人员", "label": "请客人员", "type": "text", "required": false, "max_length": 100},
+        {"key": "participants", "name": "参加人员", "label": "参加人员", "type": "textarea", "required": false, "max_length": 1000},
+        {"key": "public_funds", "name": "是否公款吃喝", "label": "是否公款吃喝", "type": "select", "required": false, "default": "否", "options": ["是", "否"]},
+        {"key": "service_banquet", "name": "是否接受管理服务对象等宴请", "label": "是否接受管理服务对象等宴请", "type": "select", "required": false, "default": "否", "options": ["是", "否"]},
+        {"key": "hidden_place", "name": "是否在私人会所、一桌餐等隐蔽场所", "label": "是否在私人会所、“一桌餐”等隐蔽场所", "type": "select", "required": false, "default": "否", "options": ["是", "否"]},
+        {"key": "cronyism", "name": "是否存在拉帮结派、请托办事、利益勾兑等问题", "label": "是否存在拉帮结派、请托办事、利益勾兑等问题", "type": "select", "required": false, "default": "否", "options": ["是", "否"]},
+        {"key": "notes", "name": "备注说明", "label": "备注说明", "type": "textarea", "required": false, "max_length": 2000},
+        {"key": "direct_leader", "name": "直属领导", "label": "直属领导", "type": "person", "required": true, "default_source": "organization_supervisor", "default_params": {"rules": [{"requester_positions": ["组员"], "scope": "same_department", "target_positions": ["组长"]}, {"requester_positions": ["组长"], "scope": "parent_department", "target_positions": ["片长"]}, {"requester_positions": ["片长"], "scope": "parent_department", "target_positions": ["所队领导", "中队长"]}, {"requester_positions": ["社区民警"], "scope": "same_department", "target_positions": ["组长"]}]}},
+        {"key": "prohibitions", "name": "六条禁令", "label": "公安部关于严禁违规宴请饮酒的规定", "type": "static", "content": "一、严禁在工作日、值班备勤、安保任务、公务出差、学习培训期间和其他工作时间饮酒；\n二、严禁领导干部之间、单位之间相互宴请；\n三、严禁接受下属或地方公安机关宴请；\n四、严禁接受管理和服务对象宴请；\n五、严禁出入私人会所或参与“一桌餐”；\n六、严禁在任何时间、任何场合酗酒。"}
+      ]
+    }
+  },
+  "process": {
+    "code": "drinking_report",
+    "name": "饮酒报备审批",
+    "description": "发起人提交饮酒报备，由表单中固化的直属领导审批。",
+    "module_id": "workflow",
+    "default_due_hours": 24,
+    "nodes": [
+      {"node_type": "start", "node_key": "submit", "name": "发起", "assignee_type": "发起人本人", "assignee_params": {}, "multi_mode": "single", "empty_policy": "hold_and_notify", "timeout_hours": 24},
+      {"node_type": "approval", "node_key": "direct_leader_approval", "name": "直属领导审批", "assignee_type": "表单联系人字段", "assignee_params": {"field": "direct_leader"}, "multi_mode": "single", "empty_policy": "hold_and_notify", "timeout_hours": 24}
+    ]
+  }
+}

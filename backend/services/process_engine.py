@@ -142,6 +142,11 @@ def validate_nodes(nodes: Any) -> list[dict[str, Any]]:
         key = str(raw.get("node_key") or "").strip()
         name = str(raw.get("name") or "").strip()
         assignee_type = str(raw.get("assignee_type") or "").strip()
+        node_type = str(raw.get("node_type") or "approval").strip()
+        if node_type not in {"start", "approval"}:
+            raise ProcessValidationError("节点类型无效")
+        if node_type == "start" and normalized:
+            raise ProcessValidationError("发起节点必须是流程第一节点")
         if not key or key in seen or len(key) > 100:
             raise ProcessValidationError("节点标识必须唯一且不能为空")
         if not name:
@@ -157,15 +162,15 @@ def validate_nodes(nodes: Any) -> list[dict[str, Any]]:
         assignee_params = raw.get("assignee_params") or {}
         if not isinstance(assignee_params, dict):
             raise ProcessValidationError("assignee_params 必须是 JSON 对象")
-        if assignee_type == "指定成员" and not (
+        if node_type != "start" and assignee_type == "指定成员" and not (
             assignee_params.get("user_id") or assignee_params.get("user_ids")
         ):
             raise ProcessValidationError("指定成员节点必须配置 user_id 或 user_ids")
-        if assignee_type in {"发起人自选", "表单联系人字段"} and not str(assignee_params.get("field") or "").strip():
+        if node_type != "start" and assignee_type in {"发起人自选", "表单联系人字段"} and not str(assignee_params.get("field") or "").strip():
             raise ProcessValidationError(f"{assignee_type}节点必须配置 field")
-        if assignee_type == "岗位" and not str(assignee_params.get("position") or "").strip():
+        if node_type != "start" and assignee_type == "岗位" and not str(assignee_params.get("position") or "").strip():
             raise ProcessValidationError("岗位节点必须配置 position")
-        if assignee_type == "部门主管" and not (
+        if node_type != "start" and assignee_type == "部门主管" and not (
             assignee_params.get("department_id") and (
                 assignee_params.get("user_ids") or assignee_params.get("user_ids_by_department")
             )
@@ -177,6 +182,7 @@ def validate_nodes(nodes: Any) -> list[dict[str, Any]]:
         normalized.append({
             "node_key": key,
             "name": name[:200],
+            "node_type": node_type,
             "assignee_type": assignee_type,
             "assignee_params": assignee_params,
             "multi_mode": multi_mode,
@@ -210,6 +216,118 @@ def _form_value(form_data: dict[str, Any], params: dict[str, Any]) -> list[int]:
     if isinstance(value, (list, tuple)):
         return _unique_ids(value)
     return _unique_ids([value])
+
+
+async def _requester_context(cur, requester_user_id: int) -> tuple[int | None, str, str]:
+    await cur.execute(
+        "SELECT member.id,member.position,COALESCE(NULLIF(account.display_name,''),member.name,account.username) "
+        "FROM _users account LEFT JOIN _grid_members member ON member.id=account.member_id "
+        "WHERE account.id=%s",
+        (int(requester_user_id),),
+    )
+    row = await cur.fetchone()
+    if not row:
+        return None, "", ""
+    return (int(row[0]) if row[0] is not None else None, str(row[1] or ""), str(row[2] or ""))
+
+
+async def _organization_supervisor(cur, requester_user_id: int, params: dict[str, Any]) -> int | None:
+    """Resolve a single organization default without embedding business names in code.
+
+    The JSON definition supplies requester-position, scope and target-position rules.
+    A default is used only when exactly one active account matches. Ambiguous
+    organization matches stay empty so the requester must make the decision.
+    """
+    member_id, requester_position, _ = await _requester_context(cur, requester_user_id)
+    if not member_id:
+        return None
+    await cur.execute(
+        "SELECT link.department_id,department.parent_id "
+        "FROM _grid_member_department_links link "
+        "JOIN _departments department ON department.id=link.department_id "
+        "WHERE link.member_id=%s AND department.is_active=1 "
+        "ORDER BY link.sort_order,link.department_id",
+        (member_id,),
+    )
+    links = await cur.fetchall()
+    if not links:
+        return None
+    rules = params.get("rules") if isinstance(params.get("rules"), list) else []
+    for raw_rule in rules:
+        if not isinstance(raw_rule, dict):
+            continue
+        requester_positions = {str(value).strip() for value in raw_rule.get("requester_positions") or [] if str(value).strip()}
+        if requester_positions and requester_position not in requester_positions:
+            continue
+        scope = str(raw_rule.get("scope") or "same_department").strip()
+        if scope == "same_department":
+            department_ids = [int(row[0]) for row in links]
+        elif scope == "parent_department":
+            department_ids = [int(row[1]) for row in links if row[1] is not None]
+        else:
+            continue
+        target_positions = [str(value).strip() for value in raw_rule.get("target_positions") or [] if str(value).strip()]
+        if not department_ids or not target_positions:
+            continue
+        department_marks = ", ".join(["%s"] * len(department_ids))
+        position_marks = ", ".join(["%s"] * len(target_positions))
+        await cur.execute(
+            "SELECT DISTINCT account.id FROM _grid_member_department_links link "
+            "JOIN _grid_members member ON member.id=link.member_id "
+            "JOIN _users account ON account.member_id=member.id "
+            f"WHERE link.department_id IN ({department_marks}) AND member.position IN ({position_marks}) "
+            "AND member.status='在岗' ORDER BY account.id",
+            (*department_ids, *target_positions),
+        )
+        candidates = _unique_ids(row[0] for row in await cur.fetchall())
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
+async def resolve_form_defaults(cur, requester_user_id: int, schema: dict[str, Any]) -> dict[str, Any]:
+    """Resolve declarative form defaults for any process definition."""
+    defaults: dict[str, Any] = {}
+    requester_context: tuple[int | None, str, str] | None = None
+
+    async def visit(fields: list[Any], target: dict[str, Any]) -> None:
+        nonlocal requester_context
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            field_type = str(field.get("type") or "")
+            if field_type == "static":
+                continue
+            key = str(field.get("key") or field.get("name") or "").strip()
+            if field_type == "group":
+                nested: dict[str, Any] = {}
+                await visit(field.get("children") or field.get("fields") or [], nested)
+                if nested and key:
+                    target[key] = nested
+                continue
+            value: Any = None
+            has_value = False
+            if "default" in field:
+                value = field.get("default")
+                has_value = True
+            source = str(field.get("default_source") or "").strip()
+            if source:
+                if requester_context is None:
+                    requester_context = await _requester_context(cur, requester_user_id)
+                if source == "requester_display_name":
+                    value = requester_context[2]
+                    has_value = bool(value)
+                elif source == "requester_position":
+                    value = requester_context[1]
+                    has_value = bool(value)
+                elif source == "organization_supervisor":
+                    value = await _organization_supervisor(cur, requester_user_id, field.get("default_params") or {})
+                    has_value = value is not None
+            if has_value and key:
+                target[key] = value
+
+    await visit(schema.get("fields") or [], defaults)
+    return defaults
 
 
 async def resolve_assignees(cur, requester_user_id: int, assignee_type: str,
@@ -383,6 +501,30 @@ class ProcessEngine:
 
     async def _create_task(self, instance_id: int, node: dict[str, Any], order: int,
                            requester: int, form_data: dict[str, Any], *, now=None) -> int | None:
+        if node.get("node_type") == "start":
+            await self.cur.execute(
+                "SELECT process_version_id FROM process_instances WHERE id=%s", (instance_id,)
+            )
+            instance_row = await self.cur.fetchone()
+            _, nodes = await self._version(int(instance_row[0]))
+            index = next(i for i, item in enumerate(nodes) if item["node_key"] == node["node_key"])
+            await self._event(instance_id, None, "process_started", requester, "running", "running",
+                              {"node_key": node["node_key"]})
+            if index + 1 < len(nodes):
+                next_node = nodes[index + 1]
+                await self.cur.execute(
+                    "UPDATE process_instances SET current_node_key=%s WHERE id=%s",
+                    (next_node["node_key"], instance_id),
+                )
+                return await self._create_task(
+                    instance_id, next_node, order, requester, form_data, now=now,
+                )
+            completion_time = now or datetime.utcnow()
+            await self.cur.execute(
+                "UPDATE process_instances SET status='completed',current_node_key='',completed_at=%s WHERE id=%s",
+                (completion_time, instance_id),
+            )
+            return None
         assignees = await resolve_assignees(self.cur, requester, node["assignee_type"],
                                             node.get("assignee_params"), form_data)
         if not assignees:
@@ -477,6 +619,11 @@ class ProcessEngine:
         return parse_json(row[0], []) if row else []
 
     async def _validate_process_form(self, process_id: int, data: dict[str, Any]) -> None:
+        schema = await self._process_form_schema(process_id)
+        if schema:
+            validate_form_data(schema, data)
+
+    async def _process_form_schema(self, process_id: int) -> dict[str, Any]:
         await self.cur.execute(
             "SELECT definition.form_definition_id,form_definition.current_version_id,form_version.schema_json "
             "FROM process_definitions definition LEFT JOIN form_definitions form_definition "
@@ -485,8 +632,12 @@ class ProcessEngine:
             (process_id,),
         )
         row = await self.cur.fetchone()
-        if row and row[0] and row[2]:
-            validate_form_data(parse_json(row[2], {}), data)
+        return parse_json(row[2], {}) if row and row[0] and row[2] else {}
+
+    async def default_form_data(self, process_version_id: int, requester_user_id: int) -> dict[str, Any]:
+        process_id, _ = await self._version(process_version_id)
+        schema = await self._process_form_schema(process_id)
+        return await resolve_form_defaults(self.cur, requester_user_id, schema) if schema else {}
 
     async def _validate_process_form_from_instance(self, instance_id: int, data: dict[str, Any]) -> None:
         await self.cur.execute("SELECT process_definition_id FROM process_instances WHERE id=%s", (instance_id,))
@@ -498,7 +649,8 @@ class ProcessEngine:
                     title: str, description: str = "", form_data: dict[str, Any] | None = None,
                     now=None) -> dict[str, Any]:
         process_id, nodes = await self._version(process_version_id)
-        data = dict(form_data or {})
+        data = await self.default_form_data(process_version_id, requester_user_id)
+        data.update(form_data or {})
         await self._validate_process_form(process_id, data)
         instance_no = _instance_no()
         await self.cur.execute(

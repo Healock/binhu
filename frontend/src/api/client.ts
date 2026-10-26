@@ -5553,6 +5553,9 @@ export const processApi = {
   async disableDefinition(id: number) {
     return (await api.post(`/processes/definitions/${id}/disable`)).data
   },
+  async defaults(versionId: number) {
+    return (await api.get(`/processes/versions/${versionId}/defaults`, activeRequest)).data as { process_version_id: number; form_data: Record<string, unknown> }
+  },
   async tasks(params: Record<string, unknown> = {}) {
     return (await api.get('/processes/tasks', { ...activeRequest, params })).data
   },

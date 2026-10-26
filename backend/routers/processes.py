@@ -348,6 +348,15 @@ async def disable_process_definition(process_definition_id: int, conn=Depends(ge
     return {"id": process_definition_id, "enabled": False}
 
 
+@router.get("/versions/{process_version_id}/defaults")
+async def get_process_form_defaults(process_version_id: int,
+                                    conn=Depends(get_workflow_db),
+                                    user: dict = Depends(require_permission(WORKFLOW_TICKET_CREATE))):
+    async with conn.cursor() as cur:
+        defaults = await ProcessEngine(cur).default_form_data(process_version_id, int(user["id"]))
+    return {"process_version_id": process_version_id, "form_data": defaults}
+
+
 @router.post("/instances")
 async def start_process(payload: ProcessStartPayload, conn=Depends(get_workflow_db),
                         user: dict = Depends(require_permission(WORKFLOW_TICKET_CREATE))):
