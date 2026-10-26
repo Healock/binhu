@@ -1,6 +1,6 @@
 {
   "name": "@binhu/desktop-contract",
-  "version": "0.31.22",
+  "version": "0.32.0",
   "private": true,
   "type": "module",
   "exports": {
