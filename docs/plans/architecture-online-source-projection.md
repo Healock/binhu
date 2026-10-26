@@ -14,3 +14,5 @@ Flink 输出 `dev_online_source_projection`，Python 对照输出
 
 本域的切换前置条件是 Python/Flink 双轨结果逐条一致、Kafka lag 为零、Flink
 checkpoint 稳定、派生表可重建，以及保留 Python worker 的回滚路径。
+
+当前 PR 只提供隔离域代码和合同，未宣称 Staging 或 Production 已完成切换。

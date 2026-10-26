@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock
 
-from backend.services.derived_projection_adapter import selected_engine, read_derived_projection
+from services.derived_projection_adapter import selected_engine, read_derived_projection
 
 
 class DerivedProjectionAdapterTests(unittest.IsolatedAsyncioTestCase):
