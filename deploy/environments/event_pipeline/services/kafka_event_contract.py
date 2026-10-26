@@ -30,6 +30,8 @@ EVENT_TYPES = frozenset(
         "task.archived",
         "task.created",
         "task.deleted",
+        "photo.requested",
+        "photo.attached",
     }
 )
 
@@ -46,6 +48,7 @@ CHANGED_FIELDS = frozenset(
         "person_tags",
         "task_graph",
         "daily_report",
+        "photo_attachment",
     }
 )
 
