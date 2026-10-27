@@ -889,14 +889,21 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('RETIRE_TARGET = "STG-20261007-03"', gateway)
         self.assertIn('RETIRE_SUCCESSOR = "STG-20261027-02"', gateway)
+        self.assertIn('FAILED_RETIRE_TARGET = "STG-20261027-04"', gateway)
+        self.assertIn('def retire_failed(run_id: str)', gateway)
         self.assertIn('"down", "--remove-orphans"', gateway)
         self.assertNotIn('"down", "-v"', gateway)
-        self.assertIn("measure|apply|switch|run|rollback|retire", wrapper)
+        self.assertIn("measure|apply|switch|run|rollback|retire|retire-failed", wrapper)
         self.assertIn("retire STG-20261007-03", install)
+        self.assertIn("retire-failed STG-20261027-04", install)
 
     def test_retirement_rejects_foreign_run_without_docker_access(self):
         with self.assertRaises(SystemExit):
             staging_gateway.retire("STG-20261027-02")
+
+    def test_failed_retirement_rejects_foreign_run_without_docker_access(self):
+        with self.assertRaises(SystemExit):
+            staging_gateway.retire_failed("STG-20261027-02")
 
     def test_realistic_load_workflow_runs_75_users_and_keeps_production_outside_gateway(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /

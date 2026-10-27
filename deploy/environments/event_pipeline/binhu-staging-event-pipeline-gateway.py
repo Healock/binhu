@@ -23,6 +23,8 @@ MAX_BYTES = 128 * 1024 * 1024
 MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"})
 RETIRE_TARGET = "STG-20261007-03"
 RETIRE_SUCCESSOR = "STG-20261027-02"
+FAILED_RETIRE_TARGET = "STG-20261027-04"
+FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 STAGING_CORE = (
     "binhu-staging-backend-1", "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
@@ -503,6 +505,31 @@ def _retirement_identity(manifest: dict, current: dict, spec: dict, run_id: str)
     return root, project
 
 
+def _failed_retirement_identity(manifest: dict, spec: dict, run_id: str) -> tuple[Path, str]:
+    project = "binhu-staging-event-pipeline-" + run_id.lower()
+    root = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
+    if (run_id != FAILED_RETIRE_TARGET or manifest.get("environment") != "staging"
+            or manifest.get("run_id") != run_id or manifest.get("project") != project
+            or manifest.get("production_data") not in (None, False)):
+        raise ValueError("staging_retirement_run_identity_mismatch")
+    if (root.is_symlink() or not root.is_dir() or spec.get("name") != project
+            or not isinstance(spec.get("services"), dict) or not spec.get("services")):
+        raise ValueError("staging_retirement_compose_identity_mismatch")
+    backend = spec.get("networks", {}).get("backend", {})
+    if backend != {"external": True, "name": BACKEND_NETWORK}:
+        raise ValueError("staging_retirement_network_contract_mismatch")
+    forbidden = json.dumps(spec, sort_keys=True).lower()
+    production_identity = "binhu-" + "production"
+    if production_identity in forbidden or 'production_data": true' in forbidden:
+        raise ValueError("staging_retirement_production_reference")
+    compose_path = root / "compose.json"
+    expected_hash = (manifest.get("hashes") or {}).get("compose.json")
+    if (compose_path.is_symlink() or not compose_path.is_file() or not isinstance(expected_hash, str)
+            or hashlib.sha256(compose_path.read_bytes()).hexdigest() != expected_hash):
+        raise ValueError("staging_retirement_compose_hash_mismatch")
+    return root, project
+
+
 def _retirement_inspect(names: list[str]) -> dict[str, dict]:
     if not names:
         return {}
@@ -552,7 +579,7 @@ def _retirement_jobs(jobmanager: str, run_id: str) -> list[dict]:
     return safe
 
 
-def _retirement_snapshot(run_id: str, project: str) -> dict:
+def _retirement_snapshot(run_id: str, project: str, *, successor: str = RETIRE_SUCCESSOR) -> dict:
     ids = _retirement_run([
         "docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}",
     ]).stdout.split()
@@ -579,8 +606,8 @@ def _retirement_snapshot(run_id: str, project: str) -> dict:
         "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
         f"binhu-staging-event-pipeline-{run_id.lower()}-business-bridge-1",
         f"binhu-staging-event-pipeline-{run_id.lower()}-backend-outbox-relay-1",
-        f"binhu-staging-event-pipeline-{RETIRE_SUCCESSOR.lower()}-business-bridge-1",
-        f"binhu-staging-event-pipeline-{RETIRE_SUCCESSOR.lower()}-backend-outbox-relay-1",
+        f"binhu-staging-event-pipeline-{successor.lower()}-business-bridge-1",
+        f"binhu-staging-event-pipeline-{successor.lower()}-backend-outbox-relay-1",
     }
     if (network.get("Name") != BACKEND_NETWORK or network.get("Driver") != "bridge"
             or network.get("Internal") is not True or labels.get("binhu.environment") != "staging"
@@ -590,7 +617,7 @@ def _retirement_snapshot(run_id: str, project: str) -> dict:
         "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
     }))
     for name, item in connectors.items():
-        expected_run = RETIRE_SUCCESSOR if RETIRE_SUCCESSOR.lower() in name else run_id
+        expected_run = successor if successor.lower() in name else run_id
         expected_service = "business-bridge" if name.endswith("business-bridge-1") else "backend-outbox-relay"
         if (item["status"] != "running" or item["environment"] != "staging"
                 or item["run_id"] != expected_run or item["project"] != "binhu-staging-event-pipeline-" + expected_run.lower()
@@ -688,6 +715,64 @@ def retire(run_id: str) -> None:
         raise
 
 
+def retire_failed(run_id: str) -> None:
+    """Retire one failed, non-current run without changing the active pointer."""
+    if run_id != FAILED_RETIRE_TARGET:
+        fail("failed retirement target is not approved")
+    candidate = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
+    manifest_path = candidate / "manifest.json"
+    compose_path = candidate / "compose.json"
+    manifest = _retirement_file(manifest_path)
+    spec = _retirement_file(compose_path)
+    root, project = _failed_retirement_identity(manifest, spec, run_id)
+    evidence_root = STATE / "evidence" / run_id
+    if evidence_root.is_symlink() or evidence_root.parent.is_symlink():
+        fail("retirement evidence path invalid")
+    evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    evidence = evidence_root / f"retirement-{stamp}"
+    evidence.mkdir(mode=0o700)
+    before = _retirement_snapshot(run_id, project, successor=FAILED_RETIRE_SUCCESSOR)
+    if before["active_flink_jobs"]:
+        raise ValueError("staging_retirement_active_flink_job")
+    before.update({
+        "environment": "staging", "run_id": run_id, "project": project,
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "compose_sha256": hashlib.sha256(compose_path.read_bytes()).hexdigest(),
+        "active_pointer_unchanged": True,
+    })
+    _write_private_evidence(evidence, "before.json", before)
+    try:
+        _retirement_run(_retirement_command(root), timeout=300)
+        after = _retirement_snapshot_after(
+            run_id, project, before, successor=FAILED_RETIRE_SUCCESSOR,
+        )
+        result = {
+            "environment": "staging", "run_id": run_id, "status": "retired",
+            "containers_stopped": len(before["target_containers"]),
+            "volumes_preserved": before["volumes"],
+            "active_flink_jobs_stopped": before["active_flink_jobs"],
+            "backend_network_preserved": before["backend_network_id"] == after["backend_network_id"],
+            "production_and_staging_core_unchanged": before["core_services"] == after["core_services"],
+            "active_pointer_unchanged": True,
+            "mem_available_kib": after["mem_available_kib"],
+            "production_data": False, "evidence": str(evidence),
+        }
+        _write_private_evidence(evidence, "result.json", result)
+        _write_retirement_hashes(evidence)
+        print(json.dumps(result, sort_keys=True))
+    except BaseException as error:
+        safe_code = str(error) if isinstance(error, ValueError) and re.fullmatch(
+            r"staging_retirement_[a-z_]+", str(error)
+        ) else "staging_retirement_failed"
+        _write_private_evidence(evidence, "failure.json", {
+            "environment": "staging", "run_id": run_id, "status": "failed",
+            "error_code": safe_code,
+        })
+        _write_retirement_hashes(evidence)
+        raise
+
+
 def _write_private_evidence(directory: Path, name: str, payload: dict) -> None:
     target = directory / name
     with target.open("x", encoding="utf-8") as stream:
@@ -702,7 +787,9 @@ def _write_retirement_hashes(directory: Path) -> None:
     _write_private_evidence(directory, "sha256.json", hashes)
 
 
-def _retirement_snapshot_after(run_id: str, project: str, before: dict) -> dict:
+def _retirement_snapshot_after(
+    run_id: str, project: str, before: dict, *, successor: str = RETIRE_SUCCESSOR,
+) -> dict:
     ids = _retirement_run([
         "docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}",
     ]).stdout.split()
@@ -753,6 +840,8 @@ def main() -> None:
         control(sys.argv[2], sys.argv[1]); return
     if len(sys.argv) == 3 and sys.argv[1] == "retire":
         retire(sys.argv[2]); return
+    if len(sys.argv) == 3 and sys.argv[1] == "retire-failed":
+        retire_failed(sys.argv[2]); return
     if (len(sys.argv) == 4 and sys.argv[1] == "sample"
             and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[3])):
         control(sys.argv[2], "sample", int(sys.argv[3])); return

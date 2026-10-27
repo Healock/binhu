@@ -58,7 +58,7 @@ CREATE TABLE dev_task_metadata (
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
 CREATE VIEW dev_unique_events AS
--- Keep array payloads out of grouped projections; Flink does not support
+-- Keep array payloads out of grouped projections. Flink does not support
 -- MAX_BY for ARRAY<STRING>. Aggregate only the scalar field count.
 SELECT schema_version, event_id, event_type, task_id, source_id, revision,
        operation_id, MAX(CARDINALITY(changed_fields)) AS changed_field_count,
