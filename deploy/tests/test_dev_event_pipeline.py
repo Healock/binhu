@@ -1242,6 +1242,31 @@ volumes:
         with self.assertRaises(ValueError):
             render({**settings(), "MYSQL_PASSWORD": "x';secret"})
 
+    def test_dev_and_staging_sql_use_only_scalar_aggregates_for_unique_events(self):
+        staging = {
+            **settings(),
+            "APP_ENVIRONMENT": "staging",
+            "DEV_RUN_ID": "",
+            "STAGING_RUN_ID": "STG-20261027-03",
+            "MYSQL_HOST": "staging-derived-mysql",
+            "MYSQL_DATABASE": "Staging_EventPipeline",
+            "MYSQL_USER": "staging_pipeline",
+            "REDIS_HOST": "staging-derived-redis",
+            "KAFKA_BOOTSTRAP_SERVERS": "staging-kafka-1:9092,staging-kafka-2:9092,staging-kafka-3:9092",
+        }
+
+        for environ in (settings(), staging):
+            with self.subTest(environment=environ["APP_ENVIRONMENT"]):
+                sql = render(environ)
+                view = sql.split("CREATE VIEW dev_unique_events AS", 1)[1].split("FROM dev_events", 1)[0]
+                self.assertIn("MAX(CARDINALITY(changed_fields)) AS changed_field_count", view)
+                self.assertNotIn("MAX_BY(CHANGED_FIELDS", view.upper())
+                self.assertNotIn("AS CHANGED_FIELDS", view.upper())
+                self.assertNotRegex(view, r"(?:^|,)\s*changed_fields\s*(?:,|$)")
+                for column in ("schema_version", "event_id", "event_type", "task_id",
+                               "source_id", "revision", "operation_id", "environment", "run_id"):
+                    self.assertIn(column, view)
+
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
     def test_monitor_runtime_does_not_require_relay_only_exception_at_import(self):
