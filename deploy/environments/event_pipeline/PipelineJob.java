@@ -1,7 +1,9 @@
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -35,6 +37,75 @@ public final class PipelineJob {
     private static String insertSink(String command) {
         Matcher matcher = INSERT_SINK.matcher(command);
         return matcher.find() ? matcher.group(1).toLowerCase(Locale.ROOT) : "";
+    }
+
+    /** Split the private script without treating semicolons in SQL text as terminators. */
+    static List<String> splitStatements(String sql) {
+        List<String> statements = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean singleQuote = false;
+        boolean doubleQuote = false;
+        boolean backtickQuote = false;
+        boolean lineComment = false;
+        boolean blockComment = false;
+        for (int index = 0; index < sql.length(); index++) {
+            char character = sql.charAt(index);
+            char next = index + 1 < sql.length() ? sql.charAt(index + 1) : '\0';
+            if (lineComment) {
+                current.append(character);
+                if (character == '\n' || character == '\r') lineComment = false;
+                continue;
+            }
+            if (blockComment) {
+                current.append(character);
+                if (character == '*' && next == '/') {
+                    current.append(next);
+                    index++;
+                    blockComment = false;
+                }
+                continue;
+            }
+            if (!singleQuote && !doubleQuote && !backtickQuote && character == '-' && next == '-') {
+                current.append(character).append(next);
+                index++;
+                lineComment = true;
+                continue;
+            }
+            if (!singleQuote && !doubleQuote && !backtickQuote && character == '/' && next == '*') {
+                current.append(character).append(next);
+                index++;
+                blockComment = true;
+                continue;
+            }
+            if (character == '\'' && !doubleQuote && !backtickQuote) {
+                current.append(character);
+                if (singleQuote && next == '\'') {
+                    current.append(next);
+                    index++;
+                } else {
+                    singleQuote = !singleQuote;
+                }
+                continue;
+            }
+            if (character == '"' && !singleQuote && !backtickQuote) {
+                doubleQuote = !doubleQuote;
+                current.append(character);
+                continue;
+            }
+            if (character == '`' && !singleQuote && !doubleQuote) {
+                backtickQuote = !backtickQuote;
+                current.append(character);
+                continue;
+            }
+            if (character == ';' && !singleQuote && !doubleQuote && !backtickQuote) {
+                statements.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(character);
+            }
+        }
+        if (current.length() > 0) statements.add(current.toString());
+        return statements;
     }
 
     private static String safeFailureCode(Throwable failure) {
@@ -74,7 +145,7 @@ public final class PipelineJob {
         Set<String> sinks = new HashSet<>();
         int index = 0;
         try {
-            for (String statement : sql.split(";")) {
+            for (String statement : splitStatements(sql)) {
                 index++;
                 String command = statement.strip();
                 if (command.startsWith("SET ")) {

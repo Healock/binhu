@@ -1267,6 +1267,23 @@ volumes:
                                "source_id", "revision", "operation_id", "environment", "run_id"):
                     self.assertIn(column, view)
 
+    def test_pipeline_sql_statement_terminators_are_not_hidden_in_comments(self):
+        sql = render(settings())
+        in_comment = False
+        for line in sql.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("--"):
+                self.assertNotIn(";", stripped)
+            if "/*" in line or "*/" in line:
+                in_comment = not in_comment
+            if in_comment:
+                self.assertNotIn(";", line)
+
+        source = Path(__file__).parents[1] / "environments" / "event_pipeline" / "PipelineJob.java"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("splitStatements(sql)", text)
+        self.assertNotIn("sql.split(\";\")", text)
+
 
 class RelayTests(unittest.IsolatedAsyncioTestCase):
     def test_monitor_runtime_does_not_require_relay_only_exception_at_import(self):
