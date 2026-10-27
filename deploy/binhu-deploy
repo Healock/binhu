@@ -7,6 +7,7 @@ umask 077
 : "${BINHU_DEPLOY_STATE_DIR:=/var/lib/binhu-deploy}"
 : "${BINHU_DEPLOY_MIN_FREE_KB:=1048576}"
 : "${BINHU_DEPLOY_MAX_BUNDLE_BYTES:=134217728}"
+: "${BINHU_DEPLOY_MAX_HOTFIX_BUNDLE_BYTES:=1073741824}"
 : "${BINHU_DEPLOY_PUBLIC_URL:=}"
 
 log() {
@@ -52,6 +53,72 @@ PY
   exit 0
 fi
 
+if [[ "${1:-}" == "hotfix" ]]; then
+  [[ $# -eq 8 ]] || fail "hotfix requires version, commit, all scope, bundle size, id and digest"
+  readonly hotfix_version="$2"
+  readonly hotfix_commit="$3"
+  readonly hotfix_backup_scope="$4"
+  readonly hotfix_release_scope="$5"
+  readonly hotfix_bundle_bytes="$6"
+  readonly hotfix_id="$7"
+  readonly hotfix_bundle_sha256="$8"
+  [[ "$hotfix_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid hotfix version"
+  [[ "$hotfix_commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid hotfix commit"
+  [[ "$hotfix_backup_scope" == all && "$hotfix_release_scope" == backend ]] \
+    || fail "hotfix requires all-database backup and backend-only release"
+  [[ "$hotfix_bundle_bytes" =~ ^[1-9][0-9]{0,9}$ ]] \
+    && (( hotfix_bundle_bytes <= BINHU_DEPLOY_MAX_HOTFIX_BUNDLE_BYTES )) || fail "invalid hotfix bundle size"
+  [[ "$hotfix_id" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]] || fail "invalid hotfix id"
+  [[ "$hotfix_bundle_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid hotfix bundle digest"
+  [[ "$BINHU_DEPLOY_STATE_DIR" == /var/lib/binhu-deploy ]] || fail "unexpected deployment state directory"
+  exec 9>"/run/lock/binhu-deploy.lock"
+  flock -n 9 || fail "another deployment is already running"
+  export BINHU_DEPLOY_LOCK_HELD=1
+  exec "$0" internal-hotfix-bundle "$hotfix_version" "$hotfix_commit" \
+    "$hotfix_backup_scope" "$hotfix_release_scope" "$hotfix_bundle_bytes" "$hotfix_id" "$hotfix_bundle_sha256"
+fi
+
+if [[ "${1:-}" == "promote" ]]; then
+  [[ $# -eq 6 ]] || fail "promote requires Staging run, commit and Compose identity"
+  readonly promotion_version="$2"
+  readonly promotion_run_id="$3"
+  readonly promotion_commit="$4"
+  readonly promotion_compose_sha256="$5"
+  readonly promotion_compose_bytes="$6"
+  [[ "$promotion_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid promotion version"
+  [[ "$promotion_run_id" =~ ^staging-app-[0-9a-f]{16}$ ]] || fail "invalid Staging run id"
+  [[ "$promotion_commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid promotion commit"
+  [[ "$promotion_compose_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid production Compose digest"
+  [[ "$promotion_compose_bytes" =~ ^[1-9][0-9]{0,6}$ ]] \
+    && (( promotion_compose_bytes <= 1048576 )) || fail "invalid production Compose size"
+  [[ "$BINHU_DEPLOY_STATE_DIR" == /var/lib/binhu-deploy ]] || fail "unexpected deployment state directory"
+  exec 9>"/run/lock/binhu-deploy.lock"
+  flock -n 9 || fail "another deployment is already running"
+  install -d -o root -g root -m 0750 "$BINHU_DEPLOY_STATE_DIR/incoming"
+  readonly compose_input="$(mktemp "$BINHU_DEPLOY_STATE_DIR/incoming/compose.XXXXXX")"
+  trap 'rm -f -- "$compose_input"' EXIT
+  head -c "$promotion_compose_bytes" > "$compose_input"
+  [[ "$(wc -c < "$compose_input")" == "$promotion_compose_bytes" ]] || fail "incomplete production Compose input"
+  promotion_result="$(PYTHONPATH=/usr/local/lib/binhu-deploy python3 -m deploy.environments.production_promotion \
+    "$promotion_run_id" "$promotion_commit" "$promotion_version" \
+    "$compose_input" "$promotion_compose_sha256")" || fail "accepted Staging promotion validation failed"
+  promotion_artifact_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["artifact_id"])' "$promotion_result")"
+  promotion_artifact_sha256="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["artifact_manifest_sha256"])' "$promotion_result")"
+  promotion_image_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["image_id"])' "$promotion_result")"
+  readonly promotion_bundle="$BINHU_DEPLOY_STATE_DIR/candidates/$promotion_run_id/production-release.tar.gz"
+  [[ -f "$promotion_bundle" ]] || fail "promotion bundle was not created"
+  readonly promotion_bundle_bytes="$(wc -c < "$promotion_bundle")"
+  [[ "$promotion_bundle_bytes" =~ ^[1-9][0-9]{0,8}$ ]] \
+    && (( promotion_bundle_bytes <= BINHU_DEPLOY_MAX_BUNDLE_BYTES )) || fail "promotion bundle exceeds size limit"
+  rm -f -- "$compose_input"
+  trap - EXIT
+  export BINHU_DEPLOY_LOCK_HELD=1
+  exec "$0" internal-bundle "$promotion_version" "$promotion_commit" \
+    "$promotion_image_id" "$promotion_run_id" "$promotion_artifact_id" \
+    "$promotion_artifact_sha256" "$promotion_compose_sha256" "$promotion_bundle_bytes" \
+    < "$promotion_bundle"
+fi
+
 if [[ "${1:-}" == "production-maintenance" ]]; then
   [[ $# -ge 4 && $# -le 9 ]] || fail "production-maintenance requires operation, phase and run id"
   [[ -x /usr/local/sbin/binhu-maintenance ]] || fail "production maintenance contract is not installed"
@@ -77,48 +144,65 @@ if [[ "${1:-}" == "current-flow-cleanup" ]]; then
     "$cleanup_phase" "$cleanup_run_id" "$cleanup_business_date"
 fi
 
-release_kind="release"
+release_kind="staging-promotion"
+promotion_image_id=""
+promotion_run_id=""
+promotion_artifact_id=""
+promotion_artifact_sha256=""
+promotion_compose_sha256=""
 hotfix_id=""
-if [[ "${1:-}" == "hotfix" ]]; then
-  release_kind="hotfix"
-  [[ $# -eq 7 ]] || fail "expected hotfix arguments"
-  shift
-  # After removing the command, hotfix has the same five release fields plus
-  # the unique identifier: version commit backup_scope release_scope size id.
-  [[ $# -eq 6 ]] || fail "expected hotfix arguments"
-  readonly release_scope="$4"
-  readonly expected_bundle_size="$5"
-  hotfix_id="$6"
-elif [[ $# -eq 4 ]]; then
+if [[ "${1:-}" == "internal-bundle" ]]; then
+  [[ "${EUID:-$(id -u)}" -eq 0 && "${BINHU_DEPLOY_LOCK_HELD:-}" == 1 && $# -eq 9 ]] \
+    || fail "invalid internal promotion invocation"
+  release_kind="staging-promotion"
+  readonly release_version="$2"
+  readonly release_commit="$3"
+  promotion_image_id="$4"
+  promotion_run_id="$5"
+  promotion_artifact_id="$6"
+  promotion_artifact_sha256="$7"
+  promotion_compose_sha256="$8"
+  readonly backup_scope="all"
   readonly release_scope="full"
-  readonly expected_bundle_size="$4"
-elif [[ $# -eq 5 ]]; then
-  readonly release_scope="$4"
-  readonly expected_bundle_size="$5"
+  readonly expected_bundle_size="$9"
+elif [[ "${1:-}" == "internal-hotfix-bundle" ]]; then
+  [[ "${EUID:-$(id -u)}" -eq 0 && "${BINHU_DEPLOY_LOCK_HELD:-}" == 1 && $# -eq 8 ]] \
+    || fail "invalid internal hotfix invocation"
+  release_kind="hotfix"
+  readonly release_version="$2"
+  readonly release_commit="$3"
+  readonly backup_scope="$4"
+  readonly release_scope="$5"
+  readonly expected_bundle_size="$6"
+  hotfix_id="$7"
+  hotfix_bundle_sha256="$8"
+  [[ "$backup_scope" == all && "$release_scope" == backend ]] || fail "invalid hotfix release scope"
+  [[ "$hotfix_id" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]] || fail "invalid hotfix id"
+  [[ "$hotfix_bundle_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid hotfix bundle digest"
 else
-  fail "expected version, commit, backup scope, release scope and bundle size"
+  fail "only accepted Staging promotions or fixed hotfix bundles may enter Production"
 fi
-readonly release_version="$1"
-readonly release_commit="$2"
-readonly backup_scope="$3"
+if [[ "$release_kind" == "staging-promotion" ]]; then
+  [[ "$promotion_image_id" =~ ^sha256:[0-9a-f]{64}$ \
+    && "$promotion_run_id" =~ ^staging-app-[0-9a-f]{16}$ \
+    && "$promotion_artifact_id" =~ ^[0-9a-f]{64}$ \
+    && "$promotion_artifact_sha256" =~ ^[0-9a-f]{64}$ \
+    && "$promotion_compose_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "invalid promotion identity"
+fi
 [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid version"
 [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit"
-case "$backup_scope" in
-  none|online|daily|all) ;;
-  *) fail "invalid backup scope" ;;
-esac
-case "$release_scope" in
-  backend|frontend|full) ;;
-  *) fail "invalid release scope" ;;
-esac
-if [[ "$release_kind" == "hotfix" ]]; then
-  [[ "$release_scope" == "backend" && "$backup_scope" == "online" ]] || fail "invalid hotfix scope"
-  [[ "$hotfix_id" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]] || fail "invalid hotfix id"
+if [[ "$release_kind" == "staging-promotion" ]]; then
+  [[ "$backup_scope" == all && "$release_scope" == full ]] || fail "Production promotion requires all/full"
+else
+  [[ "$backup_scope" == all && "$release_scope" == backend ]] || fail "hotfix requires all/backend scope"
 fi
-[[ "$expected_bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] \
-  || fail "invalid bundle size"
-(( expected_bundle_size <= BINHU_DEPLOY_MAX_BUNDLE_BYTES )) \
-  || fail "release bundle exceeds size limit"
+if [[ "$release_kind" == "hotfix" ]]; then
+  [[ "$expected_bundle_size" =~ ^[1-9][0-9]{0,9}$ ]] \
+    && (( expected_bundle_size <= BINHU_DEPLOY_MAX_HOTFIX_BUNDLE_BYTES )) || fail "hotfix bundle exceeds size limit"
+else
+  [[ "$expected_bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] \
+    && (( expected_bundle_size <= BINHU_DEPLOY_MAX_BUNDLE_BYTES )) || fail "release bundle exceeds size limit"
+fi
 
 for command_name in docker curl python3 tar gzip sha256sum flock head awk \
   readlink install date mktemp wc df grep seq sleep cp rm; do
@@ -135,8 +219,10 @@ readonly state_dir="$(readlink -m "$BINHU_DEPLOY_STATE_DIR")"
 
 install -d -o root -g root -m 0750 "$state_dir/incoming" "$state_dir/work" \
   "$state_dir/releases" "$state_dir/history"
-exec 9>"/run/lock/binhu-deploy.lock"
-flock -n 9 || fail "another deployment is already running"
+if [[ "${BINHU_DEPLOY_LOCK_HELD:-}" != 1 ]]; then
+  exec 9>"/run/lock/binhu-deploy.lock"
+  flock -n 9 || fail "another deployment is already running"
+fi
 
 readonly started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 readonly timestamp="$(date -u +%Y%m%d_%H%M%S)"
@@ -153,13 +239,16 @@ previous_version=""
 timing_receive=0
 timing_validate=0
 timing_preflight=0
-timing_build=0
+timing_image_load=0
+timing_image_build=0
 timing_program_backup=0
 timing_database_backup=0
 timing_switch_files=0
 timing_container_recreate=0
 timing_health_checks=0
 backup_id=""
+hotfix_id="${hotfix_id:-}"
+hotfix_bundle_sha256="${hotfix_bundle_sha256:-}"
 
 cleanup() {
   [[ "$incoming_bundle" == "$state_dir/incoming/"* ]] \
@@ -194,6 +283,11 @@ payload = {
     "release_dir": "$release_dir",
     "release_kind": "$release_kind",
     "hotfix_id": "$hotfix_id",
+    "hotfix_bundle_sha256": "$hotfix_bundle_sha256",
+    "staging_run_id": "$promotion_run_id",
+    "artifact_id": "$promotion_artifact_id",
+    "image_id": "$promotion_image_id",
+    "production_compose_sha256": "$promotion_compose_sha256",
     "backup_id": "$backup_id",
     "program_backup": "$program_backup",
     "rollback_image": "$rollback_tag",
@@ -201,7 +295,8 @@ payload = {
         "receive": $timing_receive,
         "validate_extract": $timing_validate,
         "preflight": $timing_preflight,
-        "image_build": $timing_build,
+        "image_load": $timing_image_load,
+        "image_build": $timing_image_build,
         "program_backup": $timing_program_backup,
         "database_backup": $timing_database_backup,
         "switch_files": $timing_switch_files,
@@ -235,7 +330,11 @@ rollback_after_error() {
     fi
     (
       cd "$project_dir"
-      docker compose up -d --no-deps --force-recreate ops-agent backend
+      if [[ "$release_kind" == "hotfix" ]]; then
+        docker compose up -d --no-build --no-deps --force-recreate ops-agent backend
+      else
+        docker compose up -d --no-build --no-deps --force-recreate ops-agent backend event-relay diagnostic-worker
+      fi
     )
     for _ in $(seq 1 45); do
       if curl -fsS http://127.0.0.1:37125/api/health 2>/dev/null \
@@ -256,6 +355,10 @@ log "receiving ${release_scope} release ${release_version} (${short_commit}), ${
 head -c "$expected_bundle_size" > "$incoming_bundle"
 bundle_size="$(wc -c < "$incoming_bundle")"
 [[ "$bundle_size" == "$expected_bundle_size" ]] || fail "incomplete release bundle"
+if [[ "$release_kind" == "hotfix" ]]; then
+  [[ "$(sha256sum "$incoming_bundle" | awk '{print $1}')" == "$hotfix_bundle_sha256" ]] \
+    || fail "hotfix bundle digest mismatch"
+fi
 timing_receive=$(( $(date +%s) - receive_started ))
 log "release received in ${timing_receive}s"
 
@@ -268,6 +371,7 @@ from pathlib import PurePosixPath
 allowed_sets = (
     {"source.tar.gz", "manifest.json", "SHA256SUMS"},
     {"source.tar.gz", "frontend-dist.tar.gz", "manifest.json", "SHA256SUMS"},
+    {"source.tar.gz", "image.tar.gz", "candidate.json", "manifest.json", "SHA256SUMS"},
 )
 with tarfile.open(sys.argv[1], "r:gz") as archive:
     members = archive.getmembers()
@@ -282,7 +386,9 @@ PY
 tar -xzf "$incoming_bundle" -C "$work_dir"
 
 python3 - "$work_dir/manifest.json" "$work_dir/SHA256SUMS" \
-  "$release_version" "$release_commit" "$backup_scope" "$release_scope" <<'PY'
+  "$release_version" "$release_commit" "$backup_scope" "$release_scope" \
+  "$promotion_run_id" "$promotion_artifact_id" "$promotion_artifact_sha256" \
+  "$promotion_image_id" "$promotion_compose_sha256" "$hotfix_id" <<'PY'
 import hashlib
 import json
 import re
@@ -292,7 +398,7 @@ from pathlib import Path
 manifest_path = Path(sys.argv[1])
 checksums_path = Path(sys.argv[2])
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-if manifest.get("schema") not in {1, 2}:
+if manifest.get("schema") not in {1, 2, 3}:
     raise SystemExit("unsupported manifest schema")
 if manifest.get("version") != sys.argv[3]:
     raise SystemExit("manifest version mismatch")
@@ -303,11 +409,53 @@ if manifest.get("backup_scope") != sys.argv[5]:
 manifest_scope = manifest.get("release_scope", "full")
 if manifest_scope != sys.argv[6]:
     raise SystemExit("manifest release scope mismatch")
+if manifest.get("schema") == 3:
+    expected_promotion = {
+        "backup_scope": "all", "release_scope": "full",
+        "release_kind": "staging-promotion",
+        "staging_run_id": sys.argv[7], "artifact_id": sys.argv[8],
+        "artifact_manifest_sha256": sys.argv[9], "image_id": sys.argv[10],
+        "commit": sys.argv[4], "version": sys.argv[3],
+        "production_config_commit": sys.argv[4],
+        "production_compose_sha256": sys.argv[11],
+    }
+    if any(manifest.get(key) != value for key, value in expected_promotion.items()):
+        raise SystemExit("Staging promotion manifest identity mismatch")
+    expected_files = {"source.tar.gz", "frontend-dist.tar.gz"}
+elif manifest.get("schema") == 2 and manifest.get("release_kind") == "hotfix":
+    if (manifest.get("commit") != sys.argv[4] or manifest.get("version") != sys.argv[3]
+            or manifest.get("backup_scope") != "all" or manifest.get("release_scope") != "backend"
+            or manifest.get("hotfix_id") != sys.argv[12]
+            or manifest.get("ready_for_hotfix") is not True):
+        raise SystemExit("hotfix release identity mismatch")
+    candidate_path = manifest_path.parent / "candidate.json"
+    candidate_digest = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    if candidate_digest != manifest.get("candidate_manifest_sha256"):
+        raise SystemExit("hotfix candidate manifest digest mismatch")
+    if (candidate.get("schema") != 1 or candidate.get("commit") != sys.argv[4]
+            or candidate.get("version") != sys.argv[3]
+            or candidate.get("release_scope") != "backend"
+            or candidate.get("ready_for_hotfix") is not True
+            or candidate.get("artifact_id") != manifest.get("artifact_id")
+            or candidate.get("image_id") != manifest.get("image_id")):
+        raise SystemExit("hotfix candidate identity mismatch")
+    expected_files = {"source.tar.gz", "image.tar.gz", "candidate.json"}
+    if set(manifest.get("files", {})) != expected_files:
+        raise SystemExit("hotfix candidate file list mismatch")
+    source_digest = hashlib.sha256((manifest_path.parent / "source.tar.gz").read_bytes()).hexdigest()
+    if (source_digest != candidate.get("artifact_id")
+            or source_digest != candidate.get("files", {}).get("source.tar.gz", {}).get("sha256")):
+        raise SystemExit("hotfix source artifact digest mismatch")
+    image_metadata = candidate.get("files", {}).get("image.tar.gz", {})
+    if image_metadata != manifest.get("files", {}).get("image.tar.gz"):
+        raise SystemExit("hotfix image archive metadata mismatch")
+else:
+    raise SystemExit("Production bundle is neither an accepted Staging promotion nor a fixed hotfix")
 checksum_lines = checksums_path.read_text(encoding="ascii").splitlines()
-expected_files = {"source.tar.gz"}
 if manifest_scope in {"frontend", "full"}:
     expected_files.add("frontend-dist.tar.gz")
-checksum_pattern = re.compile(r"^([0-9a-f]{64})  ([a-z-]+\.tar\.gz)$")
+checksum_pattern = re.compile(r"^([0-9a-f]{64})  ([a-z-]+(?:\.tar\.gz|\.json))$")
 checksums = {}
 for line in checksum_lines:
     match = checksum_pattern.fullmatch(line)
@@ -404,52 +552,100 @@ log "deployment preflight completed in ${timing_preflight}s"
 previous_version="$(tr -d '\r\n' < "$project_dir/VERSION")"
 [[ "$previous_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "current VERSION is invalid"
 
-verify_hotfix_prebackup() {
-  [[ "$release_kind" == "hotfix" ]] || return 0
-  readonly prebackup_root="${BINHU_DEPLOY_PREBACKUP_DIR:-/var/lib/binhu-deploy/prebackups}"
-  readonly prebackup_max_age="${BINHU_DEPLOY_PREBACKUP_MAX_AGE_SECONDS:-86400}"
-  [[ -d "$prebackup_root" ]] || fail "hotfix prebackup directory is missing"
-  local manifest
-  manifest="$(find "$prebackup_root" -mindepth 2 -maxdepth 2 -type f -name backup-manifest.json -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
-  [[ -n "$manifest" && -f "$manifest" ]] || fail "no hotfix prebackup manifest found"
-  python3 - "$manifest" "$prebackup_max_age" "$previous_version" <<'PY'
-import hashlib, json, sys
-from datetime import datetime, timezone
+rollback_tag="binhu-backend:auto-rollback-${previous_version}-${timestamp}"
+if [[ "$release_kind" == "staging-promotion" ]]; then
+  candidate_tag="binhu-backend:staging-${promotion_run_id}"
+  readonly promotion_candidate="$state_dir/candidates/$promotion_run_id"
+  python3 - "$promotion_candidate/promotion.json" "$promotion_candidate/image.tar" \
+    "$promotion_run_id" "$promotion_artifact_id" "$promotion_artifact_sha256" \
+    "$promotion_image_id" "$release_commit" "$release_version" "$promotion_compose_sha256" <<'PY'
+import hashlib
+import json
+import sys
 from pathlib import Path
-manifest_path = Path(sys.argv[1])
-payload = json.loads(manifest_path.read_text(encoding='utf-8'))
-if payload.get('backup_scope') != 'online': raise SystemExit('prebackup scope mismatch')
-created = datetime.fromisoformat(str(payload.get('created_at', '')).replace('Z', '+00:00'))
-if (datetime.now(timezone.utc) - created).total_seconds() > int(sys.argv[2]): raise SystemExit('hotfix prebackup is expired')
-if payload.get('database_version') not in (None, sys.argv[3]): raise SystemExit('prebackup database version mismatch')
-entries = payload.get('databases') or []
-online = next((item for item in entries if item.get('database') in {'OnlineData', 'OnlineData.sql.gz'}), None)
-if not online or not online.get('sha256') or not online.get('size_bytes'): raise SystemExit('OnlineData prebackup manifest is incomplete')
-backup_file = manifest_path.parent / str(online.get('filename', ''))
-if not backup_file.is_file() or backup_file.stat().st_size != int(online['size_bytes']): raise SystemExit('OnlineData prebackup file is missing or truncated')
-if hashlib.sha256(backup_file.read_bytes()).hexdigest() != online['sha256']: raise SystemExit('OnlineData prebackup checksum mismatch')
-PY
-  backup_id="$(basename "$(dirname "$manifest")")"
-  log "hotfix prebackup verified: ${backup_id}"
-}
 
-if [[ "$release_scope" == "frontend" ]]; then
-  docker image inspect binhu-backend:latest >/dev/null
-  log "reusing current backend image for frontend release"
+manifest_path, image_path = map(Path, sys.argv[1:3])
+if (any(path.is_symlink() for path in (manifest_path, image_path, *image_path.parents))
+        or not image_path.is_file()):
+    raise SystemExit("promotion image archive is missing or unsafe")
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+expected = {
+    "staging_run_id": sys.argv[3], "artifact_id": sys.argv[4],
+    "artifact_manifest_sha256": sys.argv[5], "image_id": sys.argv[6],
+    "commit": sys.argv[7], "version": sys.argv[8],
+    "production_config_commit": sys.argv[7],
+    "production_compose_sha256": sys.argv[9],
+}
+if any(manifest.get(key) != value for key, value in expected.items()):
+    raise SystemExit("promotion image identity mismatch")
+archive = manifest.get("files", {}).get("image.tar", {})
+digest = hashlib.sha256()
+with image_path.open("rb") as source:
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        digest.update(chunk)
+if (archive.get("size") != image_path.stat().st_size
+        or archive.get("sha256") != digest.hexdigest()):
+    raise SystemExit("promotion image archive digest mismatch")
+PY
+  image_load_started="$(date +%s)"
+  docker image load --input "$promotion_candidate/image.tar" >/dev/null
+  timing_image_load=$(( $(date +%s) - image_load_started ))
+  image_inspect="$(docker image inspect "$promotion_image_id")"
+  python3 - "$image_inspect" "$promotion_image_id" "$promotion_artifact_id" \
+    "$release_commit" "$release_version" <<'PY'
+import json
+import sys
+
+image = json.loads(sys.argv[1])[0]
+labels = image.get("Config", {}).get("Labels", {})
+if image.get("Id") != sys.argv[2]:
+    raise SystemExit("loaded image digest does not match the accepted Staging image")
+if (labels.get("binhu.artifact.id") != sys.argv[3]
+        or labels.get("org.opencontainers.image.revision") != sys.argv[4]
+        or labels.get("org.opencontainers.image.version") != sys.argv[5]):
+    raise SystemExit("loaded image labels do not match the accepted Staging identity")
+PY
+  log "loaded exact Staging-accepted image ${promotion_image_id}"
 else
-  candidate_tag="binhu-backend:auto-candidate-${release_version}-${timestamp}"
-  rollback_tag="binhu-backend:auto-rollback-${previous_version}-${timestamp}"
-  build_started="$(date +%s)"
-  log "building candidate image"
-  docker build --pull=false -t "$candidate_tag" \
-    -f "$release_dir/source/backend/Dockerfile" "$release_dir/source/backend"
-  timing_build=$(( $(date +%s) - build_started ))
-  log "candidate image built in ${timing_build}s"
+  readonly hotfix_manifest="$work_dir/manifest.json"
+  promotion_artifact_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifact_id"])' "$hotfix_manifest")"
+  promotion_artifact_sha256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["candidate_manifest_sha256"])' "$hotfix_manifest")"
+  promotion_image_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_id"])' "$hotfix_manifest")"
+  [[ "$promotion_artifact_id" =~ ^[0-9a-f]{64}$ \
+    && "$promotion_artifact_sha256" =~ ^[0-9a-f]{64}$ \
+    && "$promotion_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "invalid hotfix candidate identity"
+  candidate_tag="binhu-backend:hotfix-${hotfix_id}"
+  image_load_started="$(date +%s)"
+  docker image load --input "$work_dir/image.tar.gz" >/dev/null
+  timing_image_load=$(( $(date +%s) - image_load_started ))
+  image_inspect="$(docker image inspect "$promotion_image_id")"
+  python3 - "$image_inspect" "$promotion_image_id" "$promotion_artifact_id" \
+    "$release_commit" "$release_version" "$work_dir/candidate.json" \
+    "$promotion_artifact_sha256" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+image = json.loads(sys.argv[1])[0]
+labels = image.get("Config", {}).get("Labels", {})
+candidate_path = Path(sys.argv[6])
+if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != sys.argv[7]:
+    raise SystemExit("hotfix candidate manifest digest mismatch")
+if image.get("Id") != sys.argv[2]:
+    raise SystemExit("loaded hotfix image digest mismatch")
+if (labels.get("binhu.artifact.id") != sys.argv[3]
+        or labels.get("org.opencontainers.image.revision") != sys.argv[4]
+        or labels.get("org.opencontainers.image.version") != sys.argv[5]
+        or "APP_VERSION=" + sys.argv[5] not in image.get("Config", {}).get("Env", [])):
+    raise SystemExit("loaded hotfix image labels/version do not match candidate")
+PY
+  log "loaded prebuilt exact-main-CI hotfix image ${promotion_image_id}"
 fi
+docker tag "$promotion_image_id" "$candidate_tag"
 
 readonly backup_dir="$project_dir/deploy-backups/automated/$release_id"
 install -d -o root -g root -m 0700 "$backup_dir"
-verify_hotfix_prebackup
 program_backup="$backup_dir/program.tar.gz"
 program_backup_started="$(date +%s)"
 case "$release_scope" in
@@ -484,22 +680,14 @@ backup_database() {
 }
 
 database_backup_started="$(date +%s)"
-if [[ "$release_kind" != "hotfix" ]]; then
-  case "$backup_scope" in
-    online) backup_database OnlineData ;;
-    daily) backup_database daily_report ;;
-    all)
-      backup_database OnlineData
-      backup_database OnlineDataArchive
-      backup_database daily_report
-      backup_database PlatformData
-      backup_database VisitData
-      backup_database DispatchData
-      backup_database RegistryData
-      backup_database WorkflowData
-      ;;
-  esac
-fi
+backup_database OnlineData
+backup_database OnlineDataArchive
+backup_database daily_report
+backup_database PlatformData
+backup_database VisitData
+backup_database DispatchData
+backup_database RegistryData
+backup_database WorkflowData
 
 python3 - "$backup_dir" "$backup_scope" "$release_scope" <<'PY'
 import gzip
@@ -560,7 +748,11 @@ container_recreate_started="$(date +%s)"
 (
   cd "$project_dir"
   docker compose config --quiet
-  docker compose up -d --no-deps --force-recreate ops-agent backend
+  if [[ "$release_kind" == "hotfix" ]]; then
+    docker compose up -d --no-build --no-deps --force-recreate ops-agent backend
+  else
+    docker compose up -d --no-build --no-deps --force-recreate ops-agent backend event-relay diagnostic-worker
+  fi
 )
 timing_container_recreate=$(( $(date +%s) - container_recreate_started ))
 log "application containers recreated in ${timing_container_recreate}s"
@@ -593,6 +785,8 @@ PY
 curl -fsS "http://127.0.0.1:37125/$main_asset" >/dev/null
 [[ "$(docker inspect -f '{{.State.Running}}' binhu-backend)" == "true" ]]
 [[ "$(docker inspect -f '{{.State.Running}}' binhu-ops-agent)" == "true" ]]
+[[ "$(docker inspect -f '{{.State.Running}}' binhu-event-relay)" == "true" ]]
+[[ "$(docker inspect -f '{{.State.Running}}' binhu-diagnostic-worker)" == "true" ]]
 [[ "$(docker inspect -f '{{.State.Health.Status}}' binhu-ops-agent)" == "healthy" ]]
 
 public_health="$(curl --http1.1 --fail --silent --show-error --max-time 15 \
@@ -623,10 +817,9 @@ printf 'STARTUP_ERROR_LINES=%s\n' "$error_lines"
 printf 'DEPLOY_TIMING_RECEIVE_SECONDS=%s\n' "$timing_receive"
 printf 'DEPLOY_TIMING_VALIDATE_EXTRACT_SECONDS=%s\n' "$timing_validate"
 printf 'DEPLOY_TIMING_PREFLIGHT_SECONDS=%s\n' "$timing_preflight"
-printf 'DEPLOY_TIMING_IMAGE_BUILD_SECONDS=%s\n' "$timing_build"
+printf 'DEPLOY_TIMING_IMAGE_LOAD_SECONDS=%s\n' "$timing_image_load"
 printf 'DEPLOY_TIMING_PROGRAM_BACKUP_SECONDS=%s\n' "$timing_program_backup"
 printf 'DEPLOY_TIMING_DATABASE_BACKUP_SECONDS=%s\n' "$timing_database_backup"
 printf 'DEPLOY_TIMING_SWITCH_FILES_SECONDS=%s\n' "$timing_switch_files"
 printf 'DEPLOY_TIMING_CONTAINER_RECREATE_SECONDS=%s\n' "$timing_container_recreate"
 printf 'DEPLOY_TIMING_HEALTH_CHECKS_SECONDS=%s\n' "$timing_health_checks"
-# hotfix scope initialization is validated before release checks

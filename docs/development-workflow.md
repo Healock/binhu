@@ -446,17 +446,9 @@ Agent 开始较大的功能、修复或数据库改动前，先按本页确定�
 
 缺一项就不进入停机和数据迁移。
 
-发布包不再由开发电脑临时拼接。提交进入 `main` 后，由 GitHub 的 `Deploy production` 手动工作流重新运行
-部署测试始终运行；后端范围运行后端测试和 Python 编译，前端范围运行前端测试和生产构建，完整范围两者都运行。
-`release_scope=auto` 会先读取生产最近一次成功发布的提交：纯后端运行代码生成仅含 `VERSION + backend/` 的精简包，
-纯前端运行代码生成仅含 `VERSION + frontend/dist` 的精简包；前后端同时变化、Compose、Nginx、部署脚本、未知路径
-或无法验证生产祖先提交时自动回退为完整包。发布包记录版本、完整提交号、备份
-范围、发布范围、文件大小和 SHA-256；服务器必须再次校验，不能接受工作区未提交文件。
+Production 只能晋级 Staging 已接受的不可变应用制品。GitHub `Deploy production` 手动工作流接收已进入 `main` 的完整提交、Staging `run_id` 和精确版本号；它散列该提交的 `docker-compose.yml` 并仅上传此配置文件。固定 root gateway 从服务器受保护的 Staging acceptance ledger 读取候选并核验 artifact/image/commit/version，不能以调用方上传的 `accept.json` 作为接受凭据。
 
-手动发布固定填写四项：已经进入 `main` 的 Git ref、精确版本号、数据库备份范围和发布范围（`auto`、`backend`、
-`frontend` 或 `full`）。普通 push、Pull Request、
-CI 通过或创建标签都不能自动触发生产切换。数据库备份范围仍按本页和运维手册判断，不能为了省时间统一选择
-`none`。同一时刻只允许一个生产发布任务。
+普通 Production 发布固定备份八个业务数据库 (`backup_scope=all`) 并执行完整切换。镜像必须来自服务器记录的 Staging accepted image archive，由服务器 `docker load` 后核验 image ID 和 labels；应用镜像禁止在 Production 重建，Production Compose 中禁止 `build:`。紧急 hotfix 是经用户确认的独立 Production 快速通道：调用者必须选择已合入 `main` 的完整 commit SHA 和该提交对应的成功 main push CI run，下载该 run 按完整 SHA 命名的预构建 backend 镜像候选；服务器校验包摘要、候选 manifest、镜像 ID、artifact/commit/version labels 后加载该镜像，且仍固定备份全部八个数据库 (`backup_scope=all`)。hotfix 仅切换 backend，保留 Production 当前 `VERSION`，不经过 Staging acceptance。普通 push、Pull Request、CI 通过或创建标签都不能自动触发生产切换；同一时刻只允许一个生产发布任务。
 
 ### 4.1 Dev、Staging 与 Production 的部署台账
 

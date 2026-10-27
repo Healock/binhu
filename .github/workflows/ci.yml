@@ -87,43 +87,65 @@ jobs:
 
   hotfix-candidate:
     name: Prebuild backend hotfix candidate
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     needs: backend
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
       - name: Check out the PR commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-      - name: Build candidate archive
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Build and verify exact commit candidate
         shell: bash
         run: |
           set -Eeuo pipefail
-          mkdir -p hotfix-candidate
-          git archive --format=tar.gz --output=hotfix-candidate/source.tar.gz HEAD VERSION backend deploy
-          sha256sum hotfix-candidate/source.tar.gz > hotfix-candidate/SHA256SUMS
-          CANDIDATE_COMMIT='${{ github.event.pull_request.head.sha }}' python - <<'PY'
+          commit="$(git rev-parse HEAD)"
+          version="$(tr -d '\r\n' < VERSION)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p hotfix-candidate context
+          git archive --format=tar.gz --output=hotfix-candidate/source.tar.gz HEAD VERSION backend
+          tar -xzf hotfix-candidate/source.tar.gz -C context
+          cp context/VERSION context/backend/VERSION
+          printf '\nENV APP_VERSION=%s\n' "$version" >> context/backend/Dockerfile
+          artifact_id="$(sha256sum hotfix-candidate/source.tar.gz | awk '{print $1}')"
+          image_tag="binhu-hotfix-candidate:$commit"
+          docker build --pull=false \
+            --label "binhu.artifact.id=$artifact_id" \
+            --label "org.opencontainers.image.revision=$commit" \
+            --label "org.opencontainers.image.version=$version" \
+            -t "$image_tag" -f context/backend/Dockerfile context/backend
+          image_id="$(docker image inspect --format '{{.Id}}' "$image_tag")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker image inspect "$image_tag" | python -c 'import json,sys; i=json.load(sys.stdin)[0]; l=i["Config"]["Labels"]; e={"binhu.artifact.id":sys.argv[1],"org.opencontainers.image.revision":sys.argv[2],"org.opencontainers.image.version":sys.argv[3]}; assert i["Id"]==sys.argv[4] and all(l.get(k)==v for k,v in e.items())' "$artifact_id" "$commit" "$version" "$image_id"
+          docker image save "$image_tag" | gzip -1 > hotfix-candidate/image.tar.gz
+          CANDIDATE_COMMIT="$commit" CANDIDATE_VERSION="$version" \
+            CANDIDATE_ARTIFACT_ID="$artifact_id" CANDIDATE_IMAGE_ID="$image_id" python - <<'PY'
           import hashlib, json, os
           from pathlib import Path
-          source = Path('hotfix-candidate/source.tar.gz')
+          root = Path('hotfix-candidate')
+          files = {}
+          for name in ('source.tar.gz', 'image.tar.gz'):
+              data = (root / name).read_bytes()
+              files[name] = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
           payload = {
-              'schema': 1,
-              'commit': os.environ['CANDIDATE_COMMIT'],
-              'version': Path('VERSION').read_text().strip(),
-              'release_scope': 'backend',
-              'ready_for_hotfix': True,
-              'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+              'schema': 1, 'commit': os.environ['CANDIDATE_COMMIT'],
+              'version': os.environ['CANDIDATE_VERSION'], 'release_scope': 'backend',
+              'ready_for_hotfix': True, 'artifact_id': os.environ['CANDIDATE_ARTIFACT_ID'],
+              'image_id': os.environ['CANDIDATE_IMAGE_ID'], 'files': files,
           }
-          Path('hotfix-candidate/manifest.json').write_text(json.dumps(payload, indent=2) + '\n')
+          (root / 'manifest.json').write_text(json.dumps(payload, sort_keys=True, indent=2) + '\n')
           PY
+          (cd hotfix-candidate && sha256sum source.tar.gz image.tar.gz > SHA256SUMS)
       - name: Upload reusable hotfix candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: binhu-hotfix-candidate-${{ github.sha }}
+          name: binhu-hotfix-candidate-${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           path: hotfix-candidate
           retention-days: 30
+
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
       - name: Validate Docker Compose configuration
