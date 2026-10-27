@@ -849,6 +849,20 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "foreign member"):
                 staging_control._backend_network("STG-20261027-02")
 
+    def test_staging_connector_identity_requires_all_fixed_labels(self):
+        name = "binhu-staging-event-pipeline-stg-20261007-03-business-bridge-1"
+        labels = {
+            "binhu.environment": "staging",
+            "binhu.run_id": "STG-20261007-03",
+            "com.docker.compose.project": "binhu-staging-event-pipeline-stg-20261007-03",
+            "com.docker.compose.service": "business-bridge",
+        }
+        self.assertTrue(staging_control._staging_backend_connector(name, labels))
+        for key in labels:
+            with self.subTest(label=key):
+                mismatched = {**labels, key: "production"}
+                self.assertFalse(staging_control._staging_backend_connector(name, mismatched))
+
     def test_staging_gateway_rejects_reseeding_before_starting_seed_container(self):
         gateway = (
             Path(__file__).parents[1]
