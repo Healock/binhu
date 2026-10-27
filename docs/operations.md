@@ -1005,35 +1005,29 @@ python -m deploy.environments.update apply-staging ... --evidence /srv/deploy-ba
 
 ## 正式部署入口
 
-正式版本使用 GitHub 仓库中的 `Deploy production` 手动工作流发布，不再从开发电脑逐文件传输。普通 push、
-Pull Request 和 `CI` 工作流没有生产 Secret，也不能连接服务器。代码必须先通过 PR 合并到 `main`，然后由
-发布人手动填写：
+正式 Production 发布只允许把已接受的 Staging 应用候选晋级到 Production。普通 push、Pull Request、CI 和桌面发布均不能连接 Production。代码和 `docker-compose.yml` 必须来自同一个已合并到 `main` 的完整提交；Staging 候选的 commit 与该提交不一致时，root-owned Production gateway 会拒绝发布。
 
-- `ref`：必须是已经合并到 `main` 的完整 40 位小写 Git 提交号。禁止使用 7/8 位短提交号、分支名或标签；短提交号可能无法被 GitHub Actions 的检出步骤解析，导致发布在构建前失败。
-- `expected_version`：必须与该提交根目录 `VERSION` 完全一致。
-- `backup_scope`：`none`、`online`、`daily` 或 `all`，按本手册“部署服务器前”的风险范围选择。
-- `release_scope`：默认 `auto`。生产提交可验证时，纯后端变化发送后端精简包，纯前端变化发送前端精简包；
-  前后端同时变化、Compose、Nginx、部署脚本、未知路径或状态不确定时发送完整包。也可以明确选择 `backend`、
-  `frontend` 或 `full`，但手动精简范围遇到不属于该范围的运行文件会被拒绝。
+发布人手动填写 `ref`、`run_id` 和 `expected_version`。`run_id` 必须是 Staging acceptance 返回的 `staging-app-` 加 16 位小写十六进制编号。工作流从所选 main commit 读取并散列 `docker-compose.yml`，只把该单文件送入固定 gateway；gateway 依据 root-only Staging acceptance ledger 派生 artifact/image identity，并逐项校验 artifact、image、commit 和版本。随包 `accept.json` 不作为接受事实。
+
+Production 固定执行 `backup_scope=all` 与完整应用切换。镜像从 accepted image archive 执行 `docker load`，核验 image ID、artifact、commit 和版本 labels，再打 `binhu-backend` 标签；生产 Compose 不含 `build:`，Production 发布链路也不构建应用镜像。`Deploy hotfix` 仍保留紧急操作入口，但复用同一套 Staging acceptance、备份、镜像与 Compose 校验，不再提供独立 artifact 或直接部署通道。
 
 网页上可以从 GitHub Actions 手动运行，也可以在已经登录 GitHub CLI 的受控电脑执行：
 
 ```powershell
 $version = (Get-Content VERSION -Raw).Trim()
 $releaseCommit = (git rev-parse origin/main).Trim()
+$stagingRunId = Read-Host 'Accepted Staging run id (staging-app- plus 16 lowercase hex digits)'
 if ($releaseCommit -notmatch '^[0-9a-f]{40}$') { throw '发布提交号必须是完整 40 位小写 Git SHA' }
+if ($stagingRunId -notmatch '^staging-app-[0-9a-f]{16}$') { throw 'Staging run id 格式无效' }
 git merge-base --is-ancestor $releaseCommit origin/main
 if ($LASTEXITCODE -ne 0) { throw '发布提交尚未进入 main' }
 gh workflow run deploy-production.yml --ref main `
   -f ref=$releaseCommit `
-  -f expected_version=$version `
-  -f backup_scope=none `
-  -f release_scope=auto
+  -f run_id=$stagingRunId `
+  -f expected_version=$version
 ```
 
-其中命令行参数 `--ref main` 表示从 `main` 读取工作流定义；表单参数 `-f ref=$releaseCommit` 才是实际发布的代码提交，两者不能混用。触发后应在工作流标题中确认显示的是完整 40 位提交号。
-
-`backup_scope=none` 只适用于纯前端，或不修改数据库结构和数据写入逻辑的普通后端更新。涉及在线同步、导入、日报计算、数据库结构或迁移时，必须按“部署服务器前”的风险表改为 `online`、`daily` 或 `all`，不能因为自动工作流方便就一律填 `none`。
+其中命令行参数 `--ref main` 表示从 `main` 读取工作流定义；表单参数 `-f ref=$releaseCommit` 才是发布代码提交。触发后核对工作流选中的 commit 和 Staging run ID。生产 gateway 会固定备份八个业务数据库，不接受调用方缩小备份范围。
 
 触发后记录工作流地址并等待唯一一次运行结束，不要因构建时间较长重复点击。可以使用：
 
@@ -1042,7 +1036,7 @@ gh run list --workflow deploy-production.yml --limit 1
 gh run watch <运行编号> --exit-status
 ```
 
-只有工作流成功、生产健康接口返回预期版本、容器和近期日志正常后，才创建并推送 `vX.Y.Z` 标签。工作流失败时先查看失败步骤；不要在原因不明时重复发布，也不要改用手工上传掩盖固定入口的问题。
+只有工作流成功、生产健康接口返回预期版本、容器和近期日志正常后，才创建并推送 `vX.Y.Z` 标签。工作流失败时先查看失败步骤；不要在原因不明时重复发布，也不要改用手工上传绕过 Staging acceptance。
 
 ### 桌面客户端更新包的 OSS 传输链路
 
@@ -1752,7 +1746,7 @@ production-maintenance registry-property-identity rollback <run-id> <old-id> <ca
 
 允许的 `operation` 为 `internal-department-retirement`、`photo-sheet-retirement`、`registry-property-identity`。常规阶段为 `measure`、`backup`、`apply`、`verify`；`rollback` 只允许房屋身份归并使用。执行 `apply` 前必须有同一运行编号的测量和备份，脚本重新核对固定证据、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。房屋归并只接受一个旧房屋 ID、一个现行房屋 ID 和一个测量摘要，不接受候选列表、表名、SQL 或任意脚本路径。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
 
-该入口由服务器 root 安装，不随普通应用发布自动覆盖。安装或更新时机是：对应网关/维护脚本 PR 合并、CI 通过，且生产发布前；由部署负责人执行 `deploy/install-server-deployer.sh`，先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再运行 `visudo -cf`、检查脚本 SHA-256，并使用 `status` 和一个拒绝性参数测试确认入口边界。安装完成后才允许触发维护工作流。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
+该入口由服务器 root 安装，不随普通应用发布自动覆盖。网关/维护脚本 PR 合并并通过 CI 后，首次 Production promotion 前由部署负责人执行 `deploy/install-server-deployer.sh`；先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy`、`/usr/local/lib/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再检查安装文件 SHA-256、运行 `visudo -cf`，并用 `status` 和拒绝性命令验证入口边界。安装会部署 Staging promotion 校验器和受限 sudoers 命令；未完成这一步时，新 Production workflow 应失败关闭。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
 
 部门归位的执行顺序固定为：`measure → backup → apply → verify`。`measure` 输出的内勤人数必须原样作为 `expected-count`；`backup` 只备份 `PlatformData`；`apply` 调用 `migrations.internal_department_retirement` 的完整参数（包括 `--run-id`、`--backup-manifest`、`--expect-internal-members`、`--confirm-remove-internal`）。照片退役同样按四阶段执行，`backup` 包含 `WorkflowData`、照片附件和 ZIP 目录，`apply` 调用既有 `--expect-photo-tickets` 与 `--confirm-empty-photo-tables`。任一阶段失败都停止后续阶段，不覆盖失败证据。
 

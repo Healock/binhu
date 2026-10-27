@@ -108,53 +108,35 @@ if [[ "${command_parts[0]:-}" == "current-flow-cleanup" && "${#command_parts[@]}
     current-flow-cleanup "$cleanup_phase" "$cleanup_run_id" "$cleanup_business_date"
 fi
 
-if [[ "${command_parts[0]:-}" == "hotfix" && "${#command_parts[@]}" -eq 7 ]]; then
-  readonly version="${command_parts[1]}"; readonly commit="${command_parts[2]}"
-  readonly backup_scope="${command_parts[3]}"; readonly release_scope="${command_parts[4]}"
-  readonly bundle_size="${command_parts[5]}"; readonly hotfix_id="${command_parts[6]}"
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version." >&2; exit 64; }
-  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid commit." >&2; exit 64; }
-  [[ "$backup_scope" == online && "$release_scope" == backend ]] || { echo "Invalid hotfix scope." >&2; exit 64; }
-  [[ "$hotfix_id" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]] || { echo "Invalid hotfix id." >&2; exit 64; }
-  [[ "$bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] && (( bundle_size <= 134217728 )) || { echo "Invalid bundle size." >&2; exit 64; }
-  exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy hotfix "$version" "$commit" "$backup_scope" "$release_scope" "$bundle_size" "$hotfix_id"
-fi
-if [[ "${command_parts[0]:-}" != "deploy" || "${#command_parts[@]}" -ne 6 ]]; then
-  echo "Only the fixed Binhu deploy command is allowed." >&2
+if [[ "${command_parts[0]:-}" != "promote" || "${#command_parts[@]}" -ne 6 ]]; then
+  echo "Only accepted Staging promotions are allowed in Production." >&2
   exit 64
 fi
 readonly version="${command_parts[1]}"
-readonly commit="${command_parts[2]}"
-readonly backup_scope="${command_parts[3]}"
-readonly release_scope="${command_parts[4]}"
-readonly bundle_size="${command_parts[5]}"
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+readonly staging_run_id="${command_parts[2]}"
+readonly commit="${command_parts[3]}"
+readonly compose_sha256="${command_parts[4]}"
+readonly compose_size="${command_parts[5]}"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
   echo "Invalid version." >&2
   exit 64
-fi
-if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+}
+[[ "$staging_run_id" =~ ^staging-app-[0-9a-f]{16}$ ]] || {
+  echo "Invalid Staging run id." >&2
+  exit 64
+}
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || {
   echo "Invalid commit." >&2
   exit 64
-fi
-case "$backup_scope" in
-  none|online|daily|all) ;;
-  *)
-    echo "Invalid backup scope." >&2
-    exit 64
-    ;;
-esac
-case "$release_scope" in
-  backend|frontend|full) ;;
-  *)
-    echo "Invalid release scope." >&2
-    exit 64
-    ;;
-esac
-if [[ ! "$bundle_size" =~ ^[1-9][0-9]{0,8}$ ]] \
-  || (( bundle_size > 134217728 )); then
-  echo "Invalid bundle size." >&2
+}
+[[ "$compose_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "Invalid Production Compose digest." >&2
   exit 64
-fi
+}
+[[ "$compose_size" =~ ^[1-9][0-9]{0,6}$ ]] && (( compose_size <= 1048576 )) || {
+  echo "Invalid Production Compose size." >&2
+  exit 64
+}
 
 exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy \
-  "$version" "$commit" "$backup_scope" "$release_scope" "$bundle_size"
+  promote "$version" "$staging_run_id" "$commit" "$compose_sha256" "$compose_size"

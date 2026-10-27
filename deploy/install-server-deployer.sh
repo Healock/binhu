@@ -26,7 +26,10 @@ for command_name in useradd passwd install visudo; do
   }
 done
 [[ -f "$script_dir/binhu-deploy" && -f "$script_dir/binhu-deploy-gateway" \
-  && -f "$script_dir/binhu-maintenance" ]] || {
+  && -f "$script_dir/binhu-maintenance" \
+  && -f "$script_dir/environments/production_promotion.py" \
+  && -f "$script_dir/environments/artifact.py" \
+  && -f "$script_dir/environments/image.py" ]] || {
   echo "Run the installer from a complete deploy script directory." >&2
   exit 1
 }
@@ -53,6 +56,12 @@ passwd -l "$deploy_user" >/dev/null 2>&1 || true
 install -o root -g root -m 0755 "$script_dir/binhu-deploy" /usr/local/sbin/binhu-deploy
 install -o root -g root -m 0755 "$script_dir/binhu-deploy-gateway" /usr/local/bin/binhu-deploy-gateway
 install -o root -g root -m 0755 "$script_dir/binhu-maintenance" /usr/local/sbin/binhu-maintenance
+install -d -o root -g root -m 0755 /usr/local/lib/binhu-deploy/deploy/environments
+install -o root -g root -m 0644 "$script_dir/__init__.py" /usr/local/lib/binhu-deploy/deploy/__init__.py
+install -o root -g root -m 0644 "$script_dir/environments/__init__.py" /usr/local/lib/binhu-deploy/deploy/environments/__init__.py
+install -o root -g root -m 0644 "$script_dir/environments/production_promotion.py" \
+  "$script_dir/environments/artifact.py" "$script_dir/environments/image.py" \
+  /usr/local/lib/binhu-deploy/deploy/environments/
 install -d -o root -g root -m 0750 "$state_dir" "$state_dir/incoming" \
   "$state_dir/work" "$state_dir/releases" "$state_dir/history"
 install -d -o "$deploy_user" -g "$deploy_user" -m 0700 "$deploy_home/.ssh"
@@ -73,7 +82,10 @@ chown root:root /etc/binhu-deploy.conf
 chmod 0644 /etc/binhu-deploy.conf
 
 cat > /etc/sudoers.d/binhu-deploy <<'EOF'
-binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy *
+binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy status
+binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy promote *
+binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy production-maintenance *
+binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy current-flow-cleanup *
 EOF
 chown root:root /etc/sudoers.d/binhu-deploy
 chmod 0440 /etc/sudoers.d/binhu-deploy

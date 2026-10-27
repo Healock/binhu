@@ -1,142 +1,45 @@
-name: Deploy hotfix
+name: Deploy accepted Staging candidate as emergency hotfix
+run-name: Hotfix ${{ inputs.hotfix_id }} from ${{ inputs.run_id }}
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Merged main ref containing the hotfix
+        description: Commit already merged into main
         required: true
         default: main
         type: string
-      hotfix_id:
-        description: Unique ID, for example HF-20260911-589
-        required: true
-        type: string
-      artifact_run_id:
-        description: Successful workflow run that produced the prebuilt bundle
+      run_id:
+        description: Accepted Staging application candidate
         required: true
         type: string
       expected_version:
-        description: Current production VERSION (unchanged by a hotfix)
+        description: Exact VERSION of the selected main commit
         required: true
         type: string
-      backup_scope:
-        description: Prebackup scope (must be online)
+      hotfix_id:
+        description: Emergency change tracking ID, for example HF-20261027-12
         required: true
-        default: online
         type: string
 
 permissions:
   contents: read
-  actions: read
-
-concurrency:
-  group: production-hotfix
-  cancel-in-progress: false
 
 jobs:
-  validate-and-package:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      EXPECTED_VERSION: ${{ inputs.expected_version }}
-      HOTFIX_ID: ${{ inputs.hotfix_id }}
-      BACKUP_SCOPE: ${{ inputs.backup_scope }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-      - name: Verify merged ref and hotfix identity
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          git fetch --no-tags origin main
-          commit="$(git rev-parse HEAD)"
-          git merge-base --is-ancestor "$commit" origin/main
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$HOTFIX_ID" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]]
-          [[ "$(tr -d '\r\n' < VERSION)" == "$EXPECTED_VERSION" ]]
-          printf 'RELEASE_COMMIT=%s\n' "$commit" >> "$GITHUB_ENV"
-      - name: Download PR candidate artifact
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
-        with:
-          run-id: ${{ inputs.artifact_run_id }}
-          path: candidate-artifact
-          github-token: ${{ github.token }}
-      - name: Verify candidate artifact
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          manifest="$(find candidate-artifact -name manifest.json -type f | head -n 1)"
-          [[ -n "$manifest" ]] || { echo 'candidate manifest missing' >&2; exit 1; }
-          python - "$manifest" "${{ inputs.ref }}" "$EXPECTED_VERSION" "$BACKUP_SCOPE" <<'PY'
-          import json, pathlib, re, subprocess, sys
-          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          if manifest.get('release_scope') != 'backend' or not manifest.get('ready_for_hotfix'):
-              raise SystemExit('candidate is not backend hotfix-ready')
-          if manifest.get('version') != sys.argv[3]:
-              raise SystemExit('candidate version mismatch')
-          if sys.argv[4] != 'online':
-              raise SystemExit('hotfix backup scope must be online')
-          commit = manifest.get('commit', '')
-          if not re.fullmatch(r'[0-9a-f]{40}', commit):
-              raise SystemExit('candidate commit is not a full SHA')
-          subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
-          pathlib.Path('release-commit.txt').write_text(commit + '\n')
-          PY
-          printf 'RELEASE_COMMIT=%s\n' "$(cat release-commit.txt)" >> "$GITHUB_ENV"
-      - name: Build hotfix bundle
-        run: |
-          mkdir -p release-output
-          python deploy/build_release_bundle.py \
-            --repository . --commit "$RELEASE_COMMIT" \
-            --backup-scope "$BACKUP_SCOPE" --release-scope backend \
-            --release-kind hotfix --hotfix-id "$HOTFIX_ID" \
-            --output release-output/binhu-hotfix.tar.gz
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: binhu-hotfix-${{ inputs.hotfix_id }}-${{ github.run_id }}
-          path: release-output/binhu-hotfix.tar.gz
-          retention-days: 30
-
-  deploy:
-    needs: validate-and-package
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    environment: production
-    env:
-      EXPECTED_VERSION: ${{ inputs.expected_version }}
-      HOTFIX_ID: ${{ inputs.hotfix_id }}
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: binhu-hotfix-${{ inputs.hotfix_id }}-${{ github.run_id }}
-          path: release-output
-      - name: Deploy through fixed hotfix gateway
-        shell: bash
+      - name: Validate emergency change ID
         env:
-          DEPLOY_HOST: ${{ secrets.BINHU_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.BINHU_DEPLOY_PORT }}
-          DEPLOY_KEY: ${{ secrets.BINHU_DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.BINHU_DEPLOY_KNOWN_HOSTS }}
+          HOTFIX_ID: ${{ inputs.hotfix_id }}
         run: |
           set -Eeuo pipefail
-          install -d -m 700 "$RUNNER_TEMP/binhu-ssh"
-          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/key"
-          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
-          chmod 600 "$RUNNER_TEMP/binhu-ssh/key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
-          commit="$(tar -xOf release-output/binhu-hotfix.tar.gz manifest.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
-          size="$(wc -c < release-output/binhu-hotfix.tar.gz)"
-          started="$(date +%s)"
-          ssh -F /dev/null -i "$RUNNER_TEMP/binhu-ssh/key" -o BatchMode=yes \
-            -o IdentitiesOnly=yes -o PasswordAuthentication=no \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-ssh/known_hosts" \
-            -p "$DEPLOY_PORT" "binhu-deploy@$DEPLOY_HOST" \
-            "hotfix $EXPECTED_VERSION $commit online backend $size $HOTFIX_ID" \
-            < release-output/binhu-hotfix.tar.gz
-          elapsed=$(( $(date +%s) - started ))
-          printf 'HOTFIX_ID=%s\nELAPSED_SECONDS=%s\n' "$HOTFIX_ID" "$elapsed"
-          (( elapsed <= 180 ))
+          [[ "$HOTFIX_ID" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]]
+  promote:
+    needs: validate
+    uses: ./.github/workflows/deploy-production.yml
+    with:
+      ref: ${{ inputs.ref }}
+      run_id: ${{ inputs.run_id }}
+      expected_version: ${{ inputs.expected_version }}
+    secrets: inherit

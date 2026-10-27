@@ -11,24 +11,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class DeploymentContractTests(unittest.TestCase):
-    def test_production_workflow_is_manual_restricted_and_pinned(self) -> None:
+    def test_production_workflow_only_promotes_accepted_staging_candidates(self) -> None:
         workflow = (ROOT / ".github/workflows/deploy-production.yml").read_text(
             encoding="utf-8"
         )
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("workflow_call:", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotRegex(workflow, re.compile(r"(?m)^\s+push:\s*$"))
         self.assertIn("permissions:\n  contents: read", workflow)
         self.assertIn("group: production-deploy", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("environment: production", workflow)
-        self.assertIn("NODE_OPTIONS: --max-old-space-size=8192", workflow)
-        self.assertIn("release_scope:", workflow)
-        self.assertIn("deploy/resolve_release_scope.py", workflow)
-        self.assertIn("- frontend", workflow)
-        self.assertIn("env.RELEASE_SCOPE == 'frontend' || env.RELEASE_SCOPE == 'full'", workflow)
-        self.assertIn("if: env.RELEASE_SCOPE != 'frontend'", workflow)
-        self.assertIn('"binhu-deploy@$DEPLOY_HOST" status', workflow)
+        self.assertIn("STAGING_RUN_ID", workflow)
+        self.assertIn("staging-app-[0-9a-f]{16}", workflow)
+        self.assertIn("sha256sum docker-compose.yml", workflow)
         self.assertIn(
             'git merge-base --is-ancestor "$release_commit" origin/main', workflow
         )
@@ -38,23 +35,35 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("-o StrictHostKeyChecking=yes", workflow)
         self.assertIn("-o PasswordAuthentication=no", workflow)
         self.assertIn(
-            'bundle_size="$(wc -c < release-output/binhu-release.tar.gz)"',
+            '"promote $EXPECTED_VERSION $STAGING_RUN_ID $RELEASE_COMMIT $PRODUCTION_COMPOSE_SHA256 $PRODUCTION_COMPOSE_SIZE"',
             workflow,
         )
-        self.assertIn('gateway_started="$(date +%s)"', workflow)
-        self.assertIn("Fixed gateway upload and server deployment completed", workflow)
-        self.assertIn(
-            '"deploy $EXPECTED_VERSION $RELEASE_COMMIT $BACKUP_SCOPE $RELEASE_SCOPE $bundle_size"',
-            workflow,
-        )
-        self.assertNotIn("BINHU_PUBLIC_URL", workflow)
+        self.assertIn("< docker-compose.yml", workflow)
+        self.assertNotIn("backup_scope:", workflow)
+        self.assertNotIn("release_scope:", workflow)
+        self.assertNotIn("build_release_bundle.py", workflow)
         self.assertNotIn("docker compose", workflow)
         self.assertNotIn("docker build", workflow)
 
         action_refs = re.findall(r"uses:\s+[^@\s]+@([^\s#]+)", workflow)
-        self.assertGreaterEqual(len(action_refs), 4)
+        self.assertGreaterEqual(len(action_refs), 1)
         for action_ref in action_refs:
             self.assertRegex(action_ref, r"^[0-9a-f]{40}$")
+
+    def test_emergency_hotfix_entry_reuses_the_production_promotion_gate(self) -> None:
+        workflow = (ROOT / ".github/workflows/deploy-hotfix.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("hotfix_id:", workflow)
+        self.assertIn("run_id:", workflow)
+        self.assertIn("uses: ./.github/workflows/deploy-production.yml", workflow)
+        self.assertIn("secrets: inherit", workflow)
+        self.assertNotIn("actions/download-artifact", workflow)
+        self.assertNotIn("binhu-deploy@", workflow)
+
+    def test_production_compose_is_no_build(self) -> None:
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertNotRegex(compose, re.compile(r"(?m)^\s+build\s*:"))
+        self.assertGreaterEqual(compose.count("image: binhu-backend"), 3)
 
     def test_ci_never_references_production_secrets_or_gateway(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -129,6 +138,10 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('[[ "$bundle_size" == "$expected_bundle_size" ]]', script)
         self.assertIn('release_scope="full"', script)
         self.assertIn('RELEASE_SCOPE=%s', script)
+        self.assertIn('docker image load --input "$promotion_candidate/image.tar"', script)
+        self.assertIn('docker image inspect "$promotion_image_id"', script)
+        self.assertIn('promotion image archive digest mismatch', script)
+        self.assertNotIn("docker build", script)
         self.assertIn('release received in', script)
         self.assertIn('release validated and extracted in', script)
         self.assertIn('deployment preflight completed in', script)
@@ -141,7 +154,7 @@ class DeploymentContractTests(unittest.TestCase):
             "RECEIVE",
             "VALIDATE_EXTRACT",
             "PREFLIGHT",
-            "IMAGE_BUILD",
+            "IMAGE_LOAD",
             "PROGRAM_BACKUP",
             "DATABASE_BACKUP",
             "SWITCH_FILES",
@@ -151,11 +164,17 @@ class DeploymentContractTests(unittest.TestCase):
             self.assertIn(f"DEPLOY_TIMING_{timing_name}_SECONDS", script)
         self.assertIn('if [[ "$status" == "success" ]]', script)
         self.assertIn('rm -rf -- "$project_dir/backend"', script)
-        self.assertIn('release_scope" == "frontend"', script)
-        self.assertIn('reusing current backend image for frontend release', script)
-        self.assertIn('tar -czf "$program_backup" -C "$project_dir" VERSION frontend/dist', script)
+        self.assertIn('tar -czf "$program_backup" -C "$project_dir" \\', script)
         self.assertIn('switched=1', script)
         self.assertNotIn('BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1', script)
+
+    def test_deployer_installs_root_only_promotion_verifier_and_restricts_sudo(self) -> None:
+        installer = (ROOT / "deploy/install-server-deployer.sh").read_text(encoding="utf-8")
+        self.assertIn("production_promotion.py", installer)
+        self.assertIn("artifact.py", installer)
+        self.assertIn("image.py", installer)
+        self.assertIn("binhu-deploy promote *", installer)
+        self.assertNotRegex(installer, re.compile(r"NOPASSWD: /usr/local/sbin/binhu-deploy \*\n"))
 
     def test_assignment_projection_backfill_does_not_block_api_bootstrap(self) -> None:
         database = (ROOT / "backend/database.py").read_text(encoding="utf-8")
@@ -174,6 +193,9 @@ class DeploymentContractTests(unittest.TestCase):
             "",
             "bash",
             "deploy 0.15.0 deadbeef none",
+            "hotfix 0.15.0 " + "a" * 40 + " online backend 1024 HF-20261027-1",
+            "promote 1.2.3 staging-app-" + "a" * 16,
+            "promote 1.2.3 staging-app-" + "a" * 16 + " " + "a" * 40 + " f" * 64 + " 4",
             "deploy 0.15.0 " + "a" * 40 + " invalid",
             "deploy 0.15.0 " + "a" * 40 + " none",
             "deploy 0.15.0 " + "a" * 40 + " none 0",

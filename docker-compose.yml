@@ -39,9 +39,6 @@ services:
       retries: 10
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
     image: binhu-backend
     container_name: binhu-backend
     restart: unless-stopped
@@ -200,9 +197,6 @@ services:
         condition: service_healthy
 
   event-relay:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
     image: binhu-backend
     container_name: binhu-event-relay
     restart: unless-stopped
@@ -227,9 +221,6 @@ services:
         condition: service_healthy
 
   diagnostic-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
     image: binhu-backend
     container_name: binhu-diagnostic-worker
     restart: unless-stopped
