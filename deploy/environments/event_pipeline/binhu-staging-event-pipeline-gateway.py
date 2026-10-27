@@ -734,7 +734,12 @@ def _retirement_snapshot_after(run_id: str, project: str, before: dict) -> dict:
             break
     if available is None:
         raise ValueError("staging_retirement_memory_probe_failed")
-    return {"mem_available_kib": available}
+    return {
+        "backend_network_id": network.get("Id"),
+        "backend_members": sorted(members),
+        "core_services": core,
+        "mem_available_kib": available,
+    }
 
 
 def main() -> None:
