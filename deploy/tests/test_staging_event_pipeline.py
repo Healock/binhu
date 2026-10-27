@@ -773,6 +773,96 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "foreign_member"):
                 staging_backend_network.validate_network(valid)
 
+    def test_staging_measure_accepts_valid_connectors_from_an_older_run(self):
+        names = (
+            "binhu-staging-environment-mysql-1",
+            "binhu-staging-redis-1",
+            "binhu-staging-event-pipeline-stg-20261007-03-business-bridge-1",
+            "binhu-staging-event-pipeline-stg-20261007-03-backend-outbox-relay-1",
+        )
+        network = {
+            "Name": staging_compose.BACKEND_NETWORK,
+            "Driver": "bridge",
+            "Internal": True,
+            "Labels": {"binhu.environment": "staging", "binhu.role": "pipeline-backend-access"},
+            "Containers": {str(index): {"Name": name} for index, name in enumerate(names)},
+        }
+        labels = {
+            name: {
+                "binhu.environment": "staging",
+                "binhu.run_id": "STG-20261007-03",
+                "com.docker.compose.project": "binhu-staging-event-pipeline-stg-20261007-03",
+                "com.docker.compose.service": "environment-mysql" if name.endswith("environment-mysql-1")
+                else "redis" if name.endswith("redis-1")
+                else "business-bridge" if name.endswith("business-bridge-1")
+                else "backend-outbox-relay",
+            }
+            for name in names
+        }
+        labels[names[0]]["com.docker.compose.project"] = "binhu-staging"
+        labels[names[1]]["com.docker.compose.project"] = "binhu-staging"
+        inspected = [
+            {"Name": "/" + name, "State": {"Status": "running"}, "Config": {"Labels": labels[name]}}
+            for name in names
+        ]
+
+        def docker_json(command):
+            return [network] if command[1] == "network" else inspected
+
+        with patch.object(staging_control, "_docker_json", side_effect=docker_json):
+            result = staging_control._backend_network("STG-20261027-02")
+        self.assertEqual(result, network)
+
+    def test_staging_measure_rejects_mislabeled_old_connectors(self):
+        names = (
+            "binhu-staging-environment-mysql-1",
+            "binhu-staging-redis-1",
+            "binhu-staging-event-pipeline-stg-20261007-03-business-bridge-1",
+        )
+        network = {
+            "Name": staging_compose.BACKEND_NETWORK,
+            "Driver": "bridge",
+            "Internal": True,
+            "Labels": {"binhu.environment": "staging", "binhu.role": "pipeline-backend-access"},
+            "Containers": {str(index): {"Name": name} for index, name in enumerate(names)},
+        }
+        inspected = []
+        for name in names:
+            service = ("environment-mysql" if name.endswith("environment-mysql-1") else
+                       "redis" if name.endswith("redis-1") else "business-bridge")
+            project = "binhu-staging" if service in {"environment-mysql", "redis"} else \
+                "binhu-staging-event-pipeline-stg-20261007-03"
+            labels = {
+                "binhu.environment": "staging",
+                "binhu.run_id": "STG-20261007-03",
+                "com.docker.compose.project": project,
+                "com.docker.compose.service": service,
+            }
+            inspected.append({"Name": "/" + name, "State": {"Status": "running"},
+                              "Config": {"Labels": labels}})
+        inspected[-1]["Config"]["Labels"]["com.docker.compose.project"] = "binhu-staging-event-pipeline-stg-20261027-02"
+
+        def docker_json(command):
+            return [network] if command[1] == "network" else inspected
+
+        with patch.object(staging_control, "_docker_json", side_effect=docker_json):
+            with self.assertRaisesRegex(ValueError, "foreign member"):
+                staging_control._backend_network("STG-20261027-02")
+
+    def test_staging_connector_identity_requires_all_fixed_labels(self):
+        name = "binhu-staging-event-pipeline-stg-20261007-03-business-bridge-1"
+        labels = {
+            "binhu.environment": "staging",
+            "binhu.run_id": "STG-20261007-03",
+            "com.docker.compose.project": "binhu-staging-event-pipeline-stg-20261007-03",
+            "com.docker.compose.service": "business-bridge",
+        }
+        self.assertTrue(staging_control._staging_backend_connector(name, labels))
+        for key in labels:
+            with self.subTest(label=key):
+                mismatched = {**labels, key: "production"}
+                self.assertFalse(staging_control._staging_backend_connector(name, mismatched))
+
     def test_staging_gateway_rejects_reseeding_before_starting_seed_container(self):
         gateway = (
             Path(__file__).parents[1]

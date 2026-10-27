@@ -151,6 +151,24 @@ def _validate_no_cross_environment(spec: dict) -> None:
             raise ValueError("Staging runtime references a forbidden environment")
 
 
+def _staging_backend_connector(name: str, labels: dict[str, Any]) -> bool:
+    match = re.fullmatch(
+        r"binhu-staging-event-pipeline-stg-(\d{8}-\d{2})-"
+        r"(business-bridge|backend-outbox-relay)-1",
+        name,
+    )
+    if match is None:
+        return False
+    run_id = "STG-" + match.group(1)
+    service = match.group(2)
+    return (
+        labels.get("binhu.environment") == "staging"
+        and labels.get("binhu.run_id") == run_id
+        and labels.get("com.docker.compose.project") == project_for(run_id)
+        and labels.get("com.docker.compose.service") == service
+    )
+
+
 def _backend_network(run_id: str) -> dict:
     network = _docker_json(["docker", "network", "inspect", BACKEND_NETWORK])[0]
     labels = network.get("Labels", {}) or {}
@@ -161,9 +179,7 @@ def _backend_network(run_id: str) -> dict:
         raise ValueError("isolated Staging Backend network required")
     names = {str(item.get("Name", "")) for item in (network.get("Containers") or {}).values()}
     required = {"binhu-staging-environment-mysql-1", "binhu-staging-redis-1"}
-    allowed = required | {f"{project_for(run_id)}-{service}-1"
-                          for service in ("business-bridge", "backend-outbox-relay")}
-    if not required <= names or not names <= allowed:
+    if not required <= names:
         raise ValueError("foreign or missing member on Staging Backend network")
     for item in _docker_json(["docker", "inspect", *sorted(names)]):
         container_labels = item.get("Config", {}).get("Labels", {}) or {}
@@ -171,10 +187,12 @@ def _backend_network(run_id: str) -> dict:
         if (container_labels.get("binhu.environment") != "staging"
                 or item.get("State", {}).get("Status") != "running"):
             raise ValueError("foreign member on Staging Backend network")
-        if name not in required and (container_labels.get("binhu.run_id") != run_id
-                or container_labels.get("com.docker.compose.project") != project_for(run_id)):
-            raise ValueError("foreign member on Staging Backend network")
-        if name in required and container_labels.get("com.docker.compose.project") != "binhu-staging":
+        if name in required:
+            service = "environment-mysql" if name.endswith("environment-mysql-1") else "redis"
+            if (container_labels.get("com.docker.compose.project") != "binhu-staging"
+                    or container_labels.get("com.docker.compose.service") != service):
+                raise ValueError("foreign member on Staging Backend network")
+        elif not _staging_backend_connector(name, container_labels):
             raise ValueError("foreign member on Staging Backend network")
     return network
 
