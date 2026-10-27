@@ -874,6 +874,30 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             seed.index('"docker", "run"'),
         )
 
+    def test_retirement_is_fixed_to_authorized_run_and_preserves_volumes(self):
+        gateway = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "binhu-staging-event-pipeline-gateway.py"
+        ).read_text(encoding="utf-8")
+        wrapper = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "binhu-staging-event-pipeline-gateway"
+        ).read_text(encoding="utf-8")
+        install = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "install-staging-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('RETIRE_TARGET = "STG-20261007-03"', gateway)
+        self.assertIn('RETIRE_SUCCESSOR = "STG-20261027-02"', gateway)
+        self.assertIn('"down", "--remove-orphans"', gateway)
+        self.assertNotIn('"down", "-v"', gateway)
+        self.assertIn("measure|apply|switch|run|rollback|retire", wrapper)
+        self.assertIn("retire STG-20261007-03", install)
+
+    def test_retirement_rejects_foreign_run_without_docker_access(self):
+        with self.assertRaises(SystemExit):
+            staging_gateway.retire("STG-20261027-02")
+
     def test_realistic_load_workflow_runs_75_users_and_keeps_production_outside_gateway(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
                     "run-staging-realistic-load.yml").read_text(encoding="utf-8")
