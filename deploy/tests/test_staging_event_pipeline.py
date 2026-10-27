@@ -920,7 +920,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('RETIRE_TARGET = "STG-20261007-03"', gateway)
         self.assertIn('RETIRE_SUCCESSOR = "STG-20261027-02"', gateway)
-        self.assertIn('FAILED_RETIRE_TARGET = "STG-20261027-04"', gateway)
+        self.assertIn('FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})', gateway)
         self.assertIn('def retire_failed(run_id: str)', gateway)
         self.assertIn('"down", "--remove-orphans"', gateway)
         self.assertNotIn('"down", "-v"', gateway)
@@ -935,6 +935,28 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
     def test_failed_retirement_rejects_foreign_run_without_docker_access(self):
         with self.assertRaises(SystemExit):
             staging_gateway.retire_failed("STG-20261027-02")
+
+    def test_failed_retirement_requires_matching_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261027-05" / "apply-run"
+            evidence.mkdir(parents=True)
+            (evidence / "failure.json").write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261027-05",
+                "acceptance": "failed", "error_code": "flink_rest_http_400",
+            }), encoding="utf-8")
+            with patch.object(staging_gateway, "STATE", state):
+                result = staging_gateway._failed_retirement_evidence("STG-20261027-05")
+            self.assertEqual(result[0]["path"], "apply-run/failure.json")
+            self.assertRegex(result[0]["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_failed_retirement_rejects_missing_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            (state / "evidence" / "STG-20261027-05").mkdir(parents=True)
+            with patch.object(staging_gateway, "STATE", state):
+                with self.assertRaisesRegex(ValueError, "staging_retirement_failure_evidence_missing"):
+                    staging_gateway._failed_retirement_evidence("STG-20261027-05")
 
     def test_realistic_load_workflow_runs_75_users_and_keeps_production_outside_gateway(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /

@@ -1263,9 +1263,17 @@ volumes:
                 self.assertNotIn("MAX_BY(CHANGED_FIELDS", view.upper())
                 self.assertNotIn("AS CHANGED_FIELDS", view.upper())
                 self.assertNotRegex(view, r"(?:^|,)\s*changed_fields\s*(?:,|$)")
+                for changed in ("address_changed", "community_changed", "inspector_changed",
+                                "task_graph_changed", "person_tags_changed"):
+                    self.assertIn(changed, view)
                 for column in ("schema_version", "event_id", "event_type", "task_id",
                                "source_id", "revision", "operation_id", "environment", "run_id"):
                     self.assertIn(column, view)
+
+                projection_sql = sql.split("CREATE VIEW dev_unique_events AS", 1)[1]
+                self.assertNotIn("ARRAY_CONTAINS(changed_fields", projection_sql.split("FROM dev_unique_events", 1)[1])
+                self.assertIn("ARRAY_AGG(event_type ORDER BY revision DESC, event_id DESC", projection_sql)
+                self.assertNotIn("MAX_BY(event_type, revision)", projection_sql)
 
     def test_pipeline_sql_statement_terminators_are_not_hidden_in_comments(self):
         sql = render(settings())
