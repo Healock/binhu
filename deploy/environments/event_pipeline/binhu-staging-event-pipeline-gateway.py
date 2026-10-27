@@ -572,10 +572,18 @@ def _retirement_jobs(jobmanager: str, run_id: str) -> list[dict]:
     if not isinstance(jobs, list):
         raise ValueError("staging_retirement_flink_probe_invalid")
     safe = []
+    terminal_states = {"CANCELED", "FAILED", "FINISHED", "SUSPENDED"}
     for job in jobs:
-        if not isinstance(job, dict) or job.get("name") != run_id:
+        if not isinstance(job, dict):
             raise ValueError("staging_retirement_foreign_flink_job")
-        safe.append({key: job.get(key) for key in ("jid", "name", "state")})
+        state = str(job.get("state", "")).upper()
+        if job.get("name") != run_id and state not in terminal_states:
+            raise ValueError("staging_retirement_foreign_flink_job")
+        safe.append({
+            "jid": job.get("jid"),
+            "name": job.get("name") if job.get("name") == run_id else "terminal-job",
+            "state": state,
+        })
     return safe
 
 
