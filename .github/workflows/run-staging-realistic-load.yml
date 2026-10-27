@@ -6,6 +6,11 @@ on:
     inputs:
       ref: {description: "Merged main commit deployed to Staging", required: true, type: string}
       run_id: {description: "Applied STG-YYYYMMDD-NN run", required: true, type: string}
+      waive_4gib_memory_gate:
+        description: "Explicitly waive only the 4 GiB preflight for this run"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,6 +44,7 @@ jobs:
           BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}
+          WAIVE_MEMORY_GATE: ${{ inputs.waive_4gib_memory_gate }}
         run: |
           set -Eeuo pipefail
           [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "$BASE_URL" =~ ^https://[^/]+/?$ ]]
@@ -48,6 +54,24 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/staging-ssh/"*
           ssh_cmd=(ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "binhu-staging-deploy@$HOST")
+          preflight_start_epoch=$(date +%s)
+          "${ssh_cmd[@]}" "sample $RUN_ID $preflight_start_epoch" > "$RUNNER_TEMP/staging-load/preflight-sample.json"
+          PYTHONPATH=load-tests python -m staging.load_monitor preflight \
+            --run-id "$RUN_ID" --sample "$RUNNER_TEMP/staging-load/preflight-sample.json" \
+            --state "$RUNNER_TEMP/staging-load/monitor-state.json" \
+            --waive-memory-gate "$WAIVE_MEMORY_GATE"
+          python - <<'PY'
+          import json, os, requests
+          from pathlib import Path
+          base=os.environ['BASE_URL'].rstrip('/')
+          response=requests.get(base+'/staging/api/app/bootstrap',timeout=15)
+          if response.status_code != 200 or response.json().get('environment') != 'staging':
+              raise SystemExit('Staging bootstrap identity check failed')
+          policy=json.loads(Path(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','monitor-state.json')).read_text())
+          print(json.dumps({'environment':'staging','run_id':policy['run_id'],
+                            'memory_gate':policy['memory_gate'],
+                            'production_monitor':'ready'}))
+          PY
           "${ssh_cmd[@]}" "run $RUN_ID" > "$RUNNER_TEMP/staging-load/runtime-index.json"
           python - <<'PY'
           import json, os, requests, sys
@@ -73,6 +97,7 @@ jobs:
           LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
           RUN_ID: ${{ inputs.run_id }}
           APP_ENVIRONMENT: staging
+          WAIVE_MEMORY_GATE: ${{ inputs.waive_4gib_memory_gate }}
         run: |
           set -Eeuo pipefail
           export STAGING_LOAD_TEST_RUN_ID="$RUN_ID"
@@ -83,20 +108,134 @@ jobs:
           export STAGING_RUNTIME_INDEX="$RUNNER_TEMP/staging-load/runtime-index.json"
           export STAGING_LOAD_REPORT="$RUNNER_TEMP/staging-load/load-report.json"
           ssh_cmd=(ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "binhu-staging-deploy@$HOST")
-          "${ssh_cmd[@]}" "sample $RUN_ID" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+          monitor_start_epoch=$(date +%s)
+          if ! "${ssh_cmd[@]}" "sample $RUN_ID $monitor_start_epoch" > "$RUNNER_TEMP/staging-load/current-sample.json"; then
+            echo 'monitor_start_error=production_or_staging_monitor_unavailable' >&2
+            exit 1
+          fi
+          PYTHONPATH=load-tests python -m staging.load_monitor preflight \
+            --run-id "$RUN_ID" --sample "$RUNNER_TEMP/staging-load/current-sample.json" \
+            --state "$RUNNER_TEMP/staging-load/monitor-state.json" \
+            --waive-memory-gate "$WAIVE_MEMORY_GATE"
+          cat "$RUNNER_TEMP/staging-load/current-sample.json" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+          load_pid=""
+          record_execution_policy() {
+            local stop_reason="${1:-}"
+            python - "$RUNNER_TEMP/staging-load/load-report.json" \
+              "$RUNNER_TEMP/staging-load/monitor-state.json" "$RUN_ID" "$stop_reason" <<'PY'
+          import json,sys
+          from pathlib import Path
+          report_path,state_path,run_id,reason=sys.argv[1:]
+          state=json.loads(Path(state_path).read_text(encoding='utf-8'))
+          target=Path(report_path)
+          report=json.loads(target.read_text(encoding='utf-8')) if target.is_file() else {
+              'run_id':run_id,'environment':'staging','production_data':False}
+          report['execution_policy']={
+              'users':75,
+              'memory_gate':state['memory_gate'],
+              'production_monitor':'stopped' if reason.startswith('production_') else ('failed' if reason else 'passed'),
+              'production_stop_thresholds':{
+                  'health_failures':2,'container_restart_delta':0,'oom_killed_delta':0,
+                  'new_error_count':0,'monitor_failure':'stop_immediately'},
+              'staging_stop_thresholds':{
+                  'restart_delta':0,'oom_killed_delta':0,
+                  'request_failure_rate':0.02,'request_failure_window_seconds':60,
+                  'request_stall_seconds':30},
+              'limited_acceptance':bool(state['memory_gate']['waived']),
+              'stop_reason':reason or None,
+          }
+          with target.open('w',encoding='utf-8') as stream:
+              json.dump(report,stream,ensure_ascii=False,sort_keys=True,indent=2)
+              stream.write('\n')
+          PY
+          }
+          cleanup_load() {
+            if [[ -n "$load_pid" ]] && kill -0 "$load_pid" 2>/dev/null; then
+              kill -TERM "$load_pid" 2>/dev/null || true
+              wait "$load_pid" || true
+            fi
+            rm -f "$RUNNER_TEMP/staging-ssh/key" "$RUNNER_TEMP/staging-ssh/known_hosts"
+          }
+          finalize_load() {
+            local status=$?
+            if [[ "$status" -ne 0 && -s "$RUNNER_TEMP/staging-load/monitor-state.json" ]]; then
+              local reason=test_tool_failed
+              if [[ -s "$RUNNER_TEMP/staging-load/stop-reason.json" ]]; then
+                reason=$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reason","test_tool_failed"))' "$RUNNER_TEMP/staging-load/stop-reason.json")
+              fi
+              record_execution_policy "$reason"
+            fi
+            cleanup_load
+            return "$status"
+          }
+          trap finalize_load EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          stop_for_monitor() {
+            local reason="$1"
+            python - "$RUNNER_TEMP/staging-load/stop-reason.json" "$RUN_ID" "$reason" <<'PY'
+          import json,sys
+          from pathlib import Path
+          Path(sys.argv[1]).write_text(json.dumps({'run_id':sys.argv[2],'environment':'staging',
+              'stopped':True,'reason':sys.argv[3]},indent=2)+'\n',encoding='utf-8')
+          PY
+            if [[ -n "$load_pid" ]] && kill -0 "$load_pid" 2>/dev/null; then
+              kill -TERM "$load_pid" 2>/dev/null || true
+              wait "$load_pid" || true
+              load_pid=""
+            fi
+            record_execution_policy "$reason"
+            return 1
+          }
+          if ! "${ssh_cmd[@]}" "sample $RUN_ID $monitor_start_epoch" > "$RUNNER_TEMP/staging-load/current-sample.json"; then
+            stop_for_monitor production_or_staging_monitor_unavailable
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/staging-load/current-sample.json" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+          if ! PYTHONPATH=load-tests python -m staging.load_monitor observe \
+              --run-id "$RUN_ID" --sample "$RUNNER_TEMP/staging-load/current-sample.json" \
+              --state "$RUNNER_TEMP/staging-load/monitor-state.json" \
+              --locust-stats "$RUNNER_TEMP/staging-load/locust_stats.csv" \
+              --stop-reason "$RUNNER_TEMP/staging-load/stop-reason.json"; then
+            stop_for_monitor "$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reason","monitor_failed"))' "$RUNNER_TEMP/staging-load/stop-reason.json")"
+            exit 1
+          fi
           locust -f load-tests/staging/locustfile.py --headless --users 75 --spawn-rate 5 \
             --run-time 30m --stop-timeout 30 --csv "$RUNNER_TEMP/staging-load/locust" \
             --only-summary &
           load_pid=$!
           while kill -0 "$load_pid" 2>/dev/null; do
             sleep 30
-            "${ssh_cmd[@]}" "sample $RUN_ID" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+            if ! "${ssh_cmd[@]}" "sample $RUN_ID $monitor_start_epoch" > "$RUNNER_TEMP/staging-load/current-sample.json"; then
+              stop_for_monitor production_or_staging_monitor_unavailable
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/staging-load/current-sample.json" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+            if ! PYTHONPATH=load-tests python -m staging.load_monitor observe \
+                --run-id "$RUN_ID" --sample "$RUNNER_TEMP/staging-load/current-sample.json" \
+                --state "$RUNNER_TEMP/staging-load/monitor-state.json" \
+                --locust-stats "$RUNNER_TEMP/staging-load/locust_stats.csv" \
+                --stop-reason "$RUNNER_TEMP/staging-load/stop-reason.json"; then
+              reason=$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reason","monitor_failed"))' "$RUNNER_TEMP/staging-load/stop-reason.json")
+              stop_for_monitor "$reason"
+              exit 1
+            fi
           done
           wait "$load_pid"
           drain_started=$(date +%s)
           while true; do
-            sample=$("${ssh_cmd[@]}" "sample $RUN_ID")
+            sample=$("${ssh_cmd[@]}" "sample $RUN_ID $monitor_start_epoch")
             printf '%s\n' "$sample" >> "$RUNNER_TEMP/staging-load/staging-samples.jsonl"
+            printf '%s\n' "$sample" > "$RUNNER_TEMP/staging-load/current-sample.json"
+            if ! PYTHONPATH=load-tests python -m staging.load_monitor observe \
+                --run-id "$RUN_ID" --sample "$RUNNER_TEMP/staging-load/current-sample.json" \
+                --state "$RUNNER_TEMP/staging-load/monitor-state.json" \
+                --locust-stats "$RUNNER_TEMP/staging-load/locust_stats.csv" \
+                --stop-reason "$RUNNER_TEMP/staging-load/stop-reason.json"; then
+              reason=$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("reason","monitor_failed"))' "$RUNNER_TEMP/staging-load/stop-reason.json")
+              stop_for_monitor "$reason"
+              exit 1
+            fi
             pending=$(python -c 'import json,sys; print(int(json.load(sys.stdin)["derived_queue"]["pending"]))' <<< "$sample")
             [[ "$pending" -eq 0 ]] && break
             (( $(date +%s) - drain_started < 120 )) || break
@@ -110,18 +249,42 @@ jobs:
           rows[-1]['derived_queue']['drain_seconds']=int(os.environ['DRAIN_SECONDS'])
           with open(path,'w',encoding='utf-8') as stream:
               for row in rows: stream.write(json.dumps(row,ensure_ascii=False,separators=(',',':'))+'\n')
+          report_path=os.path.join(os.environ['RUNNER_TEMP'],'staging-load','load-report.json')
+          report=json.load(open(report_path,encoding='utf-8'))
+          policy=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','monitor-state.json'),encoding='utf-8'))
+          report['execution_policy']={
+              'users':75,
+              'memory_gate':policy['memory_gate'],
+              'production_monitor':'passed',
+              'production_stop_thresholds':{
+                  'health_failures':2,'container_restart_delta':0,'oom_killed_delta':0,
+                  'new_error_count':0,'monitor_failure':'stop_immediately'},
+              'staging_stop_thresholds':{
+                  'restart_delta':0,'oom_killed_delta':0,
+                  'request_failure_rate':0.02,'request_failure_window_seconds':60,
+                  'request_stall_seconds':30},
+              'limited_acceptance':bool(policy['memory_gate']['waived']),
+          }
+          with open(report_path,'w',encoding='utf-8') as stream:
+              json.dump(report,stream,ensure_ascii=False,sort_keys=True,indent=2)
+              stream.write('\n')
           PY
           test -s "$STAGING_LOAD_REPORT"
           rm -f "$STAGING_RUNTIME_INDEX" "$RUNNER_TEMP/staging-ssh/key" "$RUNNER_TEMP/staging-ssh/known_hosts"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
           name: staging-realistic-load-${{ inputs.run_id }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/staging-load/load-report.json
+            ${{ runner.temp }}/staging-load/preflight-sample.json
+            ${{ runner.temp }}/staging-load/monitor-state.json
+            ${{ runner.temp }}/staging-load/current-sample.json
+            ${{ runner.temp }}/staging-load/stop-reason.json
             ${{ runner.temp }}/staging-load/staging-samples.jsonl
             ${{ runner.temp }}/staging-load/locust_stats.csv
             ${{ runner.temp }}/staging-load/locust_stats_history.csv
             ${{ runner.temp }}/staging-load/locust_failures.csv
             ${{ runner.temp }}/staging-load/locust_exceptions.csv
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14

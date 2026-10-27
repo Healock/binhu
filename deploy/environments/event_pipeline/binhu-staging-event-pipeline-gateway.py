@@ -184,7 +184,8 @@ def environment() -> dict[str, str]:
     return result
 
 
-def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
+def run_module(run_id: str, module: str, manifest: dict | None = None,
+               production_since_unix: int | None = None) -> dict:
     candidate = CANDIDATES / run_id
     source = candidate / "source"
     env = environment()
@@ -202,6 +203,10 @@ def run_module(run_id: str, module: str, manifest: dict | None = None) -> dict:
             args += [f"--{name.replace('_', '-')}-image", manifest["images"][name]]
     else:
         args = [sys.executable, "-m", "event_pipeline.staging_control", module, "--run-id", run_id]
+        if module == "sample":
+            if production_since_unix is None:
+                fail("Production monitor start time required")
+            args += ["--production-since", str(production_since_unix)]
     try:
         result = subprocess.run(
             args, cwd=source, env=env, check=True, capture_output=True, text=True,
@@ -288,10 +293,10 @@ def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
         raise
 
 
-def control(run_id: str, action: str) -> None:
+def control(run_id: str, action: str, production_since_unix: int | None = None) -> None:
     if not RUN_RE.fullmatch(run_id) or not (CANDIDATES / run_id).is_dir():
         fail("prepared Staging candidate required")
-    result = run_module(run_id, action)
+    result = run_module(run_id, action, production_since_unix=production_since_unix)
     manifest = json.loads(((CANDIDATES / run_id) / "manifest.json").read_text(encoding="utf-8"))
     if action in {"apply", "switch"}:
         if action == "apply":
@@ -431,8 +436,11 @@ def main() -> None:
         status(); return
     if len(sys.argv) == 6 and sys.argv[1] == "prepare":
         prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]); return
-    if len(sys.argv) == 3 and sys.argv[1] in {"measure", "apply", "switch", "sample", "rollback"}:
+    if len(sys.argv) == 3 and sys.argv[1] in {"measure", "apply", "switch", "rollback"}:
         control(sys.argv[2], sys.argv[1]); return
+    if (len(sys.argv) == 4 and sys.argv[1] == "sample"
+            and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[3])):
+        control(sys.argv[2], "sample", int(sys.argv[3])); return
     if len(sys.argv) == 3 and sys.argv[1] == "run":
         seed(sys.argv[2]); return
     if len(sys.argv) == 5 and sys.argv[1] == "verify":

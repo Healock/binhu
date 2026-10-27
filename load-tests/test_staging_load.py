@@ -1,4 +1,5 @@
 import json
+import io
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ from staging.fixture import validate_fixture
 from staging.fixture_model import make_accounts, make_tasks, runtime_index
 from staging.guard import StagingSafetyError, validate_staging_environment
 from staging.metrics import StagingMetrics
+from staging.load_monitor import MEMORY_GATE_BYTES, observe, preflight
+from staging.production_guard import ProductionStopMonitor
 from staging.report import evaluate_report
 from staging.resource_metrics import summarize_resource_samples
 from staging.stream_clients import StreamHooks, cookie_header, run_query_websocket, run_sse, websocket_url
@@ -58,6 +61,121 @@ def runtime_payload():
 
 
 class StagingLoadTests(unittest.TestCase):
+    @staticmethod
+    def _safety_sample(*, memory=3 * 1024**3, production_errors=0):
+        names = ("binhu-backend", "binhu-mysql", "binhu-ops-agent")
+        containers = {name: {"running": True, "restarting": False, "oom_killed": False,
+                             "health": "healthy", "restart_count": 2} for name in names}
+        return {
+            "run_id": RUN_ID, "environment": "staging", "production_data": False,
+            "host": {"memory_available_bytes": memory},
+            "containers": {"count": 14, "running_count": 14, "restart_count": 0, "oom_killed_count": 0},
+            "staging_services": {
+                name: {"running": True, "restarting": False, "oom_killed": False, "restart_count": 1}
+                for name in ("binhu-staging-backend-1", "binhu-staging-environment-mysql-1")
+            },
+            "production": {
+                "environment": "production", "bootstrap_environment": "production",
+                "bootstrap_status": 200, "health_status": 200, "health": True,
+                "containers": containers, "error_count": production_errors, "monitor_error": None,
+            },
+        }
+
+    def test_4gib_preflight_is_default_deny_and_explicit_waiver_is_auditable(self):
+        sample = self._safety_sample(memory=MEMORY_GATE_BYTES - 1)
+        with self.assertRaisesRegex(ValueError, "staging_memory_gate_not_waived"):
+            preflight(sample, run_id=RUN_ID, waive_memory_gate=False)
+        policy = preflight(sample, run_id=RUN_ID, waive_memory_gate=True)
+        self.assertEqual(policy["memory_gate"], {
+            "required_bytes": MEMORY_GATE_BYTES,
+            "observed_bytes": MEMORY_GATE_BYTES - 1,
+            "waiver_requested": True,
+            "waived": True,
+            "status": "waived",
+        })
+
+    def test_production_monitor_fails_closed_for_missing_identity_and_stops_on_restart_oom_or_error(self):
+        sample = self._safety_sample()
+        policy = preflight(sample, run_id=RUN_ID, waive_memory_gate=True)
+        state = json.loads(json.dumps(policy))
+        with tempfile.TemporaryDirectory() as directory:
+            stats = Path(directory) / "locust_stats.csv"
+            stats.write_text("Type,Name,Request Count,Failure Count\n", encoding="utf-8")
+            missing = json.loads(json.dumps(sample))
+            missing["production"] = None
+            _, reason = observe(missing, state, locust_stats=stats)
+            self.assertEqual(reason, "production_monitor_unavailable")
+
+            restarted = json.loads(json.dumps(sample))
+            restarted["production"]["containers"]["binhu-mysql"]["restart_count"] += 1
+            _, reason = observe(restarted, state, locust_stats=stats)
+            self.assertEqual(reason, "production_container_unhealthy_or_restarted")
+
+            oom = json.loads(json.dumps(sample))
+            oom["production"]["containers"]["binhu-mysql"]["oom_killed"] = True
+            _, reason = observe(oom, state, locust_stats=stats)
+            self.assertEqual(reason, "production_container_unhealthy_or_restarted")
+
+            new_error = json.loads(json.dumps(sample))
+            new_error["production"]["error_count"] = 1
+            _, reason = observe(new_error, state, locust_stats=stats)
+            self.assertEqual(reason, "production_new_error_threshold_exceeded")
+
+    def test_cumulative_production_errors_do_not_roll_with_sliding_window(self):
+        sample = self._safety_sample(production_errors=0)
+        policy = preflight(sample, run_id=RUN_ID, waive_memory_gate=True)
+        monitor = ProductionStopMonitor(policy["production_baseline"])
+        first_zero = json.loads(json.dumps(sample["production"]))
+        self.assertEqual(monitor.observe(first_zero), "")
+        second_zero = json.loads(json.dumps(sample["production"]))
+        self.assertEqual(monitor.observe(second_zero), "")
+        new_error = json.loads(json.dumps(sample["production"]))
+        new_error["error_count"] = 1
+        self.assertEqual(monitor.observe(new_error), "production_new_error_threshold_exceeded")
+
+    def test_production_error_reader_uses_one_fixed_start_and_bounded_logs(self):
+        class FakeProcess:
+            def __init__(self, content):
+                self.stdout = io.BytesIO(content)
+
+            def wait(self, timeout=None):
+                return 0
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from deploy.environments.event_pipeline import staging_metrics_probe
+
+        old_error = b"ERROR old bounded test line\n"
+        old_and_new = old_error + b"ERROR new bounded test line\n"
+        processes = [FakeProcess(old_error), FakeProcess(old_and_new)]
+        with patch.object(staging_metrics_probe.subprocess, "Popen", side_effect=processes) as popen:
+            first = staging_metrics_probe._production_log_error_count("binhu-backend", 1790000000)
+            second = staging_metrics_probe._production_log_error_count("binhu-backend", 1790000000)
+        self.assertEqual((first, second), (1, 2))
+        for call in popen.call_args_list:
+            self.assertEqual(call.args[0][call.args[0].index("--since") + 1], "1790000000")
+            self.assertEqual(call.args[0][-1], "binhu-backend")
+
+    def test_staging_oom_restart_and_persistent_connection_failures_stop_run(self):
+        sample = self._safety_sample()
+        policy = preflight(sample, run_id=RUN_ID, waive_memory_gate=True)
+        with tempfile.TemporaryDirectory() as directory:
+            stats = Path(directory) / "locust_stats.csv"
+            stats.write_text("Type,Name,Request Count,Failure Count\nGET,core.query,100,3\n", encoding="utf-8")
+            oom = json.loads(json.dumps(sample))
+            oom["containers"]["oom_killed_count"] = 1
+            _, reason = observe(oom, json.loads(json.dumps(policy)), locust_stats=stats)
+            self.assertEqual(reason, "staging_pipeline_container_unhealthy_or_restarted")
+
+            restarted = json.loads(json.dumps(sample))
+            restarted["staging_services"]["binhu-staging-backend-1"]["restart_count"] += 1
+            _, reason = observe(restarted, json.loads(json.dumps(policy)), locust_stats=stats)
+            self.assertEqual(reason, "staging_application_service_unhealthy_or_restarted")
+
+            state = json.loads(json.dumps(policy))
+            state["request_failure_started_at"] = __import__("time").time() - 61
+            _, reason = observe(sample, state, locust_stats=stats)
+            self.assertEqual(reason, "staging_request_failure_rate_above_2_percent_for_60_seconds")
+
     def test_staging_fixture_model_is_fictional_credential_free_and_large_enough(self):
         accounts = make_accounts()
         tasks = make_tasks()
@@ -391,6 +509,17 @@ class StagingLoadTests(unittest.TestCase):
     def test_final_report_requires_load_resources_rollback_and_manual_acceptance(self):
         load = {
             "run_id": RUN_ID, "environment": "staging", "production_data": False,
+            "execution_policy": {
+                "users": 75,
+                "production_monitor": "passed",
+                "memory_gate": {
+                    "required_bytes": 4 * 1024**3,
+                    "observed_bytes": 4 * 1024**3,
+                    "waiver_requested": False,
+                    "waived": False,
+                    "status": "passed",
+                },
+            },
             "layers": {
                 "core.save": {"p95_ms": 1000},
                 "core.multi_client_pair": {"success_rate": 1.0},
@@ -441,6 +570,31 @@ class StagingLoadTests(unittest.TestCase):
                 manual_report_path=root / "manual.json",
             )
             self.assertTrue(report["passed"])
+            load["execution_policy"]["memory_gate"].update({
+                "observed_bytes": 3 * 1024**3,
+                "waiver_requested": True,
+                "waived": True,
+                "status": "waived",
+            })
+            (root / "load.json").write_text(json.dumps(load), encoding="utf-8")
+            limited = assemble_report(
+                run_id=RUN_ID,
+                load_report_path=root / "load.json",
+                resource_samples_path=root / "resources.json",
+                rollback_report_path=root / "rollback.json",
+                manual_report_path=root / "manual.json",
+            )
+            self.assertTrue(limited["limited_acceptance"])
+            self.assertFalse(limited["passed"])
+            self.assertFalse(limited["promotion_ready"])
+            self.assertIn("4 GiB", limited["acceptance_limitations"][0])
+            load["execution_policy"]["memory_gate"].update({
+                "observed_bytes": 4 * 1024**3,
+                "waiver_requested": False,
+                "waived": False,
+                "status": "passed",
+            })
+            (root / "load.json").write_text(json.dumps(load), encoding="utf-8")
             rollback["data_consistency_verified"] = False
             (root / "rollback.json").write_text(json.dumps(rollback), encoding="utf-8")
             self.assertFalse(assemble_report(

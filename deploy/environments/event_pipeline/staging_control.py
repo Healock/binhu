@@ -744,11 +744,20 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("measure", "apply", "switch", "sample", "rollback"))
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--production-since", type=int)
     args = parser.parse_args()
     try:
-        action = {"measure": measure, "apply": apply, "switch": switch,
-                  "sample": metrics_sample, "rollback": rollback}[args.action]
-        print(json.dumps(action(args.run_id), sort_keys=True))
+        if args.action == "sample":
+            if args.production_since is None:
+                raise ValueError("Production monitor start time required")
+            result = metrics_sample(args.run_id, args.production_since)
+        else:
+            if args.production_since is not None:
+                raise ValueError("Production monitor start time is only valid for sample")
+            action = {"measure": measure, "apply": apply, "switch": switch,
+                      "rollback": rollback}[args.action]
+            result = action(args.run_id)
+        print(json.dumps(result, sort_keys=True))
     except Exception:
         raise SystemExit("Staging event-pipeline control refused; inspect private evidence") from None
 

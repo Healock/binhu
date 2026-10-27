@@ -8,12 +8,20 @@ import re
 import subprocess
 import time
 from typing import Any
+import urllib.error
+import urllib.request
 
 from .staging_compose import BROKERS, EVENT_TOPIC
 from .staging_prepare import root_for
 
 
 DERIVED_DATABASE = "Staging_EventPipeline"
+PRODUCTION_CONTAINER_NAMES = ("binhu-backend", "binhu-mysql", "binhu-ops-agent")
+PRODUCTION_BOOTSTRAP_URL = "http://127.0.0.1:37125/api/app/bootstrap"
+PRODUCTION_HEALTH_URL = "http://127.0.0.1:37125/api/health"
+PRODUCTION_ERROR_RE = re.compile(r"\b(?:ERROR|CRITICAL|FATAL|Traceback)\b", re.IGNORECASE)
+PRODUCTION_LOG_LINE_LIMIT = 5000
+PRODUCTION_LOG_BYTE_LIMIT = 8 * 1024 * 1024
 
 
 def _run(command: list[str], *, timeout: int = 30, input_text: str | None = None) -> str:
@@ -227,7 +235,123 @@ def _containers(project: str) -> dict[str, Any]:
     }
 
 
-def sample(run_id: str) -> dict[str, Any]:
+def _production_http(url: str) -> tuple[int, dict[str, Any] | None]:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            status = int(response.status)
+            if url == PRODUCTION_BOOTSTRAP_URL and status == 200:
+                payload = json.loads(response.read(64 * 1024))
+                return status, payload if isinstance(payload, dict) else None
+            return status, None
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return 0, None
+
+
+def _production_log_error_count(name: str, since_unix: int) -> int:
+    command = ["docker", "logs", "--since", str(since_unix), "--tail",
+               str(PRODUCTION_LOG_LINE_LIMIT + 1), name]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if process.stdout is None:
+        raise RuntimeError("production_log_monitor_unavailable")
+    output = process.stdout.read(PRODUCTION_LOG_BYTE_LIMIT + 1)
+    if len(output) > PRODUCTION_LOG_BYTE_LIMIT:
+        process.kill()
+        process.wait(timeout=3)
+        raise RuntimeError("production_log_sample_limit_exceeded")
+    try:
+        return_code = process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+        raise RuntimeError("production_log_monitor_timeout") from None
+    if return_code:
+        raise RuntimeError("production_log_monitor_unavailable")
+    lines = output.decode("utf-8", "replace").splitlines()
+    if len(lines) > PRODUCTION_LOG_LINE_LIMIT:
+        raise RuntimeError("production_log_sample_limit_exceeded")
+    return sum(1 for line in lines if PRODUCTION_ERROR_RE.search(line))
+
+
+def _production_sample(since_unix: int) -> dict[str, Any]:
+    """Return fixed aggregate-only Production health and container evidence."""
+    try:
+        inspected = json.loads(_run(["docker", "inspect", *PRODUCTION_CONTAINER_NAMES]))
+        if len(inspected) != len(PRODUCTION_CONTAINER_NAMES):
+            raise RuntimeError("production_container_set_incomplete")
+        states: dict[str, dict[str, Any]] = {}
+        for name, item in zip(PRODUCTION_CONTAINER_NAMES, inspected, strict=True):
+            if item.get("Name", "").lstrip("/") != name:
+                raise RuntimeError("production_container_identity_mismatch")
+            state = item.get("State") or {}
+            health = state.get("Health") or {}
+            states[name] = {
+                "running": bool(state.get("Running")),
+                "restarting": bool(state.get("Restarting")),
+                "oom_killed": bool(state.get("OOMKilled")),
+                "health": str(health.get("Status") or ""),
+                "restart_count": int(item.get("RestartCount") or 0),
+            }
+            if name == "binhu-backend":
+                environment = {
+                    value.partition("=")[2]
+                    for value in (item.get("Config", {}).get("Env") or [])
+                    if value.startswith("APP_ENVIRONMENT=")
+                }
+                if environment != {"production"}:
+                    raise RuntimeError("production_backend_identity_mismatch")
+
+        bootstrap_status, bootstrap = _production_http(PRODUCTION_BOOTSTRAP_URL)
+        health_status, _ = _production_http(PRODUCTION_HEALTH_URL)
+        bootstrap_environment = str((bootstrap or {}).get("environment") or "")
+        if bootstrap_status != 200 or bootstrap_environment != "production":
+            raise RuntimeError("production_bootstrap_identity_mismatch")
+
+        if (not isinstance(since_unix, int) or since_unix <= 0
+                or since_unix > int(time.time()) or since_unix < int(time.time()) - 3600):
+            raise RuntimeError("production_monitor_start_time_invalid")
+        error_count = 0
+        for name in PRODUCTION_CONTAINER_NAMES:
+            error_count += _production_log_error_count(name, since_unix)
+        return {
+            "environment": "production",
+            "bootstrap_environment": bootstrap_environment,
+            "bootstrap_status": bootstrap_status,
+            "health_status": health_status,
+            "health": 200 <= health_status < 300,
+            "containers": states,
+            "error_count": error_count,
+            "monitor_error": None,
+        }
+    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+        code = str(error) if str(error).startswith("production_") else "production_monitor_failed"
+        return {
+            "environment": "production", "bootstrap_environment": "",
+            "bootstrap_status": 0, "health_status": 0, "health": False,
+            "containers": {}, "error_count": None, "monitor_error": code,
+        }
+
+
+def _staging_service_states() -> dict[str, Any]:
+    names = ("binhu-staging-backend-1", "binhu-staging-environment-mysql-1")
+    inspected = json.loads(_run(["docker", "inspect", *names]))
+    if len(inspected) != len(names):
+        raise RuntimeError("Staging application service set incomplete")
+    result: dict[str, Any] = {}
+    for name, item in zip(names, inspected, strict=True):
+        if item.get("Name", "").lstrip("/") != name:
+            raise RuntimeError("Staging application service identity mismatch")
+        state = item.get("State") or {}
+        result[name] = {
+            "running": bool(state.get("Running")),
+            "restarting": bool(state.get("Restarting")),
+            "oom_killed": bool(state.get("OOMKilled")),
+            "restart_count": int(item.get("RestartCount") or 0),
+        }
+    return result
+
+
+def sample(run_id: str, production_since_unix: int) -> dict[str, Any]:
     if not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", run_id):
         raise RuntimeError("Staging metrics run id invalid")
     root = root_for(run_id)
@@ -245,6 +369,7 @@ def sample(run_id: str) -> dict[str, Any]:
     stat = Path(root).stat()
     disk = Path(root).anchor or "/"
     usage = __import__("shutil").disk_usage(disk)
+    meminfo = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     return {
         "sampled_at_unix": int(time.time()),
         "run_id": run_id,
@@ -257,10 +382,9 @@ def sample(run_id: str) -> dict[str, Any]:
         "flink": _flink(project, run_id),
         "derived_queue": _queue(derived_mysql, run_id, DERIVED_DATABASE),
         "containers": _containers(project),
+        "staging_services": _staging_service_states(),
+        "host": {"memory_available_bytes": int(meminfo["MemAvailable"].split()[0]) * 1024},
         "disk": {"used": usage.used, "total": usage.total},
-        # Production is deliberately absent: the isolated Staging gateway may
-        # not inspect Production. A separately authorized read-only observer
-        # must merge the Production sample before final verification.
-        "production": None,
+        "production": _production_sample(production_since_unix),
         "root_inode": int(stat.st_ino),
     }
