@@ -180,6 +180,22 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('switched=1', script)
         self.assertNotIn('BINHU_DEPLOY_MAX_BUNDLE_BYTES + 1', script)
 
+    def test_hotfix_recreates_only_backend_and_ops_agent_on_success_and_rollback(self) -> None:
+        script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
+        rollback = script.split("rollback_after_error() {", 1)[1].split("\n}", 1)[0]
+        recreate = script.split('container_recreate_started="$(date +%s)"', 1)[1].split(
+            'timing_container_recreate=$(( $(date +%s) - container_recreate_started ))', 1
+        )[0]
+        hotfix_only = re.compile(
+            r'if \[\[ "\$release_kind" == "hotfix" \]\]; then\s+'
+            r'docker compose up -d --no-build --no-deps --force-recreate ops-agent backend\s+'
+            r'else\s+'
+            r'docker compose up -d --no-build --no-deps --force-recreate '
+            r'ops-agent backend event-relay diagnostic-worker\s+fi',
+        )
+        self.assertRegex(recreate, hotfix_only)
+        self.assertRegex(rollback, hotfix_only)
+
     def test_deployer_installs_root_only_promotion_verifier_and_restricts_sudo(self) -> None:
         installer = (ROOT / "deploy/install-server-deployer.sh").read_text(encoding="utf-8")
         self.assertIn("production_promotion.py", installer)
