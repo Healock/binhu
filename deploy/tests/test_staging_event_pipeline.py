@@ -57,6 +57,37 @@ class StagingGatewayDiagnosticTests(unittest.TestCase):
             self.assertIn("stdout_sha256", text)
             self.assertIn("stderr_sha256", text)
 
+    def test_failed_retirement_accepts_terminal_flink_jobs_as_safe_summaries(self):
+        payload = {
+            "jobs": [
+                {"jid": "canceled-jid", "name": "SELECT sensitive-looking text", "state": "CANCELED"},
+                {"jid": "finished-jid", "name": "another terminal job", "state": "FINISHED"},
+                {"jid": "target-jid", "name": "STG-20261027-04", "state": "FAILED"},
+            ]
+        }
+        completed = subprocess.CompletedProcess(
+            ["docker", "exec"], 0, json.dumps(payload), ""
+        )
+        with patch.object(staging_gateway.subprocess, "run", return_value=completed):
+            jobs = staging_gateway._retirement_jobs("jobmanager", "STG-20261027-04")
+        self.assertEqual(
+            jobs,
+            [
+                {"jid": "canceled-jid", "name": "terminal-job", "state": "CANCELED"},
+                {"jid": "finished-jid", "name": "terminal-job", "state": "FINISHED"},
+                {"jid": "target-jid", "name": "STG-20261027-04", "state": "FAILED"},
+            ],
+        )
+
+    def test_failed_retirement_rejects_running_foreign_flink_job(self):
+        payload = {"jobs": [{"jid": "foreign-jid", "name": "foreign-run", "state": "RUNNING"}]}
+        completed = subprocess.CompletedProcess(
+            ["docker", "exec"], 0, json.dumps(payload), ""
+        )
+        with patch.object(staging_gateway.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "staging_retirement_foreign_flink_job"):
+                staging_gateway._retirement_jobs("jobmanager", "STG-20261027-04")
+
     def test_stream_clients_can_be_loaded_as_locust_top_level_module(self):
         staging_dir = Path(__file__).parents[2] / "load-tests" / "staging"
         spec = importlib.util.spec_from_file_location("stream_clients", staging_dir / "stream_clients.py")
