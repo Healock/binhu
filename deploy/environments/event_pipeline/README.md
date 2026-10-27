@@ -12,6 +12,16 @@
 
 ## 操作顺序
 
+### 受控退役旧 Staging 运行
+
+项目管理人批准的旧运行只能通过固定网关执行 `retire STG-20261007-03`。
+该入口在执行前核对当前运行、Compose 项目、Staging/Production 核心容器、共享
+backend 网络、替代运行的 `business-bridge` 与 `backend-outbox-relay`，以及旧
+Flink 作业身份。通过后只对旧运行执行 `docker compose down --remove-orphans`，
+不带 `-v`，不删除卷、checkpoint、共享网络或历史证据。退役前后状态和 SHA-256
+写入 root-only 证据目录；如果旧运行有活动 Flink 作业，证据会明确记录事件投影在
+新运行恢复 apply 前暂停。Production 和 Staging 应用核心容器必须保持不变。
+
 ### GitHub Actions 隔离环境
 
 `Install Dev event-pipeline gateway`、`Prepare Dev event pipeline`、
