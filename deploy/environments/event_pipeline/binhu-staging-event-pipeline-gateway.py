@@ -23,7 +23,7 @@ MAX_BYTES = 128 * 1024 * 1024
 MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"})
 RETIRE_TARGET = "STG-20261007-03"
 RETIRE_SUCCESSOR = "STG-20261027-02"
-FAILED_RETIRE_TARGET = "STG-20261027-04"
+FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})
 FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 STAGING_CORE = (
@@ -508,7 +508,7 @@ def _retirement_identity(manifest: dict, current: dict, spec: dict, run_id: str)
 def _failed_retirement_identity(manifest: dict, spec: dict, run_id: str) -> tuple[Path, str]:
     project = "binhu-staging-event-pipeline-" + run_id.lower()
     root = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
-    if (run_id != FAILED_RETIRE_TARGET or manifest.get("environment") != "staging"
+    if (run_id not in FAILED_RETIRE_TARGETS or manifest.get("environment") != "staging"
             or manifest.get("run_id") != run_id or manifest.get("project") != project
             or manifest.get("production_data") not in (None, False)):
         raise ValueError("staging_retirement_run_identity_mismatch")
@@ -528,6 +528,32 @@ def _failed_retirement_identity(manifest: dict, spec: dict, run_id: str) -> tupl
             or hashlib.sha256(compose_path.read_bytes()).hexdigest() != expected_hash):
         raise ValueError("staging_retirement_compose_hash_mismatch")
     return root, project
+
+
+def _failed_retirement_evidence(run_id: str) -> list[dict[str, str]]:
+    """Require an existing, redacted failure record for the exact run."""
+    root = STATE / "evidence" / run_id
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("staging_retirement_failure_evidence_missing")
+    result: list[dict[str, str]] = []
+    for path in sorted(root.rglob("failure.json")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if (not isinstance(payload, dict) or payload.get("environment") != "staging"
+                or payload.get("run_id") != run_id
+                or payload.get("status") != "failed" and payload.get("acceptance") != "failed"):
+            continue
+        result.append({
+            "path": path.relative_to(root).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        })
+    if not result:
+        raise ValueError("staging_retirement_failure_evidence_missing")
+    return result
 
 
 def _retirement_inspect(names: list[str]) -> dict[str, dict]:
@@ -725,7 +751,7 @@ def retire(run_id: str) -> None:
 
 def retire_failed(run_id: str) -> None:
     """Retire one failed, non-current run without changing the active pointer."""
-    if run_id != FAILED_RETIRE_TARGET:
+    if run_id not in FAILED_RETIRE_TARGETS:
         fail("failed retirement target is not approved")
     candidate = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
     manifest_path = candidate / "manifest.json"
@@ -733,6 +759,7 @@ def retire_failed(run_id: str) -> None:
     manifest = _retirement_file(manifest_path)
     spec = _retirement_file(compose_path)
     root, project = _failed_retirement_identity(manifest, spec, run_id)
+    failure_evidence = _failed_retirement_evidence(run_id)
     evidence_root = STATE / "evidence" / run_id
     if evidence_root.is_symlink() or evidence_root.parent.is_symlink():
         fail("retirement evidence path invalid")
@@ -747,6 +774,7 @@ def retire_failed(run_id: str) -> None:
         "environment": "staging", "run_id": run_id, "project": project,
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "compose_sha256": hashlib.sha256(compose_path.read_bytes()).hexdigest(),
+        "failure_evidence": failure_evidence,
         "active_pointer_unchanged": True,
     })
     _write_private_evidence(evidence, "before.json", before)

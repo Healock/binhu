@@ -62,6 +62,11 @@ CREATE VIEW dev_unique_events AS
 -- MAX_BY for ARRAY<STRING>. Aggregate only the scalar field count.
 SELECT schema_version, event_id, event_type, task_id, source_id, revision,
        operation_id, MAX(CARDINALITY(changed_fields)) AS changed_field_count,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'address') THEN 1 ELSE 0 END) AS address_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'community') THEN 1 ELSE 0 END) AS community_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'inspector') THEN 1 ELSE 0 END) AS inspector_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'task_graph') THEN 1 ELSE 0 END) AS task_graph_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'person_tags') THEN 1 ELSE 0 END) AS person_tags_changed,
        `timestamp`, environment, run_id
 FROM dev_events
 WHERE environment = '{environment}' AND run_id = '{run}'
