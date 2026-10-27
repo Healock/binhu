@@ -108,6 +108,20 @@ if [[ "${command_parts[0]:-}" == "current-flow-cleanup" && "${#command_parts[@]}
     current-flow-cleanup "$cleanup_phase" "$cleanup_run_id" "$cleanup_business_date"
 fi
 
+if [[ "${command_parts[0]:-}" == "hotfix" && "${#command_parts[@]}" -eq 8 ]]; then
+  readonly version="${command_parts[1]}"; readonly commit="${command_parts[2]}"
+  readonly backup_scope="${command_parts[3]}"; readonly release_scope="${command_parts[4]}"
+  readonly bundle_size="${command_parts[5]}"; readonly hotfix_id="${command_parts[6]}"
+  readonly bundle_sha256="${command_parts[7]}"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version." >&2; exit 64; }
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid commit." >&2; exit 64; }
+  [[ "$backup_scope" == all && "$release_scope" == backend ]] || { echo "Invalid hotfix scope." >&2; exit 64; }
+  [[ "$hotfix_id" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]] || { echo "Invalid hotfix id." >&2; exit 64; }
+  [[ "$bundle_size" =~ ^[1-9][0-9]{0,9}$ ]] && (( bundle_size <= 1073741824 )) || { echo "Invalid bundle size." >&2; exit 64; }
+  [[ "$bundle_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid hotfix bundle digest." >&2; exit 64; }
+  exec /usr/bin/sudo -n /usr/local/sbin/binhu-deploy \
+    hotfix "$version" "$commit" "$backup_scope" "$release_scope" "$bundle_size" "$hotfix_id" "$bundle_sha256"
+fi
 if [[ "${command_parts[0]:-}" != "promote" || "${#command_parts[@]}" -ne 6 ]]; then
   echo "Only accepted Staging promotions are allowed in Production." >&2
   exit 64

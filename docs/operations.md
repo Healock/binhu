@@ -1009,7 +1009,7 @@ python -m deploy.environments.update apply-staging ... --evidence /srv/deploy-ba
 
 发布人手动填写 `ref`、`run_id` 和 `expected_version`。`run_id` 必须是 Staging acceptance 返回的 `staging-app-` 加 16 位小写十六进制编号。工作流从所选 main commit 读取并散列 `docker-compose.yml`，只把该单文件送入固定 gateway；gateway 依据 root-only Staging acceptance ledger 派生 artifact/image identity，并逐项校验 artifact、image、commit 和版本。随包 `accept.json` 不作为接受事实。
 
-Production 固定执行 `backup_scope=all` 与完整应用切换。镜像从 accepted image archive 执行 `docker load`，核验 image ID、artifact、commit 和版本 labels，再打 `binhu-backend` 标签；生产 Compose 不含 `build:`，Production 发布链路也不构建应用镜像。`Deploy hotfix` 仍保留紧急操作入口，但复用同一套 Staging acceptance、备份、镜像与 Compose 校验，不再提供独立 artifact 或直接部署通道。
+普通 Production 发布固定执行 `backup_scope=all` 与完整应用切换。镜像从服务器 accepted Staging image archive 执行 `docker load`，核验 image ID、artifact、commit 和版本 labels，再打 `binhu-backend` 标签；生产 Compose 不含 `build:`，Production 发布链路也不构建应用镜像。紧急 hotfix 是独立快速通道，仅在用户确认后使用：选择已合入 `main` 的完整 commit SHA、该 SHA 对应成功 main push CI run 和当前 Production VERSION；工作流下载 CI 已构建并按完整 SHA 绑定的 backend 镜像 artifact，不在发布工作流重建镜像。固定 gateway 校验 bundle SHA-256、候选 manifest、镜像 ID 与 artifact/commit/version labels，热修固定执行 `backup_scope=all`，只重建 backend 与 ops-agent，保持现有 VERSION 不变，并记录 hotfix ID、bundle SHA、完整 commit、备份与健康检查结果。失败时使用热修前 backend 镜像和程序备份回滚。hotfix 不依赖 Staging acceptance，但仍使用 Production environment、固定 SSH gateway、互斥发布锁、全库备份、健康检查和回滚门禁。
 
 网页上可以从 GitHub Actions 手动运行，也可以在已经登录 GitHub CLI 的受控电脑执行：
 

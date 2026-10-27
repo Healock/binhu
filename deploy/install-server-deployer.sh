@@ -76,6 +76,7 @@ BINHU_PROJECT_DIR=$project_dir
 BINHU_DEPLOY_STATE_DIR=$state_dir
 BINHU_DEPLOY_MIN_FREE_KB=1048576
 BINHU_DEPLOY_MAX_BUNDLE_BYTES=134217728
+BINHU_DEPLOY_MAX_HOTFIX_BUNDLE_BYTES=1073741824
 BINHU_DEPLOY_PUBLIC_URL=$public_health_url
 EOF
 chown root:root /etc/binhu-deploy.conf
@@ -84,6 +85,7 @@ chmod 0644 /etc/binhu-deploy.conf
 cat > /etc/sudoers.d/binhu-deploy <<'EOF'
 binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy status
 binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy promote *
+binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy hotfix *
 binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy production-maintenance *
 binhu-deploy ALL=(root) NOPASSWD: /usr/local/sbin/binhu-deploy current-flow-cleanup *
 EOF

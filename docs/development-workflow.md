@@ -448,7 +448,7 @@ Agent 开始较大的功能、修复或数据库改动前，先按本页确定�
 
 Production 只能晋级 Staging 已接受的不可变应用制品。GitHub `Deploy production` 手动工作流接收已进入 `main` 的完整提交、Staging `run_id` 和精确版本号；它散列该提交的 `docker-compose.yml` 并仅上传此配置文件。固定 root gateway 从服务器受保护的 Staging acceptance ledger 读取候选并核验 artifact/image/commit/version，不能以调用方上传的 `accept.json` 作为接受凭据。
 
-Production 发布固定备份八个业务数据库 (`backup_scope=all`) 并执行完整切换。accepted image archive 必须进入 Production candidate，由服务器 `docker load` 后核验 image ID 和 labels；应用镜像禁止在 Production 重建，Production Compose 中禁止 `build:`。紧急 hotfix workflow 保留为入口，但复用同一 Staging accepted promotion workflow 和所有 Production 发布门禁。普通 push、Pull Request、CI 通过或创建标签都不能自动触发生产切换；同一时刻只允许一个生产发布任务。
+普通 Production 发布固定备份八个业务数据库 (`backup_scope=all`) 并执行完整切换。镜像必须来自服务器记录的 Staging accepted image archive，由服务器 `docker load` 后核验 image ID 和 labels；应用镜像禁止在 Production 重建，Production Compose 中禁止 `build:`。紧急 hotfix 是经用户确认的独立 Production 快速通道：调用者必须选择已合入 `main` 的完整 commit SHA 和该提交对应的成功 main push CI run，下载该 run 按完整 SHA 命名的预构建 backend 镜像候选；服务器校验包摘要、候选 manifest、镜像 ID、artifact/commit/version labels 后加载该镜像，且仍固定备份全部八个数据库 (`backup_scope=all`)。hotfix 仅切换 backend，保留 Production 当前 `VERSION`，不经过 Staging acceptance。普通 push、Pull Request、CI 通过或创建标签都不能自动触发生产切换；同一时刻只允许一个生产发布任务。
 
 ### 4.1 Dev、Staging 与 Production 的部署台账
 

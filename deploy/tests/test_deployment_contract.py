@@ -50,15 +50,19 @@ class DeploymentContractTests(unittest.TestCase):
         for action_ref in action_refs:
             self.assertRegex(action_ref, r"^[0-9a-f]{40}$")
 
-    def test_emergency_hotfix_entry_reuses_the_production_promotion_gate(self) -> None:
+    def test_emergency_hotfix_uses_exact_main_ci_candidate_and_fixed_full_backup(self) -> None:
         workflow = (ROOT / ".github/workflows/deploy-hotfix.yml").read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("hotfix_id:", workflow)
-        self.assertIn("run_id:", workflow)
-        self.assertIn("uses: ./.github/workflows/deploy-production.yml", workflow)
-        self.assertIn("secrets: inherit", workflow)
-        self.assertNotIn("actions/download-artifact", workflow)
-        self.assertNotIn("binhu-deploy@", workflow)
+        self.assertIn("artifact_run_id:", workflow)
+        self.assertIn("run.get('event') != 'push'", workflow)
+        self.assertIn("run.get('head_sha') != sys.argv[3]", workflow)
+        self.assertIn("binhu-hotfix-candidate-${{ inputs.ref }}", workflow)
+        self.assertIn("'backup_scope': 'all'", workflow)
+        self.assertIn('"hotfix $EXPECTED_VERSION $commit all backend $size $HOTFIX_ID $bundle_sha256"', workflow)
+        self.assertIn('"binhu-deploy@$DEPLOY_HOST"', workflow)
+        self.assertIn("docker image load --input \"$work_dir/image.tar.gz\"", (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8"))
+        self.assertIn("docker image load --input \"$promotion_candidate/image.tar\"", (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8"))
 
     def test_production_compose_is_no_build(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
@@ -139,8 +143,16 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('release_scope="full"', script)
         self.assertIn('RELEASE_SCOPE=%s', script)
         self.assertIn('docker image load --input "$promotion_candidate/image.tar"', script)
+        self.assertIn('docker image load --input "$work_dir/image.tar.gz"', script)
         self.assertIn('docker image inspect "$promotion_image_id"', script)
+        self.assertIn('loaded prebuilt exact-main-CI hotfix image', script)
+        self.assertIn('loaded exact Staging-accepted image', script)
+        self.assertIn('docker compose up -d --no-build --no-deps --force-recreate ops-agent backend', script)
+        self.assertIn('docker compose up -d --no-build --no-deps --force-recreate ops-agent backend event-relay diagnostic-worker', script)
         self.assertIn('promotion image archive digest mismatch', script)
+        self.assertIn('hotfix bundle digest mismatch', script)
+        self.assertIn('hotfix candidate manifest digest mismatch', script)
+        self.assertIn('hotfix requires all/backend scope', script)
         self.assertNotIn("docker build", script)
         self.assertIn('release received in', script)
         self.assertIn('release validated and extracted in', script)
@@ -174,6 +186,7 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("artifact.py", installer)
         self.assertIn("image.py", installer)
         self.assertIn("binhu-deploy promote *", installer)
+        self.assertEqual(installer.count("binhu-deploy hotfix *"), 1)
         self.assertNotRegex(installer, re.compile(r"NOPASSWD: /usr/local/sbin/binhu-deploy \*\n"))
 
     def test_assignment_projection_backfill_does_not_block_api_bootstrap(self) -> None:
@@ -193,7 +206,8 @@ class DeploymentContractTests(unittest.TestCase):
             "",
             "bash",
             "deploy 0.15.0 deadbeef none",
-            "hotfix 0.15.0 " + "a" * 40 + " online backend 1024 HF-20261027-1",
+            "hotfix 0.15.0 " + "a" * 40 + " online backend 1024 HF-20261027-1 " + "b" * 64,
+            "hotfix 0.15.0 " + "a" * 40 + " all full 1024 HF-20261027-1 " + "b" * 64,
             "promote 1.2.3 staging-app-" + "a" * 16,
             "promote 1.2.3 staging-app-" + "a" * 16 + " " + "a" * 40 + " f" * 64 + " 4",
             "deploy 0.15.0 " + "a" * 40 + " invalid",

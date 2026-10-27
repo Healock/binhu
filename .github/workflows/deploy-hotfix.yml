@@ -1,45 +1,187 @@
-name: Deploy accepted Staging candidate as emergency hotfix
-run-name: Hotfix ${{ inputs.hotfix_id }} from ${{ inputs.run_id }}
+name: Deploy hotfix
+run-name: Hotfix ${{ inputs.hotfix_id }} from ${{ inputs.ref }}
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Commit already merged into main
-        required: true
-        default: main
-        type: string
-      run_id:
-        description: Accepted Staging application candidate
-        required: true
-        type: string
-      expected_version:
-        description: Exact VERSION of the selected main commit
+        description: Full 40-character commit SHA already merged into main
         required: true
         type: string
       hotfix_id:
-        description: Emergency change tracking ID, for example HF-20261027-12
+        description: Unique ID, for example HF-20260911-589
+        required: true
+        type: string
+      artifact_run_id:
+        description: Successful main CI run that built the exact commit candidate
+        required: true
+        type: string
+      expected_version:
+        description: Current production VERSION (unchanged by a hotfix)
         required: true
         type: string
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 jobs:
-  validate:
+  validate-and-package:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      HOTFIX_ID: ${{ inputs.hotfix_id }}
     steps:
-      - name: Validate emergency change ID
-        env:
-          HOTFIX_ID: ${{ inputs.hotfix_id }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Verify merged ref and hotfix identity
+        shell: bash
         run: |
           set -Eeuo pipefail
+          git fetch --no-tags origin main
+          commit="$(git rev-parse HEAD)"
+          [[ "${{ inputs.ref }}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$commit" == "${{ inputs.ref }}" ]]
+          git merge-base --is-ancestor "$commit" origin/main
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$HOTFIX_ID" =~ ^HF-[0-9]{8}-[0-9]{1,6}$ ]]
-  promote:
-    needs: validate
-    uses: ./.github/workflows/deploy-production.yml
-    with:
-      ref: ${{ inputs.ref }}
-      run_id: ${{ inputs.run_id }}
-      expected_version: ${{ inputs.expected_version }}
-    secrets: inherit
+          [[ "$(tr -d '\r\n' < VERSION)" == "$EXPECTED_VERSION" ]]
+          printf 'RELEASE_COMMIT=%s\n' "$commit" >> "$GITHUB_ENV"
+      - name: Verify successful CI run for the selected main commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$ARTIFACT_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" \
+            -o "$RUNNER_TEMP/hotfix-ci-run.json"
+          python - "$RUNNER_TEMP/hotfix-ci-run.json" "$GITHUB_REPOSITORY" "$RELEASE_COMMIT" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding='utf-8') as source:
+              run = json.load(source)
+          if (run.get('name') != 'CI' or run.get('event') != 'push'
+                  or run.get('status') != 'completed' or run.get('conclusion') != 'success'
+                  or run.get('head_sha') != sys.argv[3]
+                  or (run.get('repository') or {}).get('full_name') != sys.argv[2]):
+              raise SystemExit('hotfix candidate run does not match selected successful main CI commit')
+          PY
+      - name: Download exact commit-bound hotfix candidate
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: binhu-hotfix-candidate-${{ inputs.ref }}
+          run-id: ${{ inputs.artifact_run_id }}
+          path: candidate-artifact
+          github-token: ${{ github.token }}
+      - name: Verify and wrap the prebuilt candidate without rebuilding it
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - candidate-artifact release-output "$RELEASE_COMMIT" "$EXPECTED_VERSION" "$HOTFIX_ID" <<'PY'
+          import hashlib, json, pathlib, re, sys, tarfile
+          candidate_root, output_root = map(pathlib.Path, sys.argv[1:3])
+          commit, version, hotfix_id = sys.argv[3:]
+          files = [path for path in candidate_root.rglob('*') if path.is_file()]
+          if len(files) != 3 or {path.name for path in files} != {'manifest.json', 'source.tar.gz', 'image.tar.gz'}:
+              raise SystemExit('candidate must contain exactly one manifest and its two payloads')
+          candidate_path = candidate_root / 'manifest.json'
+          candidate = json.loads(candidate_path.read_text(encoding='utf-8'))
+          if (candidate.get('schema') != 1 or candidate.get('commit') != commit
+                  or candidate.get('version') != version or candidate.get('release_scope') != 'backend'
+                  or candidate.get('ready_for_hotfix') is not True
+                  or not re.fullmatch(r'[0-9a-f]{64}', str(candidate.get('artifact_id', '')))
+                  or not re.fullmatch(r'sha256:[0-9a-f]{64}', str(candidate.get('image_id', '')))):
+              raise SystemExit('hotfix candidate identity does not match selected commit/version')
+          metadata = candidate.get('files') or {}
+          for name in ('source.tar.gz', 'image.tar.gz'):
+              path = candidate_root / name
+              item = metadata.get(name) or {}
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if item.get('sha256') != digest or item.get('size') != path.stat().st_size:
+                  raise SystemExit('hotfix candidate file digest mismatch')
+          if candidate['artifact_id'] != metadata['source.tar.gz']['sha256']:
+              raise SystemExit('hotfix candidate artifact identity mismatch')
+          output_root.mkdir(parents=True, exist_ok=True)
+          candidate_copy = output_root / 'candidate.json'
+          candidate_copy.write_bytes(candidate_path.read_bytes())
+          bundle_manifest = {
+              'schema': 2, 'version': version, 'commit': commit,
+              'backup_scope': 'all', 'release_scope': 'backend',
+              'release_kind': 'hotfix', 'hotfix_id': hotfix_id,
+              'ready_for_hotfix': True, 'artifact_id': candidate['artifact_id'],
+              'candidate_manifest_sha256': hashlib.sha256(candidate_copy.read_bytes()).hexdigest(),
+              'image_id': candidate['image_id'], 'files': {},
+          }
+          for path in (candidate_root / 'source.tar.gz', candidate_root / 'image.tar.gz', candidate_copy):
+              bundle_manifest['files'][path.name] = {
+                  'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'size': path.stat().st_size,
+              }
+          manifest_path = output_root / 'manifest.json'
+          manifest_path.write_text(json.dumps(bundle_manifest, sort_keys=True, indent=2) + '\n', encoding='utf-8')
+          sums = ''.join(f"{item['sha256']}  {name}\n" for name, item in sorted(bundle_manifest['files'].items()))
+          sums_path = output_root / 'SHA256SUMS'
+          sums_path.write_text(sums, encoding='ascii')
+          with tarfile.open(output_root / 'binhu-hotfix.tar.gz', 'w:gz') as archive:
+              for path in (candidate_root / 'source.tar.gz', candidate_root / 'image.tar.gz', candidate_copy, manifest_path, sums_path):
+                  archive.add(path, arcname=path.name, recursive=False)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: binhu-hotfix-${{ inputs.hotfix_id }}-${{ github.run_id }}
+          path: release-output/binhu-hotfix.tar.gz
+          retention-days: 30
+
+  deploy:
+    needs: validate-and-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      EXPECTED_VERSION: ${{ inputs.expected_version }}
+      HOTFIX_ID: ${{ inputs.hotfix_id }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: binhu-hotfix-${{ inputs.hotfix_id }}-${{ github.run_id }}
+          path: release-output
+      - name: Deploy through fixed hotfix gateway
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.BINHU_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.BINHU_DEPLOY_PORT }}
+          DEPLOY_KEY: ${{ secrets.BINHU_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$RUNNER_TEMP/binhu-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/binhu-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/binhu-ssh/key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
+          commit="$(tar -xOf release-output/binhu-hotfix.tar.gz manifest.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["commit"])')"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          size="$(wc -c < release-output/binhu-hotfix.tar.gz)"
+          (( size > 0 && size <= 1073741824 ))
+          bundle_sha256="$(sha256sum release-output/binhu-hotfix.tar.gz | awk '{print $1}')"
+          [[ "$bundle_sha256" =~ ^[0-9a-f]{64}$ ]]
+          started="$(date +%s)"
+          ssh -F /dev/null -i "$RUNNER_TEMP/binhu-ssh/key" -o BatchMode=yes \
+            -o IdentitiesOnly=yes -o PasswordAuthentication=no \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/binhu-ssh/known_hosts" \
+            -p "$DEPLOY_PORT" "binhu-deploy@$DEPLOY_HOST" \
+            "hotfix $EXPECTED_VERSION $commit all backend $size $HOTFIX_ID $bundle_sha256" \
+            < release-output/binhu-hotfix.tar.gz
+          elapsed=$(( $(date +%s) - started ))
+          printf 'HOTFIX_ID=%s\nELAPSED_SECONDS=%s\n' "$HOTFIX_ID" "$elapsed"
+          (( elapsed <= 180 ))

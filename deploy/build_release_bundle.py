@@ -75,8 +75,8 @@ def build_bundle(
     if release_kind not in {"release", "hotfix"}:
         raise ValueError("unsupported release kind")
     if release_kind == "hotfix":
-        if release_scope != "backend" or backup_scope != "online":
-            raise ValueError("hotfix requires backend release and online backup")
+        if release_scope != "backend" or backup_scope != "all":
+            raise ValueError("hotfix requires backend release and all-database backup")
         if not HOTFIX_ID_PATTERN.fullmatch(hotfix_id):
             raise ValueError("invalid hotfix id")
     elif hotfix_id:
