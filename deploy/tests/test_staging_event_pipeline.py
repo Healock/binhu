@@ -465,16 +465,23 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
                     snapshot_id,
                 )
 
-    def test_metrics_probe_is_aggregate_fixed_and_excludes_production(self):
+    def test_metrics_probe_exposes_fixed_aggregate_production_monitor(self):
         source = Path(staging_metrics_probe.__file__).read_text(encoding="utf-8")
         for metric in (
             "Innodb_deadlocks", "Innodb_row_lock_current_waits", "keyspace_hits",
             "checkpoint_completed", "_kafka_event_delivery", "restart_count",
-            "pool_count", "/api/admin/ops/performance",
+            "pool_count", "/api/admin/ops/performance", "production_since_unix",
+            "production_bootstrap_identity_mismatch", "production_log_sample_limit_exceeded",
         ):
             self.assertIn(metric, source)
-        self.assertIn('"production": None', source)
-        self.assertNotIn("binhu-mysql", source)
+        self.assertEqual(staging_metrics_probe.PRODUCTION_CONTAINER_NAMES,
+                         ("binhu-backend", "binhu-mysql", "binhu-ops-agent"))
+        self.assertEqual(staging_metrics_probe.PRODUCTION_BOOTSTRAP_URL,
+                         "http://127.0.0.1:37125/api/app/bootstrap")
+        self.assertEqual(staging_metrics_probe.PRODUCTION_HEALTH_URL,
+                         "http://127.0.0.1:37125/api/health")
+        production_source = source[source.index("def _production_sample"):source.index("def _staging_service_states")]
+        self.assertNotIn("print(", production_source)
 
     def test_backend_pool_probe_passes_private_password_only_over_stdin(self):
         payload = {"pool_count": 8, "usage_ratio": .5, "used": 20, "max_size": 40}
@@ -625,10 +632,12 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         gateway = (root / "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
         self.assertIn("binhu-staging-deploy", installer)
         self.assertIn("^STG-[0-9]{8}-[0-9]{2}$", wrapper)
-        self.assertIn('in {"measure", "apply", "switch", "sample", "rollback"}', gateway)
+        self.assertIn('sys.argv[1] == "sample"', gateway)
+        self.assertIn('sys.argv[1] in {"measure", "apply", "switch", "rollback"}', gateway)
         self.assertIn('sys.argv[1] == "run"', gateway)
         self.assertIn('sys.argv[1] == "verify"', gateway)
-        self.assertIn("measure|apply|switch|run|sample|rollback", wrapper)
+        self.assertIn("measure|apply|switch|run|rollback", wrapper)
+        self.assertIn("sample)", wrapper)
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
         self.assertNotIn("binhu-production", wrapper + gateway + installer)
@@ -637,6 +646,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"error_code"', diagnostic)
         self.assertNotIn("backend.env", diagnostic)
         control = (root / "staging_control.py").read_text(encoding="utf-8")
+        self.assertIn('"--production-since"', control)
         self.assertIn('"phase": phase', control)
         self.assertIn('"error_type": type(error).__name__', control)
         self.assertIn('"error_code": error_code', control)
@@ -778,8 +788,10 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
                     "run-staging-realistic-load.yml").read_text(encoding="utf-8")
         for marker in (
-            '"run $RUN_ID"', '"sample $RUN_ID"', "--users 75", "--run-time 30m",
+            '"run $RUN_ID"', '"sample $RUN_ID $monitor_start_epoch"', "--users 75", "--run-time 30m",
             "/staging/api/query/", "staging-samples.jsonl", "derived_queue",
+            "waive_4gib_memory_gate", "default: false", "staging.load_monitor observe",
+            "production_stop_thresholds", "health_failures",
         ):
             self.assertIn(marker, workflow)
         self.assertNotIn("BINHU_DEPLOY_SSH_KEY", workflow)

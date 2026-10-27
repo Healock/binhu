@@ -1,0 +1,11 @@
+# Staging realistic load acceptance
+
+The fixed `run-staging-realistic-load` workflow runs the complete 75-user, 30-minute Staging request model. Its workflow-dispatch input `waive_4gib_memory_gate` defaults to `false`. Set it to `true` only for an approved run that starts below the 4 GiB preflight threshold. This waives that preflight only; it does not change the workload, resource limits, result thresholds, or Production protections.
+
+The workflow records the required and observed memory, waiver request, and whether the gate was actually waived in `load-report.json`. A waived run is a limited acceptance: the final Staging acceptance report must state that it did not meet the 4 GiB precondition and must keep `passed` and `promotion_ready` false.
+
+Before creating fixtures, preflight verifies the Staging run identity, Staging bootstrap identity, Production bootstrap identity, Production health, the fixed Production container set, and Staging service state. The restricted Staging gateway samples only fixed Production endpoints on `127.0.0.1:37125` and the fixed containers `binhu-backend`, `binhu-mysql`, and `binhu-ops-agent`. It emits aggregate status, restart/OOM state, and an error-line count; it never includes log or response bodies. Production log sampling uses one fixed run-start timestamp, a 5,000-line limit and an 8 MiB output limit. Inspection failure, identity mismatch, counter regression, or sampling-limit overflow fails closed.
+
+During Locust, the workflow samples every 30 seconds. It terminates Locust if Production health fails twice consecutively, a fixed Production container becomes unhealthy/restarts/OOMs, a new Production error line appears, or the monitor cannot complete. Staging service/pipeline OOM or restart, persistent request failure above 2% for 60 seconds, request stalls, and sampling failures also stop the run. Stop reasons and execution policy are preserved in the run artifacts.
+
+The 75-user model remains unchanged: login, core business operations, polling, SSE/WebSocket streams, token refresh, multi-client sessions, reconnects and retry behavior. A resource-gate waiver does not establish that the same workload passes the original 4 GiB resource gate or full promotion acceptance.

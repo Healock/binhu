@@ -38,6 +38,17 @@ def assemble_report(
     if not isinstance(load, dict):
         raise RuntimeError("load evidence must be an object")
     _identity(load, run_id, "load")
+    execution = load.get("execution_policy")
+    memory_gate = execution.get("memory_gate") if isinstance(execution, dict) else None
+    if (not isinstance(execution, dict) or execution.get("users") != 75
+            or execution.get("production_monitor") != "passed"
+            or not isinstance(memory_gate, dict)
+            or memory_gate.get("required_bytes") != 4 * 1024 ** 3
+            or not isinstance(memory_gate.get("waived"), bool)
+            or not isinstance(memory_gate.get("observed_bytes"), int)):
+        raise RuntimeError("load execution policy evidence is missing or invalid")
+    if memory_gate["observed_bytes"] < memory_gate["required_bytes"] and not memory_gate["waived"]:
+        raise RuntimeError("load memory gate was below threshold without a recorded waiver")
 
     samples_envelope = _read_json(resource_samples_path, "resource")
     if not isinstance(samples_envelope, dict):
@@ -72,6 +83,8 @@ def assemble_report(
         and bool(manual_checks)
         and all(value is True for value in manual_checks.values())
     )
+    limited_acceptance = bool(memory_gate["waived"])
+    checks_passed = threshold_result["passed"] and rollback_passed and manual_passed
     return {
         "run_id": run_id,
         "environment": "staging",
@@ -81,8 +94,14 @@ def assemble_report(
         "rollback": rollback,
         "manual_acceptance": manual,
         "thresholds": threshold_result,
+        "execution_policy": execution,
+        "limited_acceptance": limited_acceptance,
+        "acceptance_limitations": ([
+            "The 4 GiB preflight memory gate was explicitly waived for this run.",
+            "This run does not satisfy the original 4 GiB resource precondition or constitute full architecture acceptance.",
+        ] if limited_acceptance else []),
         "rollback_passed": rollback_passed,
         "manual_acceptance_passed": manual_passed,
-        "passed": threshold_result["passed"] and rollback_passed and manual_passed,
-        "promotion_ready": threshold_result["passed"] and rollback_passed and manual_passed,
+        "passed": checks_passed and not limited_acceptance,
+        "promotion_ready": checks_passed and not limited_acceptance,
     }
