@@ -8,8 +8,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -250,36 +252,66 @@ class ProductionServiceControl:
 
     def backup_database(self, backup_dir: Path, database: str) -> dict:
         destination = backup_dir / f"{database}.sql.gz"
-        if destination.exists():
+        temporary = backup_dir / f"{database}.sql.gz.partial"
+        if destination.exists() or temporary.exists():
             raise ServiceControlError("backup_evidence_exists")
         dump_cmd = (
             'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction '
             "--routines --triggers --default-character-set=utf8mb4 --databases " + database
         )
+        process = None
         try:
-            with gzip.open(destination, "xb") as output:
+            with gzip.open(temporary, "xb") as output:
                 process = self.popen(
                     ["docker", "exec", "binhu-mysql", "sh", "-c", dump_cmd],
-                    stdout=output, stderr=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 )
+                if process.stdout is None:
+                    raise ServiceControlError("database_backup_failed")
+                stream_errors: list[Exception] = []
+
+                def compress_dump_stream() -> None:
+                    try:
+                        shutil.copyfileobj(process.stdout, output, length=1024 * 1024)
+                    except Exception as exc:
+                        stream_errors.append(exc)
+                    finally:
+                        process.stdout.close()
+
+                reader = threading.Thread(target=compress_dump_stream, daemon=True)
+                reader.start()
                 try:
                     returncode = process.wait(timeout=900)
                 except subprocess.TimeoutExpired as exc:
                     process.kill()
                     process.wait()
+                    reader.join()
                     raise ServiceControlError("database_backup_timeout") from exc
+                reader.join()
+                if stream_errors:
+                    raise ServiceControlError("database_backup_failed") from stream_errors[0]
                 if returncode != 0:
                     raise ServiceControlError("database_backup_failed")
-            if not validate_gzip_dump(destination, database):
+            if not validate_gzip_dump(temporary, database):
                 raise ServiceControlError("database_backup_scope_unproven")
+            os.replace(temporary, destination)
             return {
                 "database": database,
                 "filename": destination.name,
                 "size_bytes": destination.stat().st_size,
                 "sha256": sha256_file(destination),
             }
+        except FileExistsError as exc:
+            raise ServiceControlError("backup_evidence_exists") from exc
+        except ServiceControlError:
+            raise
         except (OSError, subprocess.TimeoutExpired, EOFError) as exc:
             raise ServiceControlError("database_backup_failed") from exc
+        finally:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
+            temporary.unlink(missing_ok=True)
 
     def write_json_once(self, path: Path, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
