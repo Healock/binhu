@@ -1200,15 +1200,30 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             Path(__file__).parents[1] / "environments" / "event_pipeline" /
             "install-staging-gateway.sh"
         ).read_text(encoding="utf-8")
-        self.assertIn('RETIRE_TARGET = "STG-20261007-03"', gateway)
+        self.assertIn('RETIRE_TARGETS = frozenset({"STG-20261027-07", "STG-20261028-03"})', gateway)
+        self.assertNotIn('RETIRE_TARGET = "STG-20261007-03"', gateway)
         self.assertIn('RETIRE_SUCCESSOR = "STG-20261027-02"', gateway)
         self.assertIn('FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})', gateway)
         self.assertIn('def retire_failed(run_id: str)', gateway)
         self.assertIn('"down", "--remove-orphans"', gateway)
         self.assertNotIn('"down", "-v"', gateway)
         self.assertIn("measure|apply|switch|run|rollback|retire|retire-failed", wrapper)
-        self.assertIn("retire STG-20261007-03", install)
+        self.assertIn("retire STG-20261027-07", install)
+        self.assertIn("retire STG-20261028-03", install)
+        self.assertNotIn("retire STG-20261007-03", install)
         self.assertIn("retire-failed STG-20261027-04", install)
+
+    def test_retirement_allowlist_rejects_other_valid_run_ids(self):
+        for run_id in ("STG-20261007-03", "STG-20261029-02"):
+            with self.subTest(run_id=run_id), self.assertRaises(SystemExit):
+                staging_gateway.retire(run_id)
+
+    def test_retirement_sudoers_has_no_wildcard(self):
+        install = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "install-staging-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertNotRegex(install, r"retire \*")
 
     def test_retirement_rejects_foreign_run_without_docker_access(self):
         with self.assertRaises(SystemExit):

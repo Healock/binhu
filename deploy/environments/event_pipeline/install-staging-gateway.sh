@@ -38,7 +38,8 @@ binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py run *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py sample *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py rollback *
-binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py retire STG-20261007-03
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py retire STG-20261027-07
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py retire STG-20261028-03
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py retire-failed STG-20261027-04
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py verify *
 EOF
