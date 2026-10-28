@@ -278,6 +278,8 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('BINHU_DEV_APP_ADMIN_SSH_KEY', install)
         self.assertIn('BINHU_DEV_APP_DEPLOY_PUBLIC_KEY', install)
         self.assertIn('binhu-dev-app-deploy', install)
+        self.assertIn('find "$package/deploy" -type f -exec sed -i', install)
+        self.assertIn("s/\\r$//", install)
 
     def test_reconcile_is_dev_only_and_preserves_volumes(self):
         wrapper = (ROOT / 'deploy/environments/binhu-dev-application-gateway').read_text()
