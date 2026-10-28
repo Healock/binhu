@@ -7,7 +7,9 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -161,6 +163,52 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
             (root / "OnlineData.sql.gz").write_bytes(b"tampered")
             with self.assertRaisesRegex(SERVICE_CONTROL.ServiceControlError, "backup_database_invalid"):
                 SERVICE_CONTROL.verify_backup_manifest(root, "pause-test-001")
+
+    def test_backup_database_writes_verified_gzip_and_cleans_failed_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            header = b"-- MySQL dump\n-- Current Database: `OnlineData`\nUSE `OnlineData`;\n"
+            row = b"synthetic-row-data\n"
+            dump = header + row * 150000
+
+            def popen_success(*args, **kwargs):
+                script = f"import sys; sys.stdout.buffer.write({header!r}); sys.stdout.buffer.write({row!r} * 150000)"
+                return subprocess.Popen([sys.executable, "-c", script], **kwargs)
+
+            controller = SERVICE_CONTROL.ProductionServiceControl(
+                evidence_root=root / "evidence", backup_root=root / "backups",
+                popen=popen_success,
+            )
+            result = controller.backup_database(root, "OnlineData")
+            destination = root / "OnlineData.sql.gz"
+            compressed = destination.read_bytes()
+            self.assertEqual(compressed[:2], b"\x1f\x8b")
+            self.assertEqual(result["size_bytes"], len(compressed))
+            self.assertEqual(result["sha256"], hashlib.sha256(compressed).hexdigest())
+            gzip_command = shutil.which("gzip")
+            if gzip_command:
+                gzip_test = subprocess.run([gzip_command, "-t", str(destination)], check=False)
+                self.assertEqual(gzip_test.returncode, 0)
+            with gzip.open(destination, "rb") as stream:
+                actual = stream.read()
+            self.assertEqual(len(actual), len(dump))
+            self.assertEqual(hashlib.sha256(actual).hexdigest(), hashlib.sha256(dump).hexdigest())
+            self.assertFalse((root / "OnlineData.sql.gz.partial").exists())
+
+            def popen_failure(*args, **kwargs):
+                script = "import sys; sys.stdout.buffer.write(b'partial dump'); sys.exit(1)"
+                return subprocess.Popen([sys.executable, "-c", script], **kwargs)
+
+            failed_controller = SERVICE_CONTROL.ProductionServiceControl(
+                evidence_root=root / "failure-evidence", backup_root=root / "failure-backups",
+                popen=popen_failure,
+            )
+            failed = root / "failed"
+            failed.mkdir()
+            with self.assertRaisesRegex(SERVICE_CONTROL.ServiceControlError, "database_backup_failed"):
+                failed_controller.backup_database(failed, "OnlineData")
+            self.assertFalse((failed / "OnlineData.sql.gz").exists())
+            self.assertFalse((failed / "OnlineData.sql.gz.partial").exists())
 
     def test_service_control_rejects_unexpected_scope_and_environment(self) -> None:
         with self.assertRaisesRegex(SERVICE_CONTROL.ServiceControlError, "invalid_run_id"):
