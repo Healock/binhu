@@ -6,6 +6,8 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +56,7 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn("production-maintenance", gateway)
         self.assertIn("internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery|pause-production|resume-production", gateway)
         self.assertIn("measure|backup|apply|verify|rollback", gateway)
+        self.assertIn('[[ "$maintenance_operation" == "pause-production" || "$maintenance_operation" == "resume-production" ]] || {', gateway)
         maintenance_block = gateway.split(
             "if [[ \"${command_parts[0]:-}\" == \"production-maintenance\" ]]",
             1,
@@ -70,6 +73,30 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn("^[0-9a-f]{64}$", gateway)
         self.assertNotIn("--sql", maintenance_block)
         self.assertNotIn("--table", maintenance_block)
+
+    @unittest.skipIf(os.name == "nt", "gateway behavior test requires POSIX bash")
+    def test_execute_phase_is_exclusive_to_pause_and_resume(self) -> None:
+        gateway_path = ROOT / "deploy/binhu-deploy-gateway"
+
+        def invoke(command: str) -> subprocess.CompletedProcess[str]:
+            environment = os.environ.copy()
+            environment["SSH_ORIGINAL_COMMAND"] = command
+            return subprocess.run(
+                ["bash", str(gateway_path)], capture_output=True, text=True, env=environment,
+            )
+
+        pause = invoke(
+            "production-maintenance pause-production execute short confirm-pause-production"
+        )
+        self.assertEqual(pause.returncode, 64)
+        self.assertIn("Invalid production-maintenance run id.", pause.stderr)
+        self.assertNotIn("Invalid production-maintenance phase.", pause.stderr)
+
+        non_service = invoke(
+            "production-maintenance internal-department-retirement execute run-id-123"
+        )
+        self.assertEqual(non_service.returncode, 64)
+        self.assertIn("Invalid production-maintenance phase.", non_service.stderr)
 
     def test_root_contract_requires_evidence_and_backup_before_apply(self) -> None:
         script = (ROOT / "deploy/binhu-maintenance").read_text(encoding="utf-8")
