@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""Fixed, evidence-preserving Production application/MySQL pause and resume."""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+
+
+DATABASES = (
+    "OnlineData",
+    "OnlineDataArchive",
+    "daily_report",
+    "PlatformData",
+    "VisitData",
+    "DispatchData",
+    "RegistryData",
+    "WorkflowData",
+)
+TARGETS = {"binhu-backend", "binhu-mysql"}
+EXPECTED_SERVICES = {"binhu-backend": "backend", "binhu-mysql": "mysql"}
+EVIDENCE_ROOT = Path(os.environ.get(
+    "BINHU_MAINTENANCE_EVIDENCE_ROOT", "/srv/binhu-release-evidence-maintenance"
+))
+BACKUP_ROOT = Path(os.environ.get(
+    "BINHU_MAINTENANCE_BACKUP_ROOT", "/root/binhu/deploy-backups/automated"
+))
+PROJECT_DIR = Path(os.environ.get("BINHU_PROJECT_DIR", "/root/binhu"))
+PROJECT_NAME = os.environ.get("BINHU_COMPOSE_PROJECT_NAME", "binhu")
+API_BASE = "http://127.0.0.1:37125"
+
+
+class ServiceControlError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def validate_run_id(run_id: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{7,63}", run_id):
+        raise ServiceControlError("invalid_run_id")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_gzip_dump(path: Path, database: str) -> bool:
+    prefix = ""
+    try:
+        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as stream:
+            prefix = stream.read(1024 * 1024)
+            for _ in iter(lambda: stream.read(1024 * 1024), ""):
+                pass
+    except (OSError, EOFError):
+        return False
+    return (
+        prefix.startswith("-- MySQL dump")
+        and f"-- Current Database: `{database}`" in prefix
+        and f"USE `{database}`;" in prefix
+    )
+
+
+def verify_backup_manifest(backup_dir: Path, expected_run_id: str | None = None) -> dict:
+    manifest_path = backup_dir / "backup-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ServiceControlError("backup_manifest_unreadable") from exc
+    if (
+        manifest.get("schema") != 1
+        or manifest.get("operation") != "pause-production"
+        or (expected_run_id is not None and manifest.get("run_id") != expected_run_id)
+        or manifest.get("database_scope") != sorted(DATABASES)
+    ):
+        raise ServiceControlError("backup_database_scope_mismatch")
+    raw_entries = manifest.get("databases")
+    if not isinstance(raw_entries, list) or any(not isinstance(entry, dict) for entry in raw_entries):
+        raise ServiceControlError("backup_database_manifest_invalid")
+    entries = {entry.get("database"): entry for entry in raw_entries}
+    if set(entries) != set(DATABASES):
+        raise ServiceControlError("backup_database_manifest_incomplete")
+    for database in DATABASES:
+        entry = entries[database]
+        path = backup_dir / f"{database}.sql.gz"
+        try:
+            valid = (
+                path.is_file()
+                and entry.get("filename") == path.name
+                and path.stat().st_size == int(entry["size_bytes"])
+                and sha256_file(path) == entry["sha256"]
+            )
+            if valid:
+                valid = validate_gzip_dump(path, database)
+        except (OSError, KeyError, TypeError, ValueError, EOFError):
+            valid = False
+        if not valid:
+            raise ServiceControlError("backup_database_invalid")
+    return manifest
+
+
+def compare_protected_states(before: list[dict], after: list[dict]) -> bool:
+    """Only the two fixed Production containers may change running state."""
+    normalize = lambda rows: sorted(
+        (row["id"], row["name"], row["state"])
+        for row in rows if row["name"] not in TARGETS
+    )
+    return normalize(before) == normalize(after)
+
+
+def probe_bootstrap(payload: object) -> bool:
+    return isinstance(payload, dict) and payload.get("environment") == "production"
+
+
+class ProductionServiceControl:
+    def __init__(
+        self,
+        evidence_root: Path = EVIDENCE_ROOT,
+        backup_root: Path = BACKUP_ROOT,
+        project_dir: Path = PROJECT_DIR,
+        project_name: str = PROJECT_NAME,
+        run: Callable = subprocess.run,
+        popen: Callable = subprocess.Popen,
+        sleep: Callable = time.sleep,
+        opener: Callable = urllib.request.urlopen,
+        monotonic: Callable = time.monotonic,
+    ):
+        self.evidence_root = evidence_root
+        self.backup_root = backup_root
+        self.project_dir = project_dir
+        self.project_name = project_name
+        self.run = run
+        self.popen = popen
+        self.sleep = sleep
+        self.opener = opener
+        self.monotonic = monotonic
+
+    def command(self, *args: str) -> subprocess.CompletedProcess:
+        try:
+            result = self.run(args, capture_output=True, text=True, check=False, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ServiceControlError("fixed_command_failed") from exc
+        if result.returncode:
+            raise ServiceControlError("fixed_command_failed")
+        return result
+
+    def inspect_container(self, name: str) -> dict:
+        result = self.command("docker", "inspect", name)
+        try:
+            payload = json.loads(result.stdout)[0]
+            labels = payload["Config"].get("Labels") or {}
+            state = payload["State"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise ServiceControlError("production_container_identity_unreadable") from exc
+        expected_service = EXPECTED_SERVICES[name]
+        if (
+            payload.get("Name", "").lstrip("/") != name
+            or labels.get("com.docker.compose.project") != self.project_name
+            or labels.get("com.docker.compose.service") != expected_service
+        ):
+            raise ServiceControlError("production_container_identity_mismatch")
+        return {
+            "id": payload["Id"],
+            "name": name,
+            "project": self.project_name,
+            "service": expected_service,
+            "state": state.get("Status"),
+            "running": state.get("Running") is True,
+            "health": (state.get("Health") or {}).get("Status"),
+        }
+
+    def container_states(self) -> list[dict]:
+        result = self.command("docker", "ps", "--all", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}\t{{.State}}")
+        rows = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                rows.append({"id": parts[0], "name": parts[1], "state": parts[2]})
+        return sorted(rows, key=lambda row: row["name"])
+
+    def require_services(self, expected_running: bool) -> dict:
+        services = {name: self.inspect_container(name) for name in sorted(TARGETS)}
+        if any(item["running"] is not expected_running for item in services.values()):
+            raise ServiceControlError("production_service_state_unexpected")
+        if expected_running and services["binhu-mysql"]["health"] != "healthy":
+            raise ServiceControlError("production_mysql_unhealthy")
+        return services
+
+    def wait_mysql_healthy(self, timeout_seconds: int = 180) -> dict:
+        deadline = self.monotonic() + timeout_seconds
+        while self.monotonic() < deadline:
+            mysql = self.inspect_container("binhu-mysql")
+            if mysql["running"] and mysql["health"] == "healthy":
+                return mysql
+            self.sleep(3)
+        raise ServiceControlError("production_mysql_start_timeout")
+
+    def request_status(self, path: str) -> tuple[int, bytes]:
+        request = urllib.request.Request(API_BASE + path, method="GET")
+        try:
+            with self.opener(request, timeout=5) as response:
+                return response.status, response.read(1024 * 1024)
+        except urllib.error.HTTPError as response:
+            return response.code, response.read(1024 * 1024)
+        except (OSError, TimeoutError, urllib.error.URLError) as exc:
+            raise ServiceControlError("production_api_probe_unreachable") from exc
+
+    def probe_application(self) -> dict:
+        health_status, _ = self.request_status("/api/health")
+        if health_status != 200:
+            raise ServiceControlError("production_health_probe_failed")
+        bootstrap_status, body = self.request_status("/api/app/bootstrap")
+        try:
+            bootstrap_payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ServiceControlError("production_bootstrap_payload_invalid") from exc
+        if bootstrap_status != 200 or not probe_bootstrap(bootstrap_payload):
+            raise ServiceControlError("production_bootstrap_identity_mismatch")
+        query_status, _ = self.request_status("/api/query/types")
+        if query_status not in (200, 401, 403):
+            raise ServiceControlError("production_query_route_probe_failed")
+        return {
+            "health_status": health_status,
+            "bootstrap_status": bootstrap_status,
+            "bootstrap_environment_matches": True,
+            "query_status": query_status,
+        }
+
+    def compose(self, *args: str) -> None:
+        self.command(
+            "docker", "compose", "--project-directory", str(self.project_dir),
+            "-f", str(self.project_dir / "docker-compose.yml"), "-p", self.project_name,
+            *args,
+        )
+
+    def backup_database(self, backup_dir: Path, database: str) -> dict:
+        destination = backup_dir / f"{database}.sql.gz"
+        if destination.exists():
+            raise ServiceControlError("backup_evidence_exists")
+        dump_cmd = (
+            'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction '
+            "--routines --triggers --default-character-set=utf8mb4 --databases " + database
+        )
+        try:
+            with gzip.open(destination, "xb") as output:
+                process = self.popen(
+                    ["docker", "exec", "binhu-mysql", "sh", "-c", dump_cmd],
+                    stdout=output, stderr=subprocess.DEVNULL,
+                )
+                try:
+                    returncode = process.wait(timeout=900)
+                except subprocess.TimeoutExpired as exc:
+                    process.kill()
+                    process.wait()
+                    raise ServiceControlError("database_backup_timeout") from exc
+                if returncode != 0:
+                    raise ServiceControlError("database_backup_failed")
+            if not validate_gzip_dump(destination, database):
+                raise ServiceControlError("database_backup_scope_unproven")
+            return {
+                "database": database,
+                "filename": destination.name,
+                "size_bytes": destination.stat().st_size,
+                "sha256": sha256_file(destination),
+            }
+        except (OSError, subprocess.TimeoutExpired, EOFError) as exc:
+            raise ServiceControlError("database_backup_failed") from exc
+
+    def write_json_once(self, path: Path, payload: dict) -> None:
+        data = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+        try:
+            with path.open("x", encoding="utf-8") as stream:
+                stream.write(data)
+        except FileExistsError as exc:
+            raise ServiceControlError("evidence_exists_use_new_run_id") from exc
+
+    def acquire_lock(self):
+        import fcntl
+
+        lock = open("/run/lock/binhu-maintenance.lock", "a", encoding="utf-8")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock
+
+    def prepare_dirs(self, operation: str, run_id: str) -> tuple[Path, Path]:
+        evidence = self.evidence_root / operation / run_id
+        backup = self.backup_root / f"maintenance-pause-production-{run_id}"
+        if evidence.exists() or (operation == "pause-production" and backup.exists()):
+            raise ServiceControlError("evidence_exists_use_new_run_id")
+        evidence.mkdir(parents=True, mode=0o700)
+        os.chmod(evidence, 0o700)
+        if operation == "pause-production":
+            backup.mkdir(parents=True, mode=0o700)
+            os.chmod(backup, 0o700)
+        return evidence, backup
+
+    def verify_backup(self, backup_dir: Path, run_id: str, require_fresh: bool = True) -> dict:
+        manifest = verify_backup_manifest(backup_dir, expected_run_id=run_id)
+        try:
+            created_at = datetime.fromisoformat(manifest["created_at"].replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - created_at).total_seconds()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ServiceControlError("backup_timestamp_invalid") from exc
+        if require_fresh and (age < 0 or age > 1800):
+            raise ServiceControlError("backup_not_fresh")
+        return manifest
+
+    def pause(self, run_id: str, confirmation: str) -> dict:
+        validate_run_id(run_id)
+        if confirmation != "confirm-pause-production":
+            raise ServiceControlError("invalid_confirmation")
+        evidence, backup = self.prepare_dirs("pause-production", run_id)
+        try:
+            lock = self.acquire_lock()
+        except BlockingIOError as exc:
+            self.write_json_once(evidence / "failure.json", {
+                "operation": "pause-production", "run_id": run_id,
+                "error_code": "another_maintenance_run_active",
+            })
+            raise ServiceControlError("another_maintenance_run_active") from exc
+        except OSError as exc:
+            self.write_json_once(evidence / "failure.json", {
+                "operation": "pause-production", "run_id": run_id,
+                "error_code": "service_control_lock_unavailable",
+            })
+            raise ServiceControlError("service_control_lock_unavailable") from exc
+        stopped = False
+        started_at = datetime.now(timezone.utc).isoformat()
+        try:
+            before_services = self.require_services(expected_running=True)
+            before = self.container_states()
+            self.probe_application()
+            db_entries = [self.backup_database(backup, name) for name in DATABASES]
+            manifest = {
+                "schema": 1,
+                "operation": "pause-production",
+                "run_id": run_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "database_scope": sorted(DATABASES),
+                "databases": db_entries,
+                "dump_contract": "mysqldump-single-transaction-gzip",
+            }
+            self.write_json_once(backup / "backup-manifest.json", manifest)
+            verified_manifest = self.verify_backup(backup, run_id)
+            if self.container_states() != before:
+                raise ServiceControlError("container_inventory_changed_during_backup")
+            self.compose("stop", "--timeout", "60", "backend")
+            stopped = True
+            self.compose("stop", "--timeout", "60", "mysql")
+            after_services = self.require_services(expected_running=False)
+            after = self.container_states()
+            if not compare_protected_states(before, after):
+                raise ServiceControlError("protected_container_state_changed")
+            result = {
+                "schema": 1,
+                "operation": "pause-production",
+                "run_id": run_id,
+                "created_at": started_at,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "accepted": True,
+                "stopped_services": ["backend", "mysql"],
+                "before_services": before_services,
+                "after_services": after_services,
+                "container_states_before": before,
+                "container_states_after": after,
+                "protected_container_states_unchanged": True,
+                "backup_manifest_sha256": sha256_file(backup / "backup-manifest.json"),
+                "backup_databases": verified_manifest["database_scope"],
+            }
+            self.write_json_once(evidence / "pause.json", result)
+            return result
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ServiceControlError) else "service_pause_failed"
+            if not stopped:
+                try:
+                    stopped = not all(
+                        self.inspect_container(name)["running"] for name in TARGETS
+                    )
+                except Exception:
+                    stopped = True
+            if stopped:
+                try:
+                    self.compose("start", "mysql")
+                    self.wait_mysql_healthy()
+                    self.compose("start", "backend")
+                    probe = self.probe_application()
+                except Exception:
+                    probe = {"recovery_error": "service_recovery_failed"}
+                failure = {"operation": "pause-production", "run_id": run_id,
+                           "error_code": code, "recovery": probe}
+            else:
+                failure = {"operation": "pause-production", "run_id": run_id, "error_code": code}
+            self.write_json_once(evidence / "failure.json", failure)
+            raise ServiceControlError(code) from exc
+
+    def resume(self, run_id: str, pause_run_id: str, confirmation: str) -> dict:
+        validate_run_id(run_id)
+        validate_run_id(pause_run_id)
+        if run_id == pause_run_id:
+            raise ServiceControlError("resume_run_id_must_be_new")
+        if confirmation != "confirm-resume-production":
+            raise ServiceControlError("invalid_confirmation")
+        evidence, backup = self.prepare_dirs("resume-production", run_id)
+        pause_evidence = self.evidence_root / "pause-production" / pause_run_id / "pause.json"
+        try:
+            lock = self.acquire_lock()
+        except BlockingIOError as exc:
+            self.write_json_once(evidence / "failure.json", {
+                "operation": "resume-production", "run_id": run_id,
+                "pause_run_id": pause_run_id,
+                "error_code": "another_maintenance_run_active",
+            })
+            raise ServiceControlError("another_maintenance_run_active") from exc
+        except OSError as exc:
+            self.write_json_once(evidence / "failure.json", {
+                "operation": "resume-production", "run_id": run_id,
+                "pause_run_id": pause_run_id,
+                "error_code": "service_control_lock_unavailable",
+            })
+            raise ServiceControlError("service_control_lock_unavailable") from exc
+        started_at = datetime.now(timezone.utc).isoformat()
+        try:
+            before = self.container_states()
+            try:
+                paused = json.loads(pause_evidence.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ServiceControlError("successful_pause_evidence_missing") from exc
+            if paused.get("accepted") is not True or paused.get("run_id") != pause_run_id:
+                raise ServiceControlError("successful_pause_evidence_invalid")
+            pause_backup = self.backup_root / f"maintenance-pause-production-{pause_run_id}"
+            manifest = self.verify_backup(pause_backup, pause_run_id, require_fresh=False)
+            if sha256_file(pause_backup / "backup-manifest.json") != paused.get("backup_manifest_sha256"):
+                raise ServiceControlError("pause_backup_evidence_mismatch")
+            current_services = {name: self.inspect_container(name) for name in sorted(TARGETS)}
+            if any(item["state"] not in {"running", "exited"} for item in current_services.values()):
+                raise ServiceControlError("production_service_state_unexpected")
+            if current_services["binhu-mysql"]["running"] and current_services["binhu-mysql"]["health"] != "healthy":
+                raise ServiceControlError("production_mysql_unhealthy")
+            self.compose("start", "mysql")
+            mysql = self.wait_mysql_healthy()
+            self.compose("start", "backend")
+            deadline = self.monotonic() + 180
+            probe = None
+            while self.monotonic() < deadline:
+                try:
+                    probe = self.probe_application()
+                    break
+                except ServiceControlError:
+                    self.sleep(3)
+            if probe is None:
+                raise ServiceControlError("production_application_start_timeout")
+            after_services = self.require_services(expected_running=True)
+            after = self.container_states()
+            if not compare_protected_states(before, after):
+                raise ServiceControlError("protected_container_state_changed")
+            result = {
+                "schema": 1,
+                "operation": "resume-production",
+                "run_id": run_id,
+                "pause_run_id": pause_run_id,
+                "created_at": started_at,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "accepted": True,
+                "started_services": ["mysql", "backend"],
+                "mysql_health": mysql["health"],
+                "after_services": after_services,
+                "container_states_before": before,
+                "container_states_after": after,
+                "probes": probe,
+                "protected_container_states_unchanged": True,
+                "backup_database_count": len(manifest["database_scope"]),
+            }
+            self.write_json_once(evidence / "resume.json", result)
+            return result
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ServiceControlError) else "service_resume_failed"
+            self.write_json_once(evidence / "failure.json", {
+                "operation": "resume-production", "run_id": run_id,
+                "pause_run_id": pause_run_id, "error_code": code,
+            })
+            raise ServiceControlError(code) from exc
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 4:
+        print("fixed service control requires operation, run id, pause run id and confirmation", file=sys.stderr)
+        return 64
+    operation, run_id, pause_run_id, confirmation = argv
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        print(json.dumps({"accepted": False, "error_code": "root_required"}, sort_keys=True))
+        return 1
+    controller = ProductionServiceControl()
+    try:
+        if operation == "pause-production":
+            if pause_run_id:
+                raise ServiceControlError("invalid_pause_contract")
+            result = controller.pause(run_id, confirmation)
+        elif operation == "resume-production":
+            result = controller.resume(run_id, pause_run_id, confirmation)
+        else:
+            raise ServiceControlError("unsupported_operation")
+    except ServiceControlError as exc:
+        print(json.dumps({"accepted": False, "error_code": exc.code}, sort_keys=True))
+        return 1
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

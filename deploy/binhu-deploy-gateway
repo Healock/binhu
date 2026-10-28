@@ -18,7 +18,7 @@ if [[ "${command_parts[0]:-}" == "production-maintenance" ]]; then
   readonly maintenance_phase="${command_parts[2]}"
   readonly maintenance_run_id="${command_parts[3]}"
   case "$maintenance_operation" in
-    internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery) ;;
+    internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery|pause-production|resume-production) ;;
     *) echo "Invalid production-maintenance operation." >&2; exit 64 ;;
   esac
   case "$maintenance_phase" in
@@ -28,7 +28,21 @@ if [[ "${command_parts[0]:-}" == "production-maintenance" ]]; then
   [[ "$maintenance_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || {
     echo "Invalid production-maintenance run id." >&2; exit 64;
   }
-  if [[ "$maintenance_operation" == "registry-property-identity" ]]; then
+  if [[ "$maintenance_operation" == "pause-production" || "$maintenance_operation" == "resume-production" ]]; then
+    [[ "$maintenance_phase" == execute ]] || {
+      echo "Production service control requires execute, run id and confirmation." >&2; exit 64;
+    }
+    if [[ "$maintenance_operation" == "pause-production" ]]; then
+      [[ "${#command_parts[@]}" -eq 5 && "${command_parts[4]}" == confirm-pause-production ]] || {
+        echo "Invalid production pause contract." >&2; exit 64;
+      }
+    else
+      [[ "${#command_parts[@]}" -eq 6 && "${command_parts[4]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ && \
+        "${command_parts[4]}" != "$maintenance_run_id" && "${command_parts[5]}" == confirm-resume-production ]] || {
+        echo "Invalid production resume contract." >&2; exit 64;
+      }
+    fi
+  elif [[ "$maintenance_operation" == "registry-property-identity" ]]; then
     valid_property_id() {
       [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]] &&
         python3 -c 'import sys; sys.exit(0 if int(sys.argv[1]) <= 9223372036854775807 else 1)' "$1"
