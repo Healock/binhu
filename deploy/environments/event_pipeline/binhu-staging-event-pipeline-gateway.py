@@ -30,6 +30,8 @@ RETIRE_TARGET = "STG-20261007-03"
 RETIRE_SUCCESSOR = "STG-20261027-02"
 FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})
 FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
+MEASURE_DIAGNOSTIC_RUN_ID = "STG-20261028-01"
+MEASURE_EVIDENCE_RE = re.compile(r"^measure-[0-9a-f]{16}\.json$")
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 STAGING_CORE = (
     "binhu-staging-backend-1", "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
@@ -309,6 +311,73 @@ def status() -> None:
         print(current.read_text(encoding="utf-8"))
     else:
         print(json.dumps({"environment": "staging", "status": "empty"}))
+
+
+def diagnose_measure_failure(run_id: str) -> None:
+    """Read the one approved measure failure and emit only its safe fields."""
+    if run_id != MEASURE_DIAGNOSTIC_RUN_ID:
+        fail("measure diagnostic target is not approved")
+    evidence_root = STATE / "evidence" / run_id
+    if (STATE.is_symlink() or (STATE / "evidence").is_symlink()
+            or evidence_root.is_symlink() or not evidence_root.is_dir()):
+        fail("measure failure evidence is unavailable")
+    paths = sorted(evidence_root.glob("measure-*.json"))
+    if not paths or len(paths) > 16:
+        fail("measure failure evidence count is invalid")
+
+    records = []
+    for path in paths:
+        if (not MEASURE_EVIDENCE_RE.fullmatch(path.name) or path.is_symlink()
+                or not path.is_file() or path.stat().st_size > 4096):
+            fail("measure failure evidence file is invalid")
+        raw = path.read_bytes()
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fail("measure failure evidence is invalid")
+        if (not isinstance(payload, dict) or payload.get("environment") != "staging"
+                or payload.get("run_id") != run_id or payload.get("phase") != "measure"
+                or payload.get("status") != "failed"):
+            fail("measure failure evidence identity is invalid")
+
+        error_type = payload.get("error_type")
+        error_code = payload.get("error_code")
+        if (not isinstance(error_type, str) or error_type not in SAFE_EXCEPTION_TYPES
+                or not isinstance(error_code, str)
+                or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", error_code)):
+            fail("measure failure evidence fields are invalid")
+        record = {
+            "evidence_file": path.name,
+            "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+            "error_type": error_type, "error_code": error_code,
+        }
+        code = payload.get("diagnostic_code")
+        if code is not None:
+            if not isinstance(code, str) or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", code):
+                fail("measure failure evidence fields are invalid")
+            record["diagnostic_code"] = code
+        for key in ("child_return_code", "stdout_bytes", "stderr_bytes"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    fail("measure failure evidence fields are invalid")
+                if key.endswith("_bytes") and not 0 <= value <= 10_000_000:
+                    fail("measure failure evidence fields are invalid")
+                if key == "child_return_code" and not -255 <= value <= 255:
+                    fail("measure failure evidence fields are invalid")
+                record[key] = value
+        for key in ("stdout_sha256", "stderr_sha256"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, str) or not SHA_RE.fullmatch(value):
+                    fail("measure failure evidence fields are invalid")
+                record[key] = value
+        records.append(record)
+
+    print(json.dumps({
+        "environment": "staging", "run_id": run_id, "phase": "measure",
+        "status": "failed", "failures": records,
+    }, sort_keys=True))
 
 
 def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
@@ -896,6 +965,8 @@ def main() -> None:
         fail("root execution required")
     if len(sys.argv) == 2 and sys.argv[1] == "status":
         status(); return
+    if len(sys.argv) == 3 and sys.argv[1] == "diagnose-measure":
+        diagnose_measure_failure(sys.argv[2]); return
     if len(sys.argv) == 6 and sys.argv[1] == "prepare":
         prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]); return
     if len(sys.argv) == 3 and sys.argv[1] in {"measure", "apply", "switch", "rollback"}:

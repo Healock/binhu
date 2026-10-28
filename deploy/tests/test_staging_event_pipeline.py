@@ -35,6 +35,64 @@ def images():
 
 
 class StagingGatewayDiagnosticTests(unittest.TestCase):
+    def test_measure_failure_reader_emits_only_fixed_fields_without_writing(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-01"
+            evidence.mkdir(parents=True)
+            source = evidence / "measure-0123456789abcdef.json"
+            source.write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261028-01",
+                "phase": "measure", "status": "failed", "error_type": "ValueError",
+                "error_code": "staging_insufficient_memory",
+                "diagnostic_code": "staging_insufficient_memory",
+                "child_return_code": 1, "stdout_sha256": "a" * 64,
+                "stderr_sha256": "b" * 64, "stdout_bytes": 23, "stderr_bytes": 41,
+                "stdout": "secret output", "stderr": "SELECT sensitive_value",
+                "password": "must-not-leak", "path": "/private/server/path",
+            }), encoding="utf-8")
+            original = source.read_bytes()
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_measure_failure("STG-20261028-01")
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "failed")
+            record = result["failures"][0]
+            self.assertEqual(record["error_code"], "staging_insufficient_memory")
+            self.assertEqual(record["child_return_code"], 1)
+            self.assertEqual(record["evidence_sha256"], hashlib.sha256(original).hexdigest())
+            for private in ("secret output", "sensitive_value", "must-not-leak", "/private/"):
+                self.assertNotIn(private, output.getvalue())
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_measure_failure_reader_rejects_unapproved_run_id(self):
+        output = StringIO()
+        with (
+            redirect_stdout(output), self.assertRaises(SystemExit) as raised,
+        ):
+            staging_gateway.diagnose_measure_failure(RUN_ID)
+        self.assertIn("measure diagnostic target is not approved", str(raised.exception))
+        self.assertEqual(output.getvalue(), "")
+
+    def test_measure_failure_reader_rejects_mismatched_evidence_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-01"
+            evidence.mkdir(parents=True)
+            (evidence / "measure-0123456789abcdef.json").write_text(json.dumps({
+                "environment": "production", "run_id": "STG-20261028-01",
+                "phase": "measure", "status": "failed", "error_type": "ValueError",
+                "error_code": "staging_measure_failed",
+            }), encoding="utf-8")
+            with patch.object(staging_gateway, "STATE", state):
+                with self.assertRaisesRegex(SystemExit, "measure failure evidence identity is invalid"):
+                    staging_gateway.diagnose_measure_failure("STG-20261028-01")
+
     def test_child_payload_accepts_prefixed_json_without_forwarding_text(self):
         payloads = staging_gateway._child_payloads(
             'warning {"environment":"staging","run_id":"STG-20260920-01",'
@@ -752,7 +810,10 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('sys.argv[1] in {"measure", "apply", "switch", "rollback"}', gateway)
         self.assertIn('sys.argv[1] == "run"', gateway)
         self.assertIn('sys.argv[1] == "verify"', gateway)
+        self.assertIn('sys.argv[1] == "diagnose-measure"', gateway)
         self.assertIn("measure|apply|switch|run|rollback", wrapper)
+        self.assertIn("diagnose-measure)", wrapper)
+        self.assertIn("diagnose-measure STG-20261028-01", installer)
         self.assertIn("sample)", wrapper)
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
@@ -825,6 +886,16 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         ):
             self.assertIn(marker, workflow)
         self.assertNotIn('cat "$archive" | ssh', workflow)
+
+    def test_measure_diagnostic_action_checks_restricted_key_and_fixed_run(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
+        self.assertIn("diagnose-measure", workflow)
+        self.assertIn("BINHU_STAGING_EVENT_PIPELINE_SSH_KEY", workflow)
+        self.assertIn('"${ssh_cmd[@]}" status', workflow)
+        self.assertIn('"diagnose-measure $RUN_ID"', workflow)
+        self.assertIn("RUN_ID\" == 'STG-20261028-01'", workflow)
+        self.assertIn("staging_pipeline_ssh_authentication=passed", workflow)
 
     def test_schema_registry_preload_classifies_fixed_docker_errors(self):
         self.assertEqual(
