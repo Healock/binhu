@@ -41,7 +41,8 @@ Staging 身份，再读取该运行已有的 `measure-<hash>.json` 失败证据�
 
 `diagnose-prepare` 同样使用受限 Staging deploy key 和固定 `status` 身份检查，只允许读取
 `STG-20261028-02` 的 prepare 失败元数据。prepare 的网关级失败记录固定错误类别、阶段、退出码及
-stdout/stderr 哈希；子进程输出仅保存哈希和字节数。诊断只输出候选是否存在、失败数量及白名单字段，
+stdout/stderr 哈希；子进程输出仅保存哈希和字节数。诊断只输出候选路径类型（missing/directory/file/other）、
+失败数量及白名单字段，
 不读取或回显原始 stdout/stderr、异常正文、配置、凭据或任意路径，也不会重跑 prepare。
 
 0. 从已经合并到 `main` 的提交触发 `Prepare Dev event pipeline` 工作流，传入新的

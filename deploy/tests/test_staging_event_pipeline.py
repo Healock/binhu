@@ -62,6 +62,7 @@ class StagingGatewayDiagnosticTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertEqual(result["status"], "failed")
             self.assertFalse(result["candidate_present"])
+            self.assertEqual(result["candidate_entry"], "missing")
             record = result["failures"][0]
             self.assertEqual(record["failure_stage"], "gateway")
             self.assertEqual(record["exit_code"], 1)
@@ -83,6 +84,7 @@ class StagingGatewayDiagnosticTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertEqual(result["status"], "evidence_missing")
             self.assertEqual(result["failure_count"], 0)
+            self.assertEqual(result["candidate_entry"], "missing")
 
         with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as raised:
             staging_gateway.diagnose_prepare_failure(RUN_ID)
@@ -1014,6 +1016,12 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"diagnose-prepare $RUN_ID"', workflow)
         self.assertIn('RUN_ID" == \'STG-20261028-02\'', workflow)
         self.assertIn("failure_count", workflow)
+
+    def test_staging_deploy_workflow_returns_success_after_non_apply_actions(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "deploy-staging-event-pipeline.yml").read_text(encoding="utf-8")
+        self.assertIn('if [[ "$ACTION" == apply ]]; then', workflow)
+        self.assertNotIn('[[ "$ACTION" == apply ]] && "${ssh_cmd[@]}"', workflow)
 
     def test_schema_registry_preload_classifies_fixed_docker_errors(self):
         self.assertEqual(
