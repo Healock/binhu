@@ -23,6 +23,11 @@ if [[ "${command_parts[0]:-}" == "production-maintenance" ]]; then
   esac
   case "$maintenance_phase" in
     measure|backup|apply|verify|rollback) ;;
+    execute)
+      [[ "$maintenance_operation" == "pause-production" || "$maintenance_operation" == "resume-production" ]] || {
+        echo "Invalid production-maintenance phase." >&2; exit 64;
+      }
+      ;;
     *) echo "Invalid production-maintenance phase." >&2; exit 64 ;;
   esac
   [[ "$maintenance_run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || {
