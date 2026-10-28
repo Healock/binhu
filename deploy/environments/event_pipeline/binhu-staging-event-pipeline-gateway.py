@@ -23,6 +23,7 @@ SAFE_EXCEPTION_TYPES = frozenset({
     "ModuleNotFoundError", "ImportError", "SyntaxError", "FileNotFoundError",
     "PermissionError", "TimeoutExpired", "CalledProcessError", "ValueError",
     "RuntimeError", "OSError", "KeyError", "TypeError", "ChildProcessError",
+    "SystemExit", "TarError",
 })
 MAX_BYTES = 128 * 1024 * 1024
 MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"})
@@ -32,6 +33,8 @@ FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})
 FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
 MEASURE_DIAGNOSTIC_RUN_ID = "STG-20261028-01"
 MEASURE_EVIDENCE_RE = re.compile(r"^measure-[0-9a-f]{16}\.json$")
+PREPARE_DIAGNOSTIC_RUN_ID = "STG-20261028-02"
+PREPARE_EVIDENCE_RE = re.compile(r"^prepare-(?:gateway-)?[0-9a-f]{16}\.json$")
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 STAGING_CORE = (
     "binhu-staging-backend-1", "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
@@ -380,21 +383,159 @@ def diagnose_measure_failure(run_id: str) -> None:
     }, sort_keys=True))
 
 
-def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
-    if not RUN_RE.fullmatch(run_id) or not COMMIT_RE.fullmatch(commit):
-        fail("prepare identity invalid")
-    target = CANDIDATES / run_id
-    if target.exists() or target.is_symlink():
-        fail("run id already exists")
-    target.mkdir(mode=0o700, parents=True)
+def diagnose_prepare_failure(run_id: str) -> None:
+    """Read only the approved run's fixed prepare failure metadata."""
+    if run_id != PREPARE_DIAGNOSTIC_RUN_ID:
+        fail("prepare diagnostic target is not approved")
+
+    candidate = CANDIDATES / run_id
+    if (STATE.is_symlink() or CANDIDATES.is_symlink() or candidate.is_symlink()):
+        fail("prepare diagnostic target is unsafe")
+    candidate_present = candidate.is_dir()
+
+    evidence_root = STATE / "evidence" / run_id
+    if (STATE.is_symlink() or (STATE / "evidence").is_symlink()
+            or evidence_root.is_symlink()):
+        fail("prepare failure evidence is unsafe")
+    paths = sorted(evidence_root.glob("prepare-*.json")) if evidence_root.is_dir() else []
+    if len(paths) > 16:
+        fail("prepare failure evidence count is invalid")
+
+    records = []
+    for path in paths:
+        if (not PREPARE_EVIDENCE_RE.fullmatch(path.name) or path.is_symlink()
+                or not path.is_file() or path.stat().st_size > 4096):
+            fail("prepare failure evidence file is invalid")
+        raw = path.read_bytes()
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fail("prepare failure evidence is invalid")
+        if (not isinstance(payload, dict) or payload.get("environment") != "staging"
+                or payload.get("run_id") != run_id or payload.get("phase") != "prepare"
+                or payload.get("status") != "failed"):
+            fail("prepare failure evidence identity is invalid")
+
+        error_type = payload.get("error_type")
+        error_code = payload.get("error_code")
+        if (not isinstance(error_type, str) or error_type not in SAFE_EXCEPTION_TYPES
+                or not isinstance(error_code, str)
+                or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", error_code)):
+            fail("prepare failure evidence fields are invalid")
+        failure_stage = payload.get("failure_stage", "child" if "child_return_code" in payload else "gateway")
+        if failure_stage not in {"gateway", "child"}:
+            fail("prepare failure evidence fields are invalid")
+        record = {
+            "evidence_file": path.name,
+            "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+            "failure_stage": failure_stage,
+            "error_type": error_type,
+            "error_code": error_code,
+        }
+        exit_code = payload.get("exit_code", payload.get("child_return_code", 1))
+        if (not isinstance(exit_code, int) or isinstance(exit_code, bool)
+                or not -255 <= exit_code <= 255):
+            fail("prepare failure evidence fields are invalid")
+        record["exit_code"] = exit_code
+        for key in ("stdout_sha256", "stderr_sha256"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, str) or not SHA_RE.fullmatch(value):
+                    fail("prepare failure evidence fields are invalid")
+                record[key] = value
+        for key in ("stdout_bytes", "stderr_bytes"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 10_000_000:
+                    fail("prepare failure evidence fields are invalid")
+                record[key] = value
+        records.append(record)
+
+    status_value = "failed" if records else ("no_failure_evidence" if candidate_present else "evidence_missing")
+    print(json.dumps({
+        "environment": "staging", "run_id": run_id, "phase": "prepare",
+        "status": status_value, "candidate_present": candidate_present,
+        "failure_count": len(records), "failures": records,
+    }, sort_keys=True))
+
+
+def _prepare_failure_code(error: BaseException) -> str:
+    if isinstance(error, SystemExit):
+        message = str(error)
+        prefix = "Staging event-pipeline gateway refused: "
+        if message.startswith(prefix):
+            message = message[len(prefix):]
+        return {
+            "prepare identity invalid": "staging_prepare_identity_invalid",
+            "run id already exists": "staging_prepare_run_id_exists",
+            "candidate size or digest invalid": "staging_candidate_size_or_digest_invalid",
+            "candidate upload truncated": "staging_candidate_upload_truncated",
+            "candidate bundle hash mismatch": "staging_candidate_bundle_hash_mismatch",
+            "candidate contents are not fixed": "staging_candidate_contents_invalid",
+            "candidate manifest invalid": "staging_candidate_manifest_invalid",
+            "candidate identity mismatch": "staging_candidate_identity_mismatch",
+            "candidate checksums invalid": "staging_candidate_checksums_invalid",
+            "candidate source entry invalid": "staging_candidate_source_invalid",
+        }.get(message, "staging_prepare_gateway_rejected")
+    if isinstance(error, tarfile.TarError):
+        return "staging_candidate_archive_invalid"
+    if isinstance(error, (OSError, PermissionError)):
+        return "staging_prepare_io_failed"
+    if isinstance(error, subprocess.CalledProcessError):
+        return "staging_prepare_child_failed"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "staging_prepare_child_timeout"
+    return "staging_prepare_internal_error"
+
+
+def _record_prepare_failure(run_id: str, error: BaseException) -> None:
+    if not RUN_RE.fullmatch(run_id):
+        return
     try:
+        evidence = STATE / "evidence" / run_id
+        evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+        error_code = _prepare_failure_code(error)
+        material = f"staging\0{run_id}\0prepare\0{type(error).__name__}\0{error_code}"
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+        target = evidence / f"prepare-gateway-{digest}.json"
+        if target.exists() or target.is_symlink():
+            return
+        error_type = type(error).__name__
+        if error_type not in SAFE_EXCEPTION_TYPES:
+            error_type = "RuntimeError"
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        payload = {
+            "environment": "staging", "run_id": run_id, "phase": "prepare",
+            "status": "failed", "failure_stage": "gateway",
+            "error_type": error_type, "error_code": error_code, "exit_code": 1,
+            "stdout_sha256": empty_hash, "stderr_sha256": empty_hash,
+            "stdout_bytes": 0, "stderr_bytes": 0,
+        }
+        target.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        target.chmod(0o600)
+    except (OSError, ValueError):
+        return
+
+
+def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
+    target = CANDIDATES / run_id
+    created_target = False
+    try:
+        if not RUN_RE.fullmatch(run_id) or not COMMIT_RE.fullmatch(commit):
+            fail("prepare identity invalid")
+        if target.exists() or target.is_symlink():
+            fail("run id already exists")
+        target.mkdir(mode=0o700, parents=True)
+        created_target = True
         bundle = target / "candidate.tar.gz"
         read_bundle(int(size_text), digest, bundle)
         manifest = extract_candidate(bundle, target, run_id, commit)
         run_module(run_id, "prepare", manifest)
         print(json.dumps({"environment": "staging", "run_id": run_id, "prepared": True}))
-    except BaseException:
-        shutil.rmtree(target, ignore_errors=True)
+    except BaseException as error:
+        _record_prepare_failure(run_id, error)
+        if created_target:
+            shutil.rmtree(target, ignore_errors=True)
         raise
 
 
@@ -967,6 +1108,8 @@ def main() -> None:
         status(); return
     if len(sys.argv) == 3 and sys.argv[1] == "diagnose-measure":
         diagnose_measure_failure(sys.argv[2]); return
+    if len(sys.argv) == 3 and sys.argv[1] == "diagnose-prepare":
+        diagnose_prepare_failure(sys.argv[2]); return
     if len(sys.argv) == 6 and sys.argv[1] == "prepare":
         prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]); return
     if len(sys.argv) == 3 and sys.argv[1] in {"measure", "apply", "switch", "rollback"}:

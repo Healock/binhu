@@ -8,9 +8,9 @@ on:
         required: true
         default: install
         type: choice
-        options: [install, cleanup-unused-networks, measure, apply, diagnose, diagnose-measure, diagnose-runtime, diagnose-apply, diagnose-images, diagnose-preload, preload-schema-registry]
+        options: [install, cleanup-unused-networks, measure, apply, diagnose, diagnose-measure, diagnose-prepare, diagnose-runtime, diagnose-apply, diagnose-images, diagnose-preload, preload-schema-registry]
       run_id:
-        description: Existing STG run for the read-only measure diagnostic
+        description: Existing fixed STG run for a read-only diagnostic
         required: false
         default: ''
         type: string
@@ -121,6 +121,31 @@ jobs:
           diagnosis="$("${ssh_cmd[@]}" "diagnose-measure $RUN_ID")"
           printf '%s' "$diagnosis" | jq -e '.environment == "staging" and .run_id == "STG-20261028-01" and .phase == "measure" and .status == "failed" and (.failures | length > 0)' >/dev/null
           printf '%s\n' "$diagnosis" | jq -c '{environment,run_id,phase,status,failures:[.failures[]|{evidence_file,evidence_sha256,error_type,error_code,diagnostic_code,child_return_code,stdout_sha256,stderr_sha256,stdout_bytes,stderr_bytes}]}'
+      - name: Verify Staging deploy-key authentication and read fixed prepare failure
+        if: inputs.action == 'diagnose-prepare'
+        shell: bash
+        env:
+          HOST: ${{ secrets.BINHU_STAGING_HOST }}
+          PORT: ${{ secrets.BINHU_STAGING_PORT }}
+          PIPELINE_KEY: ${{ secrets.BINHU_STAGING_EVENT_PIPELINE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RUN_ID" == 'STG-20261028-02' ]]
+          [[ -n "$HOST" && "$PORT" =~ ^[0-9]+$ && -n "$PIPELINE_KEY" && -n "$KNOWN_HOSTS" ]]
+          install -d -m 700 "$RUNNER_TEMP/staging-ssh"
+          printf '%s\n' "$PIPELINE_KEY" > "$RUNNER_TEMP/staging-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/staging-ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/staging-ssh/"*
+          trap 'rm -f "$RUNNER_TEMP/staging-ssh/key" "$RUNNER_TEMP/staging-ssh/known_hosts"' EXIT
+          ssh_cmd=(ssh -p "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" "binhu-staging-deploy@$HOST")
+          status_output="$("${ssh_cmd[@]}" status)"
+          printf '%s' "$status_output" | jq -e '.environment == "staging"' >/dev/null
+          echo 'staging_pipeline_ssh_authentication=passed'
+          diagnosis="$("${ssh_cmd[@]}" "diagnose-prepare $RUN_ID")"
+          printf '%s' "$diagnosis" | jq -e '.environment == "staging" and .run_id == "STG-20261028-02" and .phase == "prepare" and (.status == "failed" or .status == "evidence_missing" or .status == "no_failure_evidence") and (.failures | length <= 16)' >/dev/null
+          printf '%s\n' "$diagnosis" | jq -c '{environment,run_id,phase,status,candidate_present,failure_count,failures:[.failures[]|{evidence_file,evidence_sha256,failure_stage,error_type,error_code,exit_code,stdout_sha256,stderr_sha256,stdout_bytes,stderr_bytes}]}'
       - name: Provision missing Staging pipeline credentials
         if: inputs.action == 'install'
         shell: bash

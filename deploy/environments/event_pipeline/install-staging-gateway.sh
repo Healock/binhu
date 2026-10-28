@@ -31,6 +31,7 @@ chmod 0600 /home/binhu-staging-deploy/.ssh/authorized_keys
 cat > /etc/sudoers.d/binhu-staging-event-pipeline <<'EOF'
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py status
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py diagnose-measure STG-20261028-01
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py diagnose-prepare STG-20261028-02
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py prepare *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py measure *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py apply *
