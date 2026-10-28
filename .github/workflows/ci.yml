@@ -84,6 +84,8 @@ jobs:
           ENCRYPTION_KEY: test-encryption-key
         run: python -m pytest tests/test_process_engine_mysql_integration.py -q
         working-directory: backend
+      - name: Install Staging load test dependencies
+        run: python -m pip install --disable-pip-version-check -r load-tests/requirements.txt
       - name: Run Staging load profile contracts
         env:
           PYTHONPATH: load-tests
