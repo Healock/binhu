@@ -958,16 +958,21 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "staging_retirement_failure_evidence_missing"):
                     staging_gateway._failed_retirement_evidence("STG-20261027-05")
 
-    def test_realistic_load_workflow_runs_75_users_and_keeps_production_outside_gateway(self):
+    def test_realistic_load_workflow_runs_fixed_profiles_and_keeps_production_outside_gateway(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
                     "run-staging-realistic-load.yml").read_text(encoding="utf-8")
         for marker in (
-            '"run $RUN_ID"', '"sample $RUN_ID $monitor_start_epoch"', "--users 75", "--run-time 30m",
+            '"run $RUN_ID"', '"sample $RUN_ID $monitor_start_epoch"',
+            "options: [low20, full75]", '--users "$users"', '--spawn-rate "$spawn_rate"',
+            '--run-time "${duration_seconds}s"',
             "/staging/api/query/", "staging-samples.jsonl", "derived_queue",
             "waive_4gib_memory_gate", "default: false", "staging.load_monitor observe",
             "production_stop_thresholds", "health_failures",
         ):
             self.assertIn(marker, workflow)
+        profile = (Path(__file__).parents[2] / "load-tests" / "staging" / "profile.py").read_text(encoding="utf-8")
+        self.assertIn('"low20": LoadProfile(', profile)
+        self.assertIn("name=\"low20\", users=20, spawn_rate=2, duration_seconds=600", profile)
         self.assertNotIn("BINHU_DEPLOY_SSH_KEY", workflow)
         self.assertNotIn("binhu-deploy@", workflow)
 
