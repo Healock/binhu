@@ -21,7 +21,10 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_BYTES = 128 * 1024 * 1024
 MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"})
-RETIRE_TARGET = "STG-20261007-03"
+# Retirement is deliberately limited to the two stale, approved Staging runs.
+# Keep this allowlist closed; the SSH wrapper may accept the generic run-id
+# shape, but the root gateway must enforce the actual authorization boundary.
+RETIRE_TARGETS = frozenset({"STG-20261027-07", "STG-20261028-03"})
 RETIRE_SUCCESSOR = "STG-20261027-02"
 FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})
 FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
@@ -473,11 +476,13 @@ def _retirement_file(path: Path) -> dict:
 def _retirement_identity(manifest: dict, current: dict, spec: dict, run_id: str) -> tuple[Path, str]:
     project = "binhu-staging-event-pipeline-" + run_id.lower()
     root = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
-    if (run_id != RETIRE_TARGET or manifest.get("environment") != "staging"
+    current_run = current.get("run_id")
+    if (run_id not in RETIRE_TARGETS or manifest.get("environment") != "staging"
             or manifest.get("run_id") != run_id or manifest.get("project") != project
             or manifest.get("production_data") not in (None, False)
-            or current.get("environment") != "staging" or current.get("run_id") != run_id
-            or current.get("project") != project or current.get("started") is not True
+            or current.get("environment") != "staging" or current_run not in RETIRE_TARGETS
+            or (current_run == run_id and current.get("project") != project)
+            or current.get("started") is not True
             or current.get("acceptance") == "passed"):
         raise ValueError("staging_retirement_run_identity_mismatch")
     architecture = current.get("architecture", manifest.get("architecture"))
@@ -638,11 +643,28 @@ def _retirement_snapshot(run_id: str, project: str, *, successor: str = RETIRE_S
     members = {entry.get("Name") for entry in (network.get("Containers") or {}).values()}
     expected_members = {
         "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
-        f"binhu-staging-event-pipeline-{run_id.lower()}-business-bridge-1",
-        f"binhu-staging-event-pipeline-{run_id.lower()}-backend-outbox-relay-1",
-        f"binhu-staging-event-pipeline-{successor.lower()}-business-bridge-1",
-        f"binhu-staging-event-pipeline-{successor.lower()}-backend-outbox-relay-1",
     }
+    if run_id in RETIRE_TARGETS:
+        # The two approved runs may be retired in either order. Require both
+        # connectors for every live approved peer and reject foreign members.
+        for approved_run in RETIRE_TARGETS:
+            peer = {
+                f"binhu-staging-event-pipeline-{approved_run.lower()}-business-bridge-1",
+                f"binhu-staging-event-pipeline-{approved_run.lower()}-backend-outbox-relay-1",
+            }
+            present = peer & members
+            if approved_run == run_id and present != peer:
+                raise ValueError("staging_retirement_backend_network_membership_mismatch")
+            if approved_run != run_id and present not in (set(), peer):
+                raise ValueError("staging_retirement_backend_network_membership_mismatch")
+            expected_members.update(present)
+    else:
+        expected_members.update({
+            f"binhu-staging-event-pipeline-{run_id.lower()}-business-bridge-1",
+            f"binhu-staging-event-pipeline-{run_id.lower()}-backend-outbox-relay-1",
+            f"binhu-staging-event-pipeline-{successor.lower()}-business-bridge-1",
+            f"binhu-staging-event-pipeline-{successor.lower()}-backend-outbox-relay-1",
+        })
     if (network.get("Name") != BACKEND_NETWORK or network.get("Driver") != "bridge"
             or network.get("Internal") is not True or labels.get("binhu.environment") != "staging"
             or labels.get("binhu.role") != "pipeline-backend-access" or members != expected_members):
@@ -651,7 +673,11 @@ def _retirement_snapshot(run_id: str, project: str, *, successor: str = RETIRE_S
         "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
     }))
     for name, item in connectors.items():
-        expected_run = successor if successor.lower() in name else run_id
+        expected_run = next(
+            (approved_run for approved_run in RETIRE_TARGETS
+             if f"-{approved_run.lower()}-" in name),
+            successor if successor.lower() in name else run_id,
+        )
         expected_service = "business-bridge" if name.endswith("business-bridge-1") else "backend-outbox-relay"
         if (item["status"] != "running" or item["environment"] != "staging"
                 or item["run_id"] != expected_run or item["project"] != "binhu-staging-event-pipeline-" + expected_run.lower()
@@ -687,7 +713,7 @@ def _retirement_snapshot(run_id: str, project: str, *, successor: str = RETIRE_S
 
 
 def retire(run_id: str) -> None:
-    if run_id != RETIRE_TARGET:
+    if run_id not in RETIRE_TARGETS:
         fail("retirement target is not approved")
     candidate = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
     current_path = STATE / "current.json"
@@ -716,16 +742,17 @@ def retire(run_id: str) -> None:
     try:
         _retirement_run(_retirement_command(root), timeout=300)
         after = _retirement_snapshot_after(run_id, project, before)
-        current.update({
-            "lifecycle_status": "retired", "retired_at": datetime.now(timezone.utc).isoformat(),
-            "retirement_evidence": str(evidence),
-        })
-        staged = current_path.with_name("current.json.retirement-new")
-        if staged.exists() or staged.is_symlink():
-            raise ValueError("staging_retirement_state_temp_exists")
-        staged.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        staged.chmod(0o600)
-        os.replace(staged, current_path)
+        if current.get("run_id") == run_id:
+            current.update({
+                "lifecycle_status": "retired", "retired_at": datetime.now(timezone.utc).isoformat(),
+                "retirement_evidence": str(evidence),
+            })
+            staged = current_path.with_name("current.json.retirement-new")
+            if staged.exists() or staged.is_symlink():
+                raise ValueError("staging_retirement_state_temp_exists")
+            staged.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            staged.chmod(0o600)
+            os.replace(staged, current_path)
         result = {
             "environment": "staging", "run_id": run_id, "status": "retired",
             "containers_stopped": len(before["target_containers"]),
