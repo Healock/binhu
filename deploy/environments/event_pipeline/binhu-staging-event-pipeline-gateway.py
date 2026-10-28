@@ -22,6 +22,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_BYTES = 128 * 1024 * 1024
 MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"})
 # Retirement is deliberately limited to the two stale, approved Staging runs.
+# Retiring either run must leave the other run's backend connectors intact.
 # Keep this allowlist closed; the SSH wrapper may accept the generic run-id
 # shape, but the root gateway must enforce the actual authorization boundary.
 RETIRE_TARGETS = frozenset({"STG-20261027-07", "STG-20261028-03"})
