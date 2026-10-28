@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 import zipfile
 import subprocess
+from contextlib import redirect_stdout
+from io import StringIO
 
 from deploy.environments.event_pipeline import (
     staging_backend_network, staging_compose, staging_control, staging_deploy,
@@ -56,6 +58,89 @@ class StagingGatewayDiagnosticTests(unittest.TestCase):
             self.assertNotIn("sensitive", text)
             self.assertIn("stdout_sha256", text)
             self.assertIn("stderr_sha256", text)
+
+    def test_measure_child_failure_records_safe_code_and_return_code_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            safe_child = json.dumps({
+                "environment": "staging", "run_id": RUN_ID, "status": "failed",
+                "phase": "measure", "error_type": "ValueError",
+                "error_code": "staging_measure_contract_rejected",
+            })
+            error = subprocess.CalledProcessError(
+                1, ["python", "-m", "event_pipeline.staging_control"],
+                output=safe_child, stderr="SELECT sensitive_value; secret=hidden",
+            )
+            output = StringIO()
+            with patch.object(staging_gateway, "STATE", state), \
+                    patch.object(staging_gateway, "environment", return_value={}), \
+                    patch.object(staging_gateway.subprocess, "run", side_effect=error), \
+                    redirect_stdout(output), self.assertRaises(subprocess.CalledProcessError):
+                staging_gateway.run_module(RUN_ID, "measure")
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["phase"], "measure")
+            self.assertEqual(payload["error_code"], "staging_measure_contract_rejected")
+            self.assertEqual(payload["child_return_code"], 1)
+            evidence = next((state / "evidence" / RUN_ID).glob("*.json"))
+            recorded = json.loads(evidence.read_text(encoding="utf-8"))
+            text = evidence.read_text(encoding="utf-8")
+            self.assertEqual(recorded["child_return_code"], 1)
+            self.assertEqual(recorded["diagnostic_code"], "staging_measure_contract_rejected")
+            self.assertNotIn("SELECT", text)
+            self.assertNotIn("sensitive_value", text)
+            self.assertNotIn("hidden", text)
+
+    def test_module_and_path_failures_are_classified_without_raw_output(self):
+        cases = (
+            ("ModuleNotFoundError: No module named '/private/module'", "staging_module_import_failed"),
+            ("FileNotFoundError: /private/path/with-sensitive-name", "staging_required_file_missing"),
+        )
+        for stderr, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                with tempfile.TemporaryDirectory() as directory:
+                    error = subprocess.CalledProcessError(1, ["python"], stderr=stderr)
+                    output = StringIO()
+                    with patch.object(staging_gateway, "STATE", Path(directory)), \
+                            patch.object(staging_gateway, "environment", return_value={}), \
+                            patch.object(staging_gateway.subprocess, "run", side_effect=error), \
+                            redirect_stdout(output), self.assertRaises(subprocess.CalledProcessError):
+                        staging_gateway.run_module(RUN_ID, "measure")
+                    diagnostic = json.loads(output.getvalue())
+                    self.assertEqual(diagnostic["error_code"], expected_code)
+                    self.assertEqual(diagnostic["phase"], "measure")
+                    evidence = next((Path(directory) / "evidence" / RUN_ID).glob("*.json"))
+                    text = evidence.read_text(encoding="utf-8")
+                    self.assertNotIn("/private/", text)
+
+    def test_measure_failure_emits_fixed_sanitized_child_diagnostic(self):
+        output = StringIO()
+        with patch("sys.argv", ["staging_control", "measure", "--run-id", RUN_ID]), \
+                patch.object(staging_control, "measure", side_effect=ValueError("raw SQL and secret")), \
+                redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            staging_control.main()
+        self.assertEqual(raised.exception.code, 1)
+        diagnostic = json.loads(output.getvalue())
+        self.assertEqual(diagnostic, {
+            "environment": "staging", "run_id": RUN_ID, "status": "failed",
+            "phase": "measure", "error_type": "ValueError",
+            "error_code": "staging_measure_contract_rejected",
+        })
+        self.assertNotIn("raw SQL", output.getvalue())
+
+    def test_child_launch_path_failure_is_recorded_without_path_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = StringIO()
+            with patch.object(staging_gateway, "STATE", Path(directory)), \
+                    patch.object(staging_gateway, "environment", return_value={}), \
+                    patch.object(staging_gateway.subprocess, "run",
+                                 side_effect=FileNotFoundError("/private/python-with-secret")), \
+                    redirect_stdout(output), self.assertRaises(FileNotFoundError):
+                staging_gateway.run_module(RUN_ID, "measure")
+            diagnostic = json.loads(output.getvalue())
+            self.assertEqual(diagnostic["error_type"], "FileNotFoundError")
+            self.assertEqual(diagnostic["error_code"], "staging_child_launch_failed")
+            evidence = next((Path(directory) / "evidence" / RUN_ID).glob("*.json"))
+            self.assertNotIn("/private/", evidence.read_text(encoding="utf-8"))
 
     def test_failed_retirement_accepts_terminal_flink_jobs_as_safe_summaries(self):
         payload = {
@@ -681,7 +766,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"phase": phase', control)
         self.assertIn('"error_type": type(error).__name__', control)
         self.assertIn('"error_code": error_code', control)
-        self.assertIn('payload.get("status") == "failed"', gateway)
+        self.assertIn('item.get("status") == "failed"', gateway)
         self.assertIn('staging_container_conflict', control)
         self.assertIn('staging_image_missing', control)
         self.assertIn('staging_network_attachment_failed', control)
