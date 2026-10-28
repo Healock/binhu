@@ -26,7 +26,8 @@ for command_name in useradd passwd install visudo; do
   }
 done
 [[ -f "$script_dir/binhu-deploy" && -f "$script_dir/binhu-deploy-gateway" \
-  && -f "$script_dir/binhu-maintenance" ]] || {
+  && -f "$script_dir/binhu-maintenance" \
+  && -f "$script_dir/binhu-production-service-control" ]] || {
   echo "Run the installer from a complete deploy script directory." >&2
   exit 1
 }
@@ -53,6 +54,9 @@ passwd -l "$deploy_user" >/dev/null 2>&1 || true
 install -o root -g root -m 0755 "$script_dir/binhu-deploy" /usr/local/sbin/binhu-deploy
 install -o root -g root -m 0755 "$script_dir/binhu-deploy-gateway" /usr/local/bin/binhu-deploy-gateway
 install -o root -g root -m 0755 "$script_dir/binhu-maintenance" /usr/local/sbin/binhu-maintenance
+install -d -o root -g root -m 0755 /usr/local/libexec
+install -o root -g root -m 0755 "$script_dir/binhu-production-service-control" \
+  /usr/local/libexec/binhu-production-service-control
 install -d -o root -g root -m 0750 "$state_dir" "$state_dir/incoming" \
   "$state_dir/work" "$state_dir/releases" "$state_dir/history"
 install -d -o "$deploy_user" -g "$deploy_user" -m 0700 "$deploy_home/.ssh"
@@ -80,6 +84,7 @@ chmod 0440 /etc/sudoers.d/binhu-deploy
 visudo -cf /etc/sudoers.d/binhu-deploy >/dev/null
 
 restorecon -Rv "$deploy_home/.ssh" /usr/local/sbin/binhu-deploy \
-  /usr/local/sbin/binhu-maintenance /usr/local/bin/binhu-deploy-gateway 2>/dev/null || true
+  /usr/local/sbin/binhu-maintenance /usr/local/libexec/binhu-production-service-control \
+  /usr/local/bin/binhu-deploy-gateway 2>/dev/null || true
 
 echo "Binhu deployment gateway installed for ${deploy_user}."

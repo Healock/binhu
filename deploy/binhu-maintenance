@@ -22,11 +22,11 @@ operation="$1"
 phase="$2"
 run_id="$3"
 case "$operation" in
-  internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery) ;;
+  internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery|pause-production|resume-production) ;;
   *) fail "unsupported maintenance operation" ;;
 esac
 case "$phase" in
-  measure|backup|apply|verify|rollback) ;;
+  measure|backup|apply|verify|rollback|execute) ;;
   *) fail "unsupported maintenance phase" ;;
 esac
 [[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]] || fail "invalid run id"
@@ -64,6 +64,17 @@ if [[ "$operation" == registry-property-identity ]]; then
       [[ "$maintenance_actor" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]] || fail "invalid maintenance actor"
       ;;
   esac
+elif [[ "$operation" == pause-production || "$operation" == resume-production ]]; then
+  [[ "$phase" == execute ]] || fail "service control requires execute phase"
+  if [[ "$operation" == "pause-production" ]]; then
+    [[ $# -eq 4 && "$4" == confirm-pause-production ]] || fail "invalid production pause contract"
+    confirmation="$4"
+  else
+    [[ $# -eq 5 && "$4" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ && "$4" != "$run_id" && \
+      "$5" == confirm-resume-production ]] || fail "invalid production resume contract"
+    maintenance_actor="$4"
+    confirmation="$5"
+  fi
 elif [[ "$operation" == venue-photo-recovery ]]; then
   case "$phase" in
     measure|backup|verify) [[ $# -eq 3 ]] || fail "$phase takes no extra arguments" ;;
@@ -91,9 +102,19 @@ case "$operation:$phase:$confirmation" in
   registry-property-identity:apply:confirm-registry-property-identity|\
   registry-property-identity:rollback:confirm-registry-property-identity-rollback|\
   venue-photo-recovery:apply:confirm-venue-photo-recovery|\
+  pause-production:execute:confirm-pause-production|resume-production:execute:confirm-resume-production|\
   *:measure:|*:backup:|*:verify:) ;;
   *) fail "invalid confirmation for operation" ;;
 esac
+
+if [[ "$operation" == pause-production || "$operation" == resume-production ]]; then
+  [[ -x /usr/local/libexec/binhu-production-service-control ]] || fail "production service control contract is not installed"
+  export BINHU_PROJECT_DIR BINHU_MAINTENANCE_EVIDENCE_ROOT BINHU_MAINTENANCE_BACKUP_ROOT BINHU_COMPOSE_PROJECT_NAME
+  if [[ "$operation" == "pause-production" ]]; then
+    exec /usr/local/libexec/binhu-production-service-control "$operation" "$run_id" "" "$confirmation"
+  fi
+  exec /usr/local/libexec/binhu-production-service-control "$operation" "$run_id" "$maintenance_actor" "$confirmation"
+fi
 
 exec 9>"/run/lock/binhu-maintenance.lock"
 flock -n 9 || fail "another production maintenance run is active"

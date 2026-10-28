@@ -1741,16 +1741,22 @@ python -m migrations.photo_sheet_retirement verify
 
 ## Production 固定维护入口
 
-部门归位、照片退役和单组房屋户号归并都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或手工拼接命令。三项操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
+部门归位、照片退役、单组房屋户号归并，以及资源维护时短暂停启 Production Backend/MySQL，都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或手工拼接命令。各操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
 
 ```text
 production-maintenance <operation> <phase> <run-id>
 production-maintenance <operation> apply <run-id> <expected-count> <confirmation>
 production-maintenance registry-property-identity apply <run-id> <old-id> <canonical-id> <measurement-hash> confirm-registry-property-identity
 production-maintenance registry-property-identity rollback <run-id> <old-id> <canonical-id> <latest-verify-hash> confirm-registry-property-identity-rollback
+production-maintenance pause-production execute <run-id> confirm-pause-production
+production-maintenance resume-production execute <resume-run-id> <pause-run-id> confirm-resume-production
 ```
 
-允许的 `operation` 为 `internal-department-retirement`、`photo-sheet-retirement`、`registry-property-identity`。常规阶段为 `measure`、`backup`、`apply`、`verify`；`rollback` 只允许房屋身份归并使用。执行 `apply` 前必须有同一运行编号的测量和备份，脚本重新核对固定证据、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。房屋归并只接受一个旧房屋 ID、一个现行房屋 ID 和一个测量摘要，不接受候选列表、表名、SQL 或任意脚本路径。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
+允许的 `operation` 还包括 `venue-photo-recovery`、`pause-production` 和 `resume-production`。常规阶段为 `measure`、`backup`、`apply`、`verify`；`rollback` 只允许房屋身份归并使用，服务控制只接受 `execute`。执行已有数据维护操作的 `apply` 前必须有同一运行编号的测量和备份，脚本重新核对固定证据、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。房屋归并只接受一个旧房屋 ID、一个现行房屋 ID 和一个测量摘要，不接受候选列表、表名、SQL 或任意脚本路径。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
+
+Production 服务控制只允许操作固定 Compose 项目中的 `backend` 和 `mysql` 服务（容器名为 `binhu-backend`、`binhu-mysql`）。`pause-production` 会先确认两个服务正常，并检查 Production 的 bootstrap 与 health 接口，然后立即生成并校验八库 gzip 备份及 SHA-256：`OnlineData`、`OnlineDataArchive`、`daily_report`、`PlatformData`、`VisitData`、`DispatchData`、`RegistryData`、`WorkflowData`。暂停时备份清单不得超过 30 分钟。备份通过后按 Backend 在先、MySQL 在后的顺序停止服务。Redis、ops-agent、FRP/SSH、Staging、Dev、网络、卷和 checkpoint 数据不在操作目标内；脚本对比操作前后的容器 ID 与状态，任何非目标容器变化都会记为失败。
+
+`resume-production` 使用新的恢复运行编号，并通过 `pause_run_id` 精确引用暂停成功记录及其备份哈希。它先启动 MySQL 并等待健康检查通过，再启动 Backend，随后检查 `/api/health`、`/api/app/bootstrap` 返回的 Production 身份和只读 `/api/query/types` 路由。恢复失败后可用新的恢复运行编号重试；同一暂停记录仍保持不变。响应正文与凭据不会写入证据。暂停期间 Production 会中断，因此只应在批准的维护窗口执行。失败证据不可覆盖；新一轮暂停必须使用新运行编号。暂停备份作为恢复材料保留，不会自动回写数据。
 
 该入口由服务器 root 安装，不随普通应用发布自动覆盖。安装或更新时机是：对应网关/维护脚本 PR 合并、CI 通过，且生产发布前；由部署负责人执行 `deploy/install-server-deployer.sh`，先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再运行 `visudo -cf`、检查脚本 SHA-256，并使用 `status` 和一个拒绝性参数测试确认入口边界。安装完成后才允许触发维护工作流。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
 
