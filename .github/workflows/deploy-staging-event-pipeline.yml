@@ -65,5 +65,7 @@ jobs:
             cat "$bundle" | "${ssh_cmd[@]}" "prepare $RUN_ID $COMMIT $size $EXPECTED_SHA"
           fi
           [[ "$ACTION" == prepare || "$ACTION" == measure ]] && "${ssh_cmd[@]}" "measure $RUN_ID"
-          [[ "$ACTION" == apply ]] && "${ssh_cmd[@]}" "apply $RUN_ID"
+          if [[ "$ACTION" == apply ]]; then
+            "${ssh_cmd[@]}" "apply $RUN_ID"
+          fi
           rm -f "$RUNNER_TEMP/staging-ssh/key" "$RUNNER_TEMP/staging-ssh/known_hosts"

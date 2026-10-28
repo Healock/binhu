@@ -391,7 +391,15 @@ def diagnose_prepare_failure(run_id: str) -> None:
     candidate = CANDIDATES / run_id
     if (STATE.is_symlink() or CANDIDATES.is_symlink() or candidate.is_symlink()):
         fail("prepare diagnostic target is unsafe")
-    candidate_present = candidate.is_dir()
+    if not candidate.exists():
+        candidate_entry = "missing"
+    elif candidate.is_dir():
+        candidate_entry = "directory"
+    elif candidate.is_file():
+        candidate_entry = "file"
+    else:
+        candidate_entry = "other"
+    candidate_present = candidate_entry == "directory"
 
     evidence_root = STATE / "evidence" / run_id
     if (STATE.is_symlink() or (STATE / "evidence").is_symlink()
@@ -455,6 +463,7 @@ def diagnose_prepare_failure(run_id: str) -> None:
     print(json.dumps({
         "environment": "staging", "run_id": run_id, "phase": "prepare",
         "status": status_value, "candidate_present": candidate_present,
+        "candidate_entry": candidate_entry,
         "failure_count": len(records), "failures": records,
     }, sort_keys=True))
 
