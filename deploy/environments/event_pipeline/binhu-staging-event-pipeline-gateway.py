@@ -19,6 +19,11 @@ CANDIDATES = STATE / "candidates"
 RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+SAFE_EXCEPTION_TYPES = frozenset({
+    "ModuleNotFoundError", "ImportError", "SyntaxError", "FileNotFoundError",
+    "PermissionError", "TimeoutExpired", "CalledProcessError", "ValueError",
+    "RuntimeError", "OSError", "KeyError", "TypeError", "ChildProcessError",
+})
 MAX_BYTES = 128 * 1024 * 1024
 MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"})
 RETIRE_TARGET = "STG-20261007-03"
@@ -71,6 +76,19 @@ def _child_error_code(stdout: str, stderr: str) -> str:
     return "staging_child_process_failed"
 
 
+def _child_error_type(stdout: str, stderr: str) -> str:
+    """Return only a fixed exception category from child diagnostics."""
+    text = f"{stdout}\n{stderr}"
+    for exception_type in (
+        "ModuleNotFoundError", "ImportError", "SyntaxError", "FileNotFoundError",
+        "PermissionError", "TimeoutExpired", "CalledProcessError", "ValueError",
+        "RuntimeError", "OSError", "KeyError", "TypeError",
+    ):
+        if exception_type in text:
+            return exception_type
+    return "ChildProcessError"
+
+
 def _child_payloads(stdout: str, stderr: str) -> list[dict]:
     """Extract bounded JSON diagnostics without forwarding child output."""
     payloads: list[dict] = []
@@ -91,7 +109,8 @@ def _child_payloads(stdout: str, stderr: str) -> list[dict]:
 
 
 def _record_child_failure(run_id: str, phase: str, payload: dict,
-                          stdout: str, stderr: str) -> None:
+                          stdout: str, stderr: str, *, return_code: int | None = None,
+                          diagnostic_code: str | None = None) -> None:
     """Persist only redacted failure metadata and output hashes."""
     try:
         digest = hashlib.sha256((stdout + "\0" + stderr).encode("utf-8", "replace")).hexdigest()
@@ -100,15 +119,25 @@ def _record_child_failure(run_id: str, phase: str, payload: dict,
         target = evidence / f"{phase}-{digest[:16]}.json"
         if target.exists() or target.is_symlink():
             return
+        error_type = payload.get("error_type", "CalledProcessError")
+        if not isinstance(error_type, str) or error_type not in SAFE_EXCEPTION_TYPES:
+            error_type = "ChildProcessError"
+        error_code = payload.get("error_code", "staging_child_process_failed")
+        if not isinstance(error_code, str) or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", error_code):
+            error_code = "staging_child_process_failed"
         safe = {
             "environment": "staging", "run_id": run_id, "phase": phase,
-            "status": "failed", "error_type": str(payload.get("error_type", "CalledProcessError")),
-            "error_code": str(payload.get("error_code", "staging_child_process_failed")),
+            "status": "failed", "error_type": error_type, "error_code": error_code,
             "stdout_sha256": hashlib.sha256(stdout.encode("utf-8", "replace")).hexdigest(),
             "stderr_sha256": hashlib.sha256(stderr.encode("utf-8", "replace")).hexdigest(),
             "stdout_bytes": len(stdout.encode("utf-8", "replace")),
             "stderr_bytes": len(stderr.encode("utf-8", "replace")),
         }
+        if isinstance(return_code, int) and -255 <= return_code <= 255:
+            safe["child_return_code"] = return_code
+        if isinstance(diagnostic_code, str) and re.fullmatch(
+                r"staging_[a-z0-9_]{1,72}", diagnostic_code):
+            safe["diagnostic_code"] = diagnostic_code
         if isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
             safe["image_key"] = payload["image_key"]
         target.write_text(json.dumps(safe, sort_keys=True) + "\n", encoding="utf-8")
@@ -223,47 +252,44 @@ def run_module(run_id: str, module: str, manifest: dict | None = None,
             timeout=900 if module == "apply" else 300,
         )
     except subprocess.CalledProcessError as error:
-        if module in {"prepare", "apply"}:
-            # The child emits bounded JSON on stdout, while import/runtime
-            # failures can only reach stderr. Inspect both streams without
-            # forwarding arbitrary command output or credentials.
-            child_stdout = error.stdout or ""
-            child_stderr = error.stderr or ""
-            emitted = False
-            for payload in _child_payloads(child_stdout, child_stderr):
-                if (isinstance(payload, dict)
-                        and payload.get("environment") == "staging"
-                        and payload.get("run_id") == run_id
-                        and payload.get("status") == "failed"
-                        and payload.get("phase") in {
-                            "prepare",
-                            "compose_brokers", "create_topics", "start_schema_dependencies",
-                            "apply_schema_registry", "migrate_delivery_schema",
-                            "start_pipeline_services", "start_flink_job",
-                        }
-                        and isinstance(payload.get("error_code"), str)
-                        and re.fullmatch(r"[A-Za-z0-9_. -]{1,96}", payload["error_code"] or "")):
-                    bounded = {
-                        "environment": "staging", "run_id": run_id,
-                        "status": "failed", "phase": payload["phase"],
-                        "error_type": str(payload.get("error_type", "ChildError")),
-                        "error_code": payload["error_code"],
-                    }
-                    if isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
-                        bounded["image_key"] = payload["image_key"]
-                    _record_child_failure(run_id, module, bounded, child_stdout, child_stderr)
-                    print(json.dumps(bounded, sort_keys=True))
-                    emitted = True
-                    break
-            if not emitted:
-                bounded = {
-                    "environment": "staging", "run_id": run_id,
-                    "status": "failed", "phase": module,
-                    "error_type": type(error).__name__,
-                    "error_code": _child_error_code(child_stdout, child_stderr),
-                }
-                _record_child_failure(run_id, module, bounded, child_stdout, child_stderr)
-                print(json.dumps(bounded, sort_keys=True))
+        child_stdout = error.stdout or ""
+        child_stderr = error.stderr or ""
+        diagnostic_code = _child_error_code(child_stdout, child_stderr)
+        allowed_phases = {
+            "prepare", "measure", "apply", "sample", "rollback",
+            "compose_brokers", "create_topics", "start_schema_dependencies",
+            "apply_schema_registry", "migrate_delivery_schema", "start_pipeline_services",
+            "start_flink_job", "prepare_flink_checkpoint_volume",
+        }
+        payload = next((item for item in _child_payloads(child_stdout, child_stderr)
+                        if item.get("environment") == "staging" and item.get("run_id") == run_id
+                        and item.get("status") == "failed" and item.get("phase") in allowed_phases
+                        and isinstance(item.get("error_code"), str)
+                        and re.fullmatch(r"staging_[a-z0-9_]{1,72}", item["error_code"])), None)
+        bounded = {
+            "environment": "staging", "run_id": run_id, "status": "failed",
+            "phase": payload["phase"] if payload else module,
+            "error_type": (payload.get("error_type") if payload
+                           and isinstance(payload.get("error_type"), str)
+                           and payload.get("error_type") in SAFE_EXCEPTION_TYPES
+                           else _child_error_type(child_stdout, child_stderr)),
+            "error_code": payload["error_code"] if payload else diagnostic_code,
+            "child_return_code": error.returncode,
+        }
+        if payload and isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
+            bounded["image_key"] = payload["image_key"]
+        _record_child_failure(run_id, module, bounded, child_stdout, child_stderr,
+                              return_code=error.returncode, diagnostic_code=bounded["error_code"])
+        print(json.dumps(bounded, sort_keys=True))
+        raise
+    except (OSError, subprocess.TimeoutExpired) as error:
+        error_type = "TimeoutExpired" if isinstance(error, subprocess.TimeoutExpired) else type(error).__name__
+        diagnostic_code = ("staging_child_timeout" if isinstance(error, subprocess.TimeoutExpired)
+                           else "staging_child_launch_failed")
+        bounded = {"environment": "staging", "run_id": run_id, "status": "failed",
+                   "phase": module, "error_type": error_type, "error_code": diagnostic_code}
+        _record_child_failure(run_id, module, bounded, "", "", diagnostic_code=diagnostic_code)
+        print(json.dumps(bounded, sort_keys=True))
         raise
     lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
     if not lines:
