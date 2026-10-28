@@ -7,6 +7,7 @@ from typing import Any
 
 from .report import evaluate_report
 from .resource_metrics import summarize_resource_samples
+from .profile import get_profile, profile_payload
 
 
 def _read_json(path: str | Path, label: str) -> Any:
@@ -40,11 +41,26 @@ def assemble_report(
     _identity(load, run_id, "load")
     execution = load.get("execution_policy")
     memory_gate = execution.get("memory_gate") if isinstance(execution, dict) else None
-    if (not isinstance(execution, dict) or execution.get("users") != 75
+    profile = execution.get("workload_profile") if isinstance(execution, dict) else None
+    expected_profile = (
+        profile_payload(get_profile(profile.get("name", "")))
+        if isinstance(profile, dict) and profile.get("name") in {"full75", "low20"}
+        else None
+    )
+    if (not isinstance(execution, dict) or not isinstance(profile, dict)
+            or profile != expected_profile
+            or execution.get("users") != profile.get("users")
             or execution.get("production_monitor") != "passed"
             or not isinstance(memory_gate, dict)
             or memory_gate.get("required_bytes") != 4 * 1024 ** 3
             or not isinstance(memory_gate.get("waived"), bool)
+            or (memory_gate.get("waived") and (
+                memory_gate.get("waiver_requested") is not True
+                or execution.get("memory_gate_approval_basis") != (
+                    "user-approved low20 profile" if not profile["equivalent_to_full_75_user_gate"]
+                    else "explicit workflow dispatch approval"
+                )
+            ))
             or not isinstance(memory_gate.get("observed_bytes"), int)):
         raise RuntimeError("load execution policy evidence is missing or invalid")
     if memory_gate["observed_bytes"] < memory_gate["required_bytes"] and not memory_gate["waived"]:
@@ -83,7 +99,7 @@ def assemble_report(
         and bool(manual_checks)
         and all(value is True for value in manual_checks.values())
     )
-    limited_acceptance = bool(memory_gate["waived"])
+    limited_acceptance = bool(memory_gate["waived"] or not profile["equivalent_to_full_75_user_gate"])
     checks_passed = threshold_result["passed"] and rollback_passed and manual_passed
     return {
         "run_id": run_id,
@@ -96,10 +112,14 @@ def assemble_report(
         "thresholds": threshold_result,
         "execution_policy": execution,
         "limited_acceptance": limited_acceptance,
-        "acceptance_limitations": ([
-            "The 4 GiB preflight memory gate was explicitly waived for this run.",
-            "This run does not satisfy the original 4 GiB resource precondition or constitute full architecture acceptance.",
-        ] if limited_acceptance else []),
+        "acceptance_limitations": (
+            (["The 4 GiB preflight memory gate was explicitly waived for this run.",
+              "This run does not satisfy the original 4 GiB resource precondition."] if memory_gate["waived"] else [])
+            + (["The low20 profile is not equivalent to the 75-user Staging load gate."]
+               if not profile["equivalent_to_full_75_user_gate"] else [])
+        ),
+        "load_profile_passed": checks_passed,
+        "load_profile": profile,
         "rollback_passed": rollback_passed,
         "manual_acceptance_passed": manual_passed,
         "passed": checks_passed and not limited_acceptance,

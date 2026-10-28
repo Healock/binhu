@@ -36,7 +36,12 @@ class RuntimeIndex:
     property_search_keyword: str
 
 
-def load_runtime_index(path: str, expected_run_id: str) -> RuntimeIndex:
+def load_runtime_index(path: str, expected_run_id: str, profile_name: str = "full75") -> RuntimeIndex:
+    try:
+        from .profile import get_profile, select_accounts
+    except ImportError:
+        from profile import get_profile, select_accounts
+    profile = get_profile(profile_name)
     target = Path(path)
     if not path or not target.is_file():
         raise RuntimeError("STAGING_RUNTIME_INDEX 必须指向受控 Staging 运行索引")
@@ -58,6 +63,10 @@ def load_runtime_index(path: str, expected_run_id: str) -> RuntimeIndex:
         accounts.append(RuntimeAccount(username=username, role=role, scope=scope))
     if len(accounts) < 75:
         raise RuntimeError("Staging 运行索引至少需要 75 个隔离测试账号")
+    selected_accounts = select_accounts(
+        [{"username": item.username, "role": item.role, "scope": item.scope} for item in accounts],
+        profile,
+    )
     tasks = tuple(item for item in (payload.get("tasks") or []) if isinstance(item, dict))
     if not tasks:
         raise RuntimeError("Staging 运行索引缺少脱敏任务")
@@ -67,4 +76,9 @@ def load_runtime_index(path: str, expected_run_id: str) -> RuntimeIndex:
     keyword = str(payload.get("property_search_keyword") or "").strip()
     if not keyword:
         raise RuntimeError("Staging 运行索引缺少脱敏房屋搜索词")
-    return RuntimeIndex(expected_run_id, tuple(accounts), tasks, keyword)
+    return RuntimeIndex(
+        expected_run_id,
+        tuple(RuntimeAccount(**item) for item in selected_accounts),
+        tasks,
+        keyword,
+    )

@@ -84,6 +84,10 @@ jobs:
           ENCRYPTION_KEY: test-encryption-key
         run: python -m pytest tests/test_process_engine_mysql_integration.py -q
         working-directory: backend
+      - name: Run Staging load profile contracts
+        env:
+          PYTHONPATH: load-tests
+        run: python -m unittest discover -s load-tests -p test_staging_load.py
 
   hotfix-candidate:
     name: Prebuild backend hotfix candidate
