@@ -35,6 +35,111 @@ def images():
 
 
 class StagingGatewayDiagnosticTests(unittest.TestCase):
+    def test_prepare_failure_reader_emits_only_fixed_fields_without_writing(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-02"
+            evidence.mkdir(parents=True)
+            source = evidence / "prepare-gateway-0123456789abcdef.json"
+            source.write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261028-02",
+                "phase": "prepare", "status": "failed", "failure_stage": "gateway",
+                "error_type": "SystemExit", "error_code": "staging_candidate_bundle_hash_mismatch",
+                "exit_code": 1, "stdout_sha256": "a" * 64, "stderr_sha256": "b" * 64,
+                "stdout_bytes": 27, "stderr_bytes": 41,
+                "stdout": "secret stdout", "stderr": "password=hidden", "path": "/private/path",
+            }), encoding="utf-8")
+            original = source.read_bytes()
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", state / "candidates"),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_prepare_failure("STG-20261028-02")
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "failed")
+            self.assertFalse(result["candidate_present"])
+            record = result["failures"][0]
+            self.assertEqual(record["failure_stage"], "gateway")
+            self.assertEqual(record["exit_code"], 1)
+            self.assertEqual(record["evidence_sha256"], hashlib.sha256(original).hexdigest())
+            for private in ("secret stdout", "password=hidden", "/private/path"):
+                self.assertNotIn(private, output.getvalue())
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_prepare_failure_reader_reports_missing_evidence_and_rejects_other_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", state / "candidates"),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_prepare_failure("STG-20261028-02")
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "evidence_missing")
+            self.assertEqual(result["failure_count"], 0)
+
+        with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as raised:
+            staging_gateway.diagnose_prepare_failure(RUN_ID)
+        self.assertIn("prepare diagnostic target is not approved", str(raised.exception))
+
+    def test_prepare_failure_reader_accepts_existing_child_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-02"
+            evidence.mkdir(parents=True)
+            source = evidence / "prepare-0123456789abcdef.json"
+            source.write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261028-02",
+                "phase": "prepare", "status": "failed", "error_type": "ValueError",
+                "error_code": "staging_candidate_identity_mismatch",
+                "child_return_code": 23, "stdout_sha256": "c" * 64,
+                "stderr_sha256": "d" * 64, "stdout_bytes": 10, "stderr_bytes": 20,
+                "stderr": "private response must not escape",
+            }), encoding="utf-8")
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", state / "candidates"),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_prepare_failure("STG-20261028-02")
+            result = json.loads(output.getvalue())
+            record = result["failures"][0]
+            self.assertEqual(record["failure_stage"], "child")
+            self.assertEqual(record["exit_code"], 23)
+            self.assertEqual(record["stderr_sha256"], "d" * 64)
+            self.assertNotIn("private response", output.getvalue())
+
+    def test_prepare_gateway_rejection_writes_only_fixed_failure_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            candidates = state / "candidates"
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "read_bundle", side_effect=SystemExit(
+                    "Staging event-pipeline gateway refused: candidate bundle hash mismatch"
+                )),
+                self.assertRaises(SystemExit),
+            ):
+                staging_gateway.prepare(
+                    "STG-20261028-02", "a" * 40, "32", "b" * 64,
+                )
+            self.assertFalse((candidates / "STG-20261028-02").exists())
+            failure = next((state / "evidence" / "STG-20261028-02").glob("prepare-gateway-*.json"))
+            payload = json.loads(failure.read_text(encoding="utf-8"))
+            self.assertEqual(payload["failure_stage"], "gateway")
+            self.assertEqual(payload["error_code"], "staging_candidate_bundle_hash_mismatch")
+            self.assertEqual(payload["exit_code"], 1)
+            self.assertEqual(payload["stdout_bytes"], 0)
+            self.assertEqual(payload["stderr_bytes"], 0)
+
     def test_measure_failure_reader_emits_only_fixed_fields_without_writing(self):
         import hashlib
 
@@ -811,9 +916,12 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('sys.argv[1] == "run"', gateway)
         self.assertIn('sys.argv[1] == "verify"', gateway)
         self.assertIn('sys.argv[1] == "diagnose-measure"', gateway)
+        self.assertIn('sys.argv[1] == "diagnose-prepare"', gateway)
         self.assertIn("measure|apply|switch|run|rollback", wrapper)
         self.assertIn("diagnose-measure)", wrapper)
+        self.assertIn("diagnose-prepare)", wrapper)
         self.assertIn("diagnose-measure STG-20261028-01", installer)
+        self.assertIn("diagnose-prepare STG-20261028-02", installer)
         self.assertIn("sample)", wrapper)
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
@@ -896,6 +1004,16 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"diagnose-measure $RUN_ID"', workflow)
         self.assertIn("RUN_ID\" == 'STG-20261028-01'", workflow)
         self.assertIn("staging_pipeline_ssh_authentication=passed", workflow)
+
+    def test_prepare_diagnostic_action_checks_restricted_key_and_fixed_run(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
+        self.assertIn("diagnose-prepare", workflow)
+        self.assertIn("BINHU_STAGING_EVENT_PIPELINE_SSH_KEY", workflow)
+        self.assertIn('"${ssh_cmd[@]}" status', workflow)
+        self.assertIn('"diagnose-prepare $RUN_ID"', workflow)
+        self.assertIn('RUN_ID" == \'STG-20261028-02\'', workflow)
+        self.assertIn("failure_count", workflow)
 
     def test_schema_registry_preload_classifies_fixed_docker_errors(self):
         self.assertEqual(
