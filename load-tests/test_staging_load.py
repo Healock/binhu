@@ -130,6 +130,10 @@ class StagingLoadTests(unittest.TestCase):
             production_pause_run_id="PROD-PAUSE-20261029-02",
         )
         self.assertEqual(policy["production_mode"], PRODUCTION_MODE_PAUSED)
+        with self.assertRaisesRegex(ValueError, "production_pause_run_id_invalid"):
+            preflight(sample, run_id=RUN_ID, waive_memory_gate=True,
+                      production_mode=PRODUCTION_MODE_PAUSED,
+                      production_pause_run_id="PROD-PAUSE-20261029-03")
         with self.assertRaisesRegex(ValueError, "production_pause_run_id_unexpected"):
             preflight(sample, run_id=RUN_ID, waive_memory_gate=True,
                       production_pause_run_id="PROD-PAUSE-20261029-02")
