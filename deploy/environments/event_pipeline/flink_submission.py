@@ -23,6 +23,12 @@ from .projection_definitions import BASE_PROJECTION_NAMES, projection_names
 EXPECTED_SINKS = BASE_PROJECTION_NAMES
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
 REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
+# Flink may accept the JAR before the JobGraph has finished planning and
+# reached RUNNING.  A reset connection is therefore reconciled for the full
+# startup window, rather than being reported as a failed submission after the
+# shorter HTTP request timeout.  This covers the observed Flink 1.20 staging
+# startup path while still leaving a finite bound for an actually lost job.
+SUBMISSION_RECONCILIATION_TIMEOUT = 120.0
 
 
 class FlinkRestError(ValueError):
@@ -286,7 +292,8 @@ class FlinkRest:
 
 
 def submit_jar_or_reconcile(
-    client: FlinkRest, jar_id: str, expected_run_id: str, *, timeout: float = 30.0,
+    client: FlinkRest, jar_id: str, expected_run_id: str, *,
+    timeout: float = SUBMISSION_RECONCILIATION_TIMEOUT,
 ) -> dict[str, Any]:
     """Submit once and reconcile an uncertain REST response without resubmitting.
 
