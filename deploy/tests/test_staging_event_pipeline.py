@@ -767,7 +767,7 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
     def test_metrics_probe_validates_authorized_pause_evidence_and_eight_database_hashes(self):
         import hashlib
 
-        pause_id = "PROD-PAUSE-20261029-02"
+        pause_id = "PROD-PAUSE-20261029-04"
         databases = list(staging_metrics_probe.PRODUCTION_PAUSE_DATABASES)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
