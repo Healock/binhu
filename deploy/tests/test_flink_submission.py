@@ -167,6 +167,30 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             with self.assertRaisesRegex(flink_submission.FlinkRestError, "flink_rest_timeout"):
                 flink_submission.submit_jar_or_reconcile(Client(), "job.jar", RUN_ID, timeout=5)
 
+    def test_uncertain_submission_allows_slow_jobgraph_startup(self):
+        class Client:
+            def __init__(self):
+                self.run_calls = 0
+                self.overview_calls = 0
+
+            def run_jar(self, _jar_id):
+                self.run_calls += 1
+                raise flink_submission.FlinkRestError(
+                    "flink_rest_transport_failed", "/jars/job.jar/run",
+                )
+
+            def overview(self):
+                self.overview_calls += 1
+                return [job()] if self.overview_calls >= 40 else []
+
+        client = Client()
+        with patch.object(flink_submission.time, "monotonic", side_effect=iter(range(200))), \
+                patch.object(flink_submission.time, "sleep"):
+            result = flink_submission.submit_jar_or_reconcile(client, "job.jar", RUN_ID)
+        self.assertEqual(result, {"mode": "reconciled", "job_id": job()["jid"]})
+        self.assertEqual(client.run_calls, 1)
+        self.assertEqual(client.overview_calls, 40)
+
     def test_runtime_identity_is_parsed_as_exact_key_values(self):
         self.assertEqual(
             flink_submission.parse_runtime_identity(
