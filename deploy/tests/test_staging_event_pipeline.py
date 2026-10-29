@@ -960,7 +960,8 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('sys.argv[1] == "verify"', gateway)
         self.assertIn('sys.argv[1] == "diagnose-measure"', gateway)
         self.assertIn('sys.argv[1] == "diagnose-prepare"', gateway)
-        self.assertIn("measure|apply|switch|run|rollback", wrapper)
+        self.assertIn("measure|apply|switch|rollback", wrapper)
+        self.assertIn("run)", wrapper)
         self.assertIn("diagnose-measure)", wrapper)
         self.assertIn("diagnose-prepare)", wrapper)
         self.assertIn("diagnose-measure STG-20261028-01", installer)
@@ -1248,7 +1249,8 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('def retire_failed(run_id: str)', gateway)
         self.assertIn('"down", "--remove-orphans"', gateway)
         self.assertNotIn('"down", "-v"', gateway)
-        self.assertIn("measure|apply|switch|run|rollback|retire|retire-failed", wrapper)
+        self.assertIn("measure|apply|switch|rollback|retire|retire-failed", wrapper)
+        self.assertIn("run)", wrapper)
         self.assertIn("retire STG-20261027-07", install)
         self.assertIn("retire STG-20261028-03", install)
         self.assertNotIn("retire STG-20261007-03", install)
@@ -1300,7 +1302,7 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
                     "run-staging-realistic-load.yml").read_text(encoding="utf-8")
         for marker in (
-            '"run $RUN_ID"', 'sample $RUN_ID $monitor_start_epoch$sample_suffix',
+            '"run $CANDIDATE_RUN_ID $RUN_ID"', 'sample $CANDIDATE_RUN_ID $RUN_ID $monitor_start_epoch$sample_suffix',
             "options: [low20, full75]", '--users "$users"', '--spawn-rate "$spawn_rate"',
             '--run-time "${duration_seconds}s"',
             "/staging/api/query/", "staging-samples.jsonl", "derived_queue",
@@ -1320,10 +1322,11 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
                    "binhu-staging-event-pipeline-gateway").read_text(encoding="utf-8")
         gateway = (Path(__file__).parents[1] / "environments" / "event_pipeline" /
                    "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
-        self.assertIn('"${#parts[@]}" -eq 3 || "${#parts[@]}" -eq 5', wrapper)
-        self.assertIn('"${parts[3]}" == production_paused', wrapper)
-        self.assertIn('"${parts[4]}" == PROD-PAUSE-20261029-02', wrapper)
-        self.assertIn('sys.argv[5] == "PROD-PAUSE-20261029-02"', gateway)
+        self.assertIn('"${#parts[@]}" -eq 4 || "${#parts[@]}" -eq 6', wrapper)
+        self.assertIn('"${parts[1]}" == STG-20261029-02', wrapper)
+        self.assertIn('"${parts[4]}" == production_paused', wrapper)
+        self.assertIn('"${parts[5]}" == PROD-PAUSE-20261029-02', wrapper)
+        self.assertIn('sys.argv[6] == "PROD-PAUSE-20261029-02"', gateway)
 
     def test_rollback_workflow_uses_only_fixed_staging_command(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /

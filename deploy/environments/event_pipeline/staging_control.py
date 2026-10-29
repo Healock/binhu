@@ -810,6 +810,7 @@ def main() -> None:
     parser.add_argument("action", choices=("measure", "apply", "switch", "sample", "rollback"))
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--production-since", type=int)
+    parser.add_argument("--load-run-id")
     parser.add_argument("--production-mode", choices=("running", "production_paused"),
                         default="running")
     parser.add_argument("--production-pause-run-id")
@@ -818,17 +819,20 @@ def main() -> None:
         if args.action == "sample":
             if args.production_since is None:
                 raise ValueError("Production monitor start time required")
+            if args.load_run_id is None:
+                raise ValueError("Load evidence run id required")
             if args.production_mode == "production_paused":
                 if args.production_pause_run_id is None:
                     raise ValueError("Production pause run id required")
             elif args.production_pause_run_id is not None:
                 raise ValueError("Production pause run id is only valid for sample")
             result = metrics_sample(
-                args.run_id, args.production_since, args.production_mode,
+                args.run_id, args.load_run_id, args.production_since, args.production_mode,
                 args.production_pause_run_id,
             )
         else:
-            if args.production_since is not None or args.production_pause_run_id is not None:
+            if (args.production_since is not None or args.production_pause_run_id is not None
+                    or args.load_run_id is not None):
                 raise ValueError("Production monitor start time is only valid for sample")
             action = {"measure": measure, "apply": apply, "switch": switch,
                       "rollback": rollback}[args.action]
