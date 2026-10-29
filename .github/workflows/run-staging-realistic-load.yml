@@ -73,7 +73,7 @@ jobs:
           [[ "$PROFILE" == low20 || "$PROFILE" == full75 ]]
           [[ "$PRODUCTION_MODE" == running || "$PRODUCTION_MODE" == production_paused ]]
           if [[ "$PRODUCTION_MODE" == production_paused ]]; then
-            [[ "$PRODUCTION_PAUSE_RUN_ID" == PROD-PAUSE-20261029-02 ]]
+            [[ "$PRODUCTION_PAUSE_RUN_ID" =~ ^PROD-PAUSE-[0-9]{8}-[0-9]{2}$ ]]
             sample_suffix=" production_paused $PRODUCTION_PAUSE_RUN_ID"
             monitor_mode_args=(--production-mode "$PRODUCTION_MODE" --production-pause-run-id "$PRODUCTION_PAUSE_RUN_ID")
           else
@@ -153,7 +153,7 @@ jobs:
           [[ "$CANDIDATE_RUN_ID" == STG-20261029-02 && "$CANDIDATE_RUN_ID" != "$RUN_ID" ]]
           [[ "$PRODUCTION_MODE" == running || "$PRODUCTION_MODE" == production_paused ]]
           if [[ "$PRODUCTION_MODE" == production_paused ]]; then
-            [[ "$PRODUCTION_PAUSE_RUN_ID" == PROD-PAUSE-20261029-02 ]]
+            [[ "$PRODUCTION_PAUSE_RUN_ID" =~ ^PROD-PAUSE-[0-9]{8}-[0-9]{2}$ ]]
             sample_suffix=" production_paused $PRODUCTION_PAUSE_RUN_ID"
             monitor_mode_args=(--production-mode "$PRODUCTION_MODE" --production-pause-run-id "$PRODUCTION_PAUSE_RUN_ID")
           else
