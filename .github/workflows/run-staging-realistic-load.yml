@@ -51,7 +51,7 @@ jobs:
           python-version: "3.11"
       - name: Install fixed load generator
         run: python -m pip install -r load-tests/requirements.txt
-      - name: Seed fictional fixtures and verify query smoke path
+      - name: Seed fictional fixtures and verify seed evidence
         shell: bash
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
@@ -69,7 +69,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "$RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "$BASE_URL" =~ ^https://[^/]+/?$ ]]
-          [[ "$CANDIDATE_RUN_ID" == STG-20261029-02 && "$CANDIDATE_RUN_ID" != "$RUN_ID" ]]
+          [[ "$CANDIDATE_RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "$CANDIDATE_RUN_ID" != "$RUN_ID" ]]
           [[ "$PROFILE" == low20 || "$PROFILE" == full75 ]]
           [[ "$PRODUCTION_MODE" == running || "$PRODUCTION_MODE" == production_paused ]]
           if [[ "$PRODUCTION_MODE" == production_paused ]]; then
@@ -105,21 +105,103 @@ jobs:
                             'memory_gate':policy['memory_gate'],
                             'production_monitor':'ready'}))
           PY
-          "${ssh_cmd[@]}" "run $CANDIDATE_RUN_ID $RUN_ID" > "$RUNNER_TEMP/staging-load/runtime-index.json"
+          if ! "${ssh_cmd[@]}" "run $CANDIDATE_RUN_ID $RUN_ID" > "$RUNNER_TEMP/staging-load/runtime-index.json"; then
+            python - "$RUNNER_TEMP/staging-load/runtime-index.json" "$RUNNER_TEMP/staging-load/seed-status.json" "$CANDIDATE_RUN_ID" "$RUN_ID" <<'PY'
+          import json,sys
+          from pathlib import Path
+          source,target,candidate_id,load_id=sys.argv[1:]
+          try:
+              seed=json.loads(Path(source).read_text(encoding='utf-8').splitlines()[-1])
+          except (OSError,ValueError,IndexError):
+              seed={}
+          error_code=seed.get('error_code')
+          if error_code not in {'local_business_key_conflict','staging_seed_failed','staging_seed_runtime_unknown'}:
+              error_code='staging_seed_failed'
+          def known_count(name):
+              value=seed.get(name)
+              return value if type(value) is int else None
+          result={
+              'phase':'preload','status':'failed','candidate_run_id':candidate_id,
+              'load_run_id':load_id,'reason':'seed_command_failed',
+              'error_code':error_code,
+              'committed_task_count':known_count('committed_task_count'),
+              'committed_expectation_count':known_count('committed_expectation_count'),
+              'online_data_status':seed.get('online_data_status','unknown'),
+              'projection_status':seed.get('projection_status','unknown'),
+              'projection_statuses':seed.get('projection_statuses',{}),
+              'conflict_detected':seed.get('conflict_detected'),
+              'conflict_count':known_count('conflict_count'),
+              'conflict_count_unknown':seed.get('conflict_count_unknown',True),
+              'platform_side_effects':seed.get('platform_side_effects',{'status':'unknown'}),
+          }
+          Path(target).write_text(json.dumps(result,sort_keys=True)+'\n',encoding='utf-8')
+          PY
+            exit 1
+          fi
           python - <<'PY'
           import json, os, requests, sys
-          from urllib.parse import quote
+          from pathlib import Path
           runtime=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','runtime-index.json'),encoding='utf-8'))
-          if runtime.get('run_id') != os.environ['RUN_ID'] or len(runtime.get('accounts',[])) < 75:
+          tasks=runtime.get('tasks') or []
+          row_keys=[row.get('row_key') for row in tasks]
+          source_ids=[row.get('source_id') for row in tasks]
+          seed=runtime.get('seed') or {}
+          if (runtime.get('run_id') != os.environ['RUN_ID']
+              or runtime.get('load_run_id') != os.environ['RUN_ID']
+              or runtime.get('candidate_run_id') != os.environ['CANDIDATE_RUN_ID']
+              or len(runtime.get('accounts',[])) != 75 or len(tasks) != 1440
+              or len(set(row_keys)) != 1440 or len(set(source_ids)) != 1440
+              or any(not isinstance(value,str) or not value for value in row_keys)
+              or any(not isinstance(value,int) or value <= 0 for value in source_ids)
+              or seed.get('phase') != 'seed' or seed.get('status') != 'passed'
+              or seed.get('task_count') != 1440 or seed.get('expectation_count') != 1440
+              or seed.get('conflict_count') != 0):
               raise SystemExit('runtime index identity mismatch')
-          session=requests.Session()
-          login=session.post(os.environ['BASE_URL'].rstrip('/')+'/staging/api/auth/login',json={
-              'username':runtime['accounts'][0]['username'],'password':os.environ['LOAD_PASSWORD'],
-              'device_type':'staging-smoke','device_id':os.environ['RUN_ID'].lower()+'-smoke'},timeout=20)
-          if login.status_code >= 400: raise SystemExit('Staging smoke login failed')
-          query=session.get(os.environ['BASE_URL'].rstrip('/')+'/staging/api/query/'+quote('全链条',safe=''),params={'page':1,'page_size':200},timeout=30)
-          if query.status_code >= 400: raise SystemExit('Staging /api/query smoke failed')
-          print(json.dumps({'staging_query_smoke':'passed','status_code':query.status_code}))
+          status={'phase':'seed','status':'passed','candidate_run_id':os.environ['CANDIDATE_RUN_ID'],
+                  'load_run_id':os.environ['RUN_ID'],'task_count':len(tasks),'conflict_count':0,
+                  'expectation_count':seed.get('expectation_count'),
+                  'row_key_unique_count':len(set(row_keys)),'source_id_unique_count':len(set(source_ids)),
+                  'platform_side_effects':seed.get('platform_side_effects',{})}
+          Path(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','seed-status.json')).write_text(
+              json.dumps(status,sort_keys=True)+'\n',encoding='utf-8')
+          PY
+      - name: Run Staging query smoke after seed validation
+        shell: bash
+        env:
+          BASE_URL: ${{ secrets.BINHU_STAGING_BASE_URL || format('https://{0}', secrets.BINHU_STAGING_HOST) }}
+          LOAD_PASSWORD: ${{ secrets.BINHU_STAGING_LOAD_TEST_PASSWORD }}
+          RUN_ID: ${{ inputs.run_id }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          import json, os, requests
+          from pathlib import Path
+          from urllib.parse import quote
+          runtime=json.loads(Path(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','runtime-index.json')).read_text(encoding='utf-8'))
+          result={'phase':'smoke','status':'failed','run_id':os.environ['RUN_ID'],
+                  'load_run_id':os.environ['RUN_ID'],'candidate_run_id':os.environ['CANDIDATE_RUN_ID'],
+                  'error_code':'staging_smoke_not_completed'}
+          try:
+              session=requests.Session()
+              login=session.post(os.environ['BASE_URL'].rstrip('/')+'/staging/api/auth/login',json={
+                  'username':runtime['accounts'][0]['username'],'password':os.environ['LOAD_PASSWORD'],
+                  'device_type':'staging-smoke','device_id':os.environ['RUN_ID'].lower()+'-smoke'},timeout=20)
+              if login.status_code >= 400:
+                  result['error_code']='staging_smoke_login_failed'
+              else:
+                  query=session.get(os.environ['BASE_URL'].rstrip('/')+'/staging/api/query/'+quote('全链条',safe=''),params={'page':1,'page_size':200},timeout=30)
+                  result['query_status_code']=query.status_code
+                  result['error_code']='staging_smoke_query_failed' if query.status_code >= 400 else None
+                  if query.status_code < 400:
+                      result['status']='passed'
+          except requests.RequestException:
+              result['error_code']='staging_smoke_request_failed'
+          Path(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','smoke-status.json')).write_text(
+              json.dumps(result,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(result))
+          if result['status'] != 'passed':
+              raise SystemExit(result['error_code'])
           PY
       - name: Run selected profile with independent background polling and streams
         shell: bash
@@ -150,7 +232,7 @@ jobs:
           spawn_rate=$(python -c 'import json,sys; print(json.load(sys.stdin)["spawn_rate"])' <<< "$profile_json")
           duration_seconds=$(python -c 'import json,sys; print(json.load(sys.stdin)["duration_seconds"])' <<< "$profile_json")
           export PROFILE_JSON="$profile_json" PROFILE_USERS="$users"
-          [[ "$CANDIDATE_RUN_ID" == STG-20261029-02 && "$CANDIDATE_RUN_ID" != "$RUN_ID" ]]
+          [[ "$CANDIDATE_RUN_ID" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "$CANDIDATE_RUN_ID" != "$RUN_ID" ]]
           [[ "$PRODUCTION_MODE" == running || "$PRODUCTION_MODE" == production_paused ]]
           if [[ "$PRODUCTION_MODE" == production_paused ]]; then
             [[ "$PRODUCTION_PAUSE_RUN_ID" =~ ^PROD-PAUSE-[0-9]{8}-[0-9]{2}$ ]]
@@ -183,7 +265,11 @@ jobs:
           state=json.loads(Path(state_path).read_text(encoding='utf-8'))
           target=Path(report_path)
           report=json.loads(target.read_text(encoding='utf-8')) if target.is_file() else {
-              'run_id':run_id,'environment':'staging','production_data':False}
+              'run_id':run_id,'load_run_id':run_id,'candidate_run_id':os.environ['CANDIDATE_RUN_ID'],
+              'environment':'staging','production_data':False,'phase':'preload_failed'}
+          report['run_id']=run_id
+          report['load_run_id']=run_id
+          report['candidate_run_id']=os.environ['CANDIDATE_RUN_ID']
           report['execution_policy']={
               'users':int(os.environ['PROFILE_USERS']),
               'workload_profile':json.loads(os.environ['PROFILE_JSON']),
@@ -265,6 +351,14 @@ jobs:
             --run-time "${duration_seconds}s" --stop-timeout 30 --csv "$RUNNER_TEMP/staging-load/locust" \
             --only-summary &
           load_pid=$!
+          python - "$RUNNER_TEMP/staging-load/load-phase.json" "$CANDIDATE_RUN_ID" "$RUN_ID" <<'PY'
+          import json,sys,time
+          from pathlib import Path
+          Path(sys.argv[1]).write_text(json.dumps({
+              'phase':'load','status':'started','candidate_run_id':sys.argv[2],
+              'load_run_id':sys.argv[3],'locust_started_at_unix':int(time.time())
+          },sort_keys=True)+'\n',encoding='utf-8')
+          PY
           while kill -0 "$load_pid" 2>/dev/null; do
             sleep 30
             if ! "${ssh_cmd[@]}" "sample $CANDIDATE_RUN_ID $RUN_ID $monitor_start_epoch$sample_suffix" > "$RUNNER_TEMP/staging-load/current-sample.json"; then
@@ -312,8 +406,16 @@ jobs:
               for row in rows: stream.write(json.dumps(row,ensure_ascii=False,separators=(',',':'))+'\n')
           report_path=os.path.join(os.environ['RUNNER_TEMP'],'staging-load','load-report.json')
           report=json.load(open(report_path,encoding='utf-8'))
+          report['run_id']=os.environ['RUN_ID']
+          report['load_run_id']=os.environ['RUN_ID']
+          report['candidate_run_id']=os.environ['CANDIDATE_RUN_ID']
+          report['phase']='load'
+          report['status']='passed'
           policy=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','monitor-state.json'),encoding='utf-8'))
           report['execution_policy']={
+              'candidate_run_id':os.environ['CANDIDATE_RUN_ID'],
+              'load_run_id':os.environ['RUN_ID'],
+              'phase':'load','status':'passed',
               'users':int(os.environ['PROFILE_USERS']),
               'workload_profile':json.loads(os.environ['PROFILE_JSON']),
               'memory_gate':policy['memory_gate'],
@@ -345,6 +447,9 @@ jobs:
           name: staging-realistic-load-${{ inputs.run_id }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/staging-load/load-report.json
+            ${{ runner.temp }}/staging-load/seed-status.json
+            ${{ runner.temp }}/staging-load/smoke-status.json
+            ${{ runner.temp }}/staging-load/load-phase.json
             ${{ runner.temp }}/staging-load/preflight-sample.json
             ${{ runner.temp }}/staging-load/monitor-state.json
             ${{ runner.temp }}/staging-load/current-sample.json

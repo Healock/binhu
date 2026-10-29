@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+sys.path.insert(0, str(Path(__file__).parents[1] / "backend"))
+from services.parsers import get_parser  # noqa: E402
+
 from staging.acceptance import assemble_report
+from staging import control as staging_control
 from staging.control import load_manifest
 from staging.evidence import merge_samples
 from staging.fixture import validate_fixture
@@ -259,25 +263,71 @@ class StagingLoadTests(unittest.TestCase):
 
     def test_staging_fixture_model_is_fictional_credential_free_and_large_enough(self):
         accounts = make_accounts()
-        tasks = make_tasks()
+        tasks = make_tasks(RUN_ID)
+        other_tasks = make_tasks("STG-20260920-10")
+        def row_keys(items):
+            keys = {}
+            for item in items:
+                parser = get_parser(item["parser_type"])
+                row = {column: "" for column in parser.COLUMNS}
+                for column in ("身份证号", "身份证号码", "参考身份证号码"):
+                    if column in row:
+                        row[column] = item["identity_number"]
+                for column in ("电话号码", "手机号码", "联系号码"):
+                    if column in row:
+                        row[column] = item["phone"]
+                if "下发日期" in row:
+                    row["下发日期"] = "2026-09-20"
+                if "接警编号" in row:
+                    row["接警编号"] = item["case_number"]
+                keys.setdefault(item["parser_type"], []).append(parser.make_row_key(row))
+            return keys
+
+        actual_keys = row_keys(tasks)
+        other_keys = row_keys(other_tasks)
         self.assertEqual(len(accounts), 75)
         self.assertEqual(len({item["username"] for item in accounts}), 75)
         self.assertTrue(all(item["username"].endswith("@staging") for item in accounts))
         self.assertEqual(len(tasks), 1440)
+        self.assertEqual(len({item["identity_number"] for item in tasks}), 1440)
+        self.assertEqual(len({item["case_number"] for item in tasks}), 1440)
+        self.assertTrue(all(len(item["identity_number"]) == 18 for item in tasks))
+        self.assertTrue({item["identity_number"] for item in tasks}.isdisjoint(
+            {item["identity_number"] for item in other_tasks}))
+        self.assertTrue({item["case_number"] for item in tasks}.isdisjoint(
+            {item["case_number"] for item in other_tasks}))
+        for parser_type in actual_keys:
+            self.assertEqual(len(set(actual_keys[parser_type])), 240)
+            self.assertTrue(set(actual_keys[parser_type]).isdisjoint(set(other_keys[parser_type])))
+        suzhou = [item for item in tasks if item["parser_type"] == "苏州涉警"]
+        other_suzhou = [item for item in other_tasks if item["parser_type"] == "苏州涉警"]
+        self.assertEqual(len({item["case_number"] for item in suzhou}), 240)
+        self.assertTrue({item["case_number"] for item in suzhou}.isdisjoint(
+            {item["case_number"] for item in other_suzhou}))
         self.assertEqual({item["scenario"] for item in tasks}, {"assigned", "unassigned", "assignable"})
-        payload = runtime_index(RUN_ID, [{
+        payload = runtime_index("STG-20260920-02", RUN_ID, [{
             "parser_type": "全链条", "row_key": "synthetic", "scenario": "assigned",
         }])
         serialized = json.dumps(payload, ensure_ascii=False).lower()
         self.assertNotIn("password", serialized)
         self.assertNotIn("secret", serialized)
         self.assertFalse(payload["production_data"])
+        self.assertEqual(payload["candidate_run_id"], "STG-20260920-02")
+        self.assertEqual(payload["load_run_id"], RUN_ID)
+
+    def test_staging_fixture_requires_distinct_well_formed_run_namespace(self):
+        for run_id in ("STG-20260920-1", "other-20260920-01", "STG-20260920-01x"):
+            with self.subTest(run_id=run_id), self.assertRaises(ValueError):
+                make_tasks(run_id)
 
     def test_staging_seeder_uses_app_source_and_all_database_markers(self):
         source = (Path(__file__).parent / "staging" / "seed.py").read_text(encoding="utf-8")
         self.assertIn("create_local_source_row", source)
         self.assertIn("source_kind=\"local_table\"", source)
         self.assertIn("staging:{run_id}:task:", source)
+        self.assertIn('"--candidate-run-id"', source)
+        self.assertIn('str(task["case_number"])', source)
+        self.assertIn('"platform_side_effects"', source)
         self.assertIn("_environment_identity", source)
         self.assertIn("--password-stdin", source)
         self.assertNotIn("password_hash\":", source)
@@ -301,8 +351,10 @@ class StagingLoadTests(unittest.TestCase):
             root = Path(directory)
             staging = root / "staging.jsonl"
             production = root / "production.jsonl"
+            candidate_id = "STG-20260920-02"
             stage_rows = [
-                {"run_id": RUN_ID, "environment": "staging", "production_data": False,
+                {"run_id": RUN_ID, "candidate_run_id": candidate_id,
+                 "environment": "staging", "production_data": False,
                  "sampled_at_unix": 100 + index, "production": None}
                 for index in range(2)
             ]
@@ -315,12 +367,19 @@ class StagingLoadTests(unittest.TestCase):
             ]
             staging.write_text("\n".join(json.dumps(x) for x in stage_rows), encoding="utf-8")
             production.write_text("\n".join(json.dumps(x) for x in prod_rows), encoding="utf-8")
-            merged = merge_samples(RUN_ID, staging, production)
+            merged = merge_samples(RUN_ID, staging, production, candidate_id)
+            self.assertEqual(merged["candidate_run_id"], candidate_id)
             self.assertTrue(merged["samples"][0]["production"]["healthy"])
             prod_rows[0]["read_only"] = False
             production.write_text("\n".join(json.dumps(x) for x in prod_rows), encoding="utf-8")
             with self.assertRaises(RuntimeError):
                 merge_samples(RUN_ID, staging, production)
+            stage_rows[0]["candidate_run_id"] = "STG-20260920-03"
+            staging.write_text("\n".join(json.dumps(x) for x in stage_rows), encoding="utf-8")
+            prod_rows[0]["read_only"] = True
+            production.write_text("\n".join(json.dumps(x) for x in prod_rows), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "candidate identity"):
+                merge_samples(RUN_ID, staging, production, candidate_id)
 
     def test_guard_accepts_only_exact_staging_contract(self):
         context = validate_staging_environment(RUN_ID, env())
@@ -334,6 +393,21 @@ class StagingLoadTests(unittest.TestCase):
             candidate = env(); candidate[key] = value
             with self.assertRaises(StagingSafetyError):
                 validate_staging_environment(RUN_ID, candidate)
+
+    def test_evidence_guard_requires_staging_load_identity_without_database_access(self):
+        from staging.guard import require_staging_evidence_context
+
+        candidate = env()
+        candidate.pop("STAGING_BASE_URL")
+        candidate.pop("STAGING_DB_NAME")
+        candidate.pop("STAGING_LOAD_TEST_PASSWORD")
+        with patch.dict("os.environ", candidate, clear=True):
+            context = require_staging_evidence_context(RUN_ID)
+            self.assertEqual(context.project, f"binhu-staging-load-{RUN_ID.lower()}")
+            self.assertEqual(context.db_name, "evidence-only")
+            with patch.dict("os.environ", {"COMPOSE_PROJECT_NAME": "binhu-production"}, clear=False):
+                with self.assertRaises(StagingSafetyError):
+                    require_staging_evidence_context(RUN_ID)
 
     def test_runtime_index_requires_75_staging_accounts_and_deidentified_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -597,6 +671,13 @@ class StagingLoadTests(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding="utf-8")
             self.assertEqual(load_manifest(str(path), RUN_ID)["run_id"], RUN_ID)
 
+            candidate_id = "STG-20260920-02"
+            candidate_manifest = {**manifest, "run_id": candidate_id}
+            path.write_text(json.dumps(candidate_manifest), encoding="utf-8")
+            self.assertEqual(load_manifest(str(path), RUN_ID, candidate_id)["run_id"], candidate_id)
+            with self.assertRaisesRegex(RuntimeError, "运行编号"):
+                load_manifest(str(path), RUN_ID, "STG-20260920-03")
+
             for mutation in (
                 lambda value: value.update(candidate_image_digest="sha256:short"),
                 lambda value: value["dev_acceptance"].update(status="pending"),
@@ -610,9 +691,54 @@ class StagingLoadTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     load_manifest(str(path), RUN_ID)
 
+    def test_verify_cli_binds_candidate_and_load_run_ids_separately(self):
+        candidate_id = "STG-20260920-02"
+        manifest = {
+            "candidate_image_digest": "sha256:" + "a" * 64,
+            "commit": "b" * 40, "configuration_sha256": "c" * 64,
+            "staging_snapshot_id": "staging-" + "d" * 16,
+            "dev_acceptance": {"run_id": "dev-20260919-test"},
+            "event_pipeline_image_digests": DIGESTS,
+        }
+        argv = [
+            "staging.control", "verify", "--run-id", RUN_ID,
+            "--candidate-run-id", candidate_id, "--manifest", "manifest.json",
+            "--load-report", "load.json", "--resource-samples", "resources.json",
+            "--rollback-report", "rollback.json", "--manual-report", "manual.json",
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(staging_control, "require_staging_evidence_context",
+                         return_value=SimpleNamespace(run_id=RUN_ID, project="load", db_name="StagingLoad_test")),
+            patch.object(staging_control, "load_manifest", return_value=manifest) as load,
+            patch.object(staging_control, "assemble_report", return_value={"passed": True}) as assemble,
+            patch.object(sys, "argv", argv),
+            __import__("contextlib").redirect_stdout(output),
+        ):
+            self.assertEqual(staging_control.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["candidate_run_id"], candidate_id)
+        self.assertEqual(result["load_run_id"], RUN_ID)
+        load.assert_called_once_with("manifest.json", RUN_ID, candidate_id)
+        self.assertEqual(assemble.call_args.kwargs["run_id"], RUN_ID)
+        self.assertEqual(assemble.call_args.kwargs["candidate_run_id"], candidate_id)
+
+        with (
+            patch.object(staging_control, "require_staging_evidence_context",
+                         return_value=SimpleNamespace(run_id=RUN_ID, project="load", db_name="StagingLoad_test")),
+            patch.object(sys, "argv", [
+                "staging.control", "verify", "--run-id", RUN_ID,
+                "--candidate-run-id", RUN_ID, "--manifest", "manifest.json",
+            ]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "distinct"):
+                staging_control.main()
+
     def test_final_report_requires_load_resources_rollback_and_manual_acceptance(self):
+        candidate_id = "STG-20260920-02"
         load = {
-            "run_id": RUN_ID, "environment": "staging", "production_data": False,
+            "run_id": RUN_ID, "load_run_id": RUN_ID, "candidate_run_id": candidate_id,
+            "environment": "staging", "production_data": False,
             "execution_policy": {
                 "users": 75,
                 "workload_profile": profile_payload(get_profile("full75")),
@@ -655,7 +781,8 @@ class StagingLoadTests(unittest.TestCase):
         second["kafka"]["lag"] = 0
         second["flink"]["checkpoint_completed"] = 3
         second["derived_queue"] = {"pending": 0, "drain_seconds": 20}
-        envelope = {"run_id": RUN_ID, "environment": "staging", "production_data": False,
+        envelope = {"run_id": RUN_ID, "candidate_run_id": candidate_id,
+                    "environment": "staging", "production_data": False,
                     "samples": [first, second]}
         rollback = {"run_id": RUN_ID, "environment": "staging", "production_data": False,
                     "status": "passed", "python_worker_restored": True,
@@ -670,12 +797,15 @@ class StagingLoadTests(unittest.TestCase):
                 (root / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
             report = assemble_report(
                 run_id=RUN_ID,
+                candidate_run_id=candidate_id,
                 load_report_path=root / "load.json",
                 resource_samples_path=root / "resources.json",
                 rollback_report_path=root / "rollback.json",
                 manual_report_path=root / "manual.json",
             )
             self.assertTrue(report["passed"])
+            self.assertEqual(report["load_run_id"], RUN_ID)
+            self.assertEqual(report["candidate_run_id"], candidate_id)
             load["execution_policy"].update({
                 "users": 20,
                 "workload_profile": profile_payload(get_profile("low20")),
@@ -684,6 +814,7 @@ class StagingLoadTests(unittest.TestCase):
             (root / "load.json").write_text(json.dumps(load), encoding="utf-8")
             low_load = assemble_report(
                 run_id=RUN_ID,
+                candidate_run_id=candidate_id,
                 load_report_path=root / "load.json",
                 resource_samples_path=root / "resources.json",
                 rollback_report_path=root / "rollback.json",
@@ -708,6 +839,7 @@ class StagingLoadTests(unittest.TestCase):
             (root / "load.json").write_text(json.dumps(load), encoding="utf-8")
             limited = assemble_report(
                 run_id=RUN_ID,
+                candidate_run_id=candidate_id,
                 load_report_path=root / "load.json",
                 resource_samples_path=root / "resources.json",
                 rollback_report_path=root / "rollback.json",
@@ -729,6 +861,7 @@ class StagingLoadTests(unittest.TestCase):
             (root / "rollback.json").write_text(json.dumps(rollback), encoding="utf-8")
             self.assertFalse(assemble_report(
                 run_id=RUN_ID,
+                candidate_run_id=candidate_id,
                 load_report_path=root / "load.json",
                 resource_samples_path=root / "resources.json",
                 rollback_report_path=root / "rollback.json",

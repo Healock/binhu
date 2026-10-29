@@ -54,3 +54,19 @@ def validate_staging_environment(run_id: str, environ: dict[str, str] | None = N
 
 def require_staging_context(run_id: str) -> StagingContext:
     return validate_staging_environment(run_id)
+
+
+def require_staging_evidence_context(run_id: str) -> StagingContext:
+    env = os.environ
+    normalized = run_id.strip().upper()
+    if not RUN_ID_RE.fullmatch(normalized):
+        raise StagingSafetyError("运行编号必须使用 STG-YYYYMMDD-NN 格式")
+    if env.get("APP_ENVIRONMENT", "").strip().lower() != "staging":
+        raise StagingSafetyError("APP_ENVIRONMENT 必须严格为 staging")
+    if env.get("STAGING_LOAD_TEST_RUN_ID", "").strip().upper() != normalized:
+        raise StagingSafetyError("运行编号与 STAGING_LOAD_TEST_RUN_ID 不一致")
+    project = env.get("COMPOSE_PROJECT_NAME", "").strip()
+    expected = f"binhu-staging-load-{normalized.lower()}"
+    if project != expected:
+        raise StagingSafetyError(f"Compose 项目必须严格为 {expected}")
+    return StagingContext(normalized, project, "", "evidence-only")

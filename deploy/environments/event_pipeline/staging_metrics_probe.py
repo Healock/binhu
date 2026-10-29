@@ -12,7 +12,10 @@ from typing import Any
 import urllib.error
 import urllib.request
 
-from .staging_compose import BROKERS, EVENT_TOPIC
+from .staging_compose import (
+    BROKERS, EVENT_TOPIC, compose, model_sha256,
+    validate_pipeline_containers, validate_runtime_compose,
+)
 from .staging_prepare import root_for
 
 
@@ -33,6 +36,9 @@ PRODUCTION_PAUSE_DATABASES = (
     "DispatchData", "OnlineData", "OnlineDataArchive", "PlatformData",
     "RegistryData", "VisitData", "WorkflowData", "daily_report",
 )
+PIPELINE_STATE = Path("/var/lib/binhu-staging-event-pipeline")
+STAGING_APPLICATION_ROOT = Path("/srv/binhu-environments/staging")
+PIPELINE_IMAGE_KEYS = {"kafka", "schema_registry", "mysql", "redis", "worker", "flink"}
 
 
 def _run(command: list[str], *, timeout: int = 30, input_text: str | None = None) -> str:
@@ -246,6 +252,95 @@ def _containers(project: str) -> dict[str, Any]:
     }
 
 
+def _validate_load_candidate(candidate_run_id: str) -> tuple[dict[str, Any], str]:
+    if not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", candidate_run_id):
+        raise RuntimeError("Staging metrics candidate identity invalid")
+    root = root_for(candidate_run_id)
+    runtime_manifest_path = root / "manifest.json"
+    candidate_root = PIPELINE_STATE / "candidates" / candidate_run_id
+    candidate_manifest_path = candidate_root / "manifest.json"
+    current_path = PIPELINE_STATE / "current.json"
+    if (root.is_symlink() or not root.is_dir() or runtime_manifest_path.is_symlink()
+            or not runtime_manifest_path.is_file() or candidate_root.is_symlink()
+            or not candidate_root.is_dir() or candidate_manifest_path.is_symlink()
+            or not candidate_manifest_path.is_file() or current_path.is_symlink() or not current_path.is_file()):
+        raise RuntimeError("Staging metrics applied candidate missing")
+    manifest = json.loads(candidate_manifest_path.read_text(encoding="utf-8"))
+    runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    project = "binhu-staging-event-pipeline-" + candidate_run_id.lower()
+    images = manifest.get("images")
+    hashes = runtime_manifest.get("hashes")
+    if not isinstance(hashes, dict) or "compose.json" not in hashes:
+        raise RuntimeError("Staging metrics runtime file hashes missing")
+    for relative_name, expected_hash in hashes.items():
+        relative = Path(str(relative_name))
+        path = root / relative
+        if (relative.is_absolute() or ".." in relative.parts or path.is_symlink()
+                or not path.is_file() or root.resolve() not in path.resolve().parents
+                or not SHA256_RE.fullmatch(str(expected_hash or ""))
+                or _sha256_file(path) != expected_hash):
+            raise RuntimeError("Staging metrics runtime file hash mismatch")
+    try:
+        validate_runtime_compose(root, runtime_manifest, images, candidate_run_id)
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise RuntimeError("Staging metrics Compose identity mismatch")
+    if (manifest.get("environment") != "staging" or manifest.get("run_id") != candidate_run_id
+            or manifest.get("project") != project or manifest.get("ready_for_staging") is not True
+            or manifest.get("fictional_only") is not True or manifest.get("production_data") is not False
+            or manifest.get("started") is not True or manifest.get("acceptance") not in {"pending", "accepted"}
+            or current.get("environment") != "staging" or current.get("run_id") != candidate_run_id
+            or current.get("project") != project or current.get("started") is not True
+            or current.get("acceptance") not in {"pending", "accepted"}
+            or current.get("candidate_image_digest") != manifest.get("candidate_image_digest")
+            or current.get("images") != images or current.get("event_pipeline_image_digests") != images
+            or runtime_manifest.get("environment") != "staging"
+            or runtime_manifest.get("run_id") != candidate_run_id
+            or runtime_manifest.get("project") != project or runtime_manifest.get("images") != images
+            or runtime_manifest.get("started") is not True
+            or runtime_manifest.get("acceptance") not in {"pending", "accepted"}
+            or not isinstance(images, dict) or set(images) != PIPELINE_IMAGE_KEYS
+            or manifest.get("event_pipeline_image_digests") != images
+            or manifest.get("dev_acceptance", {}).get("event_pipeline_image_digests") != images
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("candidate_image_digest") or ""))
+            or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", str(value or "")) for value in images.values())):
+        raise RuntimeError("Staging metrics applied candidate identity mismatch")
+
+    application_path = STAGING_APPLICATION_ROOT / "manifest.json"
+    if application_path.is_symlink() or not application_path.is_file():
+        raise RuntimeError("Staging application manifest missing")
+    application = json.loads(application_path.read_text(encoding="utf-8"))
+    if (application.get("environment") != "staging" or application.get("project") != "binhu-staging"
+            or application.get("images", {}).get("backend") != manifest.get("candidate_image_digest")
+            or application.get("event_pipeline_image_digests") != images):
+        raise RuntimeError("Staging application candidate identity mismatch")
+
+    backend_ids = _run([
+        "docker", "ps", "-q", "--filter", "name=^/binhu-staging-backend-1$",
+    ]).split()
+    if len(backend_ids) != 1:
+        raise RuntimeError("Staging backend container identity missing")
+    backend = json.loads(_run(["docker", "inspect", *backend_ids]))[0]
+    labels = backend.get("Config", {}).get("Labels", {}) or {}
+    if (labels.get("binhu.environment") != "staging"
+            or labels.get("com.docker.compose.project") != "binhu-staging"
+            or labels.get("com.docker.compose.service") != "backend"
+            or backend.get("Image") != manifest.get("candidate_image_digest")):
+        raise RuntimeError("Staging backend container identity mismatch")
+
+    ids = _run([
+        "docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}",
+    ]).split()
+    if not ids:
+        raise RuntimeError("Staging pipeline containers missing")
+    containers = json.loads(_run(["docker", "inspect", *ids]))
+    try:
+        validate_pipeline_containers(containers, images, candidate_run_id)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    return manifest, project
+
+
 def _production_http(url: str) -> tuple[int, dict[str, Any] | None]:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
@@ -456,23 +551,17 @@ def sample(candidate_run_id: str, load_run_id: str, production_since_unix: int,
            production_mode: str = PRODUCTION_MODE_RUNNING,
            production_pause_run_id: str | None = None) -> dict[str, Any]:
     if (not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", candidate_run_id)
-            or candidate_run_id != "STG-20261029-02"
             or not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", load_run_id)
             or candidate_run_id == load_run_id):
         raise RuntimeError("Staging metrics run identity invalid")
-    root = root_for(candidate_run_id)
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("environment") != "staging" or manifest.get("run_id") != candidate_run_id:
-        raise RuntimeError("Staging metrics identity mismatch")
-    project = str(manifest["project"])
+    manifest, project = _validate_load_candidate(candidate_run_id)
     app_mysql = "binhu-staging-environment-mysql-1"
-    backend = "binhu-staging-environment-mysql-1"
     backend_env = Path("/srv/binhu-environments/staging/backend.env")
     if backend_env.is_symlink() or not backend_env.is_file():
         raise RuntimeError("Staging backend environment missing")
     derived_mysql = _container(project, "staging-derived-mysql")
     pipeline_redis = _container(project, "staging-derived-redis")
-    stat = Path(root).stat()
+    stat = Path(root_for(candidate_run_id)).stat()
     disk = Path(root).anchor or "/"
     usage = __import__("shutil").disk_usage(disk)
     meminfo = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())

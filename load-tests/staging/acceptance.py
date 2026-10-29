@@ -20,25 +20,33 @@ def _read_json(path: str | Path, label: str) -> Any:
         raise RuntimeError(f"{label} evidence is unreadable") from None
 
 
-def _identity(payload: dict[str, Any], run_id: str, label: str) -> None:
+def _identity(payload: dict[str, Any], run_id: str, label: str,
+              candidate_run_id: str | None = None, *, require_candidate: bool = False) -> None:
     if payload.get("run_id") != run_id or payload.get("environment") != "staging":
         raise RuntimeError(f"{label} identity mismatch")
     if payload.get("production_data") is not False:
         raise RuntimeError(f"{label} must exclude Production data")
+    if candidate_run_id is not None:
+        observed = payload.get("candidate_run_id")
+        if (require_candidate and observed != candidate_run_id) or (observed is not None and observed != candidate_run_id):
+            raise RuntimeError(f"{label} candidate identity mismatch")
 
 
 def assemble_report(
     *,
     run_id: str,
+    candidate_run_id: str | None = None,
     load_report_path: str | Path,
     resource_samples_path: str | Path,
     rollback_report_path: str | Path,
     manual_report_path: str | Path,
 ) -> dict[str, Any]:
+    candidate_run_id = candidate_run_id or run_id
+    require_candidate_identity = candidate_run_id != run_id
     load = _read_json(load_report_path, "load")
     if not isinstance(load, dict):
         raise RuntimeError("load evidence must be an object")
-    _identity(load, run_id, "load")
+    _identity(load, run_id, "load", candidate_run_id, require_candidate=require_candidate_identity)
     execution = load.get("execution_policy")
     memory_gate = execution.get("memory_gate") if isinstance(execution, dict) else None
     profile = execution.get("workload_profile") if isinstance(execution, dict) else None
@@ -69,7 +77,8 @@ def assemble_report(
     samples_envelope = _read_json(resource_samples_path, "resource")
     if not isinstance(samples_envelope, dict):
         raise RuntimeError("resource evidence must be an object")
-    _identity(samples_envelope, run_id, "resource")
+    _identity(samples_envelope, run_id, "resource", candidate_run_id,
+              require_candidate=require_candidate_identity)
     samples = samples_envelope.get("samples")
     if not isinstance(samples, list) or len(samples) < 2:
         raise RuntimeError("resource evidence requires at least two samples")
@@ -78,8 +87,8 @@ def assemble_report(
     manual = _read_json(manual_report_path, "manual")
     if not isinstance(rollback, dict) or not isinstance(manual, dict):
         raise RuntimeError("rollback and manual evidence must be objects")
-    _identity(rollback, run_id, "rollback")
-    _identity(manual, run_id, "manual")
+    _identity(rollback, run_id, "rollback", candidate_run_id)
+    _identity(manual, run_id, "manual", candidate_run_id)
 
     resources = summarize_resource_samples(samples)
     combined = {**load, "resources": resources}
@@ -103,6 +112,8 @@ def assemble_report(
     checks_passed = threshold_result["passed"] and rollback_passed and manual_passed
     return {
         "run_id": run_id,
+        "load_run_id": run_id,
+        "candidate_run_id": candidate_run_id,
         "environment": "staging",
         "production_data": False,
         "load": load,

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import importlib.util
 import re
 import tempfile
@@ -952,7 +953,13 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         wrapper = (root / "binhu-staging-event-pipeline-gateway").read_text(encoding="utf-8")
         installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
         gateway = (root / "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
         self.assertIn("binhu-staging-deploy", installer)
+        self.assertIn("staging_compose.py /usr/local/libexec/staging_compose.py", installer)
+        self.assertIn("identity.py /usr/local/libexec/identity.py", installer)
+        self.assertIn("deploy/environments/event_pipeline/staging_compose.py", workflow)
+        self.assertIn("deploy/environments/event_pipeline/identity.py", workflow)
         self.assertIn("^STG-[0-9]{8}-[0-9]{2}$", wrapper)
         self.assertIn('sys.argv[1] == "sample"', gateway)
         self.assertIn('sys.argv[1] in {"measure", "apply", "switch", "rollback"}', gateway)
@@ -1229,6 +1236,295 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             seed.index('"docker", "run"'),
         )
 
+    def test_staging_gateway_load_candidate_is_dynamic_but_bound_to_applied_manifest(self):
+        run_id = "STG-20261029-02"
+        project = staging_compose.project_for(run_id)
+        candidate = {
+            "environment": "staging", "run_id": run_id, "project": project,
+            "ready_for_staging": True, "fictional_only": True, "production_data": False,
+            "started": True, "acceptance": "pending",
+            "candidate_image_digest": "sha256:" + "a" * 64,
+            "images": images(), "event_pipeline_image_digests": images(),
+            "dev_acceptance": {"event_pipeline_image_digests": images()},
+        }
+        current = json.loads(json.dumps(candidate))
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            candidates = state / "candidates"
+            root = candidates / run_id
+            root.mkdir(parents=True)
+            (root / "manifest.json").write_text(json.dumps(candidate), encoding="utf-8")
+            compose_payload = staging_compose.compose(candidate["images"], run_id)
+            compose_bytes = json.dumps(compose_payload, sort_keys=True).encode()
+            runtime_root = state / "runtime" / run_id
+            runtime_root.mkdir(parents=True)
+            (runtime_root / "compose.json").write_bytes(compose_bytes)
+            runtime_manifest = {
+                "environment": "staging", "run_id": run_id, "project": project,
+                "images": candidate["images"], "started": True, "acceptance": "pending",
+                "hashes": {"compose.json": hashlib.sha256(compose_bytes).hexdigest()},
+                "compose_model_sha256": staging_compose.model_sha256(candidate["images"], run_id),
+            }
+            (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+            current = json.loads(json.dumps(candidate))
+            (state / "current.json").write_text(json.dumps(current), encoding="utf-8")
+            with (patch.object(staging_gateway, "STATE", state),
+                  patch.object(staging_gateway, "CANDIDATES", candidates),
+                  patch.object(staging_gateway, "PIPELINE_RUNTIME_ROOT", state / "runtime")):
+                self.assertEqual(staging_gateway._load_pipeline_candidate(run_id), candidate)
+                altered_compose = json.loads(compose_bytes)
+                altered_compose["services"]["schema-registry"]["mem_limit"] = "1g"
+                altered_bytes = json.dumps(altered_compose, sort_keys=True).encode()
+                (runtime_root / "compose.json").write_bytes(altered_bytes)
+                runtime_manifest["hashes"]["compose.json"] = hashlib.sha256(altered_bytes).hexdigest()
+                (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+                with self.assertRaisesRegex(SystemExit, "controlled model"):
+                    staging_gateway._load_pipeline_candidate(run_id)
+                (runtime_root / "compose.json").write_bytes(compose_bytes)
+                runtime_manifest["hashes"]["compose.json"] = hashlib.sha256(compose_bytes).hexdigest()
+                runtime_manifest["compose_model_sha256"] = "b" * 64
+                (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+                with self.assertRaisesRegex(SystemExit, "controlled model"):
+                    staging_gateway._load_pipeline_candidate(run_id)
+                runtime_manifest["compose_model_sha256"] = staging_compose.model_sha256(candidate["images"], run_id)
+                (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+                current["run_id"] = "STG-20261029-03"
+                (state / "current.json").write_text(json.dumps(current), encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    staging_gateway._load_pipeline_candidate(run_id)
+
+    def test_staging_gateway_seed_uses_candidate_identity_and_requires_all_1440_rows(self):
+        candidate_id = "STG-20261029-02"
+        load_id = "STG-20261029-10"
+        digest = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            candidates = state / "candidates"
+            source = candidates / candidate_id / "source" / "load-tests" / "staging"
+            source.mkdir(parents=True)
+            (source / "seed.py").write_text("# fixture", encoding="utf-8")
+            env_root = Path(directory) / "staging"
+            env_root.mkdir()
+            payload = {
+                "environment": "staging", "run_id": load_id, "load_run_id": load_id,
+                "candidate_run_id": candidate_id, "fictional_only": True,
+                "production_data": False,
+                "accounts": [{"username": f"u{i}"} for i in range(75)],
+                "tasks": [{"row_key": f"key-{i}", "source_id": i + 1} for i in range(1440)],
+                "seed": {"phase": "seed", "status": "passed", "task_count": 1440,
+                         "expectation_count": 1440, "conflict_count": 0,
+                         "platform_side_effects": {"platform_transaction_commits": 1}},
+            }
+            completed = subprocess.CompletedProcess(
+                args=["docker"], returncode=0,
+                stdout=json.dumps(payload) + "\n", stderr="",
+            )
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "environment", return_value={"STAGING_LOAD_TEST_PASSWORD": "p" * 20}),
+                patch.object(staging_gateway, "_staging_backend", return_value=(digest, env_root)),
+                patch.object(staging_gateway.subprocess, "run", return_value=completed) as run,
+                redirect_stdout(output),
+            ):
+                staging_gateway.seed(candidate_id, load_id)
+                self.assertEqual(run.call_count, 1)
+                command = run.call_args.args[0]
+                self.assertIn(f"{source}:/staging-load:ro", command)
+                self.assertIn("--candidate-run-id", command)
+                self.assertEqual(command[command.index("--candidate-run-id") + 1], candidate_id)
+                record = json.loads((state / "evidence" / load_id / "seed.json").read_text(encoding="utf-8"))
+                self.assertEqual(record["status"], "passed")
+                self.assertEqual(record["task_count"], 1440)
+            with patch.object(staging_gateway, "_staging_backend") as backend:
+                with self.assertRaises(SystemExit):
+                    staging_gateway.seed(candidate_id, candidate_id)
+                backend.assert_not_called()
+
+    def test_failed_staging_seed_records_platform_side_effects_without_reusing_run(self):
+        candidate_id = "STG-20261029-02"
+        load_id = "STG-20261029-11"
+        digest = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            candidates = state / "candidates"
+            source = candidates / candidate_id / "source" / "load-tests" / "staging"
+            source.mkdir(parents=True)
+            (source / "seed.py").write_text("# fixture", encoding="utf-8")
+            env_root = Path(directory) / "staging"
+            env_root.mkdir()
+            failure = {
+                "phase": "seed", "status": "failed", "candidate_run_id": candidate_id,
+                "load_run_id": load_id, "error_type": "ValueError",
+                "committed_task_count": 0, "committed_expectation_count": 0,
+                "online_data_status": "not_started", "projection_status": "not_started",
+                "projection_statuses": {}, "conflict_detected": True,
+                "error_code": "local_business_key_conflict",
+                "conflict_count": None, "conflict_count_unknown": True,
+                "platform_side_effects": {
+                    "platform_transaction_commits": 1, "community_upsert_attempts": 12,
+                    "department_upsert_attempts": 12, "grid_member_upsert_attempts": 75,
+                    "user_upsert_attempts": 75,
+                },
+            }
+            completed = subprocess.CompletedProcess(
+                args=["docker"], returncode=1,
+                stdout=json.dumps(failure) + "\n", stderr="controlled seed failure",
+            )
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "environment", return_value={"STAGING_LOAD_TEST_PASSWORD": "p" * 20}),
+                patch.object(staging_gateway, "_staging_backend", return_value=(digest, env_root)),
+                patch.object(staging_gateway.subprocess, "run", return_value=completed) as run,
+                redirect_stdout(output),
+            ):
+                with self.assertRaises(SystemExit):
+                    staging_gateway.seed(candidate_id, load_id)
+            command = run.call_args.args[0]
+            self.assertIn("--rm", command)
+            record = json.loads((state / "evidence" / load_id / "seed.json").read_text(encoding="utf-8"))
+            self.assertEqual(record["candidate_run_id"], candidate_id)
+            self.assertEqual(record["load_run_id"], load_id)
+            self.assertEqual(record["committed_task_count"], 0)
+            self.assertEqual(record["committed_expectation_count"], 0)
+            self.assertIsNone(record["conflict_count"])
+            self.assertTrue(record["conflict_count_unknown"])
+            self.assertTrue(record["conflict_detected"])
+            self.assertEqual(record["error_code"], "local_business_key_conflict")
+            self.assertEqual(record["platform_side_effects"]["user_upsert_attempts"], 75)
+            self.assertFalse((state / "evidence" / load_id / "runtime-index.json").exists())
+            with self.assertRaises(SystemExit):
+                staging_gateway.seed(candidate_id, load_id)
+
+            unknown_load_id = "STG-20261029-12"
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "environment", return_value={"STAGING_LOAD_TEST_PASSWORD": "p" * 20}),
+                patch.object(staging_gateway, "_staging_backend", return_value=(digest, env_root)),
+                patch.object(staging_gateway.subprocess, "run",
+                             side_effect=subprocess.TimeoutExpired(["docker", "run"], 900)),
+                redirect_stdout(StringIO()),
+            ):
+                with self.assertRaises(SystemExit):
+                    staging_gateway.seed(candidate_id, unknown_load_id)
+            unknown = json.loads((state / "evidence" / unknown_load_id / "seed.json").read_text(encoding="utf-8"))
+            self.assertEqual(unknown["error_code"], "staging_seed_runtime_unknown")
+            self.assertIsNone(unknown["committed_task_count"])
+            self.assertEqual(unknown["projection_status"], "unknown")
+            self.assertEqual(unknown["platform_side_effects"], {"status": "unknown"})
+
+    def test_metrics_probe_accepts_any_matching_applied_candidate_and_checks_live_digests(self):
+        candidate_id = "STG-20261029-02"
+        project = staging_compose.project_for(candidate_id)
+        candidate_images = images()
+        candidate = {
+            "environment": "staging", "run_id": candidate_id, "project": project,
+            "ready_for_staging": True, "fictional_only": True, "production_data": False,
+            "started": True, "acceptance": "pending",
+            "candidate_image_digest": "sha256:" + "a" * 64,
+            "images": candidate_images,
+            "event_pipeline_image_digests": candidate_images,
+            "dev_acceptance": {"event_pipeline_image_digests": candidate_images},
+        }
+        compose_payload = staging_compose.compose(candidate_images, candidate_id)
+        compose_bytes = json.dumps(compose_payload, sort_keys=True).encode()
+        current = json.loads(json.dumps(candidate))
+        labels = {
+            "binhu.environment": "staging",
+            "com.docker.compose.project": "binhu-staging",
+            "com.docker.compose.service": "backend",
+        }
+        backend = {"Image": candidate["candidate_image_digest"], "Config": {"Labels": labels}}
+        service_models = staging_compose.compose(candidate_images, candidate_id)["services"]
+        pipeline = [{
+            "Image": service_model["image"],
+            "State": {"Status": "running", "Running": True},
+            "Config": {"Labels": {
+                "binhu.environment": "staging", "binhu.run_id": candidate_id,
+                "com.docker.compose.project": project,
+                "com.docker.compose.service": service,
+                "binhu.production_data": "false",
+            }},
+        } for service, service_model in service_models.items()]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate_root = root / "candidate"
+            candidate_root.mkdir()
+            (candidate_root / "compose.json").write_bytes(compose_bytes)
+            state = root / "pipeline-state"
+            state.mkdir()
+            candidate_directory = state / "candidates" / candidate_id
+            candidate_directory.mkdir(parents=True)
+            (candidate_directory / "manifest.json").write_text(json.dumps(candidate), encoding="utf-8")
+            runtime_manifest = {
+                "environment": "staging", "run_id": candidate_id, "project": project,
+                "images": candidate_images, "started": True, "acceptance": "pending",
+                "hashes": {"compose.json": hashlib.sha256(compose_bytes).hexdigest()},
+                "compose_model_sha256": staging_compose.model_sha256(candidate_images, candidate_id),
+            }
+            (candidate_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+            (state / "current.json").write_text(json.dumps(current), encoding="utf-8")
+            app_root = root / "staging-app"
+            app_root.mkdir()
+            (app_root / "manifest.json").write_text(json.dumps({
+                "environment": "staging", "project": "binhu-staging",
+                "images": {"backend": candidate["candidate_image_digest"]},
+                "event_pipeline_image_digests": candidate_images,
+            }), encoding="utf-8")
+
+            def run(command, **_kwargs):
+                if command[:3] == ["docker", "ps", "-q"]:
+                    return "backend-id\n"
+                if command[:3] == ["docker", "ps", "-aq"]:
+                    return "pipeline-" + "\npipeline-".join(str(i) for i in range(6)) + "\n"
+                if command[:2] == ["docker", "inspect"] and command[2] == "backend-id":
+                    return json.dumps([backend])
+                if command[:2] == ["docker", "inspect"]:
+                    return json.dumps(pipeline)
+                raise AssertionError(command)
+
+            with (
+                patch.object(staging_metrics_probe, "root_for", return_value=candidate_root),
+                patch.object(staging_metrics_probe, "PIPELINE_STATE", state),
+                patch.object(staging_metrics_probe, "STAGING_APPLICATION_ROOT", app_root),
+                patch.object(staging_metrics_probe, "_run", side_effect=run),
+            ):
+                actual, actual_project = staging_metrics_probe._validate_load_candidate(candidate_id)
+                self.assertEqual(actual["run_id"], candidate_id)
+                self.assertEqual(actual_project, project)
+                pipeline[0]["State"]["Running"] = False
+                with self.assertRaisesRegex(RuntimeError, "container identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                pipeline[0]["State"]["Running"] = True
+                missing = pipeline.pop()
+                with self.assertRaisesRegex(RuntimeError, "service set incomplete"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                pipeline.append(missing)
+                with self.assertRaisesRegex(RuntimeError, "run identity invalid"):
+                    staging_metrics_probe.sample(candidate_id, candidate_id, 1790000000)
+
+                app_manifest_path = app_root / "manifest.json"
+                app_manifest = json.loads(app_manifest_path.read_text(encoding="utf-8"))
+                app_manifest["images"]["backend"] = "sha256:" + "f" * 64
+                app_manifest_path.write_text(json.dumps(app_manifest), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "application candidate identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                app_manifest["images"]["backend"] = candidate["candidate_image_digest"]
+                app_manifest_path.write_text(json.dumps(app_manifest), encoding="utf-8")
+
+                backend["Config"]["Labels"]["com.docker.compose.project"] = "binhu-production"
+                with self.assertRaisesRegex(RuntimeError, "backend container identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                backend["Config"]["Labels"]["com.docker.compose.project"] = "binhu-staging"
+
+                pipeline[0]["Image"] = "sha256:" + "f" * 64
+                with self.assertRaisesRegex(RuntimeError, "pipeline container identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+
     def test_retirement_is_fixed_to_authorized_run_and_preserves_volumes(self):
         gateway = (
             Path(__file__).parents[1] / "environments" / "event_pipeline" /
@@ -1324,7 +1620,8 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         gateway = (Path(__file__).parents[1] / "environments" / "event_pipeline" /
                    "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
         self.assertIn('"${#parts[@]}" -eq 4 || "${#parts[@]}" -eq 6', wrapper)
-        self.assertIn('"${parts[1]}" == STG-20261029-02', wrapper)
+        self.assertIn('"${parts[1]}" =~ ^STG-[0-9]{8}-[0-9]{2}$', wrapper)
+        self.assertNotIn('"${parts[1]}" == STG-20261029-02', wrapper)
         self.assertIn('"${parts[4]}" == production_paused', wrapper)
         self.assertIn('"${parts[5]}" =~ ^PROD-PAUSE-[0-9]{8}-[0-9]{2}$', wrapper)
         self.assertIn('re.fullmatch(r"PROD-PAUSE-[0-9]{8}-[0-9]{2}", sys.argv[6])', gateway)
