@@ -2082,47 +2082,6 @@ async def list_writeback_audit(
             params + [page_size, (page - 1) * page_size],
         )
         rows = await cur.fetchall()
-        projection_engine = "mysql"
-        projection_status = "authoritative"
-        projection_hints: dict[str, dict[str, Any]] = {}
-        if (
-            settings.APP_ENVIRONMENT in {"development", "staging"}
-            and str(getattr(settings, "ARCHITECTURE_UPGRADE_DOMAIN", "")) == "online_source"
-        ):
-            configured_engine = selected_engine(
-                settings.APP_ENVIRONMENT,
-                read_source=getattr(settings, "ARCHITECTURE_UPGRADE_READ_SOURCE", "mysql"),
-            )
-            run_id = str(getattr(settings, "ARCHITECTURE_UPGRADE_RUN_ID", "") or "").strip()
-            database = str(
-                getattr(settings, "ARCHITECTURE_UPGRADE_DERIVED_DATABASE", "") or ""
-            ).strip()
-            if configured_engine == "flink" and run_id and database:
-                projection_engine = "flink"
-                for row in rows:
-                    if row[5] is None:
-                        continue
-                    try:
-                        hint = await read_derived_projection(
-                            cur,
-                            environment=settings.APP_ENVIRONMENT,
-                            run_id=run_id,
-                            task_id=str(row[0]),
-                            source_id=int(row[5]),
-                            engine="flink",
-                            database=database,
-                        )
-                    except Exception:
-                        if not getattr(settings, "ARCHITECTURE_UPGRADE_FALLBACK_ENABLED", True):
-                            raise HTTPException(status_code=503, detail="派生投影暂不可用") from None
-                        projection_status = "mysql_fallback"
-                        break
-                    if hint is not None:
-                        projection_hints[str(row[0])] = hint
-                else:
-                    projection_status = "flink_freshness_checked"
-            elif configured_engine == "flink":
-                projection_status = "mysql_fallback_missing_contract"
     return {
         "data": [
             {
@@ -2346,6 +2305,29 @@ async def _projection_query(
             f"{active_source_sql_filter(parser_type, 'single_source')})=1"
         )
 
+    projection_engine = "mysql"
+    projection_status = "authoritative"
+    projection_hints: dict[str, dict[str, Any]] = {}
+    configured_engine = "mysql"
+    run_id = ""
+    database = ""
+    if (
+        settings.APP_ENVIRONMENT in {"development", "staging"}
+        and str(getattr(settings, "ARCHITECTURE_UPGRADE_DOMAIN", "")) == "online_source"
+    ):
+        configured_engine = selected_engine(
+            settings.APP_ENVIRONMENT,
+            read_source=getattr(settings, "ARCHITECTURE_UPGRADE_READ_SOURCE", "mysql"),
+        )
+        run_id = str(getattr(settings, "ARCHITECTURE_UPGRADE_RUN_ID", "") or "").strip()
+        database = str(
+            getattr(settings, "ARCHITECTURE_UPGRADE_DERIVED_DATABASE", "") or ""
+        ).strip()
+    if configured_engine == "flink" and run_id and database:
+        projection_engine = "flink"
+    elif configured_engine == "flink":
+        projection_status = "mysql_fallback_missing_contract"
+
     async with conn.cursor() as cur:
         await cur.execute(
             f"SELECT COUNT(*) FROM _online_source_projection AS projection{where}",
@@ -2373,6 +2355,29 @@ async def _projection_query(
             params + [page_size, (page - 1) * page_size],
         )
         rows = await cur.fetchall()
+        if projection_engine == "flink":
+            for row in rows:
+                if row[5] is None:
+                    continue
+                try:
+                    hint = await read_derived_projection(
+                        cur,
+                        environment=settings.APP_ENVIRONMENT,
+                        run_id=run_id,
+                        task_id=str(row[0]),
+                        source_id=int(row[5]),
+                        engine="flink",
+                        database=database,
+                    )
+                except Exception:
+                    if not getattr(settings, "ARCHITECTURE_UPGRADE_FALLBACK_ENABLED", True):
+                        raise HTTPException(status_code=503, detail="派生投影暂不可用") from None
+                    projection_status = "mysql_fallback"
+                    break
+                if hint is not None:
+                    projection_hints[str(row[0])] = hint
+            else:
+                projection_status = "flink_freshness_checked"
         effective_source_counts: dict[str, int] = {}
         if local_data_source_enabled() and rows:
             row_keys = [str(row[0]) for row in rows]
