@@ -10,6 +10,8 @@ command -v useradd >/dev/null && command -v visudo >/dev/null && command -v open
 
 wrapper=/usr/local/bin/binhu-staging-event-pipeline-gateway
 install -o root -g root -m 0755 binhu-staging-event-pipeline-gateway.py /usr/local/libexec/binhu-staging-event-pipeline-gateway.py
+install -o root -g root -m 0644 staging_compose.py /usr/local/libexec/staging_compose.py
+install -o root -g root -m 0644 identity.py /usr/local/libexec/identity.py
 install -o root -g root -m 0755 staging_backend_network.py /usr/local/libexec/binhu-staging-backend-network.py
 install -o root -g root -m 0755 staging_measure_diagnostic.py /usr/local/libexec/binhu-staging-measure-diagnostic.py
 install -o root -g root -m 0755 staging_apply_runtime_diagnostic.py /usr/local/libexec/binhu-staging-apply-runtime-diagnostic.py

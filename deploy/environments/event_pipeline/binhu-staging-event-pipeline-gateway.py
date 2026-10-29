@@ -13,12 +13,21 @@ import sys
 import tarfile
 from datetime import datetime, timezone
 
+try:
+    from deploy.environments.event_pipeline.staging_compose import (
+        validate_pipeline_containers, validate_runtime_compose,
+    )
+except ImportError:
+    from staging_compose import validate_pipeline_containers, validate_runtime_compose
+
 
 STATE = Path("/var/lib/binhu-staging-event-pipeline")
 CANDIDATES = STATE / "candidates"
+PIPELINE_RUNTIME_ROOT = Path("/srv/binhu-environments/staging-event-pipeline")
 RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SAFE_EXCEPTION_TYPES = frozenset({
     "ModuleNotFoundError", "ImportError", "SyntaxError", "FileNotFoundError",
     "PermissionError", "TimeoutExpired", "CalledProcessError", "ValueError",
@@ -33,7 +42,6 @@ MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA2
 # shape, but the root gateway must enforce the actual authorization boundary.
 RETIRE_TARGETS = frozenset({"STG-20261027-07", "STG-20261028-03"})
 RETIRE_SUCCESSOR = "STG-20261027-02"
-LOAD_CANDIDATE_RUN_ID = "STG-20261029-02"
 FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})
 FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
 MEASURE_DIAGNOSTIC_RUN_ID = "STG-20261028-01"
@@ -589,15 +597,87 @@ def control(run_id: str, action: str, production_since_unix: int | None = None,
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
+def _load_pipeline_candidate(run_id: str) -> dict:
+    if not RUN_RE.fullmatch(run_id):
+        fail("Staging candidate identity invalid")
+    candidate_root = CANDIDATES / run_id
+    manifest_path = candidate_root / "manifest.json"
+    current_path = STATE / "current.json"
+    if (candidate_root.is_symlink() or not candidate_root.is_dir()
+            or manifest_path.is_symlink() or not manifest_path.is_file()
+            or current_path.is_symlink() or not current_path.is_file()):
+        fail("applied Staging pipeline candidate required")
+    candidate = json.loads(manifest_path.read_text(encoding="utf-8"))
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    images = candidate.get("images")
+    runtime_root = PIPELINE_RUNTIME_ROOT / run_id
+    runtime_manifest_path = runtime_root / "manifest.json"
+    if (runtime_root.is_symlink() or not runtime_root.is_dir()
+            or runtime_manifest_path.is_symlink() or not runtime_manifest_path.is_file()):
+        fail("Staging pipeline runtime manifest missing")
+    runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(images, dict) or set(images) != {
+        "kafka", "schema_registry", "mysql", "redis", "worker", "flink",
+    }:
+        fail("Staging candidate image set invalid")
+    hashes = runtime_manifest.get("hashes")
+    if not isinstance(hashes, dict) or "compose.json" not in hashes:
+        fail("Staging runtime file hashes missing")
+    for relative_name, expected_hash in hashes.items():
+        relative = Path(str(relative_name))
+        path = runtime_root / relative
+        if (relative.is_absolute() or ".." in relative.parts or path.is_symlink()
+                or not path.is_file() or runtime_root.resolve() not in path.resolve().parents
+                or not SHA_RE.fullmatch(str(expected_hash or ""))
+                or hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash):
+            fail("Staging runtime file hash mismatch")
+    try:
+        validate_runtime_compose(runtime_root, runtime_manifest, images, run_id)
+    except (OSError, ValueError, json.JSONDecodeError):
+        fail("Staging Compose differs from controlled model")
+    if (candidate.get("environment") != "staging" or candidate.get("run_id") != run_id
+            or candidate.get("project") != "binhu-staging-event-pipeline-" + run_id.lower()
+            or candidate.get("ready_for_staging") is not True
+            or candidate.get("fictional_only") is not True
+            or candidate.get("production_data") is not False
+            or candidate.get("started") is not True
+            or candidate.get("acceptance") not in {"pending", "accepted"}
+            or current.get("environment") != "staging" or current.get("run_id") != run_id
+            or current.get("project") != candidate.get("project")
+            or current.get("fictional_only") is not True
+            or current.get("production_data") is not False
+            or current.get("started") is not True
+            or current.get("acceptance") not in {"pending", "accepted"}
+            or current.get("candidate_image_digest") != candidate.get("candidate_image_digest")
+            or current.get("images") != images
+            or current.get("event_pipeline_image_digests") != images
+            or not isinstance(images, dict) or set(images) != {
+                "kafka", "schema_registry", "mysql", "redis", "worker", "flink",
+            }
+            or candidate.get("event_pipeline_image_digests") != images
+            or candidate.get("dev_acceptance", {}).get("event_pipeline_image_digests") != images
+            or runtime_manifest.get("environment") != "staging"
+            or runtime_manifest.get("run_id") != run_id
+            or runtime_manifest.get("project") != candidate.get("project")
+            or runtime_manifest.get("images") != images
+            or runtime_manifest.get("started") is not True
+            or runtime_manifest.get("acceptance") not in {"pending", "accepted"}
+            or not DIGEST_RE.fullmatch(str(candidate.get("candidate_image_digest") or ""))
+            or any(not DIGEST_RE.fullmatch(str(value or "")) for value in images.values())):
+        fail("Staging candidate manifest or applied state mismatch")
+    return candidate
+
+
 def _staging_backend(run_id: str) -> tuple[str, Path]:
     environment_root = Path("/srv/binhu-environments/staging")
     manifest_path = environment_root / "manifest.json"
     if manifest_path.is_symlink() or not manifest_path.is_file():
         fail("Staging application manifest missing")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    candidate = json.loads(((CANDIDATES / run_id) / "manifest.json").read_text(encoding="utf-8"))
+    candidate = _load_pipeline_candidate(run_id)
     if (manifest.get("environment") != "staging" or manifest.get("project") != "binhu-staging"
-            or manifest.get("images", {}).get("backend") != candidate.get("candidate_image_digest")):
+            or manifest.get("images", {}).get("backend") != candidate.get("candidate_image_digest")
+            or manifest.get("event_pipeline_image_digests") != candidate.get("images")):
         fail("Staging application is not the Dev-accepted immutable candidate")
     ids = subprocess.run(
         ["docker", "ps", "-q", "--filter", "name=^/binhu-staging-backend-1$"],
@@ -609,27 +689,44 @@ def _staging_backend(run_id: str) -> tuple[str, Path]:
         ["docker", "inspect", ids[0]], check=True, capture_output=True, text=True, timeout=30,
     ).stdout)[0]
     labels = inspected.get("Config", {}).get("Labels", {}) or {}
-    if labels.get("binhu.environment") != "staging" or inspected.get("Image") != candidate["candidate_image_digest"]:
+    if (labels.get("binhu.environment") != "staging"
+            or labels.get("com.docker.compose.project") != "binhu-staging"
+            or labels.get("com.docker.compose.service") != "backend"
+            or inspected.get("Image") != candidate["candidate_image_digest"]):
         fail("Staging backend identity mismatch")
+    pipeline_ids = subprocess.run(
+        ["docker", "ps", "-aq", "--filter",
+         f"label=com.docker.compose.project={candidate['project']}"],
+        check=True, capture_output=True, text=True, timeout=30,
+    ).stdout.split()
+    pipeline_containers = json.loads(subprocess.run(
+        ["docker", "inspect", *pipeline_ids], check=True, capture_output=True,
+        text=True, timeout=30,
+    ).stdout) if pipeline_ids else []
+    try:
+        validate_pipeline_containers(pipeline_containers, candidate["images"], run_id)
+    except ValueError as error:
+        fail(str(error))
     return candidate["candidate_image_digest"], environment_root
 
 
 def seed(candidate_run_id: str, load_run_id: str) -> None:
-    if (candidate_run_id != LOAD_CANDIDATE_RUN_ID
-            or not RUN_RE.fullmatch(load_run_id)
+    if (not RUN_RE.fullmatch(load_run_id)
             or candidate_run_id == load_run_id
-            or not (CANDIDATES / candidate_run_id).is_dir()):
+            or not RUN_RE.fullmatch(candidate_run_id)):
         fail("prepared Staging candidate required")
     evidence = STATE / "evidence" / load_run_id
     index = evidence / "runtime-index.json"
-    if evidence.is_symlink() or index.exists() or index.is_symlink():
+    seed_evidence = evidence / "seed.json"
+    if (evidence.is_symlink() or index.exists() or index.is_symlink()
+            or seed_evidence.exists() or seed_evidence.is_symlink()):
         fail("Staging fixture run already exists")
     image, environment_root = _staging_backend(candidate_run_id)
     env = environment()
     password = env.get("STAGING_LOAD_TEST_PASSWORD", "")
     if len(password) < 16:
         fail("private Staging load-test password missing")
-    source = (CANDIDATES / run_id) / "source" / "load-tests" / "staging"
+    source = (CANDIDATES / candidate_run_id) / "source" / "load-tests" / "staging"
     if source.is_symlink() or not (source / "seed.py").is_file():
         fail("fixed Staging seeder missing")
     command = [
@@ -642,13 +739,64 @@ def seed(candidate_run_id: str, load_run_id: str) -> None:
         "--env", f"STAGING_LOAD_TEST_RUN_ID={load_run_id}",
         "--volume", f"{source}:/staging-load:ro",
         "--entrypoint", "python", image, "/staging-load/seed.py",
+        "--candidate-run-id", candidate_run_id,
         "--run-id", load_run_id, "--password-stdin",
     ]
-    result = subprocess.run(
-        command, input=password + "\n", capture_output=True, text=True, timeout=900,
-    )
+    try:
+        result = subprocess.run(
+            command, input=password + "\n", capture_output=True, text=True, timeout=900,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        password = ""
+        evidence.mkdir(parents=True, mode=0o700, exist_ok=True)
+        failure_record = {
+            "environment": "staging", "phase": "seed", "status": "failed",
+            "candidate_run_id": candidate_run_id, "load_run_id": load_run_id,
+            "committed_task_count": None, "committed_expectation_count": None,
+            "online_data_status": "unknown", "projection_status": "unknown",
+            "projection_statuses": {}, "conflict_detected": None,
+            "conflict_count": None, "conflict_count_unknown": True,
+            "platform_side_effects": {"status": "unknown"},
+            "error_type": "TimeoutExpired" if isinstance(error, subprocess.TimeoutExpired) else "OSError",
+            "error_code": "staging_seed_runtime_unknown",
+        }
+        seed_evidence.write_text(json.dumps(failure_record, sort_keys=True) + "\n", encoding="utf-8")
+        seed_evidence.chmod(0o600)
+        fail("Staging fixture seed ended without a complete result; side effects are unknown")
     password = ""
     if result.returncode:
+        failure_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
+        failure = {}
+        if failure_lines:
+            try:
+                failure = json.loads(failure_lines[-1])
+            except json.JSONDecodeError:
+                failure = {}
+        evidence.mkdir(parents=True, mode=0o700, exist_ok=True)
+        error_code = failure.get("error_code")
+        if error_code not in {
+            "local_business_key_conflict", "staging_seed_failed", "staging_seed_runtime_unknown",
+        }:
+            error_code = "staging_seed_failed"
+        failure_record = {
+            "environment": "staging", "phase": "seed", "status": "failed",
+            "candidate_run_id": candidate_run_id, "load_run_id": load_run_id,
+            "committed_task_count": failure.get("committed_task_count")
+            if type(failure.get("committed_task_count")) is int else None,
+            "committed_expectation_count": failure.get("committed_expectation_count")
+            if type(failure.get("committed_expectation_count")) is int else None,
+            "online_data_status": failure.get("online_data_status", "unknown"),
+            "projection_status": failure.get("projection_status", "unknown"),
+            "projection_statuses": failure.get("projection_statuses", {}),
+            "conflict_detected": failure.get("conflict_detected"),
+            "conflict_count": failure.get("conflict_count") if type(failure.get("conflict_count")) is int else None,
+            "conflict_count_unknown": failure.get("conflict_count_unknown", True),
+            "platform_side_effects": failure.get("platform_side_effects", {"status": "unknown"}),
+            "error_type": failure.get("error_type", "StagingSeedFailed"),
+            "error_code": error_code,
+        }
+        seed_evidence.write_text(json.dumps(failure_record, sort_keys=True) + "\n", encoding="utf-8")
+        seed_evidence.chmod(0o600)
         fail("Staging fixture seed failed; inspect private server evidence")
     lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
     if len(lines) != 1:
@@ -657,11 +805,24 @@ def seed(candidate_run_id: str, load_run_id: str) -> None:
         payload = json.loads(lines[0])
     except json.JSONDecodeError:
         fail("Staging fixture runtime index invalid")
-    if (payload.get("run_id") != load_run_id or payload.get("environment") != "staging"
+    if (payload.get("run_id") != load_run_id or payload.get("load_run_id") != load_run_id
+            or payload.get("candidate_run_id") != candidate_run_id
+            or payload.get("environment") != "staging"
             or payload.get("production_data") is not False or payload.get("fictional_only") is not True
-            or len(payload.get("accounts") or []) < 75):
+            or len(payload.get("accounts") or []) < 75
+            or len(payload.get("tasks") or []) != 1440
+            or len({item.get("row_key") for item in payload.get("tasks", [])}) != 1440
+            or len({item.get("source_id") for item in payload.get("tasks", [])}) != 1440):
         fail("Staging fixture runtime identity mismatch")
+    seed_report = payload.get("seed")
+    if (not isinstance(seed_report, dict) or seed_report.get("phase") != "seed"
+            or seed_report.get("status") != "passed" or seed_report.get("task_count") != 1440
+            or seed_report.get("expectation_count") != 1440
+            or seed_report.get("conflict_count") != 0):
+        fail("Staging fixture seed evidence invalid")
     evidence.mkdir(parents=True, mode=0o700, exist_ok=True)
+    seed_evidence.write_text(json.dumps(seed_report, sort_keys=True) + "\n", encoding="utf-8")
+    seed_evidence.chmod(0o600)
     index.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     index.chmod(0o600)
     # stdout is designed to be redirected directly to a private runner file.
@@ -669,11 +830,12 @@ def seed(candidate_run_id: str, load_run_id: str) -> None:
 
 
 def verify(candidate_run_id: str, load_run_id: str, size_text: str, digest: str) -> None:
-    if (candidate_run_id != LOAD_CANDIDATE_RUN_ID
+    if (not RUN_RE.fullmatch(candidate_run_id)
             or not RUN_RE.fullmatch(load_run_id)
             or candidate_run_id == load_run_id
             or not (CANDIDATES / candidate_run_id).is_dir()):
         fail("prepared Staging candidate required")
+    _load_pipeline_candidate(candidate_run_id)
     size = int(size_text)
     if size <= 0 or size > 32 * 1024 * 1024 or not SHA_RE.fullmatch(digest):
         fail("evidence bundle identity invalid")
@@ -694,9 +856,10 @@ def verify(candidate_run_id: str, load_run_id: str, size_text: str, digest: str)
     source = (CANDIDATES / candidate_run_id) / "source"
     env = environment()
     env.update({"APP_ENVIRONMENT": "staging", "STAGING_LOAD_TEST_RUN_ID": load_run_id,
+                "COMPOSE_PROJECT_NAME": f"binhu-staging-load-{load_run_id.lower()}",
                 "PYTHONPATH": str(source / "load-tests")})
-    args = [sys.executable, "-m", "staging.control", "verify", "--run-id", candidate_run_id,
-            "--load-run-id", load_run_id,
+    args = [sys.executable, "-m", "staging.control", "verify", "--run-id", load_run_id,
+            "--candidate-run-id", candidate_run_id,
             "--manifest", str(CANDIDATES / candidate_run_id / "manifest.json"),
             "--load-report", str(target / "load-report.json"),
             "--resource-samples", str(target / "resource-samples.json"),

@@ -66,6 +66,8 @@ jobs:
           scp -P "$PORT" -i "$RUNNER_TEMP/staging-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/staging-ssh/known_hosts" \
             deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway \
             deploy/environments/event_pipeline/binhu-staging-event-pipeline-gateway.py \
+            deploy/environments/event_pipeline/staging_compose.py \
+            deploy/environments/event_pipeline/identity.py \
             deploy/environments/event_pipeline/staging_backend_network.py \
             deploy/environments/event_pipeline/staging_measure_diagnostic.py \
             deploy/environments/event_pipeline/staging_apply_runtime_diagnostic.py \

@@ -6,6 +6,7 @@ stdin and is never written to the runtime index.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -44,7 +45,10 @@ def make_accounts() -> list[dict[str, Any]]:
     return accounts
 
 
-def make_tasks() -> list[dict[str, Any]]:
+def make_tasks(run_id: str) -> list[dict[str, Any]]:
+    if not isinstance(run_id, str) or not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", run_id):
+        raise ValueError("valid Staging load run id required")
+    namespace = run_id[4:].replace("-", "")
     members = [item for item in make_accounts() if item["role"] == "member"]
     leaders = [item for item in make_accounts() if item["role"] == "leader"]
     tasks: list[dict[str, Any]] = []
@@ -67,7 +71,10 @@ def make_tasks() -> list[dict[str, Any]]:
                 "scenario": scenario,
                 "community": f"预发布演练社区{community_index + 1:02d}",
                 "person_name": f"预发布虚构人员{ordinal:05d}",
-                "identity_number": f"STG{ordinal:015d}",
+                # Keep the 18-character fictional identity shape while
+                # ensuring the parser's default business key is run-scoped.
+                "identity_number": f"STG{namespace}{ordinal:05d}",
+                "case_number": f"STG-LT-{namespace}-{ordinal:05d}",
                 "phone": f"000{ordinal:08d}",
                 "original_address": (
                     f"预发布演练小区{community_index + 1:02d}"
@@ -83,11 +90,15 @@ def make_tasks() -> list[dict[str, Any]]:
     return tasks
 
 
-def runtime_index(run_id: str, seeded_tasks: list[dict[str, Any]]) -> dict[str, Any]:
+def runtime_index(candidate_run_id: str, load_run_id: str,
+                  seeded_tasks: list[dict[str, Any]],
+                  platform_side_effects: dict[str, int] | None = None) -> dict[str, Any]:
     accounts = make_accounts()
     return {
         "schema_version": 1,
-        "run_id": run_id,
+        "run_id": load_run_id,
+        "load_run_id": load_run_id,
+        "candidate_run_id": candidate_run_id,
         "environment": "staging",
         "fictional_only": True,
         "production_data": False,
@@ -96,5 +107,13 @@ def runtime_index(run_id: str, seeded_tasks: list[dict[str, Any]]) -> dict[str, 
             for item in accounts
         ],
         "tasks": seeded_tasks,
+        "seed": {
+            "phase": "seed",
+            "status": "passed",
+            "task_count": len(seeded_tasks),
+            "expectation_count": len(seeded_tasks),
+            "conflict_count": 0,
+            "platform_side_effects": platform_side_effects or {},
+        },
         "property_search_keyword": "预发布演练小区",
     }
