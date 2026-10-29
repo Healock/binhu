@@ -26,7 +26,8 @@ REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_tim
 # Flink may accept the JAR before the JobGraph has finished planning and
 # reached RUNNING.  A reset connection is therefore reconciled for the full
 # startup window, rather than being reported as a failed submission after the
-# shorter HTTP request timeout.
+# shorter HTTP request timeout.  This covers the observed Flink 1.20 staging
+# startup path while still leaving a finite bound for an actually lost job.
 SUBMISSION_RECONCILIATION_TIMEOUT = 120.0
 
 
