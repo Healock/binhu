@@ -454,14 +454,17 @@ def _staging_service_states() -> dict[str, Any]:
     return result
 
 
-def sample(run_id: str, production_since_unix: int,
+def sample(candidate_run_id: str, load_run_id: str, production_since_unix: int,
            production_mode: str = PRODUCTION_MODE_RUNNING,
            production_pause_run_id: str | None = None) -> dict[str, Any]:
-    if not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", run_id):
-        raise RuntimeError("Staging metrics run id invalid")
-    root = root_for(run_id)
+    if (not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", candidate_run_id)
+            or candidate_run_id != "STG-20261029-02"
+            or not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", load_run_id)
+            or candidate_run_id == load_run_id):
+        raise RuntimeError("Staging metrics run identity invalid")
+    root = root_for(candidate_run_id)
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("environment") != "staging" or manifest.get("run_id") != run_id:
+    if manifest.get("environment") != "staging" or manifest.get("run_id") != candidate_run_id:
         raise RuntimeError("Staging metrics identity mismatch")
     project = str(manifest["project"])
     app_mysql = "binhu-staging-environment-mysql-1"
@@ -477,15 +480,16 @@ def sample(run_id: str, production_since_unix: int,
     meminfo = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     return {
         "sampled_at_unix": int(time.time()),
-        "run_id": run_id,
+        "run_id": load_run_id,
+        "candidate_run_id": candidate_run_id,
         "environment": "staging",
         "production_data": False,
         "mysql": _mysql_status(app_mysql),
-        "backend_pool": _backend_pool("binhu-staging-backend-1", run_id),
+        "backend_pool": _backend_pool("binhu-staging-backend-1", load_run_id),
         "redis": _redis(pipeline_redis),
-        "kafka": _kafka(project, run_id),
-        "flink": _flink(project, run_id),
-        "derived_queue": _queue(derived_mysql, run_id, DERIVED_DATABASE),
+        "kafka": _kafka(project, load_run_id),
+        "flink": _flink(project, load_run_id),
+        "derived_queue": _queue(derived_mysql, load_run_id, DERIVED_DATABASE),
         "containers": _containers(project),
         "staging_services": _staging_service_states(),
         "host": {"memory_available_bytes": int(meminfo["MemAvailable"].split()[0]) * 1024},

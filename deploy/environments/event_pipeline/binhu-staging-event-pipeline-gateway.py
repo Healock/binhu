@@ -33,6 +33,7 @@ MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA2
 # shape, but the root gateway must enforce the actual authorization boundary.
 RETIRE_TARGETS = frozenset({"STG-20261027-07", "STG-20261028-03"})
 RETIRE_SUCCESSOR = "STG-20261027-02"
+LOAD_CANDIDATE_RUN_ID = "STG-20261029-02"
 FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})
 FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
 MEASURE_DIAGNOSTIC_RUN_ID = "STG-20261028-01"
@@ -235,7 +236,8 @@ def environment() -> dict[str, str]:
 def run_module(run_id: str, module: str, manifest: dict | None = None,
                production_since_unix: int | None = None,
                production_mode: str = "running",
-               production_pause_run_id: str | None = None) -> dict:
+               production_pause_run_id: str | None = None,
+               load_run_id: str | None = None) -> dict:
     candidate = CANDIDATES / run_id
     source = candidate / "source"
     env = environment()
@@ -256,6 +258,9 @@ def run_module(run_id: str, module: str, manifest: dict | None = None,
         if module == "sample":
             if production_since_unix is None:
                 fail("Production monitor start time required")
+            if not isinstance(load_run_id, str) or not RUN_RE.fullmatch(load_run_id) or load_run_id == run_id:
+                fail("load evidence run id invalid")
+            args += ["--load-run-id", load_run_id]
             args += ["--production-since", str(production_since_unix)]
             if production_mode == "production_paused":
                 if not production_pause_run_id:
@@ -563,12 +568,14 @@ def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
 
 def control(run_id: str, action: str, production_since_unix: int | None = None,
             production_mode: str = "running",
-            production_pause_run_id: str | None = None) -> None:
+            production_pause_run_id: str | None = None,
+            load_run_id: str | None = None) -> None:
     if not RUN_RE.fullmatch(run_id) or not (CANDIDATES / run_id).is_dir():
         fail("prepared Staging candidate required")
     result = run_module(
         run_id, action, production_since_unix=production_since_unix,
         production_mode=production_mode, production_pause_run_id=production_pause_run_id,
+        load_run_id=load_run_id,
     )
     manifest = json.loads(((CANDIDATES / run_id) / "manifest.json").read_text(encoding="utf-8"))
     if action in {"apply", "switch"}:
@@ -607,14 +614,17 @@ def _staging_backend(run_id: str) -> tuple[str, Path]:
     return candidate["candidate_image_digest"], environment_root
 
 
-def seed(run_id: str) -> None:
-    if not RUN_RE.fullmatch(run_id) or not (CANDIDATES / run_id).is_dir():
+def seed(candidate_run_id: str, load_run_id: str) -> None:
+    if (candidate_run_id != LOAD_CANDIDATE_RUN_ID
+            or not RUN_RE.fullmatch(load_run_id)
+            or candidate_run_id == load_run_id
+            or not (CANDIDATES / candidate_run_id).is_dir()):
         fail("prepared Staging candidate required")
-    evidence = STATE / "evidence" / run_id
+    evidence = STATE / "evidence" / load_run_id
     index = evidence / "runtime-index.json"
     if evidence.is_symlink() or index.exists() or index.is_symlink():
         fail("Staging fixture run already exists")
-    image, environment_root = _staging_backend(run_id)
+    image, environment_root = _staging_backend(candidate_run_id)
     env = environment()
     password = env.get("STAGING_LOAD_TEST_PASSWORD", "")
     if len(password) < 16:
@@ -624,15 +634,15 @@ def seed(run_id: str) -> None:
         fail("fixed Staging seeder missing")
     command = [
         "docker", "run", "--rm", "-i", "--network", "binhu-staging_internal",
-        "--label", "binhu.environment=staging", "--label", f"binhu.run_id={run_id}",
+        "--label", "binhu.environment=staging", "--label", f"binhu.run_id={load_run_id}",
         "--memory", "768m", "--cpus", "1", "--pids-limit", "128", "--read-only",
         "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
         "--env-file", str(environment_root / "backend.env"),
-        "--env", f"STAGING_LOAD_TEST_RUN_ID={run_id}",
+        "--env", f"STAGING_LOAD_TEST_RUN_ID={load_run_id}",
         "--volume", f"{source}:/staging-load:ro",
         "--entrypoint", "python", image, "/staging-load/seed.py",
-        "--run-id", run_id, "--password-stdin",
+        "--run-id", load_run_id, "--password-stdin",
     ]
     result = subprocess.run(
         command, input=password + "\n", capture_output=True, text=True, timeout=900,
@@ -647,7 +657,7 @@ def seed(run_id: str) -> None:
         payload = json.loads(lines[0])
     except json.JSONDecodeError:
         fail("Staging fixture runtime index invalid")
-    if (payload.get("run_id") != run_id or payload.get("environment") != "staging"
+    if (payload.get("run_id") != load_run_id or payload.get("environment") != "staging"
             or payload.get("production_data") is not False or payload.get("fictional_only") is not True
             or len(payload.get("accounts") or []) < 75):
         fail("Staging fixture runtime identity mismatch")
@@ -658,13 +668,16 @@ def seed(run_id: str) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
-def verify(run_id: str, size_text: str, digest: str) -> None:
-    if not RUN_RE.fullmatch(run_id) or not (CANDIDATES / run_id).is_dir():
+def verify(candidate_run_id: str, load_run_id: str, size_text: str, digest: str) -> None:
+    if (candidate_run_id != LOAD_CANDIDATE_RUN_ID
+            or not RUN_RE.fullmatch(load_run_id)
+            or candidate_run_id == load_run_id
+            or not (CANDIDATES / candidate_run_id).is_dir()):
         fail("prepared Staging candidate required")
     size = int(size_text)
     if size <= 0 or size > 32 * 1024 * 1024 or not SHA_RE.fullmatch(digest):
         fail("evidence bundle identity invalid")
-    evidence = STATE / "evidence" / run_id
+    evidence = STATE / "evidence" / load_run_id
     evidence.mkdir(parents=True, mode=0o700, exist_ok=True)
     bundle = evidence / "acceptance-evidence.tar.gz"
     if bundle.exists() or bundle.is_symlink():
@@ -678,12 +691,13 @@ def verify(run_id: str, size_text: str, digest: str) -> None:
                 or any(not item.isfile() or item.issym() or item.islnk() for item in members)):
             fail("acceptance evidence contents are not fixed")
         archive.extractall(target)
-    source = (CANDIDATES / run_id) / "source"
+    source = (CANDIDATES / candidate_run_id) / "source"
     env = environment()
-    env.update({"APP_ENVIRONMENT": "staging", "STAGING_LOAD_TEST_RUN_ID": run_id,
+    env.update({"APP_ENVIRONMENT": "staging", "STAGING_LOAD_TEST_RUN_ID": load_run_id,
                 "PYTHONPATH": str(source / "load-tests")})
-    args = [sys.executable, "-m", "staging.control", "verify", "--run-id", run_id,
-            "--manifest", str(CANDIDATES / run_id / "manifest.json"),
+    args = [sys.executable, "-m", "staging.control", "verify", "--run-id", candidate_run_id,
+            "--load-run-id", load_run_id,
+            "--manifest", str(CANDIDATES / candidate_run_id / "manifest.json"),
             "--load-report", str(target / "load-report.json"),
             "--resource-samples", str(target / "resource-samples.json"),
             "--rollback-report", str(target / "rollback-report.json"),
@@ -698,7 +712,8 @@ def verify(run_id: str, size_text: str, digest: str) -> None:
     final = evidence / "final-report.json"
     final.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     final.chmod(0o600)
-    print(json.dumps({"environment": "staging", "run_id": run_id,
+    print(json.dumps({"environment": "staging", "run_id": load_run_id,
+                      "candidate_run_id": candidate_run_id,
                       "acceptance": report.get("acceptance", "failed")}))
 
 
@@ -1169,19 +1184,24 @@ def main() -> None:
         retire(sys.argv[2]); return
     if len(sys.argv) == 3 and sys.argv[1] == "retire-failed":
         retire_failed(sys.argv[2]); return
-    if (len(sys.argv) == 4 and sys.argv[1] == "sample"
-            and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[3])):
-        control(sys.argv[2], "sample", int(sys.argv[3])); return
-    if (len(sys.argv) == 6 and sys.argv[1] == "sample"
+    if (len(sys.argv) == 5 and sys.argv[1] == "sample"
             and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[3])
-            and sys.argv[4] == "production_paused"
-            and sys.argv[5] == "PROD-PAUSE-20261029-02"):
-        control(sys.argv[2], "sample", int(sys.argv[3]),
-                "production_paused", sys.argv[5]); return
-    if len(sys.argv) == 3 and sys.argv[1] == "run":
-        seed(sys.argv[2]); return
-    if len(sys.argv) == 5 and sys.argv[1] == "verify":
-        verify(sys.argv[2], sys.argv[3], sys.argv[4]); return
+            and re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", sys.argv[2])):
+        control(sys.argv[2], "sample", int(sys.argv[4]), load_run_id=sys.argv[3]); return
+    if (len(sys.argv) == 7 and sys.argv[1] == "sample"
+            and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[4])
+            and sys.argv[5] == "production_paused"
+            and sys.argv[6] == "PROD-PAUSE-20261029-02"):
+        control(sys.argv[2], "sample", int(sys.argv[4]),
+                "production_paused", sys.argv[6], load_run_id=sys.argv[3]); return
+    if (len(sys.argv) == 4 and sys.argv[1] == "run"
+            and re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", sys.argv[2])
+            and re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", sys.argv[3])):
+        seed(sys.argv[2], sys.argv[3]); return
+    if (len(sys.argv) == 6 and sys.argv[1] == "verify"
+            and re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", sys.argv[2])
+            and re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", sys.argv[3])):
+        verify(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]); return
     fail("fixed command required")
 
 
