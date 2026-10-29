@@ -233,7 +233,9 @@ def environment() -> dict[str, str]:
 
 
 def run_module(run_id: str, module: str, manifest: dict | None = None,
-               production_since_unix: int | None = None) -> dict:
+               production_since_unix: int | None = None,
+               production_mode: str = "running",
+               production_pause_run_id: str | None = None) -> dict:
     candidate = CANDIDATES / run_id
     source = candidate / "source"
     env = environment()
@@ -255,6 +257,13 @@ def run_module(run_id: str, module: str, manifest: dict | None = None,
             if production_since_unix is None:
                 fail("Production monitor start time required")
             args += ["--production-since", str(production_since_unix)]
+            if production_mode == "production_paused":
+                if not production_pause_run_id:
+                    fail("Production pause run id required")
+                args += ["--production-mode", production_mode,
+                         "--production-pause-run-id", production_pause_run_id]
+            elif production_pause_run_id is not None or production_mode != "running":
+                fail("Production monitor mode invalid")
     try:
         result = subprocess.run(
             args, cwd=source, env=env, check=True, capture_output=True, text=True,
@@ -552,10 +561,15 @@ def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
         raise
 
 
-def control(run_id: str, action: str, production_since_unix: int | None = None) -> None:
+def control(run_id: str, action: str, production_since_unix: int | None = None,
+            production_mode: str = "running",
+            production_pause_run_id: str | None = None) -> None:
     if not RUN_RE.fullmatch(run_id) or not (CANDIDATES / run_id).is_dir():
         fail("prepared Staging candidate required")
-    result = run_module(run_id, action, production_since_unix=production_since_unix)
+    result = run_module(
+        run_id, action, production_since_unix=production_since_unix,
+        production_mode=production_mode, production_pause_run_id=production_pause_run_id,
+    )
     manifest = json.loads(((CANDIDATES / run_id) / "manifest.json").read_text(encoding="utf-8"))
     if action in {"apply", "switch"}:
         if action == "apply":
@@ -1158,6 +1172,12 @@ def main() -> None:
     if (len(sys.argv) == 4 and sys.argv[1] == "sample"
             and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[3])):
         control(sys.argv[2], "sample", int(sys.argv[3])); return
+    if (len(sys.argv) == 6 and sys.argv[1] == "sample"
+            and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[3])
+            and sys.argv[4] == "production_paused"
+            and sys.argv[5] == "PROD-PAUSE-20261029-02"):
+        control(sys.argv[2], "sample", int(sys.argv[3]),
+                "production_paused", sys.argv[5]); return
     if len(sys.argv) == 3 and sys.argv[1] == "run":
         seed(sys.argv[2]); return
     if len(sys.argv) == 5 and sys.argv[1] == "verify":

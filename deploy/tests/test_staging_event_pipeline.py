@@ -764,6 +764,47 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
         production_source = source[source.index("def _production_sample"):source.index("def _staging_service_states")]
         self.assertNotIn("print(", production_source)
 
+    def test_metrics_probe_validates_authorized_pause_evidence_and_eight_database_hashes(self):
+        import hashlib
+
+        pause_id = "PROD-PAUSE-20261029-02"
+        databases = list(staging_metrics_probe.PRODUCTION_PAUSE_DATABASES)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "evidence" / "pause-production" / pause_id
+            backup = root / "backup" / f"maintenance-pause-production-{pause_id}"
+            evidence.mkdir(parents=True)
+            backup.mkdir(parents=True)
+            entries = []
+            for database in databases:
+                path = backup / f"{database}.sql.gz"
+                path.write_bytes((database + " synthetic backup").encode())
+                entries.append({
+                    "database": database, "filename": path.name,
+                    "size_bytes": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                })
+            manifest = {
+                "schema": 1, "operation": "pause-production", "run_id": pause_id,
+                "database_scope": databases, "databases": entries,
+            }
+            manifest_path = backup / "backup-manifest.json"
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+            manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            pause_path = evidence / "pause.json"
+            pause_path.write_text(json.dumps({
+                "schema": 1, "operation": "pause-production", "run_id": pause_id,
+                "accepted": True, "stopped_services": ["backend", "mysql"],
+                "protected_container_states_unchanged": True,
+                "backup_manifest_sha256": manifest_sha,
+            }), encoding="utf-8")
+            with patch.object(staging_metrics_probe, "PRODUCTION_PAUSE_EVIDENCE_ROOT", root / "evidence"), \
+                 patch.object(staging_metrics_probe, "PRODUCTION_PAUSE_BACKUP_ROOT", root / "backup"):
+                result = staging_metrics_probe._read_pause_evidence(pause_id)
+            self.assertTrue(result["pause_evidence_valid"])
+            self.assertEqual(result["backup_database_count"], 8)
+            self.assertEqual(result["backup_manifest_sha256"], manifest_sha)
+
     def test_backend_pool_probe_passes_private_password_only_over_stdin(self):
         payload = {"pool_count": 8, "usage_ratio": .5, "used": 20, "max_size": 40}
         with patch.dict("os.environ", {"STAGING_LOAD_TEST_PASSWORD": "x" * 32}, clear=False), \
@@ -1259,12 +1300,13 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
                     "run-staging-realistic-load.yml").read_text(encoding="utf-8")
         for marker in (
-            '"run $RUN_ID"', '"sample $RUN_ID $monitor_start_epoch"',
+            '"run $RUN_ID"', 'sample $RUN_ID $monitor_start_epoch$sample_suffix',
             "options: [low20, full75]", '--users "$users"', '--spawn-rate "$spawn_rate"',
             '--run-time "${duration_seconds}s"',
             "/staging/api/query/", "staging-samples.jsonl", "derived_queue",
             "waive_4gib_memory_gate", "default: false", "staging.load_monitor observe",
             "production_stop_thresholds", "health_failures",
+            "production_mode", "production_pause_run_id", "PROD-PAUSE-20261029-02",
         ):
             self.assertIn(marker, workflow)
         profile = (Path(__file__).parents[2] / "load-tests" / "staging" / "profile.py").read_text(encoding="utf-8")
@@ -1272,6 +1314,16 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn("name=\"low20\", users=20, spawn_rate=2, duration_seconds=600", profile)
         self.assertNotIn("BINHU_DEPLOY_SSH_KEY", workflow)
         self.assertNotIn("binhu-deploy@", workflow)
+
+    def test_realistic_load_wrapper_requires_the_authorized_pause_run(self):
+        wrapper = (Path(__file__).parents[1] / "environments" / "event_pipeline" /
+                   "binhu-staging-event-pipeline-gateway").read_text(encoding="utf-8")
+        gateway = (Path(__file__).parents[1] / "environments" / "event_pipeline" /
+                   "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
+        self.assertIn('"${#parts[@]}" -eq 3 || "${#parts[@]}" -eq 5', wrapper)
+        self.assertIn('"${parts[3]}" == production_paused', wrapper)
+        self.assertIn('"${parts[4]}" == PROD-PAUSE-20261029-02', wrapper)
+        self.assertIn('sys.argv[5] == "PROD-PAUSE-20261029-02"', gateway)
 
     def test_rollback_workflow_uses_only_fixed_staging_command(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /

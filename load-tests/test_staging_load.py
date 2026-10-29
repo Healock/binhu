@@ -15,7 +15,10 @@ from staging.fixture_model import make_accounts, make_tasks, runtime_index
 from staging.guard import StagingSafetyError, validate_staging_environment
 from staging.metrics import StagingMetrics
 from staging.load_monitor import MEMORY_GATE_BYTES, observe, preflight
-from staging.production_guard import ProductionStopMonitor
+from staging.production_guard import (
+    PRODUCTION_MODE_PAUSED,
+    ProductionStopMonitor,
+)
 from staging.profile import get_profile, profile_payload, select_accounts
 from staging.report import evaluate_report
 from staging.resource_metrics import summarize_resource_samples
@@ -95,6 +98,82 @@ class StagingLoadTests(unittest.TestCase):
             "waived": True,
             "status": "waived",
         })
+
+    def test_production_paused_mode_requires_explicit_pause_evidence_and_scope(self):
+        sample = self._safety_sample()
+        sample["production"] = {
+            "environment": "production", "bootstrap_environment": "production",
+            "bootstrap_status": 0, "health_status": 0, "health": False,
+            "production_mode": PRODUCTION_MODE_PAUSED,
+            "pause_run_id": "PROD-PAUSE-20261029-02",
+            "pause_evidence_valid": True,
+            "pause_evidence_sha256": "a" * 64,
+            "backup_manifest_sha256": "b" * 64,
+            "backup_database_count": 8,
+            "backup_database_scope": [
+                "DispatchData", "OnlineData", "OnlineDataArchive", "PlatformData",
+                "RegistryData", "VisitData", "WorkflowData", "daily_report",
+            ],
+            "containers": {
+                "binhu-backend": {"running": False, "restarting": False,
+                                   "oom_killed": False, "health": "healthy", "restart_count": 2},
+                "binhu-mysql": {"running": False, "restarting": False,
+                                "oom_killed": False, "health": "healthy", "restart_count": 2},
+                "binhu-ops-agent": {"running": True, "restarting": False,
+                                     "oom_killed": False, "health": "healthy", "restart_count": 2},
+            },
+            "error_count": 0, "monitor_error": None,
+        }
+        policy = preflight(
+            sample, run_id=RUN_ID, waive_memory_gate=True,
+            production_mode=PRODUCTION_MODE_PAUSED,
+            production_pause_run_id="PROD-PAUSE-20261029-02",
+        )
+        self.assertEqual(policy["production_mode"], PRODUCTION_MODE_PAUSED)
+        with self.assertRaisesRegex(ValueError, "production_pause_run_id_invalid"):
+            preflight(sample, run_id=RUN_ID, waive_memory_gate=True,
+                      production_mode=PRODUCTION_MODE_PAUSED,
+                      production_pause_run_id="PROD-PAUSE-20261029-03")
+        with self.assertRaisesRegex(ValueError, "production_pause_run_id_unexpected"):
+            preflight(sample, run_id=RUN_ID, waive_memory_gate=True,
+                      production_pause_run_id="PROD-PAUSE-20261029-02")
+
+    def test_production_paused_monitor_stops_on_state_or_evidence_change(self):
+        sample = self._safety_sample()
+        sample["production"] = {
+            "environment": "production", "bootstrap_environment": "production",
+            "production_mode": PRODUCTION_MODE_PAUSED,
+            "pause_run_id": "PROD-PAUSE-20261029-02", "pause_evidence_valid": True,
+            "pause_evidence_sha256": "a" * 64, "backup_manifest_sha256": "b" * 64,
+            "backup_database_count": 8,
+            "backup_database_scope": [
+                "DispatchData", "OnlineData", "OnlineDataArchive", "PlatformData",
+                "RegistryData", "VisitData", "WorkflowData", "daily_report",
+            ],
+            "containers": {
+                "binhu-backend": {"running": False, "restarting": False,
+                                   "oom_killed": False, "restart_count": 2},
+                "binhu-mysql": {"running": False, "restarting": False,
+                                "oom_killed": False, "restart_count": 2},
+                "binhu-ops-agent": {"running": True, "restarting": False,
+                                     "oom_killed": False, "restart_count": 2},
+            },
+            "error_count": 0, "monitor_error": None,
+        }
+        policy = preflight(sample, run_id=RUN_ID, waive_memory_gate=True,
+                           production_mode=PRODUCTION_MODE_PAUSED,
+                           production_pause_run_id="PROD-PAUSE-20261029-02")
+        with tempfile.TemporaryDirectory() as directory:
+            stats = Path(directory) / "locust_stats.csv"
+            stats.write_text("Type,Name,Request Count,Failure Count\n", encoding="utf-8")
+            changed = json.loads(json.dumps(sample))
+            changed["production"]["containers"]["binhu-backend"]["running"] = True
+            _, reason = observe(changed, policy, locust_stats=stats)
+            self.assertEqual(reason, "production_paused_state_changed")
+            changed = json.loads(json.dumps(sample))
+            changed["production"]["pause_evidence_sha256"] = "c" * 64
+            _, reason = observe(changed, policy, locust_stats=stats)
+            self.assertEqual(reason, "production_pause_evidence_mismatch")
 
     def test_production_monitor_fails_closed_for_missing_identity_and_stops_on_restart_oom_or_error(self):
         sample = self._safety_sample()

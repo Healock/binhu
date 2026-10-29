@@ -10,7 +10,12 @@ import re
 import time
 from typing import Any
 
-from .production_guard import ProductionStopMonitor
+from .production_guard import (
+    PAUSE_RUN_RE,
+    PRODUCTION_MODE_PAUSED,
+    PRODUCTION_MODE_RUNNING,
+    ProductionStopMonitor,
+)
 
 
 GIB = 1024 ** 3
@@ -45,12 +50,25 @@ def _staging_baseline(sample: dict[str, Any]) -> dict[str, Any]:
     return {"services": services, "pipeline": pipeline}
 
 
-def preflight(sample: dict[str, Any], *, run_id: str, waive_memory_gate: bool) -> dict[str, Any]:
+def preflight(sample: dict[str, Any], *, run_id: str, waive_memory_gate: bool,
+              production_mode: str = PRODUCTION_MODE_RUNNING,
+              production_pause_run_id: str | None = None) -> dict[str, Any]:
     if sample.get("run_id") != run_id or sample.get("environment") != "staging":
         raise ValueError("staging_sample_identity_mismatch")
+    if production_mode not in {PRODUCTION_MODE_RUNNING, PRODUCTION_MODE_PAUSED}:
+        raise ValueError("production_monitor_mode_invalid")
+    if production_mode == PRODUCTION_MODE_PAUSED:
+        if not isinstance(production_pause_run_id, str) or not PAUSE_RUN_RE.fullmatch(production_pause_run_id):
+            raise ValueError("production_pause_run_id_invalid")
+    elif production_pause_run_id is not None:
+        raise ValueError("production_pause_run_id_unexpected")
     baseline = _staging_baseline(sample)
     production = sample.get("production")
-    ProductionStopMonitor(production if isinstance(production, dict) else {})
+    ProductionStopMonitor(
+        production if isinstance(production, dict) else {},
+        mode=production_mode,
+        pause_run_id=production_pause_run_id,
+    )
     available = int(sample["host"]["memory_available_bytes"])
     breached = available < MEMORY_GATE_BYTES
     if breached and not waive_memory_gate:
@@ -67,6 +85,8 @@ def preflight(sample: dict[str, Any], *, run_id: str, waive_memory_gate: bool) -
             "status": "waived" if breached and waive_memory_gate else "passed",
         },
         "production_baseline": production,
+        "production_mode": production_mode,
+        "production_pause_run_id": production_pause_run_id,
         "production_health_failures": 0,
         "staging_baseline": baseline,
         "request_failure_started_at": None,
@@ -115,7 +135,11 @@ def observe(sample: dict[str, Any], state: dict[str, Any], *, locust_stats: Path
     production = sample.get("production")
     baseline = state.get("production_baseline")
     try:
-        tracker = ProductionStopMonitor(baseline if isinstance(baseline, dict) else {})
+        tracker = ProductionStopMonitor(
+            baseline if isinstance(baseline, dict) else {},
+            mode=state.get("production_mode", PRODUCTION_MODE_RUNNING),
+            pause_run_id=state.get("production_pause_run_id"),
+        )
     except (TypeError, ValueError):
         return state, "production_monitor_baseline_invalid"
     tracker.health_failures = int(state.get("production_health_failures") or 0)
@@ -161,6 +185,9 @@ def main() -> None:
     parser.add_argument("--sample", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--waive-memory-gate", choices=("true", "false"), default="false")
+    parser.add_argument("--production-mode", choices=(PRODUCTION_MODE_RUNNING, PRODUCTION_MODE_PAUSED),
+                        default=PRODUCTION_MODE_RUNNING)
+    parser.add_argument("--production-pause-run-id")
     parser.add_argument("--locust-stats", type=Path)
     parser.add_argument("--stop-reason", type=Path)
     args = parser.parse_args()
@@ -168,7 +195,11 @@ def main() -> None:
         raise SystemExit("staging_monitor_run_id_invalid")
     sample = _read_sample(args.sample, args.run_id)
     if args.action == "preflight":
-        state = preflight(sample, run_id=args.run_id, waive_memory_gate=args.waive_memory_gate == "true")
+        state = preflight(
+            sample, run_id=args.run_id, waive_memory_gate=args.waive_memory_gate == "true",
+            production_mode=args.production_mode,
+            production_pause_run_id=args.production_pause_run_id,
+        )
         args.state.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps({"run_id": args.run_id, "memory_gate": state["memory_gate"],
                           "production_monitor": "ready"}, sort_keys=True))
