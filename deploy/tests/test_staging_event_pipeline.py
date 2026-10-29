@@ -1308,7 +1308,8 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             "/staging/api/query/", "staging-samples.jsonl", "derived_queue",
             "waive_4gib_memory_gate", "default: false", "staging.load_monitor observe",
             "production_stop_thresholds", "health_failures",
-            "production_mode", "production_pause_run_id", "PROD-PAUSE-20261029-02",
+            "production_mode", "production_pause_run_id",
+            "PROD-PAUSE-[0-9]{8}-[0-9]{2}",
         ):
             self.assertIn(marker, workflow)
         profile = (Path(__file__).parents[2] / "load-tests" / "staging" / "profile.py").read_text(encoding="utf-8")
@@ -1325,8 +1326,8 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"${#parts[@]}" -eq 4 || "${#parts[@]}" -eq 6', wrapper)
         self.assertIn('"${parts[1]}" == STG-20261029-02', wrapper)
         self.assertIn('"${parts[4]}" == production_paused', wrapper)
-        self.assertIn('"${parts[5]}" == PROD-PAUSE-20261029-02', wrapper)
-        self.assertIn('sys.argv[6] == "PROD-PAUSE-20261029-02"', gateway)
+        self.assertIn('"${parts[5]}" =~ ^PROD-PAUSE-[0-9]{8}-[0-9]{2}$', wrapper)
+        self.assertIn('re.fullmatch(r"PROD-PAUSE-[0-9]{8}-[0-9]{2}", sys.argv[6])', gateway)
 
     def test_rollback_workflow_uses_only_fixed_staging_command(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /

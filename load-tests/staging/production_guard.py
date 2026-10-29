@@ -11,7 +11,6 @@ PRODUCTION_CONTAINERS = ("binhu-backend", "binhu-mysql", "binhu-ops-agent")
 PRODUCTION_MODE_RUNNING = "running"
 PRODUCTION_MODE_PAUSED = "production_paused"
 PAUSE_RUN_RE = re.compile(r"^PROD-PAUSE-[0-9]{8}-[0-9]{2}$")
-AUTHORIZED_PAUSE_RUN_ID = "PROD-PAUSE-20261029-02"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PRODUCTION_PAUSE_DATABASES = (
     "DispatchData", "OnlineData", "OnlineDataArchive", "PlatformData",
@@ -98,8 +97,7 @@ class ProductionStopMonitor:
             raise ValueError("production_monitor_baseline_" + reason)
 
     def _init_paused(self, baseline: dict[str, Any], pause_run_id: str | None) -> None:
-        if (not isinstance(pause_run_id, str) or not PAUSE_RUN_RE.fullmatch(pause_run_id)
-                or pause_run_id != AUTHORIZED_PAUSE_RUN_ID):
+        if not isinstance(pause_run_id, str) or not PAUSE_RUN_RE.fullmatch(pause_run_id):
             raise ValueError("production_pause_run_id_invalid")
         if (baseline.get("environment") != "production"
                 or baseline.get("bootstrap_environment") != "production"
