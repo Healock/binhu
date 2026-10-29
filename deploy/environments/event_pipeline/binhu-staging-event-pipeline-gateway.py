@@ -1191,7 +1191,7 @@ def main() -> None:
     if (len(sys.argv) == 7 and sys.argv[1] == "sample"
             and re.fullmatch(r"[1-9][0-9]{9}", sys.argv[4])
             and sys.argv[5] == "production_paused"
-            and sys.argv[6] == "PROD-PAUSE-20261029-02"):
+            and re.fullmatch(r"PROD-PAUSE-[0-9]{8}-[0-9]{2}", sys.argv[6])):
         control(sys.argv[2], "sample", int(sys.argv[4]),
                 "production_paused", sys.argv[6], load_run_id=sys.argv[3]); return
     if (len(sys.argv) == 4 and sys.argv[1] == "run"
