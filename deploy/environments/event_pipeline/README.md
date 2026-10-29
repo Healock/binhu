@@ -31,6 +31,20 @@ Dev 主机、部署密钥和已知主机指纹只能从该环境读取；生产�
 `production` Environment 与密钥不会被这些工作流引用。若 `development`
 Environment 未配置完整，工作流必须在连接服务器前失败。
 
+### Staging 失败证据只读诊断
+
+`Install Staging event-pipeline gateway` 的 `diagnose-measure` action 仅接受固定运行号
+`STG-20261028-01`。它先使用 Staging 专用受限 SSH key 调用固定 `status` 命令验证认证和
+Staging 身份，再读取该运行已有的 `measure-<hash>.json` 失败证据；不会重跑 `measure`、
+读取 stdout/stderr 正文或修改候选。输出限于错误类型/错误码、子进程退出码、输出长度与哈希、
+证据文件名和 SHA-256。命令不接受任意路径、环境或 shell 参数，也不提供其他运行号的读取能力。
+
+`diagnose-prepare` 同样使用受限 Staging deploy key 和固定 `status` 身份检查，只允许读取
+`STG-20261028-02` 的 prepare 失败元数据。prepare 的网关级失败记录固定错误类别、阶段、退出码及
+stdout/stderr 哈希；子进程输出仅保存哈希和字节数。诊断只输出候选路径类型（missing/directory/file/other）、
+失败数量及白名单字段，
+不读取或回显原始 stdout/stderr、异常正文、配置、凭据或任意路径，也不会重跑 prepare。
+
 0. 从已经合并到 `main` 的提交触发 `Prepare Dev event pipeline` 工作流，传入新的
    `dev-YYYYMMDD-...` 运行编号和四个不可变镜像摘要。工作流只生成并上传候选包，
    包含提交 SHA、镜像摘要、源码清单和 SHA-256；它不会连接服务器、启动容器或

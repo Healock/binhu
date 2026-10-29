@@ -29,8 +29,55 @@ from .staging_metrics_probe import sample as metrics_sample
 
 TOPICS = (EVENT_TOPIC, DLQ_TOPIC, REGISTRY_TOPIC)
 FORBIDDEN_TOKENS = ("production", "shadow", "development", "dev_")
+SAFE_FAILURE_CODES = frozenset({
+    "staging_apply_failed", "staging_architecture_switch_failed",
+    "staging_checkpoint_volume_identity_mismatch", "staging_checkpoint_volume_path_mismatch",
+    "staging_consumer_group_not_created", "staging_container_conflict",
+    "staging_container_runtime_failed", "staging_device_driver_missing",
+    "staging_docker_daemon_error", "staging_docker_invalid_argument",
+    "staging_docker_permission_denied", "staging_docker_unavailable",
+    "staging_event_pipeline_command_failed", "staging_image_missing",
+    "staging_insufficient_disk", "staging_kafka_probe_timeout",
+    "staging_kafka_quorum_timeout", "staging_network_address_pool_exhausted",
+    "staging_network_attachment_failed", "staging_network_conflict",
+    "staging_network_firewall_failed", "staging_network_missing",
+    "staging_port_conflict", "staging_resource_exhausted",
+    "staging_resource_limit_unsupported", "staging_service_health_timeout",
+    "staging_service_missing", "staging_snapshot_id", "staging_volume_conflict",
+    "staging_volume_mount_failed",
+})
+SAFE_EXCEPTION_TYPES = frozenset({
+    "ValueError", "RuntimeError", "FileNotFoundError", "PermissionError",
+    "TimeoutExpired", "CalledProcessError", "OSError", "KeyError", "TypeError",
+})
 KAFKA_QUORUM_TIMEOUT_SECONDS = 180
 DERIVED_MYSQL_HEALTH_TIMEOUT_SECONDS = 240
+
+
+def _failure_diagnostic(action: str, error: Exception) -> dict[str, str]:
+    error_type = type(error).__name__
+    if isinstance(error, subprocess.TimeoutExpired):
+        error_type = "TimeoutExpired"
+    if error_type not in SAFE_EXCEPTION_TYPES:
+        error_type = "InternalError"
+    code = str(error) if isinstance(error, ValueError) else ""
+    if code not in SAFE_FAILURE_CODES:
+        if isinstance(error, PermissionError):
+            code = "staging_permission_denied"
+        elif isinstance(error, FileNotFoundError):
+            code = "staging_required_file_missing"
+        elif isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+            code = "staging_operation_timeout"
+        elif isinstance(error, OSError):
+            code = "staging_operating_system_error"
+        elif isinstance(error, ValueError):
+            code = "staging_measure_contract_rejected" if action == "measure" else "staging_runtime_contract_rejected"
+        else:
+            code = "staging_internal_error"
+    return {
+        "environment": "staging", "run_id": "", "status": "failed",
+        "phase": action, "error_type": error_type, "error_code": code,
+    }
 
 
 def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -776,8 +823,11 @@ def main() -> None:
                       "rollback": rollback}[args.action]
             result = action(args.run_id)
         print(json.dumps(result, sort_keys=True))
-    except Exception:
-        raise SystemExit("Staging event-pipeline control refused; inspect private evidence") from None
+    except Exception as error:
+        diagnostic = _failure_diagnostic(args.action, error)
+        diagnostic["run_id"] = args.run_id
+        print(json.dumps(diagnostic, sort_keys=True))
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

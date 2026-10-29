@@ -98,6 +98,7 @@ jobs:
           }
 
           run_status_with_retry app "${app[@]}" status
+          run_status_with_retry app_identity "${app[@]}" identity
           run_status_with_retry data "${data[@]}" status
           ! "${app[@]}" 'apply production deadbeef'
           ! "${app[@]}" 'sh -c id'

@@ -1,4 +1,4 @@
-"""Realistic Staging workload for 75 concurrent users.
+"""Realistic Staging workload for fixed 20-user and 75-user profiles.
 
 Core business actions remain Locust tasks.  Browser background work runs on
 independent schedules so heartbeats, unread counts and reconnects do not line
@@ -23,18 +23,23 @@ from locust import HttpUser, between, events, task
 try:
     from .guard import require_staging_context
     from .metrics import GLOBAL_METRICS
+    from .profile import get_profile, profile_payload
     from .stream_clients import StreamHooks, run_query_websocket, run_sse
     from .workload import load_runtime_index, retry_delay
 except ImportError:  # Locust imports this file as its working module
     from guard import require_staging_context
     from metrics import GLOBAL_METRICS
+    from profile import get_profile, profile_payload
     from stream_clients import StreamHooks, run_query_websocket, run_sse
     from workload import load_runtime_index, retry_delay
 
 
 RUN_ID = os.environ.get("STAGING_LOAD_TEST_RUN_ID", "")
 CONTEXT = require_staging_context(RUN_ID)
-RUNTIME = load_runtime_index(os.environ.get("STAGING_RUNTIME_INDEX", ""), CONTEXT.run_id)
+PROFILE = get_profile(os.environ.get("STAGING_LOAD_PROFILE", "full75"))
+RUNTIME = load_runtime_index(
+    os.environ.get("STAGING_RUNTIME_INDEX", ""), CONTEXT.run_id, PROFILE.name,
+)
 PASSWORD = os.environ.get("STAGING_LOAD_TEST_PASSWORD", "")
 if not PASSWORD:
     raise RuntimeError("缺少 STAGING_LOAD_TEST_PASSWORD")
@@ -79,6 +84,7 @@ def _write_load_report(environment, **kwargs) -> None:
         "run_id": CONTEXT.run_id,
         "environment": "staging",
         "production_data": False,
+        "workload_profile": profile_payload(PROFILE),
         **GLOBAL_METRICS.report(),
     }, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
 

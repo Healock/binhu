@@ -8,6 +8,16 @@ case "${parts[0]:-}" in
     [[ "${#parts[@]}" -eq 1 ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-event-pipeline-gateway.py status
     ;;
+  diagnose-measure)
+    [[ "${#parts[@]}" -eq 2 && "${parts[1]}" == "STG-20261028-01" ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-event-pipeline-gateway.py \
+      diagnose-measure "${parts[1]}"
+    ;;
+  diagnose-prepare)
+    [[ "${#parts[@]}" -eq 2 && "${parts[1]}" == "STG-20261028-02" ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-event-pipeline-gateway.py \
+      diagnose-prepare "${parts[1]}"
+    ;;
   prepare)
     [[ "${#parts[@]}" -eq 5 ]] || exit 64
     [[ "${parts[1]}" =~ ^STG-[0-9]{8}-[0-9]{2}$ ]] || exit 64

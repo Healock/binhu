@@ -16,6 +16,7 @@ from staging.guard import StagingSafetyError, validate_staging_environment
 from staging.metrics import StagingMetrics
 from staging.load_monitor import MEMORY_GATE_BYTES, observe, preflight
 from staging.production_guard import ProductionStopMonitor
+from staging.profile import get_profile, profile_payload, select_accounts
 from staging.report import evaluate_report
 from staging.resource_metrics import summarize_resource_samples
 from staging.stream_clients import StreamHooks, cookie_header, run_query_websocket, run_sse, websocket_url
@@ -46,14 +47,15 @@ def env():
 
 
 def runtime_payload():
+    accounts = make_accounts()
     return {
         "run_id": RUN_ID,
         "environment": "staging",
         "fictional_only": True,
         "production_data": False,
         "accounts": [
-            {"username": f"staging-load-{index:02d}@staging", "role": "member", "scope": "mine"}
-            for index in range(1, 76)
+            {"username": item["username"], "role": item["role"], "scope": item["scope"]}
+            for item in accounts
         ],
         "tasks": [{"parser_type": "全链条", "row_key": "synthetic:1", "scenario": "assigned"}],
         "property_search_keyword": "演练路",
@@ -264,6 +266,29 @@ class StagingLoadTests(unittest.TestCase):
             path.write_text(json.dumps(invalid, ensure_ascii=False), encoding="utf-8")
             with self.assertRaises(RuntimeError):
                 load_runtime_index(str(path), RUN_ID)
+
+    def test_low20_profile_is_fixed_and_selects_each_business_role(self):
+        profile = get_profile("low20")
+        self.assertEqual((profile.users, profile.spawn_rate, profile.duration_seconds), (20, 2, 600))
+        self.assertFalse(profile.equivalent_to_full_gate)
+        selected = select_accounts(make_accounts(), profile)
+        self.assertEqual(len(selected), 20)
+        self.assertEqual(
+            {role: sum(item["role"] == role for item in selected) for role, _ in profile.role_counts},
+            dict(profile.role_counts),
+        )
+        self.assertFalse(profile_payload(profile)["equivalent_to_full_75_user_gate"])
+        with self.assertRaisesRegex(ValueError, "unsupported_staging_load_profile"):
+            get_profile("20")
+
+    def test_low20_runtime_index_selects_role_balanced_users_from_fictional_fixtures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "runtime.json"
+            path.write_text(json.dumps(runtime_payload(), ensure_ascii=False), encoding="utf-8")
+            runtime = load_runtime_index(str(path), RUN_ID, "low20")
+            self.assertEqual(len(runtime.accounts), 20)
+            self.assertEqual({item.role for item in runtime.accounts},
+                             {"member", "leader", "internal_business", "admin", "super_admin"})
 
     def test_backoff_is_exponential_bounded_and_jittered(self):
         self.assertEqual(retry_delay(1, 1, maximum_seconds=30, jitter_ratio=.25, random_value=lambda: .5), 1)
@@ -511,6 +536,8 @@ class StagingLoadTests(unittest.TestCase):
             "run_id": RUN_ID, "environment": "staging", "production_data": False,
             "execution_policy": {
                 "users": 75,
+                "workload_profile": profile_payload(get_profile("full75")),
+                "memory_gate_approval_basis": "not_applicable",
                 "production_monitor": "passed",
                 "memory_gate": {
                     "required_bytes": 4 * 1024**3,
@@ -570,12 +597,35 @@ class StagingLoadTests(unittest.TestCase):
                 manual_report_path=root / "manual.json",
             )
             self.assertTrue(report["passed"])
+            load["execution_policy"].update({
+                "users": 20,
+                "workload_profile": profile_payload(get_profile("low20")),
+                "memory_gate_approval_basis": "user-approved low20 profile",
+            })
+            (root / "load.json").write_text(json.dumps(load), encoding="utf-8")
+            low_load = assemble_report(
+                run_id=RUN_ID,
+                load_report_path=root / "load.json",
+                resource_samples_path=root / "resources.json",
+                rollback_report_path=root / "rollback.json",
+                manual_report_path=root / "manual.json",
+            )
+            self.assertTrue(low_load["load_profile_passed"])
+            self.assertFalse(low_load["passed"])
+            self.assertFalse(low_load["promotion_ready"])
+            self.assertTrue(any("not equivalent" in item for item in low_load["acceptance_limitations"]))
+            load["execution_policy"].update({
+                "users": 75,
+                "workload_profile": profile_payload(get_profile("full75")),
+                "memory_gate_approval_basis": "not_applicable",
+            })
             load["execution_policy"]["memory_gate"].update({
                 "observed_bytes": 3 * 1024**3,
                 "waiver_requested": True,
                 "waived": True,
                 "status": "waived",
             })
+            load["execution_policy"]["memory_gate_approval_basis"] = "explicit workflow dispatch approval"
             (root / "load.json").write_text(json.dumps(load), encoding="utf-8")
             limited = assemble_report(
                 run_id=RUN_ID,
@@ -594,6 +644,7 @@ class StagingLoadTests(unittest.TestCase):
                 "waived": False,
                 "status": "passed",
             })
+            load["execution_policy"]["memory_gate_approval_basis"] = "not_applicable"
             (root / "load.json").write_text(json.dumps(load), encoding="utf-8")
             rollback["data_consistency_verified"] = False
             (root / "rollback.json").write_text(json.dumps(rollback), encoding="utf-8")

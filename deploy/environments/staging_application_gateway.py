@@ -343,6 +343,114 @@ def status() -> dict:
     return {"gateway": "staging-application", "environment": "staging", "runs": runs[-10:]}
 
 
+def _identity_json(path: Path) -> dict | None:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024:
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _identity_path_has_symlink(path: Path) -> bool:
+    return any(part.is_symlink() for part in (path, *path.parents))
+
+
+def _matching_dev_acceptances(identity: dict) -> list[dict]:
+    root = EVIDENCE_ROOT
+    if _identity_path_has_symlink(root) or not root.is_dir():
+        refuse("Staging identity evidence root invalid")
+    entries = sorted(root.iterdir(), key=lambda item: item.name)
+    if len(entries) > 4096:
+        refuse("Staging identity evidence count exceeded")
+    matches = []
+    for directory in entries:
+        if not DEV_RUN_RE.fullmatch(directory.name) or directory.is_symlink() or not directory.is_dir():
+            continue
+        report = _identity_json(directory / "result.json")
+        if (report and report.get("run_id") == directory.name
+                and report.get("environment") == "development" and report.get("accepted") is True
+                and report.get("health") is True
+                and all(report.get(key) == identity[key]
+                        for key in ("artifact_id", "image_id", "commit", "version"))):
+            matches.append({"run_id": directory.name})
+    return matches
+
+
+def _matching_staging_acceptances(identity: dict, matching_dev_run_ids: set[str]) -> list[dict]:
+    candidates = BASE / "candidates"
+    if _identity_path_has_symlink(candidates) or not candidates.is_dir():
+        refuse("Staging identity candidate root invalid")
+    entries = sorted(candidates.iterdir(), key=lambda item: item.name)
+    if len(entries) > 4096:
+        refuse("Staging identity candidate count exceeded")
+    matches = []
+    for directory in entries:
+        if not RUN_RE.fullmatch(directory.name) or directory.is_symlink() or not directory.is_dir():
+            continue
+        promotion = _identity_json(directory / "promotion.json")
+        accepted = _identity_json(directory / "accept.json")
+        if (not promotion or not accepted or promotion.get("environment") != "staging"
+                or promotion.get("run_id") != directory.name or promotion.get("state") != "accepted"
+                or accepted.get("environment") != "staging"
+                or accepted.get("accepted") is not True or accepted.get("production_modified") is not False
+                or accepted.get("run_id") != directory.name
+                or accepted.get("dev_acceptance_run_id") != promotion.get("dev_acceptance_run_id")
+                or any(promotion.get(key) != identity[source]
+                       for key, source in (("artifact_id", "artifact_id"), ("image_id", "image_id"),
+                                           ("commit", "commit"), ("version", "version")))
+                or any(accepted.get(key) != identity[source]
+                       for key, source in (("artifact_id", "artifact_id"), ("image_id", "image_id"),
+                                           ("commit", "commit"), ("version", "version")))
+                or promotion.get("dev_acceptance_run_id") not in matching_dev_run_ids):
+            continue
+        matches.append({"run_id": directory.name,
+                        "dev_acceptance_run_id": promotion["dev_acceptance_run_id"]})
+    return matches
+
+
+def identity() -> dict:
+    """Return only the live Staging application identity and exact accepted matches."""
+    environment_root = root_for("staging")
+    manifest_path = environment_root / "manifest.json"
+    if (_identity_path_has_symlink(environment_root)
+            or manifest_path.is_symlink() or not manifest_path.is_file()
+            or manifest_path.stat().st_size > 64 * 1024):
+        refuse("Staging identity manifest missing or invalid")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        refuse("Staging identity manifest invalid")
+    if (not isinstance(manifest, dict) or manifest.get("environment") != "staging"
+            or manifest.get("project") != "binhu-staging"
+            or not isinstance(manifest.get("images"), dict)
+            or not ARTIFACT_RE.fullmatch(str(manifest.get("artifact_id", "")))
+            or not COMMIT_RE.fullmatch(str(manifest.get("commit", "")))
+            or not VERSION_RE.fullmatch(str(manifest.get("version", "")))
+            or not IMAGE_RE.fullmatch(str((manifest.get("images") or {}).get("backend", "")))):
+        refuse("Staging identity manifest fields invalid")
+    current = {
+        "artifact_id": manifest["artifact_id"],
+        "image_id": manifest["images"]["backend"],
+        "commit": manifest["commit"],
+        "version": manifest["version"],
+    }
+    dev_acceptances = _matching_dev_acceptances(current)
+    return {
+        "gateway": "staging-application",
+        "environment": "staging",
+        "project": "binhu-staging",
+        "backend_digest": current["image_id"],
+        "artifact_id": current["artifact_id"],
+        "commit": current["commit"],
+        "version": current["version"],
+        "matching_dev_acceptances": dev_acceptances,
+        "matching_staging_acceptances": _matching_staging_acceptances(
+            current, {item["run_id"] for item in dev_acceptances}),
+    }
+
+
 def migrate(run_id: str, artifact_id: str, phase: str) -> dict:
     """Run the fixed Staging-only measure/apply/verify migration contract."""
     if phase not in {"measure", "apply", "verify"}:
@@ -354,10 +462,13 @@ def migrate(run_id: str, artifact_id: str, phase: str) -> dict:
 
 
 def main() -> None:
-    import fcntl
     if os.name != "posix" or os.geteuid() != 0:
         raise SystemExit("root execution required")
     os.umask(0o077)
+    if sys.argv[1:] == ["identity"]:
+        print(json.dumps(identity(), sort_keys=True))
+        return
+    import fcntl
     _safe_root(BASE, create=True)
     with (BASE / "gateway.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

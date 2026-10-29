@@ -19,12 +19,26 @@ CANDIDATES = STATE / "candidates"
 RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+SAFE_EXCEPTION_TYPES = frozenset({
+    "ModuleNotFoundError", "ImportError", "SyntaxError", "FileNotFoundError",
+    "PermissionError", "TimeoutExpired", "CalledProcessError", "ValueError",
+    "RuntimeError", "OSError", "KeyError", "TypeError", "ChildProcessError",
+    "SystemExit", "TarError",
+})
 MAX_BYTES = 128 * 1024 * 1024
 MEMBERS = frozenset({"source.tar.gz", "pipeline-job.jar", "manifest.json", "SHA256SUMS"})
-RETIRE_TARGET = "STG-20261007-03"
+# Retirement is deliberately limited to the two stale, approved Staging runs.
+# Retiring either run must leave the other run's backend connectors intact.
+# Keep this allowlist closed; the SSH wrapper may accept the generic run-id
+# shape, but the root gateway must enforce the actual authorization boundary.
+RETIRE_TARGETS = frozenset({"STG-20261027-07", "STG-20261028-03"})
 RETIRE_SUCCESSOR = "STG-20261027-02"
 FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})
 FAILED_RETIRE_SUCCESSOR = "STG-20261027-02"
+MEASURE_DIAGNOSTIC_RUN_ID = "STG-20261028-01"
+MEASURE_EVIDENCE_RE = re.compile(r"^measure-[0-9a-f]{16}\.json$")
+PREPARE_DIAGNOSTIC_RUN_ID = "STG-20261028-02"
+PREPARE_EVIDENCE_RE = re.compile(r"^prepare-(?:gateway-)?[0-9a-f]{16}\.json$")
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 STAGING_CORE = (
     "binhu-staging-backend-1", "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
@@ -71,6 +85,19 @@ def _child_error_code(stdout: str, stderr: str) -> str:
     return "staging_child_process_failed"
 
 
+def _child_error_type(stdout: str, stderr: str) -> str:
+    """Return only a fixed exception category from child diagnostics."""
+    text = f"{stdout}\n{stderr}"
+    for exception_type in (
+        "ModuleNotFoundError", "ImportError", "SyntaxError", "FileNotFoundError",
+        "PermissionError", "TimeoutExpired", "CalledProcessError", "ValueError",
+        "RuntimeError", "OSError", "KeyError", "TypeError",
+    ):
+        if exception_type in text:
+            return exception_type
+    return "ChildProcessError"
+
+
 def _child_payloads(stdout: str, stderr: str) -> list[dict]:
     """Extract bounded JSON diagnostics without forwarding child output."""
     payloads: list[dict] = []
@@ -91,7 +118,8 @@ def _child_payloads(stdout: str, stderr: str) -> list[dict]:
 
 
 def _record_child_failure(run_id: str, phase: str, payload: dict,
-                          stdout: str, stderr: str) -> None:
+                          stdout: str, stderr: str, *, return_code: int | None = None,
+                          diagnostic_code: str | None = None) -> None:
     """Persist only redacted failure metadata and output hashes."""
     try:
         digest = hashlib.sha256((stdout + "\0" + stderr).encode("utf-8", "replace")).hexdigest()
@@ -100,15 +128,25 @@ def _record_child_failure(run_id: str, phase: str, payload: dict,
         target = evidence / f"{phase}-{digest[:16]}.json"
         if target.exists() or target.is_symlink():
             return
+        error_type = payload.get("error_type", "CalledProcessError")
+        if not isinstance(error_type, str) or error_type not in SAFE_EXCEPTION_TYPES:
+            error_type = "ChildProcessError"
+        error_code = payload.get("error_code", "staging_child_process_failed")
+        if not isinstance(error_code, str) or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", error_code):
+            error_code = "staging_child_process_failed"
         safe = {
             "environment": "staging", "run_id": run_id, "phase": phase,
-            "status": "failed", "error_type": str(payload.get("error_type", "CalledProcessError")),
-            "error_code": str(payload.get("error_code", "staging_child_process_failed")),
+            "status": "failed", "error_type": error_type, "error_code": error_code,
             "stdout_sha256": hashlib.sha256(stdout.encode("utf-8", "replace")).hexdigest(),
             "stderr_sha256": hashlib.sha256(stderr.encode("utf-8", "replace")).hexdigest(),
             "stdout_bytes": len(stdout.encode("utf-8", "replace")),
             "stderr_bytes": len(stderr.encode("utf-8", "replace")),
         }
+        if isinstance(return_code, int) and -255 <= return_code <= 255:
+            safe["child_return_code"] = return_code
+        if isinstance(diagnostic_code, str) and re.fullmatch(
+                r"staging_[a-z0-9_]{1,72}", diagnostic_code):
+            safe["diagnostic_code"] = diagnostic_code
         if isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
             safe["image_key"] = payload["image_key"]
         target.write_text(json.dumps(safe, sort_keys=True) + "\n", encoding="utf-8")
@@ -223,47 +261,44 @@ def run_module(run_id: str, module: str, manifest: dict | None = None,
             timeout=900 if module == "apply" else 300,
         )
     except subprocess.CalledProcessError as error:
-        if module in {"prepare", "apply"}:
-            # The child emits bounded JSON on stdout, while import/runtime
-            # failures can only reach stderr. Inspect both streams without
-            # forwarding arbitrary command output or credentials.
-            child_stdout = error.stdout or ""
-            child_stderr = error.stderr or ""
-            emitted = False
-            for payload in _child_payloads(child_stdout, child_stderr):
-                if (isinstance(payload, dict)
-                        and payload.get("environment") == "staging"
-                        and payload.get("run_id") == run_id
-                        and payload.get("status") == "failed"
-                        and payload.get("phase") in {
-                            "prepare",
-                            "compose_brokers", "create_topics", "start_schema_dependencies",
-                            "apply_schema_registry", "migrate_delivery_schema",
-                            "start_pipeline_services", "start_flink_job",
-                        }
-                        and isinstance(payload.get("error_code"), str)
-                        and re.fullmatch(r"[A-Za-z0-9_. -]{1,96}", payload["error_code"] or "")):
-                    bounded = {
-                        "environment": "staging", "run_id": run_id,
-                        "status": "failed", "phase": payload["phase"],
-                        "error_type": str(payload.get("error_type", "ChildError")),
-                        "error_code": payload["error_code"],
-                    }
-                    if isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
-                        bounded["image_key"] = payload["image_key"]
-                    _record_child_failure(run_id, module, bounded, child_stdout, child_stderr)
-                    print(json.dumps(bounded, sort_keys=True))
-                    emitted = True
-                    break
-            if not emitted:
-                bounded = {
-                    "environment": "staging", "run_id": run_id,
-                    "status": "failed", "phase": module,
-                    "error_type": type(error).__name__,
-                    "error_code": _child_error_code(child_stdout, child_stderr),
-                }
-                _record_child_failure(run_id, module, bounded, child_stdout, child_stderr)
-                print(json.dumps(bounded, sort_keys=True))
+        child_stdout = error.stdout or ""
+        child_stderr = error.stderr or ""
+        diagnostic_code = _child_error_code(child_stdout, child_stderr)
+        allowed_phases = {
+            "prepare", "measure", "apply", "sample", "rollback",
+            "compose_brokers", "create_topics", "start_schema_dependencies",
+            "apply_schema_registry", "migrate_delivery_schema", "start_pipeline_services",
+            "start_flink_job", "prepare_flink_checkpoint_volume",
+        }
+        payload = next((item for item in _child_payloads(child_stdout, child_stderr)
+                        if item.get("environment") == "staging" and item.get("run_id") == run_id
+                        and item.get("status") == "failed" and item.get("phase") in allowed_phases
+                        and isinstance(item.get("error_code"), str)
+                        and re.fullmatch(r"staging_[a-z0-9_]{1,72}", item["error_code"])), None)
+        bounded = {
+            "environment": "staging", "run_id": run_id, "status": "failed",
+            "phase": payload["phase"] if payload else module,
+            "error_type": (payload.get("error_type") if payload
+                           and isinstance(payload.get("error_type"), str)
+                           and payload.get("error_type") in SAFE_EXCEPTION_TYPES
+                           else _child_error_type(child_stdout, child_stderr)),
+            "error_code": payload["error_code"] if payload else diagnostic_code,
+            "child_return_code": error.returncode,
+        }
+        if payload and isinstance(payload.get("image_key"), str) and re.fullmatch(r"[a-z_]{1,40}", payload["image_key"]):
+            bounded["image_key"] = payload["image_key"]
+        _record_child_failure(run_id, module, bounded, child_stdout, child_stderr,
+                              return_code=error.returncode, diagnostic_code=bounded["error_code"])
+        print(json.dumps(bounded, sort_keys=True))
+        raise
+    except (OSError, subprocess.TimeoutExpired) as error:
+        error_type = "TimeoutExpired" if isinstance(error, subprocess.TimeoutExpired) else type(error).__name__
+        diagnostic_code = ("staging_child_timeout" if isinstance(error, subprocess.TimeoutExpired)
+                           else "staging_child_launch_failed")
+        bounded = {"environment": "staging", "run_id": run_id, "status": "failed",
+                   "phase": module, "error_type": error_type, "error_code": diagnostic_code}
+        _record_child_failure(run_id, module, bounded, "", "", diagnostic_code=diagnostic_code)
+        print(json.dumps(bounded, sort_keys=True))
         raise
     lines = [line for line in result.stdout.splitlines() if line.strip().startswith("{")]
     if not lines:
@@ -285,21 +320,235 @@ def status() -> None:
         print(json.dumps({"environment": "staging", "status": "empty"}))
 
 
-def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
-    if not RUN_RE.fullmatch(run_id) or not COMMIT_RE.fullmatch(commit):
-        fail("prepare identity invalid")
-    target = CANDIDATES / run_id
-    if target.exists() or target.is_symlink():
-        fail("run id already exists")
-    target.mkdir(mode=0o700, parents=True)
+def diagnose_measure_failure(run_id: str) -> None:
+    """Read the one approved measure failure and emit only its safe fields."""
+    if run_id != MEASURE_DIAGNOSTIC_RUN_ID:
+        fail("measure diagnostic target is not approved")
+    evidence_root = STATE / "evidence" / run_id
+    if (STATE.is_symlink() or (STATE / "evidence").is_symlink()
+            or evidence_root.is_symlink() or not evidence_root.is_dir()):
+        fail("measure failure evidence is unavailable")
+    paths = sorted(evidence_root.glob("measure-*.json"))
+    if not paths or len(paths) > 16:
+        fail("measure failure evidence count is invalid")
+
+    records = []
+    for path in paths:
+        if (not MEASURE_EVIDENCE_RE.fullmatch(path.name) or path.is_symlink()
+                or not path.is_file() or path.stat().st_size > 4096):
+            fail("measure failure evidence file is invalid")
+        raw = path.read_bytes()
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fail("measure failure evidence is invalid")
+        if (not isinstance(payload, dict) or payload.get("environment") != "staging"
+                or payload.get("run_id") != run_id or payload.get("phase") != "measure"
+                or payload.get("status") != "failed"):
+            fail("measure failure evidence identity is invalid")
+
+        error_type = payload.get("error_type")
+        error_code = payload.get("error_code")
+        if (not isinstance(error_type, str) or error_type not in SAFE_EXCEPTION_TYPES
+                or not isinstance(error_code, str)
+                or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", error_code)):
+            fail("measure failure evidence fields are invalid")
+        record = {
+            "evidence_file": path.name,
+            "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+            "error_type": error_type, "error_code": error_code,
+        }
+        code = payload.get("diagnostic_code")
+        if code is not None:
+            if not isinstance(code, str) or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", code):
+                fail("measure failure evidence fields are invalid")
+            record["diagnostic_code"] = code
+        for key in ("child_return_code", "stdout_bytes", "stderr_bytes"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    fail("measure failure evidence fields are invalid")
+                if key.endswith("_bytes") and not 0 <= value <= 10_000_000:
+                    fail("measure failure evidence fields are invalid")
+                if key == "child_return_code" and not -255 <= value <= 255:
+                    fail("measure failure evidence fields are invalid")
+                record[key] = value
+        for key in ("stdout_sha256", "stderr_sha256"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, str) or not SHA_RE.fullmatch(value):
+                    fail("measure failure evidence fields are invalid")
+                record[key] = value
+        records.append(record)
+
+    print(json.dumps({
+        "environment": "staging", "run_id": run_id, "phase": "measure",
+        "status": "failed", "failures": records,
+    }, sort_keys=True))
+
+
+def diagnose_prepare_failure(run_id: str) -> None:
+    """Read only the approved run's fixed prepare failure metadata."""
+    if run_id != PREPARE_DIAGNOSTIC_RUN_ID:
+        fail("prepare diagnostic target is not approved")
+
+    candidate = CANDIDATES / run_id
+    if (STATE.is_symlink() or CANDIDATES.is_symlink() or candidate.is_symlink()):
+        fail("prepare diagnostic target is unsafe")
+    if not candidate.exists():
+        candidate_entry = "missing"
+    elif candidate.is_dir():
+        candidate_entry = "directory"
+    elif candidate.is_file():
+        candidate_entry = "file"
+    else:
+        candidate_entry = "other"
+    candidate_present = candidate_entry == "directory"
+
+    evidence_root = STATE / "evidence" / run_id
+    if (STATE.is_symlink() or (STATE / "evidence").is_symlink()
+            or evidence_root.is_symlink()):
+        fail("prepare failure evidence is unsafe")
+    paths = sorted(evidence_root.glob("prepare-*.json")) if evidence_root.is_dir() else []
+    if len(paths) > 16:
+        fail("prepare failure evidence count is invalid")
+
+    records = []
+    for path in paths:
+        if (not PREPARE_EVIDENCE_RE.fullmatch(path.name) or path.is_symlink()
+                or not path.is_file() or path.stat().st_size > 4096):
+            fail("prepare failure evidence file is invalid")
+        raw = path.read_bytes()
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fail("prepare failure evidence is invalid")
+        if (not isinstance(payload, dict) or payload.get("environment") != "staging"
+                or payload.get("run_id") != run_id or payload.get("phase") != "prepare"
+                or payload.get("status") != "failed"):
+            fail("prepare failure evidence identity is invalid")
+
+        error_type = payload.get("error_type")
+        error_code = payload.get("error_code")
+        if (not isinstance(error_type, str) or error_type not in SAFE_EXCEPTION_TYPES
+                or not isinstance(error_code, str)
+                or not re.fullmatch(r"staging_[a-z0-9_]{1,72}", error_code)):
+            fail("prepare failure evidence fields are invalid")
+        failure_stage = payload.get("failure_stage", "child" if "child_return_code" in payload else "gateway")
+        if failure_stage not in {"gateway", "child"}:
+            fail("prepare failure evidence fields are invalid")
+        record = {
+            "evidence_file": path.name,
+            "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+            "failure_stage": failure_stage,
+            "error_type": error_type,
+            "error_code": error_code,
+        }
+        exit_code = payload.get("exit_code", payload.get("child_return_code", 1))
+        if (not isinstance(exit_code, int) or isinstance(exit_code, bool)
+                or not -255 <= exit_code <= 255):
+            fail("prepare failure evidence fields are invalid")
+        record["exit_code"] = exit_code
+        for key in ("stdout_sha256", "stderr_sha256"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, str) or not SHA_RE.fullmatch(value):
+                    fail("prepare failure evidence fields are invalid")
+                record[key] = value
+        for key in ("stdout_bytes", "stderr_bytes"):
+            value = payload.get(key)
+            if value is not None:
+                if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 10_000_000:
+                    fail("prepare failure evidence fields are invalid")
+                record[key] = value
+        records.append(record)
+
+    status_value = "failed" if records else ("no_failure_evidence" if candidate_present else "evidence_missing")
+    print(json.dumps({
+        "environment": "staging", "run_id": run_id, "phase": "prepare",
+        "status": status_value, "candidate_present": candidate_present,
+        "candidate_entry": candidate_entry,
+        "failure_count": len(records), "failures": records,
+    }, sort_keys=True))
+
+
+def _prepare_failure_code(error: BaseException) -> str:
+    if isinstance(error, SystemExit):
+        message = str(error)
+        prefix = "Staging event-pipeline gateway refused: "
+        if message.startswith(prefix):
+            message = message[len(prefix):]
+        return {
+            "prepare identity invalid": "staging_prepare_identity_invalid",
+            "run id already exists": "staging_prepare_run_id_exists",
+            "candidate size or digest invalid": "staging_candidate_size_or_digest_invalid",
+            "candidate upload truncated": "staging_candidate_upload_truncated",
+            "candidate bundle hash mismatch": "staging_candidate_bundle_hash_mismatch",
+            "candidate contents are not fixed": "staging_candidate_contents_invalid",
+            "candidate manifest invalid": "staging_candidate_manifest_invalid",
+            "candidate identity mismatch": "staging_candidate_identity_mismatch",
+            "candidate checksums invalid": "staging_candidate_checksums_invalid",
+            "candidate source entry invalid": "staging_candidate_source_invalid",
+        }.get(message, "staging_prepare_gateway_rejected")
+    if isinstance(error, tarfile.TarError):
+        return "staging_candidate_archive_invalid"
+    if isinstance(error, (OSError, PermissionError)):
+        return "staging_prepare_io_failed"
+    if isinstance(error, subprocess.CalledProcessError):
+        return "staging_prepare_child_failed"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "staging_prepare_child_timeout"
+    return "staging_prepare_internal_error"
+
+
+def _record_prepare_failure(run_id: str, error: BaseException) -> None:
+    if not RUN_RE.fullmatch(run_id):
+        return
     try:
+        evidence = STATE / "evidence" / run_id
+        evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
+        error_code = _prepare_failure_code(error)
+        material = f"staging\0{run_id}\0prepare\0{type(error).__name__}\0{error_code}"
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+        target = evidence / f"prepare-gateway-{digest}.json"
+        if target.exists() or target.is_symlink():
+            return
+        error_type = type(error).__name__
+        if error_type not in SAFE_EXCEPTION_TYPES:
+            error_type = "RuntimeError"
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        payload = {
+            "environment": "staging", "run_id": run_id, "phase": "prepare",
+            "status": "failed", "failure_stage": "gateway",
+            "error_type": error_type, "error_code": error_code, "exit_code": 1,
+            "stdout_sha256": empty_hash, "stderr_sha256": empty_hash,
+            "stdout_bytes": 0, "stderr_bytes": 0,
+        }
+        target.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        target.chmod(0o600)
+    except (OSError, ValueError):
+        return
+
+
+def prepare(run_id: str, commit: str, size_text: str, digest: str) -> None:
+    target = CANDIDATES / run_id
+    created_target = False
+    try:
+        if not RUN_RE.fullmatch(run_id) or not COMMIT_RE.fullmatch(commit):
+            fail("prepare identity invalid")
+        if target.exists() or target.is_symlink():
+            fail("run id already exists")
+        target.mkdir(mode=0o700, parents=True)
+        created_target = True
         bundle = target / "candidate.tar.gz"
         read_bundle(int(size_text), digest, bundle)
         manifest = extract_candidate(bundle, target, run_id, commit)
         run_module(run_id, "prepare", manifest)
         print(json.dumps({"environment": "staging", "run_id": run_id, "prepared": True}))
-    except BaseException:
-        shutil.rmtree(target, ignore_errors=True)
+    except BaseException as error:
+        _record_prepare_failure(run_id, error)
+        if created_target:
+            shutil.rmtree(target, ignore_errors=True)
         raise
 
 
@@ -473,11 +722,13 @@ def _retirement_file(path: Path) -> dict:
 def _retirement_identity(manifest: dict, current: dict, spec: dict, run_id: str) -> tuple[Path, str]:
     project = "binhu-staging-event-pipeline-" + run_id.lower()
     root = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
-    if (run_id != RETIRE_TARGET or manifest.get("environment") != "staging"
+    current_run = current.get("run_id")
+    if (run_id not in RETIRE_TARGETS or manifest.get("environment") != "staging"
             or manifest.get("run_id") != run_id or manifest.get("project") != project
             or manifest.get("production_data") not in (None, False)
-            or current.get("environment") != "staging" or current.get("run_id") != run_id
-            or current.get("project") != project or current.get("started") is not True
+            or current.get("environment") != "staging" or current_run not in RETIRE_TARGETS
+            or (current_run == run_id and current.get("project") != project)
+            or current.get("started") is not True
             or current.get("acceptance") == "passed"):
         raise ValueError("staging_retirement_run_identity_mismatch")
     architecture = current.get("architecture", manifest.get("architecture"))
@@ -638,11 +889,28 @@ def _retirement_snapshot(run_id: str, project: str, *, successor: str = RETIRE_S
     members = {entry.get("Name") for entry in (network.get("Containers") or {}).values()}
     expected_members = {
         "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
-        f"binhu-staging-event-pipeline-{run_id.lower()}-business-bridge-1",
-        f"binhu-staging-event-pipeline-{run_id.lower()}-backend-outbox-relay-1",
-        f"binhu-staging-event-pipeline-{successor.lower()}-business-bridge-1",
-        f"binhu-staging-event-pipeline-{successor.lower()}-backend-outbox-relay-1",
     }
+    if run_id in RETIRE_TARGETS:
+        # The two approved runs may be retired in either order. Require both
+        # connectors for every live approved peer and reject foreign members.
+        for approved_run in RETIRE_TARGETS:
+            peer = {
+                f"binhu-staging-event-pipeline-{approved_run.lower()}-business-bridge-1",
+                f"binhu-staging-event-pipeline-{approved_run.lower()}-backend-outbox-relay-1",
+            }
+            present = peer & members
+            if approved_run == run_id and present != peer:
+                raise ValueError("staging_retirement_backend_network_membership_mismatch")
+            if approved_run != run_id and present not in (set(), peer):
+                raise ValueError("staging_retirement_backend_network_membership_mismatch")
+            expected_members.update(present)
+    else:
+        expected_members.update({
+            f"binhu-staging-event-pipeline-{run_id.lower()}-business-bridge-1",
+            f"binhu-staging-event-pipeline-{run_id.lower()}-backend-outbox-relay-1",
+            f"binhu-staging-event-pipeline-{successor.lower()}-business-bridge-1",
+            f"binhu-staging-event-pipeline-{successor.lower()}-backend-outbox-relay-1",
+        })
     if (network.get("Name") != BACKEND_NETWORK or network.get("Driver") != "bridge"
             or network.get("Internal") is not True or labels.get("binhu.environment") != "staging"
             or labels.get("binhu.role") != "pipeline-backend-access" or members != expected_members):
@@ -651,7 +919,11 @@ def _retirement_snapshot(run_id: str, project: str, *, successor: str = RETIRE_S
         "binhu-staging-environment-mysql-1", "binhu-staging-redis-1",
     }))
     for name, item in connectors.items():
-        expected_run = successor if successor.lower() in name else run_id
+        expected_run = next(
+            (approved_run for approved_run in RETIRE_TARGETS
+             if f"-{approved_run.lower()}-" in name),
+            successor if successor.lower() in name else run_id,
+        )
         expected_service = "business-bridge" if name.endswith("business-bridge-1") else "backend-outbox-relay"
         if (item["status"] != "running" or item["environment"] != "staging"
                 or item["run_id"] != expected_run or item["project"] != "binhu-staging-event-pipeline-" + expected_run.lower()
@@ -687,7 +959,7 @@ def _retirement_snapshot(run_id: str, project: str, *, successor: str = RETIRE_S
 
 
 def retire(run_id: str) -> None:
-    if run_id != RETIRE_TARGET:
+    if run_id not in RETIRE_TARGETS:
         fail("retirement target is not approved")
     candidate = Path("/srv/binhu-environments/staging-event-pipeline") / run_id
     current_path = STATE / "current.json"
@@ -716,16 +988,17 @@ def retire(run_id: str) -> None:
     try:
         _retirement_run(_retirement_command(root), timeout=300)
         after = _retirement_snapshot_after(run_id, project, before)
-        current.update({
-            "lifecycle_status": "retired", "retired_at": datetime.now(timezone.utc).isoformat(),
-            "retirement_evidence": str(evidence),
-        })
-        staged = current_path.with_name("current.json.retirement-new")
-        if staged.exists() or staged.is_symlink():
-            raise ValueError("staging_retirement_state_temp_exists")
-        staged.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        staged.chmod(0o600)
-        os.replace(staged, current_path)
+        if current.get("run_id") == run_id:
+            current.update({
+                "lifecycle_status": "retired", "retired_at": datetime.now(timezone.utc).isoformat(),
+                "retirement_evidence": str(evidence),
+            })
+            staged = current_path.with_name("current.json.retirement-new")
+            if staged.exists() or staged.is_symlink():
+                raise ValueError("staging_retirement_state_temp_exists")
+            staged.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            staged.chmod(0o600)
+            os.replace(staged, current_path)
         result = {
             "environment": "staging", "run_id": run_id, "status": "retired",
             "containers_stopped": len(before["target_containers"]),
@@ -870,6 +1143,10 @@ def main() -> None:
         fail("root execution required")
     if len(sys.argv) == 2 and sys.argv[1] == "status":
         status(); return
+    if len(sys.argv) == 3 and sys.argv[1] == "diagnose-measure":
+        diagnose_measure_failure(sys.argv[2]); return
+    if len(sys.argv) == 3 and sys.argv[1] == "diagnose-prepare":
+        diagnose_prepare_failure(sys.argv[2]); return
     if len(sys.argv) == 6 and sys.argv[1] == "prepare":
         prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]); return
     if len(sys.argv) == 3 and sys.argv[1] in {"measure", "apply", "switch", "rollback"}:
