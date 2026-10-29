@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,17 @@ PRODUCTION_HEALTH_URL = "http://127.0.0.1:37125/api/health"
 PRODUCTION_ERROR_RE = re.compile(r"\b(?:ERROR|CRITICAL|FATAL|Traceback)\b", re.IGNORECASE)
 PRODUCTION_LOG_LINE_LIMIT = 5000
 PRODUCTION_LOG_BYTE_LIMIT = 8 * 1024 * 1024
+PRODUCTION_MODE_RUNNING = "running"
+PRODUCTION_MODE_PAUSED = "production_paused"
+PRODUCTION_PAUSE_RUN_RE = re.compile(r"^PROD-PAUSE-[0-9]{8}-[0-9]{2}$")
+AUTHORIZED_PRODUCTION_PAUSE_RUN_ID = "PROD-PAUSE-20261029-02"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PRODUCTION_PAUSE_EVIDENCE_ROOT = Path("/srv/binhu-release-evidence-maintenance")
+PRODUCTION_PAUSE_BACKUP_ROOT = Path("/root/binhu/deploy-backups/automated")
+PRODUCTION_PAUSE_DATABASES = (
+    "DispatchData", "OnlineData", "OnlineDataArchive", "PlatformData",
+    "RegistryData", "VisitData", "WorkflowData", "daily_report",
+)
 
 
 def _run(command: list[str], *, timeout: int = 30, input_text: str | None = None) -> str:
@@ -273,9 +285,87 @@ def _production_log_error_count(name: str, since_unix: int) -> int:
     return sum(1 for line in lines if PRODUCTION_ERROR_RE.search(line))
 
 
-def _production_sample(since_unix: int) -> dict[str, Any]:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_pause_evidence(pause_run_id: str) -> dict[str, Any]:
+    """Validate the fixed, aggregate-only Production pause contract."""
+    if (not PRODUCTION_PAUSE_RUN_RE.fullmatch(pause_run_id)
+            or pause_run_id != AUTHORIZED_PRODUCTION_PAUSE_RUN_ID):
+        raise RuntimeError("production_pause_run_id_invalid")
+    evidence_path = PRODUCTION_PAUSE_EVIDENCE_ROOT / "pause-production" / pause_run_id / "pause.json"
+    backup_dir = PRODUCTION_PAUSE_BACKUP_ROOT / f"maintenance-pause-production-{pause_run_id}"
+    manifest_path = backup_dir / "backup-manifest.json"
+    for path in (evidence_path, manifest_path):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            raise RuntimeError("production_pause_evidence_missing")
+    try:
+        pause = json.loads(evidence_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("production_pause_evidence_invalid") from error
+    if (not isinstance(pause, dict) or pause.get("schema") != 1
+            or pause.get("operation") != "pause-production"
+            or pause.get("run_id") != pause_run_id
+            or pause.get("accepted") is not True
+            or pause.get("protected_container_states_unchanged") is not True
+            or sorted(pause.get("stopped_services") or []) != ["backend", "mysql"]):
+        raise RuntimeError("production_pause_evidence_invalid")
+    expected_scope = list(PRODUCTION_PAUSE_DATABASES)
+    if (not isinstance(manifest, dict) or manifest.get("schema") != 1
+            or manifest.get("operation") != "pause-production"
+            or manifest.get("run_id") != pause_run_id
+            or manifest.get("database_scope") != expected_scope):
+        raise RuntimeError("production_pause_backup_scope_mismatch")
+    entries = manifest.get("databases")
+    if (not isinstance(entries, list) or len(entries) != len(expected_scope)
+            or {item.get("database") for item in entries if isinstance(item, dict)}
+            != set(expected_scope)):
+        raise RuntimeError("production_pause_backup_scope_mismatch")
+    for item in entries:
+        if not isinstance(item, dict):
+            raise RuntimeError("production_pause_backup_manifest_invalid")
+        database = item.get("database")
+        backup_path = backup_dir / f"{database}.sql.gz"
+        try:
+            valid = (
+                backup_path.is_file() and not backup_path.is_symlink()
+                and item.get("filename") == backup_path.name
+                and SHA256_RE.fullmatch(str(item.get("sha256") or "")) is not None
+                and int(item.get("size_bytes") or -1) == backup_path.stat().st_size
+                and _sha256_file(backup_path) == item["sha256"]
+            )
+        except (OSError, TypeError, ValueError, KeyError):
+            valid = False
+        if not valid:
+            raise RuntimeError("production_pause_backup_manifest_invalid")
+    manifest_sha256 = _sha256_file(manifest_path)
+    if pause.get("backup_manifest_sha256") != manifest_sha256:
+        raise RuntimeError("production_pause_evidence_mismatch")
+    return {
+        "pause_run_id": pause_run_id,
+        "pause_evidence_valid": True,
+        "pause_evidence_sha256": _sha256_file(evidence_path),
+        "backup_manifest_sha256": manifest_sha256,
+        "backup_database_count": len(expected_scope),
+        "backup_database_scope": expected_scope,
+    }
+
+
+def _production_sample(since_unix: int, production_mode: str = PRODUCTION_MODE_RUNNING,
+                       pause_run_id: str | None = None) -> dict[str, Any]:
     """Return fixed aggregate-only Production health and container evidence."""
     try:
+        if production_mode not in {PRODUCTION_MODE_RUNNING, PRODUCTION_MODE_PAUSED}:
+            raise RuntimeError("production_monitor_mode_invalid")
+        if (not isinstance(since_unix, int) or since_unix <= 0
+                or since_unix > int(time.time()) or since_unix < int(time.time()) - 3600):
+            raise RuntimeError("production_monitor_start_time_invalid")
         inspected = json.loads(_run(["docker", "inspect", *PRODUCTION_CONTAINER_NAMES]))
         if len(inspected) != len(PRODUCTION_CONTAINER_NAMES):
             raise RuntimeError("production_container_set_incomplete")
@@ -301,15 +391,24 @@ def _production_sample(since_unix: int) -> dict[str, Any]:
                 if environment != {"production"}:
                     raise RuntimeError("production_backend_identity_mismatch")
 
-        bootstrap_status, bootstrap = _production_http(PRODUCTION_BOOTSTRAP_URL)
-        health_status, _ = _production_http(PRODUCTION_HEALTH_URL)
-        bootstrap_environment = str((bootstrap or {}).get("environment") or "")
-        if bootstrap_status != 200 or bootstrap_environment != "production":
-            raise RuntimeError("production_bootstrap_identity_mismatch")
-
-        if (not isinstance(since_unix, int) or since_unix <= 0
-                or since_unix > int(time.time()) or since_unix < int(time.time()) - 3600):
-            raise RuntimeError("production_monitor_start_time_invalid")
+        pause = {}
+        if production_mode == PRODUCTION_MODE_PAUSED:
+            if not isinstance(pause_run_id, str):
+                raise RuntimeError("production_pause_run_id_invalid")
+            pause = _read_pause_evidence(pause_run_id)
+            bootstrap_status, health_status, bootstrap_environment = 0, 0, "production"
+            if (not states["binhu-ops-agent"]["running"]
+                    or states["binhu-backend"]["running"]
+                    or states["binhu-mysql"]["running"]):
+                raise RuntimeError("production_paused_state_changed")
+        else:
+            if pause_run_id is not None:
+                raise RuntimeError("production_pause_run_id_unexpected")
+            bootstrap_status, bootstrap = _production_http(PRODUCTION_BOOTSTRAP_URL)
+            health_status, _ = _production_http(PRODUCTION_HEALTH_URL)
+            bootstrap_environment = str((bootstrap or {}).get("environment") or "")
+            if bootstrap_status != 200 or bootstrap_environment != "production":
+                raise RuntimeError("production_bootstrap_identity_mismatch")
         error_count = 0
         for name in PRODUCTION_CONTAINER_NAMES:
             error_count += _production_log_error_count(name, since_unix)
@@ -319,15 +418,19 @@ def _production_sample(since_unix: int) -> dict[str, Any]:
             "bootstrap_status": bootstrap_status,
             "health_status": health_status,
             "health": 200 <= health_status < 300,
+            "production_mode": production_mode,
             "containers": states,
             "error_count": error_count,
             "monitor_error": None,
+            **pause,
         }
     except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         code = str(error) if str(error).startswith("production_") else "production_monitor_failed"
         return {
             "environment": "production", "bootstrap_environment": "",
             "bootstrap_status": 0, "health_status": 0, "health": False,
+            "production_mode": production_mode,
+            "pause_run_id": pause_run_id if production_mode == PRODUCTION_MODE_PAUSED else None,
             "containers": {}, "error_count": None, "monitor_error": code,
         }
 
@@ -351,7 +454,9 @@ def _staging_service_states() -> dict[str, Any]:
     return result
 
 
-def sample(run_id: str, production_since_unix: int) -> dict[str, Any]:
+def sample(run_id: str, production_since_unix: int,
+           production_mode: str = PRODUCTION_MODE_RUNNING,
+           production_pause_run_id: str | None = None) -> dict[str, Any]:
     if not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", run_id):
         raise RuntimeError("Staging metrics run id invalid")
     root = root_for(run_id)
@@ -385,6 +490,8 @@ def sample(run_id: str, production_since_unix: int) -> dict[str, Any]:
         "staging_services": _staging_service_states(),
         "host": {"memory_available_bytes": int(meminfo["MemAvailable"].split()[0]) * 1024},
         "disk": {"used": usage.used, "total": usage.total},
-        "production": _production_sample(production_since_unix),
+        "production": _production_sample(
+            production_since_unix, production_mode, production_pause_run_id,
+        ),
         "root_inode": int(stat.st_ino),
     }
