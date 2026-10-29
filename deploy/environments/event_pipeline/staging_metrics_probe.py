@@ -26,7 +26,6 @@ PRODUCTION_LOG_BYTE_LIMIT = 8 * 1024 * 1024
 PRODUCTION_MODE_RUNNING = "running"
 PRODUCTION_MODE_PAUSED = "production_paused"
 PRODUCTION_PAUSE_RUN_RE = re.compile(r"^PROD-PAUSE-[0-9]{8}-[0-9]{2}$")
-AUTHORIZED_PRODUCTION_PAUSE_RUN_ID = "PROD-PAUSE-20261029-02"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PRODUCTION_PAUSE_EVIDENCE_ROOT = Path("/srv/binhu-release-evidence-maintenance")
 PRODUCTION_PAUSE_BACKUP_ROOT = Path("/root/binhu/deploy-backups/automated")
@@ -295,8 +294,7 @@ def _sha256_file(path: Path) -> str:
 
 def _read_pause_evidence(pause_run_id: str) -> dict[str, Any]:
     """Validate the fixed, aggregate-only Production pause contract."""
-    if (not PRODUCTION_PAUSE_RUN_RE.fullmatch(pause_run_id)
-            or pause_run_id != AUTHORIZED_PRODUCTION_PAUSE_RUN_ID):
+    if not isinstance(pause_run_id, str) or not PRODUCTION_PAUSE_RUN_RE.fullmatch(pause_run_id):
         raise RuntimeError("production_pause_run_id_invalid")
     evidence_path = PRODUCTION_PAUSE_EVIDENCE_ROOT / "pause-production" / pause_run_id / "pause.json"
     backup_dir = PRODUCTION_PAUSE_BACKUP_ROOT / f"maintenance-pause-production-{pause_run_id}"
