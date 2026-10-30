@@ -103,10 +103,20 @@ def _locust_counts(path: Path) -> tuple[int, int] | None:
     with path.open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
     rows = [row for row in rows if row.get("Name") != "Aggregated"]
-    return (
-        sum(int(row.get("Request Count") or 0) for row in rows),
-        sum(int(row.get("Failure Count") or 0) for row in rows),
-    )
+    requests = sum(int(row.get("Request Count") or 0) for row in rows)
+    failures = sum(int(row.get("Failure Count") or 0) for row in rows)
+    # Permission-scoped fixtures intentionally exercise roles that receive
+    # 401/403 on endpoints outside their scope. Keep those denials visible in
+    # Locust artifacts, but exclude them from the infrastructure failure fuse.
+    failure_path = path.with_name(path.name.replace("_stats", "_failures"))
+    expected_auth = 0
+    if failure_path.is_file() and not failure_path.is_symlink():
+        with failure_path.open(encoding="utf-8", newline="") as stream:
+            for row in csv.DictReader(stream):
+                error = str(row.get("Error") or "")
+                if re.search(r"(?:401|403)\b", error):
+                    expected_auth += int(row.get("Occurrences") or 0)
+    return requests, max(0, failures - expected_auth)
 
 
 def _staging_stop_reason(sample: dict[str, Any], baseline: dict[str, Any]) -> str:

@@ -90,7 +90,9 @@ def run_sse(
                     break
         except Exception as exc:
             failures += 1
-            hooks.failed("sse", type(exc).__name__)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            detail = f"{type(exc).__name__}_{status}" if status else type(exc).__name__
+            hooks.failed("sse", detail)
         finally:
             if response is not None:
                 response.close()
@@ -162,7 +164,9 @@ def run_query_websocket(
                     break
         except Exception as exc:
             failures += 1
-            hooks.failed("websocket", type(exc).__name__)
+            status = getattr(exc, "status_code", None)
+            detail = f"{type(exc).__name__}_{status}" if status else type(exc).__name__
+            hooks.failed("websocket", detail)
         finally:
             if socket is not None:
                 try:

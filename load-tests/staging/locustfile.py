@@ -10,6 +10,7 @@ import itertools
 import json
 import os
 import random
+import re
 import threading
 import time
 from pathlib import Path
@@ -69,7 +70,11 @@ def _request_metric(
 ) -> None:
     del request_type, response_length, kwargs
     if name and (name.startswith("core.") or name.startswith("poll.") or name.startswith("stream.")):
-        GLOBAL_METRICS.observe(name, response_time, exception is not None)
+        error_text = str(exception or "")
+        expected_auth = bool(re.search(r"(?:status[_ ]|HTTPError[^0-9]*)?(?:401|403)\b", error_text))
+        if expected_auth:
+            GLOBAL_METRICS.observe_expected_auth_denial()
+        GLOBAL_METRICS.observe(name, response_time, exception is not None and not expected_auth)
 
 
 @events.test_stop.add_listener

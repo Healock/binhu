@@ -51,6 +51,7 @@ class StagingMetrics:
     stream_reconnect_successes: int = 0
     stream_reconnect_timestamps: list[float] = field(default_factory=list)
     expected_conflicts: int = 0
+    expected_auth_denials: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def observe(self, layer: str, latency_ms: float, failed: bool = False) -> None:
@@ -60,6 +61,10 @@ class StagingMetrics:
     def observe_expected_conflict(self) -> None:
         with self._lock:
             self.expected_conflicts += 1
+
+    def observe_expected_auth_denial(self) -> None:
+        with self._lock:
+            self.expected_auth_denials += 1
 
     def stream_opened(self, *, reconnect: bool) -> None:
         with self._lock:
@@ -103,6 +108,7 @@ class StagingMetrics:
                     "reconnect_peak_per_minute": self._reconnect_peak_per_minute(),
                 },
                 "expected_conflicts": self.expected_conflicts,
+                "expected_auth_denials": self.expected_auth_denials,
             }
 
     def _reconnect_peak_per_minute(self) -> int:
