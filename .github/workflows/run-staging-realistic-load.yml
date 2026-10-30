@@ -184,8 +184,13 @@ jobs:
                   'error_code':'staging_smoke_not_completed'}
           try:
               session=requests.Session()
+              smoke_accounts=[item for item in runtime['accounts']
+                              if item.get('role') in {'admin','super_admin'}]
+              if not smoke_accounts:
+                  result['error_code']='staging_smoke_admin_fixture_missing'
+                  raise SystemExit(result['error_code'])
               login=session.post(os.environ['BASE_URL'].rstrip('/')+'/staging/api/auth/login',json={
-                  'username':runtime['accounts'][0]['username'],'password':os.environ['LOAD_PASSWORD'],
+                  'username':smoke_accounts[0]['username'],'password':os.environ['LOAD_PASSWORD'],
                   'device_type':'staging-smoke','device_id':os.environ['RUN_ID'].lower()+'-smoke'},timeout=20)
               if login.status_code >= 400:
                   result['error_code']='staging_smoke_login_failed'
