@@ -381,7 +381,13 @@ jobs:
               exit 1
             fi
           done
-          wait "$load_pid"
+          locust_exit_code=0
+          if wait "$load_pid"; then
+            :
+          else
+            locust_exit_code=$?
+          fi
+          export LOCUST_EXIT_CODE="$locust_exit_code"
           drain_started=$(date +%s)
           while true; do
             sample=$("${ssh_cmd[@]}" "sample $CANDIDATE_RUN_ID $RUN_ID $monitor_start_epoch$sample_suffix")
@@ -416,6 +422,7 @@ jobs:
           report['candidate_run_id']=os.environ['CANDIDATE_RUN_ID']
           report['phase']='load'
           report['status']='passed'
+          report['locust_exit_code']=int(os.environ.get('LOCUST_EXIT_CODE','0'))
           policy=json.load(open(os.path.join(os.environ['RUNNER_TEMP'],'staging-load','monitor-state.json'),encoding='utf-8'))
           report['execution_policy']={
               'candidate_run_id':os.environ['CANDIDATE_RUN_ID'],
