@@ -2,7 +2,7 @@ import inspect
 import os
 import unittest
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -243,6 +243,28 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             "未配置来源",
         )
 
+    def test_period_snapshot_peaks_are_per_type_and_canonical_community(self):
+        rows = [
+            (7, "全链条", "社区甲", 12, date(2026, 10, 3)),
+            (7, "全链条", "旧社区甲", 15, date(2026, 10, 4)),
+            (8, "寄递业", "社区甲", 8, date(2026, 10, 2)),
+            (7, "全链条", "社区乙", 9, date(2026, 10, 5)),
+        ]
+
+        result = monitor.canonicalize_period_snapshot_peaks(
+            rows,
+            {"旧社区甲": "社区甲", "社区甲": "社区甲"},
+            ["社区甲"],
+        )
+
+        self.assertEqual(
+            result,
+            [
+                {"target_id": 7, "parser_type": "全链条", "community": "社区甲", "count": 15, "observed_at": "2026-10-04"},
+                {"target_id": 8, "parser_type": "寄递业", "community": "社区甲", "count": 8, "observed_at": "2026-10-02"},
+            ],
+        )
+
     def test_model_three_is_supported_as_a_read_only_monitor_target(self):
         rows = [{"values": {
             "截止时间": "2026-09-20",
@@ -367,6 +389,9 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             async def fetchone(self):
                 return next(self.results)
 
+            async def fetchall(self):
+                return []
+
             async def __aenter__(self):
                 return self
 
@@ -409,6 +434,14 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["current_rows"], 0)
         self.assertEqual(result["successful_reads"], 0)
         self.assertEqual(result["status"], "healthy")
+
+    def test_period_peak_query_uses_database_window_ranking(self):
+        source = inspect.getsource(monitor.get_txdocs_statistics_overview)
+        self.assertIn("WITH snapshot_community AS", source)
+        self.assertIn("ROW_NUMBER() OVER", source)
+        self.assertIn(
+            "PARTITION BY spreadsheet_id, parser_type, community", source
+        )
 
     def test_monitor_read_path_does_not_call_tencent_write_methods(self):
         source = inspect.getsource(monitor._read_config)

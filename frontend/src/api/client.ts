@@ -1119,10 +1119,20 @@ export interface TxDocsMonitoringOverview {
   changed_rows: number
   removed_rows: number
   successful_reads: number
+  failed_reads_in_range?: number
   failed_sources: number
   last_success_at: string | null
+  period_peak_by_community?: TxDocsCommunityPeak[]
   is_stale: boolean
   message: string
+}
+
+export interface TxDocsCommunityPeak {
+  target_id: number
+  parser_type: string
+  community: string
+  count: number
+  observed_at: string
 }
 
 export interface TxDocsMonitorConfig {

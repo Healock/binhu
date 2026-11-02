@@ -298,6 +298,49 @@ def canonical_monitor_community(
     return canonical_community(value, alias_lookup)
 
 
+def canonicalize_period_snapshot_peaks(
+    peak_rows: Iterable[tuple],
+    alias_lookup: dict[str, str],
+    communities: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Normalize database-ranked peaks and apply the visible community scope."""
+    visible = (
+        None
+        if communities is None
+        else {
+            canonical_monitor_community(name, alias_lookup)
+            for name in communities
+        }
+    )
+    peaks: dict[tuple[int, str, str], dict[str, Any]] = {}
+    for target_id, parser_type, community, count, observed_at in peak_rows:
+        name = canonical_monitor_community(community, alias_lookup)
+        if visible is not None and name not in visible:
+            continue
+        key = (int(target_id), str(parser_type), name)
+        value = int(count or 0)
+        previous = peaks.get(key)
+        if previous is None or value > previous["count"]:
+            peaks[key] = {
+                "target_id": key[0],
+                "parser_type": key[1],
+                "community": key[2],
+                "count": value,
+                "observed_at": (
+                    observed_at.isoformat()
+                    if hasattr(observed_at, "isoformat")
+                    else str(observed_at)[:10]
+                ),
+            }
+    return sorted(
+        peaks.values(),
+        key=lambda item: (
+            item["parser_type"], item["community"], item["target_id"],
+            -item["count"],
+        ),
+    )
+
+
 def build_monitor_business_buckets(
     parser_type: str,
     rows: Iterable[dict[str, Any]],
@@ -1681,8 +1724,10 @@ async def get_txdocs_statistics_overview(
         "changed_rows": 0,
         "removed_rows": 0,
         "successful_reads": 0,
+        "failed_reads_in_range": 0,
         "failed_sources": 0,
         "last_success_at": None,
+        "period_peak_by_community": [],
         "is_stale": False,
         "message": "腾讯表只读监控未启用",
     }
@@ -1756,16 +1801,20 @@ async def get_txdocs_statistics_overview(
             aggregate = await cur.fetchone() or (0, 0, 0)
             await cur.execute(
                 f"""
-                SELECT COUNT(*)
+                SELECT COALESCE(SUM(status='success'),0),
+                       COALESCE(SUM(status='failed'),0)
                 FROM _txdocs_monitor_runs
-                WHERE status='success'
-                  AND observed_date BETWEEN %s AND %s
+                WHERE observed_date BETWEEN %s AND %s
                   AND parser_type IN ({type_marks})
                   AND spreadsheet_id IN ({source_marks})
                 """,
                 (start_date, end_date, *valid_types, *source_ids),
             )
-            successful_reads = int((await cur.fetchone() or [0])[0] or 0)
+            range_run_counts = await cur.fetchone() or (0, 0)
+            successful_reads = int(range_run_counts[0] or 0)
+            failed_reads_in_range = int(
+                range_run_counts[1] if len(range_run_counts) > 1 else 0
+            )
             await cur.execute(
                 f"""
                 SELECT MAX(finished_at), COUNT(*)
@@ -1793,6 +1842,67 @@ async def get_txdocs_statistics_overview(
                 (*valid_types, *source_ids),
             )
             failed_sources = int((await cur.fetchone() or [0])[0] or 0)
+            period_peak = {
+                "peak_by_community": [],
+            }
+            try:
+                alias_lookup = await get_community_alias_lookup(cur)
+            except Exception:
+                alias_lookup = {}
+            try:
+                alias_branches = []
+                alias_params: list[str] = []
+                for alias, formal in alias_lookup.items():
+                    if alias != formal:
+                        alias_branches.append("WHEN bucket.community=%s THEN %s")
+                        alias_params.extend((alias, formal))
+                community_expression = "CASE "
+                if alias_branches:
+                    community_expression += " ".join(alias_branches) + " "
+                community_expression += (
+                    "ELSE COALESCE(NULLIF(TRIM(bucket.community),''),'未分配社区') END"
+                )
+                await cur.execute(
+                    f"""
+                    WITH snapshot_community AS (
+                        SELECT run.id, run.spreadsheet_id, run.parser_type, run.observed_date,
+                               {community_expression} AS community,
+                               SUM(bucket.row_count) AS row_count
+                        FROM _txdocs_monitor_runs run
+                        JOIN _txdocs_monitor_run_buckets bucket
+                          ON bucket.run_id=run.id
+                        WHERE run.status='success'
+                          AND run.observed_date BETWEEN %s AND %s
+                          AND run.parser_type IN ({type_marks})
+                          AND run.spreadsheet_id IN ({source_marks})
+                        GROUP BY run.id, run.spreadsheet_id, run.parser_type,
+                                 run.observed_date,
+                                 community
+                    ), ranked AS (
+                        SELECT spreadsheet_id, parser_type, community, row_count, observed_date,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY spreadsheet_id, parser_type, community
+                                   ORDER BY row_count DESC, observed_date, id
+                               ) AS peak_rank
+                        FROM snapshot_community
+                    )
+                    SELECT spreadsheet_id, parser_type, community, row_count, observed_date
+                    FROM ranked
+                    WHERE peak_rank=1
+                    """,
+                    (
+                        *alias_params, start_date, end_date,
+                        *valid_types, *source_ids,
+                    ),
+                )
+                period_peak["peak_by_community"] = canonicalize_period_snapshot_peaks(
+                    await cur.fetchall(), alias_lookup, communities,
+                )
+            except Exception:
+                # Keep live counts available if historical snapshot data is absent.
+                period_peak = {
+                    "peak_by_community": [],
+                }
     finally:
         pool.release(conn)
 
@@ -1821,7 +1931,9 @@ async def get_txdocs_statistics_overview(
         "changed_rows": int(aggregate[1] or 0),
         "removed_rows": int(aggregate[2] or 0),
         "successful_reads": successful_reads,
+        "failed_reads_in_range": failed_reads_in_range,
         "failed_sources": failed_sources,
+        "period_peak_by_community": period_peak["peak_by_community"],
         "last_success_at": last_success.isoformat() + "Z",
         "is_stale": is_stale,
         "message": message,

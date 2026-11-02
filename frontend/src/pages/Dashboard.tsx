@@ -34,6 +34,7 @@ import {
   type OnlineDataOverview,
   type OnlineOverviewCategory,
   type OnlineOverviewDetailItem,
+  type TxDocsCommunityPeak,
   type TxDocsMonitoringOverview,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -51,6 +52,14 @@ const OVERVIEW_STATE_LABELS: Record<string, { text: string; color: string }> = {
   checked: { text: '待补结果', color: 'orange' },
   completed: { text: '已完成', color: 'green' },
 }
+
+const txdocsPeakColumns: TableColumnsType<TxDocsCommunityPeak> = [
+  { title: '监控目标', dataIndex: 'target_id', width: 105, render: (value: number) => `#${value}` },
+  { title: '业务类型', dataIndex: 'parser_type', width: 160 },
+  { title: '社区', dataIndex: 'community', width: 180 },
+  { title: '最高快照行数', dataIndex: 'count', width: 130, align: 'right' },
+  { title: '峰值日期', dataIndex: 'observed_at', width: 130 },
+]
 
 const fmt = (val: any, col: string) => {
   if (val == null) return '-'
@@ -500,15 +509,33 @@ export default function Dashboard() {
                 rangeValue={txdocsOverview.last_success_at
                   ? formatUTCTime(txdocsOverview.last_success_at, systemTimezone)
                   : '尚未建立成功快照'}
-                rangeDescription={`${startDate} 至 ${endDate} 共完成 ${txdocsOverview.successful_reads} 次有效读取；首轮只建立基线`}
+                rangeDescription={`${startDate} 至 ${endDate} 成功读取 ${txdocsOverview.successful_reads} 次，失败 ${txdocsOverview.failed_reads_in_range ?? 0} 次；首轮只建立基线`}
                 metrics={[
-                  { key: 'txdocs-current', title: '当前外部行数', value: txdocsOverview.current_rows, suffix: '条', help: '最近一次成功读取中的外部行数，仅作监控统计' },
+                  { key: 'txdocs-current', title: '区间末快照行数', value: txdocsOverview.current_rows, suffix: '条', help: '最近一次成功读取的外部行数，不代表区间内出现过的全部任务' },
                   { key: 'txdocs-added', title: '外部新增', value: txdocsOverview.added_rows, suffix: '次', help: '所选日期内，各轮读取相对上一成功快照累计的新出现次数' },
                   { key: 'txdocs-changed', title: '外部内容变化', value: txdocsOverview.changed_rows, suffix: '次', help: '所选日期内业务键不变但内容改变的累计次数；单纯排序不计变化' },
                   { key: 'txdocs-removed', title: '外部移除', value: txdocsOverview.removed_rows, suffix: '次', help: '所选日期内，各轮读取相对上一成功快照累计的不再出现次数' },
                 ]}
               />
             )}
+            {txdocsOverview?.period_peak_by_community?.length ? (
+              <section className="grid gap-2">
+                <div className="grid gap-1">
+                  <h3 className="text-sm font-semibold text-[var(--app-text-strong)]">分社区最高快照</h3>
+                  <p className="text-xs leading-5 text-[var(--app-text-secondary)]">
+                    每个监控目标、业务类型、社区分别取区间内单次成功快照的最高值；不同日期、目标或业务类型的峰值不能相加作为区间任务总数。
+                  </p>
+                </div>
+                <AppTable<TxDocsCommunityPeak>
+                  rowKey={(row) => `${row.target_id}:${row.parser_type}:${row.community}`}
+                  columns={txdocsPeakColumns}
+                  dataSource={txdocsOverview.period_peak_by_community}
+                  pagination={false}
+                  size="small"
+                  scroll={{ x: 440 }}
+                />
+              </section>
+            ) : null}
           </div>
         </Panel>
       )}
