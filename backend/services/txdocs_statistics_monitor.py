@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -298,12 +298,54 @@ def canonical_monitor_community(
     return canonical_community(value, alias_lookup)
 
 
-def canonicalize_period_snapshot_peaks(
-    peak_rows: Iterable[tuple],
+def build_daily_read_coverage(
+    read_rows: Iterable[tuple],
+    start_date: str,
+    end_date: str,
+    expected_targets: int,
+) -> list[dict[str, Any]]:
+    """Return every day in range, including days with no monitor run."""
+    by_date = {}
+    for observed_date, successes, failures, successful_targets in read_rows:
+        observed_text = (
+            observed_date.isoformat()
+            if hasattr(observed_date, "isoformat")
+            else str(observed_date)[:10]
+        )
+        by_date[observed_text] = {
+            "observed_at": observed_text,
+            "successful_reads": int(successes or 0),
+            "failed_reads": int(failures or 0),
+            "successful_targets": int(successful_targets or 0),
+            "expected_targets": expected_targets,
+        }
+    current_day = date.fromisoformat(start_date)
+    last_day = date.fromisoformat(end_date)
+    coverage = []
+    while current_day <= last_day:
+        observed_text = current_day.isoformat()
+        coverage.append(
+            by_date.get(
+                observed_text,
+                {
+                    "observed_at": observed_text,
+                    "successful_reads": 0,
+                    "failed_reads": 0,
+                    "successful_targets": 0,
+                    "expected_targets": expected_targets,
+                },
+            )
+        )
+        current_day += timedelta(days=1)
+    return coverage
+
+
+def canonicalize_daily_snapshot_rows(
+    snapshot_rows: Iterable[tuple],
     alias_lookup: dict[str, str],
     communities: list[str] | None,
 ) -> list[dict[str, Any]]:
-    """Normalize database-ranked peaks and apply the visible community scope."""
+    """Normalize retained daily snapshots and apply the visible community scope."""
     visible = (
         None
         if communities is None
@@ -312,31 +354,33 @@ def canonicalize_period_snapshot_peaks(
             for name in communities
         }
     )
-    peaks: dict[tuple[int, str, str], dict[str, Any]] = {}
-    for target_id, parser_type, community, count, observed_at in peak_rows:
+    snapshots: dict[tuple[str, int, str, str], dict[str, Any]] = {}
+    for observed_at, target_id, parser_type, community, count in snapshot_rows:
         name = canonical_monitor_community(community, alias_lookup)
         if visible is not None and name not in visible:
             continue
-        key = (int(target_id), str(parser_type), name)
-        value = int(count or 0)
-        previous = peaks.get(key)
-        if previous is None or value > previous["count"]:
-            peaks[key] = {
-                "target_id": key[0],
-                "parser_type": key[1],
-                "community": key[2],
-                "count": value,
-                "observed_at": (
-                    observed_at.isoformat()
-                    if hasattr(observed_at, "isoformat")
-                    else str(observed_at)[:10]
-                ),
-            }
+        observed_date = (
+            observed_at.isoformat()
+            if hasattr(observed_at, "isoformat")
+            else str(observed_at)[:10]
+        )
+        key = (observed_date, int(target_id), str(parser_type), name)
+        item = snapshots.setdefault(
+            key,
+            {
+                "observed_at": observed_date,
+                "target_id": key[1],
+                "parser_type": key[2],
+                "community": key[3],
+                "count": 0,
+            },
+        )
+        item["count"] += int(count or 0)
     return sorted(
-        peaks.values(),
+        snapshots.values(),
         key=lambda item: (
-            item["parser_type"], item["community"], item["target_id"],
-            -item["count"],
+            item["observed_at"], item["parser_type"], item["community"],
+            item["target_id"],
         ),
     )
 
@@ -1468,16 +1512,27 @@ async def run_txdocs_statistics_monitor() -> None:
         )
 
 
-async def _configured_monitor_source_ids() -> list[int]:
-    """Return enabled target IDs; legacy allowlists are migration-only."""
+async def _configured_monitor_source_ids(
+    parser_types: list[str] | None = None,
+) -> list[int]:
+    """Return enabled target IDs in the optional business-type scope."""
     from database import db_manager
 
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
+            type_clause = ""
+            params: tuple[Any, ...] = ()
+            if parser_types:
+                type_clause = " AND parser_type IN (" + ",".join(
+                    ["%s"] * len(parser_types)
+                ) + ")"
+                params = tuple(parser_types)
             await cur.execute(
-                "SELECT id FROM _txdocs_monitor_target WHERE enabled=1 ORDER BY id"
+                "SELECT id FROM _txdocs_monitor_target WHERE enabled=1" +
+                type_clause + " ORDER BY id",
+                params,
             )
             ids = [int(row[0]) for row in await cur.fetchall()]
     except Exception:
@@ -1727,7 +1782,8 @@ async def get_txdocs_statistics_overview(
         "failed_reads_in_range": 0,
         "failed_sources": 0,
         "last_success_at": None,
-        "period_peak_by_community": [],
+        "daily_read_coverage": [],
+        "daily_snapshots_by_community": [],
         "is_stale": False,
         "message": "腾讯表只读监控未启用",
     }
@@ -1749,7 +1805,7 @@ async def get_txdocs_statistics_overview(
         return {**base, "status": "unavailable", "message": "当前业务类型没有外部监控数据"}
 
     type_marks = ", ".join(["%s"] * len(valid_types))
-    source_ids = await _configured_monitor_source_ids()
+    source_ids = await _configured_monitor_source_ids(valid_types)
     community_clause = ""
     community_params: list[str] = []
     if communities is not None:
@@ -1842,9 +1898,25 @@ async def get_txdocs_statistics_overview(
                 (*valid_types, *source_ids),
             )
             failed_sources = int((await cur.fetchone() or [0])[0] or 0)
-            period_peak = {
-                "peak_by_community": [],
-            }
+            daily_read_coverage = []
+            daily_snapshots = []
+            await cur.execute(
+                f"""
+                SELECT observed_date,
+                       SUM(status='success'), SUM(status='failed'),
+                       COUNT(DISTINCT CASE WHEN status='success'
+                                           THEN spreadsheet_id END)
+                FROM _txdocs_monitor_runs
+                WHERE observed_date BETWEEN %s AND %s
+                  AND parser_type IN ({type_marks})
+                  AND spreadsheet_id IN ({source_marks})
+                GROUP BY observed_date ORDER BY observed_date
+                """,
+                (start_date, end_date, *valid_types, *source_ids),
+            )
+            daily_read_coverage = build_daily_read_coverage(
+                await cur.fetchall(), start_date, end_date, len(source_ids),
+            )
             try:
                 alias_lookup = await get_community_alias_lookup(cur)
             except Exception:
@@ -1864,45 +1936,49 @@ async def get_txdocs_statistics_overview(
                 )
                 await cur.execute(
                     f"""
-                    WITH snapshot_community AS (
-                        SELECT run.id, run.spreadsheet_id, run.parser_type, run.observed_date,
+                    WITH ranked_runs AS (
+                        SELECT id, spreadsheet_id, parser_type, observed_date,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY spreadsheet_id, parser_type, observed_date
+                                   ORDER BY finished_at DESC, id DESC
+                               ) AS snapshot_rank
+                        FROM _txdocs_monitor_runs
+                        WHERE status='success'
+                          AND observed_date BETWEEN %s AND %s
+                          AND parser_type IN ({type_marks})
+                          AND spreadsheet_id IN ({source_marks})
+                    ), labeled_buckets AS (
+                        SELECT run.observed_date, run.spreadsheet_id,
+                               run.parser_type,
                                {community_expression} AS community,
-                               SUM(bucket.row_count) AS row_count
-                        FROM _txdocs_monitor_runs run
+                               bucket.row_count
+                        FROM ranked_runs run
                         JOIN _txdocs_monitor_run_buckets bucket
                           ON bucket.run_id=run.id
-                        WHERE run.status='success'
-                          AND run.observed_date BETWEEN %s AND %s
-                          AND run.parser_type IN ({type_marks})
-                          AND run.spreadsheet_id IN ({source_marks})
-                        GROUP BY run.id, run.spreadsheet_id, run.parser_type,
-                                 run.observed_date,
-                                 community
-                    ), ranked AS (
-                        SELECT spreadsheet_id, parser_type, community, row_count, observed_date,
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY spreadsheet_id, parser_type, community
-                                   ORDER BY row_count DESC, observed_date, id
-                               ) AS peak_rank
-                        FROM snapshot_community
+                        WHERE run.snapshot_rank=1
+                    ), snapshot_community AS (
+                        SELECT observed_date, spreadsheet_id, parser_type,
+                               community, SUM(row_count) AS row_count
+                        FROM labeled_buckets
+                        GROUP BY observed_date, spreadsheet_id,
+                                 parser_type, community
                     )
-                    SELECT spreadsheet_id, parser_type, community, row_count, observed_date
-                    FROM ranked
-                    WHERE peak_rank=1
+                    SELECT observed_date, spreadsheet_id, parser_type,
+                           community, row_count
+                    FROM snapshot_community
+                    ORDER BY observed_date, parser_type, community, spreadsheet_id
                     """,
                     (
-                        *alias_params, start_date, end_date,
-                        *valid_types, *source_ids,
+                        start_date, end_date, *valid_types, *source_ids,
+                        *alias_params,
                     ),
                 )
-                period_peak["peak_by_community"] = canonicalize_period_snapshot_peaks(
+                daily_snapshots = canonicalize_daily_snapshot_rows(
                     await cur.fetchall(), alias_lookup, communities,
                 )
             except Exception:
-                # Keep live counts available if historical snapshot data is absent.
-                period_peak = {
-                    "peak_by_community": [],
-                }
+                # Keep current monitor status available if historical buckets are absent.
+                daily_snapshots = []
     finally:
         pool.release(conn)
 
@@ -1933,7 +2009,8 @@ async def get_txdocs_statistics_overview(
         "successful_reads": successful_reads,
         "failed_reads_in_range": failed_reads_in_range,
         "failed_sources": failed_sources,
-        "period_peak_by_community": period_peak["peak_by_community"],
+        "daily_read_coverage": daily_read_coverage,
+        "daily_snapshots_by_community": daily_snapshots,
         "last_success_at": last_success.isoformat() + "Z",
         "is_stale": is_stale,
         "message": message,

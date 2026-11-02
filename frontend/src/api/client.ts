@@ -1122,17 +1122,26 @@ export interface TxDocsMonitoringOverview {
   failed_reads_in_range?: number
   failed_sources: number
   last_success_at: string | null
-  period_peak_by_community?: TxDocsCommunityPeak[]
+  daily_read_coverage?: TxDocsDailyReadCoverage[]
+  daily_snapshots_by_community?: TxDocsDailyCommunitySnapshot[]
   is_stale: boolean
   message: string
 }
 
-export interface TxDocsCommunityPeak {
+export interface TxDocsDailyReadCoverage {
+  observed_at: string
+  successful_reads: number
+  failed_reads: number
+  successful_targets: number
+  expected_targets: number
+}
+
+export interface TxDocsDailyCommunitySnapshot {
+  observed_at: string
   target_id: number
   parser_type: string
   community: string
   count: number
-  observed_at: string
 }
 
 export interface TxDocsMonitorConfig {
