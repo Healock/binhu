@@ -1390,8 +1390,9 @@ class DailyDetailExternalCountsTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await build_daily_detail_data(EmptyConnection(), date(2026, 10, 14),
                                                   rental_target=10, self_owned_target=15)
-        monitor.assert_awaited_once_with("2026-10-14", "2026-10-14", ["全链条"], None,
-                                        configured_source_ids=[])
+        monitor.assert_awaited_once_with(
+            "2026-10-14", "2026-10-14", ["全链条"], None
+        )
         self.assertEqual(result[0]["instruction_total"], 15)
         self.assertEqual(result[0]["checked_instructions"], 11)
         self.assertEqual(result[0]["completed_instructions"], 7)
