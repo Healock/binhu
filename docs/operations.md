@@ -1,5 +1,13 @@
 # 开发与运维手册
 
+## 指令核查读模型迁移与验证准备
+
+Dev/Staging 的指令核查验收须使用同一候选源码与加密事件合同。启动新 Backend 前先备份目标环境数据库，依次执行 `migrations.task_command_read_model` 和 `migrations.task_view_state_revisions` 的 `measure → migrate --apply → verify`；启用在线汇总时还须执行 `migrations.online_summary_fact_outbox`。这些命令不能用启动建表代替。Dev 只使用可追踪、可清理的合成数据；通过后才推进 Staging，不修改 Production。
+
+`migrations.task_read_model_backfill` 按来源 ID 每页最多 250 条读取，再写命令与 Outbox；不能在同一游标执行写入后继续读取旧结果集。回填仅发出加密事件，不直接填充 Redis；`task_read_model_activation measure` 用于对账，`verify` 会修改 Redis readiness 标记，应按写操作执行。
+
+Dev 沿用固定 worker 镜像时，运行时 dispatcher、业务桥、Outbox relay、事件合同和汇总合同必须由候选只读挂载并纳入 manifest 哈希。只替换 Flink JAR 或看到容器启动不代表新业务链路生效。实际验收须绑定合成任务的 command/event ID、Kafka offset、Flink checkpoint、Redis revision 和 API 读回结果，并覆盖删除、重复、乱序、故障 503 与恢复对账。
+
 ## 诊断、变更与证据边界
 
 需要确认生产服务器当前状态时，先复用已登记的持久 SSH stdio MCP，并限定为一次有开始和结束边界的只读检查。只读取必要的版本、容器/进程状态、有限时间窗口日志、网络/磁盘/内存指标、部署台账和公开清单；输出必须脱敏。MCP 不能执行写文件、重启、清理、迁移、配置修改或外部平台操作，也不能替代发布网关。
