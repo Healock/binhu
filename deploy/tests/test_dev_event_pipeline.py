@@ -684,17 +684,18 @@ volumes:
         with self.assertRaisesRegex(ValueError, "identity mismatch"):
             validate_existing_container_identity(foreign)
 
-    def test_failed_schema_check_prevents_start_and_keeps_each_attempt(self):
+    def test_failed_schema_registration_prevents_start_and_keeps_each_attempt(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}), patch('time.time_ns', return_value=123):
             with patch.object(control.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="schema unavailable")) as command:
                 for attempt in range(2):
                     with self.assertRaises(ValueError):
                         control.apply()
                 self.assertEqual(command.call_count, 2)
+                self.assertTrue(all(call.args[0][-1] == "apply" for call in command.call_args_list))
                 self.assertTrue(all("up" not in call.args[0] for call in command.call_args_list))
             evidence = list(Path(tmp).glob("apply-evidence-*"))
             self.assertEqual(len(evidence), 2)
-            self.assertTrue(all((entry / "schema-check.log").exists() for entry in evidence))
+            self.assertTrue(all((entry / "schema-registration.log").exists() for entry in evidence))
 
     def test_evidence_initializer_targets_only_current_run_directory(self):
         command = control.evidence_initializer_command("dev-20260916-dualtrack-monitor18")
