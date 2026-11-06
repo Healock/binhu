@@ -88,8 +88,13 @@ stdout/stderr 哈希；子进程输出仅保存哈希和字节数。诊断只输
 5. JobManager 与 TaskManager 使用 Dev 自己的 checkpoint 卷和内部网络。
    两个服务还必须由 `event_pipeline.flink_compose` 生成，并显式携带
    `binhu.environment=development` 标签；只设置容器环境变量不能代替 Docker
-   资源身份标签。修补既有 Compose 时，工具只允许增加这两个标签，发现其他
-   配置差异立即拒绝。
+   资源身份标签。TaskManager 必须通过 `env_file` 加载当前候选生成的
+   `flink-task.env`，其中包含当前 run ID、任务载荷加密密钥和 Backend Redis 地址。
+   Dev `apply` 会在启动 TaskManager 前核验环境身份、密钥长度、Redis 主机与文件权限，
+   并通过受控 Compose 更新写入固定 `env_file` 路径；更新前配置保存在私有证据目录。
+   缺少该配置时只接受这项已知旧状态，其他 Compose 差异仍然拒绝。
+   Compose 更新后必须重新创建 TaskManager，运行期身份校验失败时不得把 JobGraph
+   标记为运行成功。
    提交前执行 `python -m event_pipeline.checkpoint measure`，如新卷根目录属主
    不匹配，再 `apply`；工具核对全部运行/停止容器的卷引用，只调整卷根目录，
    不递归改写旧检查点。新 Docker 卷默认属于 root，不能假定 Flink 用户可写。

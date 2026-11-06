@@ -189,12 +189,24 @@ def _without_approved_runtime_limits(spec: dict) -> dict:
     return value
 
 
+def _normalize_legacy_task_runtime_env(spec: dict) -> dict:
+    value = copy.deepcopy(spec)
+    taskmanager = value["services"]["taskmanager"]
+    configured = taskmanager.get("env_file")
+    if configured is None:
+        taskmanager["env_file"] = [str(PIPELINE_TASK_ENV)]
+    elif configured != [str(PIPELINE_TASK_ENV)]:
+        raise ValueError("Dev Flink task runtime env file identity mismatch")
+    return value
+
+
 def measure(image: str, artifact_root: Path) -> dict:
     if TARGET.is_symlink() or TARGET.parent != ROOT or not TARGET.is_file():
         raise ValueError("fixed Dev Flink Compose file required")
     current = json.loads(TARGET.read_text(encoding="utf-8"))
     expected = specification(image, artifact_root)
-    if _without_approved_runtime_limits(_without_environment_labels(current)) != _without_approved_runtime_limits(_without_environment_labels(expected)):
+    normalized_current = _normalize_legacy_task_runtime_env(current)
+    if _without_approved_runtime_limits(_without_environment_labels(normalized_current)) != _without_approved_runtime_limits(_without_environment_labels(expected)):
         raise ValueError("Dev Flink Compose differs beyond the approved runtime migration")
     labels = {
         service: current["services"][service].get("labels", {}).get("binhu.environment")
@@ -209,6 +221,9 @@ def measure(image: str, artifact_root: Path) -> dict:
         current["services"][service].get("restart") != APPROVED_RESTART_POLICY
         for service in ("jobmanager", "taskmanager")
     )
+    task_runtime_environment_update_required = (
+        current["services"]["taskmanager"].get("env_file") != [str(PIPELINE_TASK_ENV)]
+    )
     return {
         "environment": "development",
         "project": PROJECT,
@@ -217,6 +232,7 @@ def measure(image: str, artifact_root: Path) -> dict:
         "labels_update_required": any(value != "development" for value in labels.values()),
         "taskmanager_memory_update_required": taskmanager_memory_update_required,
         "restart_policy_update_required": restart_policy_update_required,
+        "task_runtime_environment_update_required": task_runtime_environment_update_required,
         "requires_update": (
             any(value != "development" for value in labels.values())
             or any(
@@ -225,6 +241,7 @@ def measure(image: str, artifact_root: Path) -> dict:
             )
             or taskmanager_memory_update_required
             or restart_policy_update_required
+            or task_runtime_environment_update_required
         ),
         "other_changes": False,
         "pids_limit": {
@@ -267,6 +284,7 @@ def apply(image: str, artifact_root: Path, evidence_id: str) -> dict:
         "pids_limit_updated": before["pids_limit"] != {"jobmanager": APPROVED_PIDS_LIMIT, "taskmanager": APPROVED_PIDS_LIMIT},
         "taskmanager_memory_updated": before["taskmanager_memory_update_required"],
         "restart_policy_updated": before["restart_policy_update_required"],
+        "task_runtime_environment_updated": before["task_runtime_environment_update_required"],
         "verified": not after["requires_update"],
     }
     target = evidence / "result.json"
