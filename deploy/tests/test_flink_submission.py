@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from deploy.environments.event_pipeline import flink_submission
+from deploy.environments.event_pipeline import flink_sql, flink_submission
 
 
 RUN_ID = "dev-20260915-dualtrack-monitor08"
@@ -25,7 +25,7 @@ INSERT INTO dev_revisions
 SELECT run_id, task_id, source_id, MAX(revision)
 FROM dev_events
 WHERE environment = 'development' AND run_id = '{run_id}'
- AND (schema_version = 4 OR schema_version = 5 OR schema_version = 6)
+ AND (schema_version = 4 OR schema_version = 6)
 GROUP BY run_id, task_id, source_id;
 INSERT INTO dev_task_metadata
 SELECT run_id, task_id, source_id, MAX(revision)
@@ -87,6 +87,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         self.assertIn("statementSet.attachAsDataStream()", source)
         self.assertIn("stream.execute(runId)", source)
         self.assertIn("FROM dev_task_events_redis", source)
+        self.assertIn("(schema_version=4 OR schema_version=5 OR schema_version=6)", source)
         self.assertIn('runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}")', source)
 
     def test_rest_readiness_has_a_fixed_timeout(self):
@@ -230,6 +231,25 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             flink_submission.validate_sql_identity(sql("dev-stale"), RUN_ID)
         with self.assertRaisesRegex(ValueError, "consumer group"):
             flink_submission.validate_sql_identity(sql(group_id="dev-stale-flink"), RUN_ID)
+
+    def test_rendered_sql_matches_projection_schema_contract(self):
+        rendered = flink_sql.render({
+            "APP_ENVIRONMENT": "development",
+            "DEV_RUN_ID": RUN_ID,
+            "MYSQL_PASSWORD": "a" * 48,
+            "REDIS_PASSWORD": "b" * 48,
+            "MYSQL_HOST": "dev-derived-mysql",
+            "MYSQL_DATABASE": "Dev_EventPipeline",
+            "MYSQL_USER": "dev_pipeline",
+            "REDIS_HOST": "dev-derived-redis",
+            "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
+            "BACKEND_REDIS_URL": "redis://:test-password@redis:6379/0",
+        })
+        identity = flink_submission.validate_sql_identity(rendered, RUN_ID)
+        self.assertEqual(identity["run_id"], RUN_ID)
+        self.assertEqual(identity["consumer_groups"], [
+            f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis",
+        ])
 
     def test_sql_identity_ignores_non_kafka_tables_when_collecting_source_groups(self):
         with_jdbc_sink = sql() + """
