@@ -382,6 +382,7 @@ def prepare(run_id, images, *, task_event_key: str | None = None):
         if previous.get("APP_ENVIRONMENT") == "development" and previous.get("BACKEND_MYSQL_HOST") == "environment-mysql" and previous.get("BACKEND_MYSQL_DATABASE") == "Dev_OnlineData":
             backend_password = backend_password or previous.get("BACKEND_MYSQL_PASSWORD", "")
             backend_redis_url = backend_redis_url or previous.get("BACKEND_REDIS_URL", "")
+    env["BACKEND_REDIS_URL"] = backend_redis_url
     if not backend_password or not backend_redis_url:
         raise ValueError("Dev Backend relay credentials must be supplied out of band")
     if summary_relay_enabled and not summary_database:
