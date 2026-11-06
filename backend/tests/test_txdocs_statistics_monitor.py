@@ -2,7 +2,7 @@ import inspect
 import os
 import unittest
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -243,6 +243,65 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             "未配置来源",
         )
 
+    def test_daily_snapshot_rows_keep_dates_and_merge_community_aliases(self):
+        rows = [
+            (date(2026, 10, 3), 7, "全链条", "社区甲", 12),
+            (date(2026, 10, 3), 7, "全链条", "旧社区甲", 3),
+            (date(2026, 10, 4), 7, "全链条", "社区甲", 15),
+            (date(2026, 10, 3), 8, "寄递业", "社区甲", 8),
+            (date(2026, 10, 3), 7, "全链条", "社区乙", 9),
+        ]
+
+        result = monitor.canonicalize_daily_snapshot_rows(
+            rows,
+            {"旧社区甲": "社区甲", "社区甲": "社区甲"},
+            ["社区甲"],
+        )
+
+        self.assertEqual(
+            result,
+            [
+                {"observed_at": "2026-10-03", "target_id": 7, "parser_type": "全链条", "community": "社区甲", "count": 15},
+                {"observed_at": "2026-10-03", "target_id": 8, "parser_type": "寄递业", "community": "社区甲", "count": 8},
+                {"observed_at": "2026-10-04", "target_id": 7, "parser_type": "全链条", "community": "社区甲", "count": 15},
+            ],
+        )
+
+    def test_daily_read_coverage_marks_dates_without_any_runs(self):
+        result = monitor.build_daily_read_coverage(
+            [(date(2026, 10, 1), 3, 1, 2)],
+            "2026-10-01",
+            "2026-10-03",
+            2,
+        )
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "observed_at": "2026-10-01",
+                    "successful_reads": 3,
+                    "failed_reads": 1,
+                    "successful_targets": 2,
+                    "expected_targets": 2,
+                },
+                {
+                    "observed_at": "2026-10-02",
+                    "successful_reads": 0,
+                    "failed_reads": 0,
+                    "successful_targets": 0,
+                    "expected_targets": 2,
+                },
+                {
+                    "observed_at": "2026-10-03",
+                    "successful_reads": 0,
+                    "failed_reads": 0,
+                    "successful_targets": 0,
+                    "expected_targets": 2,
+                },
+            ],
+        )
+
     def test_model_three_is_supported_as_a_read_only_monitor_target(self):
         rows = [{"values": {
             "截止时间": "2026-09-20",
@@ -367,6 +426,9 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             async def fetchone(self):
                 return next(self.results)
 
+            async def fetchall(self):
+                return []
+
             async def __aenter__(self):
                 return self
 
@@ -409,6 +471,15 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["current_rows"], 0)
         self.assertEqual(result["successful_reads"], 0)
         self.assertEqual(result["status"], "healthy")
+
+    def test_daily_snapshot_query_selects_last_success_per_target_and_day(self):
+        source = inspect.getsource(monitor.get_txdocs_statistics_overview)
+        self.assertIn("WITH ranked_runs AS", source)
+        self.assertIn("ROW_NUMBER() OVER", source)
+        self.assertIn(
+            "PARTITION BY spreadsheet_id, parser_type, observed_date", source
+        )
+        self.assertIn("WHERE run.snapshot_rank=1", source)
 
     def test_monitor_read_path_does_not_call_tencent_write_methods(self):
         source = inspect.getsource(monitor._read_config)

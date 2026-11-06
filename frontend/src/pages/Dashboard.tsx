@@ -34,6 +34,7 @@ import {
   type OnlineDataOverview,
   type OnlineOverviewCategory,
   type OnlineOverviewDetailItem,
+  type TxDocsDailyCommunitySnapshot,
   type TxDocsMonitoringOverview,
 } from '../api/client'
 import { useAuth } from '../context/AuthContext'
@@ -51,6 +52,22 @@ const OVERVIEW_STATE_LABELS: Record<string, { text: string; color: string }> = {
   checked: { text: '待补结果', color: 'orange' },
   completed: { text: '已完成', color: 'green' },
 }
+
+const txdocsDailySnapshotColumns: TableColumnsType<TxDocsDailyCommunitySnapshot> = [
+  { title: '日期', dataIndex: 'observed_at', width: 120 },
+  { title: '监控目标', dataIndex: 'target_id', width: 105, render: (value: number) => `#${value}` },
+  { title: '业务类型', dataIndex: 'parser_type', width: 160 },
+  { title: '社区', dataIndex: 'community', width: 180 },
+  { title: '快照行数', dataIndex: 'count', width: 120, align: 'right' },
+]
+
+const incompleteTxDocsDates = (
+  coverage: NonNullable<TxDocsMonitoringOverview['daily_read_coverage']>,
+) => Array.from(new Set(
+  coverage
+    .filter((item) => item.successful_targets < item.expected_targets)
+    .map((item) => item.observed_at),
+))
 
 const fmt = (val: any, col: string) => {
   if (val == null) return '-'
@@ -436,6 +453,10 @@ export default function Dashboard() {
     },
   ]
 
+  const incompleteMonitorDates = incompleteTxDocsDates(
+    txdocsOverview?.daily_read_coverage || [],
+  )
+
   return (
     <div className="app-page">
       <PageHeader
@@ -500,15 +521,41 @@ export default function Dashboard() {
                 rangeValue={txdocsOverview.last_success_at
                   ? formatUTCTime(txdocsOverview.last_success_at, systemTimezone)
                   : '尚未建立成功快照'}
-                rangeDescription={`${startDate} 至 ${endDate} 共完成 ${txdocsOverview.successful_reads} 次有效读取；首轮只建立基线`}
+                rangeDescription={`${startDate} 至 ${endDate} 成功读取 ${txdocsOverview.successful_reads} 次，失败 ${txdocsOverview.failed_reads_in_range ?? 0} 次；首轮只建立基线`}
                 metrics={[
-                  { key: 'txdocs-current', title: '当前外部行数', value: txdocsOverview.current_rows, suffix: '条', help: '最近一次成功读取中的外部行数，仅作监控统计' },
+                  { key: 'txdocs-current', title: '当前快照行数', value: txdocsOverview.current_rows, suffix: '条', help: '当前最新成功读取的外部行数，不代表所选区间内出现过的全部任务' },
                   { key: 'txdocs-added', title: '外部新增', value: txdocsOverview.added_rows, suffix: '次', help: '所选日期内，各轮读取相对上一成功快照累计的新出现次数' },
                   { key: 'txdocs-changed', title: '外部内容变化', value: txdocsOverview.changed_rows, suffix: '次', help: '所选日期内业务键不变但内容改变的累计次数；单纯排序不计变化' },
                   { key: 'txdocs-removed', title: '外部移除', value: txdocsOverview.removed_rows, suffix: '次', help: '所选日期内，各轮读取相对上一成功快照累计的不再出现次数' },
                 ]}
               />
             )}
+            {txdocsOverview?.daily_read_coverage?.length ? (
+              <section className="grid gap-2">
+                {incompleteMonitorDates.length > 0 && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`历史读取不完整：${incompleteMonitorDates.join('、')}`}
+                    description="这些日期未覆盖本次汇总所选的全部监控目标；聚合快照不能补回未成功读取期间的明细。"
+                  />
+                )}
+                <div className="grid gap-1">
+                  <h3 className="text-sm font-semibold text-[var(--app-text-strong)]">每日外部快照（按社区）</h3>
+                  <p className="text-xs leading-5 text-[var(--app-text-secondary)]">
+                    每个目标每天取最后一次成功读取，展示已留存的聚合数量；不包含外部原始任务行。
+                  </p>
+                </div>
+                <AppTable<TxDocsDailyCommunitySnapshot>
+                  rowKey={(row) => `${row.observed_at}:${row.target_id}:${row.parser_type}:${row.community}`}
+                  columns={txdocsDailySnapshotColumns}
+                  dataSource={txdocsOverview.daily_snapshots_by_community || []}
+                  pagination={{ pageSize: 25, showSizeChanger: true }}
+                  size="small"
+                  scroll={{ x: 680 }}
+                />
+              </section>
+            ) : null}
           </div>
         </Panel>
       )}
