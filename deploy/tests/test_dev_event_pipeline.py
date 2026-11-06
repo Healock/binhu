@@ -828,6 +828,44 @@ volumes:
         self.assertEqual(report, verified)
         ready.assert_called_once()
 
+    def test_flink_submission_passes_manifest_run_id_to_job(self):
+        run_id = "dev-20261107-taskreadmodel10"
+        identity = {
+            "run_id": run_id,
+            "consumer_groups": [f"{run_id}-flink", f"{run_id}-flink-redis"],
+            "topics": ["dev.task.read-model.v4"],
+            "environment": "development",
+        }
+        candidate = {
+            "source_sha256": "a" * 64,
+            "jar_sha256": "b" * 64,
+            "container_path": control.FLINK_CANDIDATE_JAR,
+        }
+        verified = {"run_id": run_id, "job_count": 1}
+
+        class Client:
+            def upload_jar(self, _path):
+                return "candidate.jar"
+
+            def run_jar(self, jar_id, expected_run_id):
+                self.submission = (jar_id, expected_run_id)
+                return "c" * 32
+
+        client = Client()
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(control, "_validate_flink_sql", return_value=identity), \
+                patch.object(control, "_validate_flink_compose"), \
+                patch.object(control, "_run_checked"), \
+                patch.object(control, "_build_candidate_flink_jar", return_value=candidate), \
+                patch.object(control.flink_submission, "FlinkRest", return_value=client), \
+                patch.object(control.flink_submission, "wait_for_rest", return_value=[]), \
+                patch.object(control.flink_submission, "partition_active_jobs", return_value=([], [])), \
+                patch.object(control.flink_submission, "wait_for_runtime", return_value=verified):
+            report = control._submit_and_verify_flink({"run_id": run_id}, Path(tmp))
+
+        self.assertEqual(report, verified)
+        self.assertEqual(client.submission, ("candidate.jar", run_id))
+
     def test_checkpoint_repair_rejects_shared_or_foreign_volume(self):
         items = [{"Name": name, "Config": {"Labels": {"com.docker.compose.project": "binhu-development-flink",
                   "binhu.environment": "development"}},

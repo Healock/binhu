@@ -302,7 +302,7 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
         raise ValueError("Dev Flink current run has an incomplete job set")
     if len(current) == 0:
         jar_id = client.upload_jar(candidate_jar["container_path"])
-        client.run_jar(jar_id)
+        client.run_jar(jar_id, manifest["run_id"])
     verified = flink_submission.wait_for_runtime(
         client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_groups"]),
         expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
