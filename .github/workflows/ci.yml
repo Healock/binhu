@@ -135,7 +135,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install deployment test dependencies
-        run: python -m pip install --disable-pip-version-check pytest
+        run: python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
       - name: Validate Docker Compose configuration
