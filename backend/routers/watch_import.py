@@ -177,6 +177,7 @@ async def preview_watch_import(
     display_name = "、".join(filename for filename, _ in contents)[:255]
     await conn.begin()
     try:
+        backfilled_snapshots = 0
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, status FROM registry_source_batches "
@@ -420,6 +421,12 @@ async def confirm_watch_import(
                 "UPDATE registry_source_batches SET status='imported', imported_count=%s, conflict_count=0 WHERE id=%s",
                 (len(people), batch_id),
             )
+            if created_assignments:
+                from services.watch_matching import sync_current_watch_snapshots_for_identities
+
+                backfilled_snapshots = await sync_current_watch_snapshots_for_identities(
+                    cur, [str(item["identity_hmac"]) for item in people],
+                )
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -432,6 +439,7 @@ async def confirm_watch_import(
         "created_people": len(new_items),
         "reused_people": len(people) - len(new_items),
         "created_assignments": created_assignments,
+        "backfilled_task_snapshots": backfilled_snapshots,
         "existing_assignments": len(people) - created_assignments,
         "created_phones": created_phones,
     }

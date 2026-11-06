@@ -53,8 +53,9 @@ async def isolated_lifespan():
     from services.platform_performance import run_performance_sampler
     await init_db()
     # No production backup, external acquisition, archive or synchronization workers.
-    tasks = [asyncio.create_task(worker()) for worker in (
-        run_online_projection_worker, run_online_summary_update_worker, run_performance_sampler)]
+    workers = [run_performance_sampler]
+    workers.extend((run_online_projection_worker, run_online_summary_update_worker))
+    tasks = [asyncio.create_task(worker()) for worker in workers]
     try:
         yield
     finally:

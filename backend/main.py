@@ -205,8 +205,10 @@ async def lifespan(app: FastAPI):
         local_report_task.cancel()
         venue_cloud_task.cancel()
         performance_sampler_task.cancel()
-        online_projection_task.cancel()
-        online_summary_task.cancel()
+        if online_projection_task:
+            online_projection_task.cancel()
+        if online_summary_task:
+            online_summary_task.cancel()
         txdocs_statistics_task.cancel()
         external_acquisition_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -227,10 +229,12 @@ async def lifespan(app: FastAPI):
             await venue_cloud_task
         with suppress(asyncio.CancelledError):
             await performance_sampler_task
-        with suppress(asyncio.CancelledError):
-            await online_projection_task
-        with suppress(asyncio.CancelledError):
-            await online_summary_task
+        if online_projection_task:
+            with suppress(asyncio.CancelledError):
+                await online_projection_task
+        if online_summary_task:
+            with suppress(asyncio.CancelledError):
+                await online_summary_task
         with suppress(asyncio.CancelledError):
             await txdocs_statistics_task
         with suppress(asyncio.CancelledError):

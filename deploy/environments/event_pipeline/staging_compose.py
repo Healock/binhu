@@ -21,8 +21,12 @@ except ImportError:  # Installed beside the fixed Staging gateway.
 IMAGE_KEYS = frozenset({"kafka", "schema_registry", "mysql", "redis", "worker", "flink"})
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 BROKERS = ("staging-kafka-1", "staging-kafka-2", "staging-kafka-3")
-EVENT_TOPIC = "staging.task.events.v1"
-DLQ_TOPIC = "staging.task.events.dlq.v1"
+EVENT_TOPIC = "staging.task.read-model.v4"
+DLQ_TOPIC = "staging.task.read-model.dlq.v4"
+LEGACY_EVENT_TOPIC = "staging.task.events.v1"
+LEGACY_DLQ_TOPIC = "staging.task.events.dlq.v1"
+SUMMARY_EVENT_TOPIC = "staging.online-summary.facts.v1"
+SUMMARY_DLQ_TOPIC = "staging.online-summary.facts.dlq.v1"
 REGISTRY_TOPIC = "staging.registry.storage.v1"
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 LOGGING = {"driver": "json-file", "options": {"max-size": "5m", "max-file": "2"}}
@@ -101,7 +105,7 @@ def _broker_environment(index: int, run_id: str) -> dict[str, str]:
         "KAFKA_NUM_PARTITIONS": "3",
         "KAFKA_AUTO_CREATE_TOPICS_ENABLE": "false",
         "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS": "0",
-        "KAFKA_LOG_RETENTION_HOURS": "24",
+        "KAFKA_LOG_RETENTION_HOURS": "168",
     }
 
 
@@ -271,6 +275,8 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
     services["taskmanager"] = {
         **flink_common, "command": ["taskmanager"], "mem_limit": "2048m",
         "memswap_limit": "2304m", "cpus": 1.5,
+        "networks": ["internal", "backend"],
+        "env_file": ["flink-task.env"],
         "depends_on": {"jobmanager": {"condition": "service_started"}},
     }
 
@@ -346,4 +352,6 @@ __all__ = [
     "BACKEND_NETWORK", "BROKERS", "DLQ_TOPIC", "EVENT_TOPIC", "IMAGE_KEYS",
     "REGISTRY_TOPIC", "cluster_id_for", "compose", "model_sha256", "network_for", "project_for",
     "validate_pipeline_containers", "validate_runtime_compose",
+    "SUMMARY_DLQ_TOPIC", "SUMMARY_EVENT_TOPIC", "cluster_id_for",
+    "compose", "model_sha256", "network_for", "project_for",
 ]

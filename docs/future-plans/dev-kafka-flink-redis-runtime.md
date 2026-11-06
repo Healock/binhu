@@ -4,16 +4,22 @@
 - 目标：把容易与业务写入抢锁的可重建派生计算逐步移到 Dev 的 Kafka/Flink/Redis 链路，先验证事件合同、版本栅栏、恢复和回放，再决定是否进入 Staging
 - 边界：MySQL 继续是业务真相；Dev 只使用虚构或已脱敏数据；不复用 Shadow 数据目录、checkpoint、Redis/Kafka 卷、数据库卷或运行编号
 
+## 指令核查事件合同切片（2026-11-04）
+
+源码正在把在线任务写事务产生的事件统一到稳定身份合同：`task_id` 使用本地业务表与物理行号，`source_id` 使用 `_online_source_rows.id`，每次写入生成独立 `operation_id`，`changed_fields` 只写固定类别。新事件不再把可能含个人资料的业务 `row_key` 放入 `aggregate_id`。业务快照允许进入 Kafka，但只能作为 AES-GCM 密文载荷；桥、Kafka 日志、Flink 状态、Redis 索引和普通日志不得出现敏感明文。Outbox 与命令台账同事务写入，部署前用迁移命令补齐 schema。
+
+这只是命令/事件合同和传输边界的一步，不代表指令核查已经以 Kafka/Flink/Redis 为运行底座。统一命令服务仍需覆盖全部写入口；Kafka/Flink 到 Redis 的完整任务读模型、全部列表/详情/队列/汇总读取切换、删除 tombstone 清理，以及 Python 投影 worker 退役仍未完成；当前 MySQL 业务表和 `_online_source_projection` 仍承担权威写入及主要页面读取。本次源码检查不等于真实 MySQL 迁移、Dev/Staging 部署或业务链路验收。
+
 ## 当前已具备的基础链路
 
-Dev 已有独立的 `binhu-development-pipeline` 资源定义和事件身份检查：Backend 的受控元数据事件进入 Dev Redis Stream，经业务桥和可靠投递台账写入 Dev Kafka，Schema Registry 校验固定 JSON 合同，Flink 按 `run_id + task_id + source_id` 计算最高 revision，结果写入 `Dev_EventPipeline`，再由 Redis revision fence 提供低延迟读缓存。
+Dev 已有独立的 `binhu-development-pipeline` 资源定义和事件身份检查：Backend 的受控事件进入 Dev Redis Stream，经业务桥和可靠投递台账写入 Dev Kafka，Schema Registry 校验固定 JSON 合同，Flink 按 `run_id + task_id + source_id` 计算最高 revision，结果写入 `Dev_EventPipeline`，再由 Redis revision fence 提供低延迟读缓存。
 
-这条链路目前只证明元数据传输和 revision 保护。它不包含完整任务正文，不执行生产外部写回，不替代生产 Python 派生 worker，也不能据此宣称日报、地址匹配或研判一致性已经迁移。
+现有运行证据只证明元数据传输和 revision 保护；源码的新合同增加了加密快照，但尚未完成真实消费与读模型回读。Flink 不持有解密密钥，不能解密任务正文；Backend 仅在鉴权和数据范围过滤后解密返回。该链路不执行生产外部写回，也不能据此宣称在线汇总、地址匹配或研判一致性已经迁移。
 
 ## 本轮实施范围
 
 1. **先止血**：研判来源一致性核对和逾期推进改为每次最多处理 100 条，并使用 `FOR UPDATE SKIP LOCKED`。被业务写入占用的记录留给下一轮，避免后台派生检查长时间持有范围锁。批量上限由代码校验，不能用参数恢复无界查询。
-2. **固定事件边界**：事件只保留业务类型、稳定任务标识、来源 ID、revision、变化类别和运行编号。姓名、证件号、手机号、完整地址、备注正文、令牌和外部平台正文不得进入 Kafka、Flink 或 Redis 派生库。
+2. **固定事件边界**：明文合同仅保留业务类型、稳定任务标识、来源 ID、revision、变化类别和运行编号。需要派生任务读模型的业务快照可进入 Kafka，但必须用 AES-GCM 加密；姓名、证件号、手机号、地址和正文不得以明文进入 Kafka、Flink、Redis、DLQ、日志或索引。Flink 只维护密文和非敏感元数据，Backend 在授权后解密。
 3. **完善 Dev 验收**：用合成任务验证重复事件、乱序 revision、桥/relay 重启、Kafka ACK 后台账、Flink checkpoint/savepoint 和 Redis 高水位。失败运行保留独立证据，不覆盖之前的验收材料。
 4. **第一个派生域已确定**：选择可重建的任务元数据投影或计数。Python/Flink 两边输出写入独立命名空间，由 `dual_track.py` 按事件 ID、revision 和计数逐条比较；不迁移业务写入、研判决定、地址人工确认、外部平台调用和归档删除。派生结果异常时，查询必须回到权威 MySQL 或明确返回“派生结果暂不可用”。详见 [Dev Python/Flink 双轨比对](dev-dual-track-comparison.md)。
 5. **再进入 Staging**：只有 Dev 事件闭环、恢复和脱敏数据门禁全部通过，才用同一提交和同一制品在 Staging 做回归与 75 人趋势复测。Production 继续使用现有 Python 派生路径，直到双轨对账满足单独的退出门槛。

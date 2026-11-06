@@ -37,6 +37,7 @@ from services.online_source import (
     json_value,
     rebuild_projection,
     rebuild_projection_rows,
+    stable_json,
     _task_annotation_addresses,
 )
 from services.address_matching import MATCHER_VERSION
@@ -48,11 +49,9 @@ from services.address_match_feedback import (
 )
 from services.online_local_writeback import (
     apply_local_system_changes,
-    launch_local_change_processing,
     load_local_changes,
     local_sync_state,
     overlay_local_values,
-    resolve_source_conflict,
 )
 from services.parsers import get_parser
 from services.permissions import (
@@ -77,11 +76,18 @@ from services.task_workflow import (
     SUMMARY_TASK_TYPES,
     TASK_WORKFLOWS,
 )
-from services.task_graph import online_task_blocked
 from services.task_assignment_responsibility import (
     capture_first_assignment,
     record_internal_transfer,
 )
+from services.domain_events import stable_task_id
+from services.task_commands import (
+    TaskCommandService,
+    TaskCommandSpec,
+    TaskMutationResult,
+    TaskAuthorizationResult,
+)
+from services.task_graph import online_task_blocked
 from services.unverifiable_review import (
     ACTIVE_STATES as UNVERIFIABLE_ACTIVE_STATES,
     DEEP_EXTENSION,
@@ -129,6 +135,594 @@ from services.residence_status_scan import _load_current_target, _lookup_registr
 
 
 router = APIRouter(prefix="/api/mobile-tasks", tags=["手机任务工作台"])
+
+
+def _require_legacy_read_model_disabled() -> None:
+    if settings.TASK_READ_MODEL_ENABLED:
+        raise HTTPException(503, {"error": "projection_pending"})
+
+
+def _task_index_filters(
+    parser_type: str, *, communities: list[str] | None = None,
+    inspectors: list[str] | None = None, results: list[str] | None = None,
+) -> dict[str, list[str]]:
+    parser = get_parser(parser_type)
+    filters: dict[str, list[str]] = {}
+    if communities:
+        filters[parser.COMMUNITY_COLUMN] = list(communities)
+    if inspectors:
+        filters["核查人"] = list(inspectors)
+    if results:
+        filters[TASK_WORKFLOWS[parser_type].result_field] = list(results)
+    return filters
+
+
+async def _task_read_model_records(
+    conn,
+    parser_type: str,
+    context: dict,
+    *,
+    scope: FlowScope,
+    keyword: str = "",
+    filters: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    """Load task facts from Redis and use MySQL only to verify source identity.
+
+    Community and inspector indexes narrow the Redis query. The returned
+    payload always comes from the encrypted read model; the source lookup does
+    not read business values and rejects missing or stale projections.
+    """
+    if not settings.TASK_READ_MODEL_ENABLED:
+        raise RuntimeError("task read model is not enabled")
+    if scope == "all" and not context.get("admin_mode"):
+        raise HTTPException(403, "组员和组长只能查看本人或本社区任务")
+    allowed_communities = context.get("community_values")
+    if allowed_communities is not None and not allowed_communities:
+        return []
+    parser = get_parser(parser_type)
+
+    run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+    secret = str(settings.TASK_EVENT_ENCRYPTION_KEY or "")
+    if not run_id or len(secret.encode()) < 32:
+        raise HTTPException(503, {"error": "projection_pending"})
+
+    try:
+        import redis.asyncio as redis
+        from services.task_read_model import require_task_read_model_ready
+
+        client = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=5,
+        )
+        try:
+            await client.ping()
+            await require_task_read_model_ready(
+                client, settings.APP_ENVIRONMENT, run_id,
+            )
+            records = await _scan_task_read_model_records(
+                client,
+                parser=parser,
+                allowed_communities=allowed_communities,
+                scope=scope,
+                inspector=str(context.get("name") or ""),
+                keyword=keyword,
+                filters=filters,
+                environment=settings.APP_ENVIRONMENT,
+                run_id=run_id,
+            )
+        finally:
+            await client.aclose()
+
+        physical_ids: list[int] = []
+        record_by_physical: dict[int, list[dict]] = {}
+        for record in records:
+            task_id = str(record.get("task_id") or "")
+            table_name, separator, raw_physical = task_id.rpartition(":")
+            if not separator or table_name != parser.table_name or not raw_physical.isdigit():
+                raise ValueError("task identity mismatch")
+            physical_row = int(raw_physical)
+            if physical_row < 1:
+                raise ValueError("task identity mismatch")
+            physical_ids.append(physical_row)
+            record_by_physical.setdefault(physical_row, []).append(record)
+
+        locators: dict[tuple[int, int], dict] = {}
+        locator_counts: dict[int, int] = {}
+        async with conn.cursor() as cur:
+            for offset in range(0, len(physical_ids), 400):
+                batch = list(dict.fromkeys(physical_ids[offset:offset + 400]))
+                if not batch:
+                    continue
+                placeholders = ",".join(["%s"] * len(batch))
+                await cur.execute(
+                    "SELECT source.id,source.physical_row,source.row_key,source.revision,source.row_hash "
+                    "FROM _online_source_rows AS source "
+                    "WHERE source.parser_type=%s AND source.physical_row IN ("
+                    + placeholders + ") AND source.archived_at IS NULL "
+                    + active_source_sql_filter(parser_type, "source"),
+                    [parser_type, *batch],
+                )
+                for source_id, physical_row, row_key, revision, row_hash in await cur.fetchall():
+                    locator_counts[int(physical_row)] = locator_counts.get(int(physical_row), 0) + 1
+                    locators[(int(physical_row), int(source_id))] = {
+                        "row_key": str(row_key),
+                        "revision": int(revision or 0),
+                        "row_hash": str(row_hash or ""),
+                    }
+
+        by_row_key: dict[str, list[dict]] = {}
+        allowed_set = set(allowed_communities or [])
+        for physical_row, same_task_records in record_by_physical.items():
+            if locator_counts.get(physical_row, 0) != len(same_task_records):
+                raise ValueError("task source identity is ambiguous")
+            for record in same_task_records:
+                source_id = int(record.get("source_id") or 0)
+                locator = locators.get((physical_row, source_id))
+                if (
+                    locator is None
+                    or locator["revision"] != int(record.get("revision") or 0)
+                    or not locator["row_key"]
+                    or locator["row_key"] != record.get("row_key")
+                ):
+                    raise ValueError("task source revision mismatch")
+                values = record.get("values")
+                if not isinstance(values, dict):
+                    raise ValueError("task snapshot missing")
+                community = parser.community_value(values).strip()
+                inspector = str(values.get("核查人") or "").strip()
+                if allowed_communities is not None and community not in allowed_set:
+                    raise ValueError("task scope identity mismatch")
+                if scope == "mine" and inspector.casefold() != str(context["name"]).strip().casefold():
+                    raise ValueError("task scope identity mismatch")
+                by_row_key.setdefault(locator["row_key"], []).append({
+                    **record,
+                    "physical_row": physical_row,
+                    "row_key": locator["row_key"],
+                    "source_row_hash": locator["row_hash"],
+                })
+        source_counts: dict[str, int] = {}
+        row_keys = list(by_row_key)
+        for offset in range(0, len(row_keys), 400):
+            batch = row_keys[offset:offset + 400]
+            if not batch:
+                continue
+            placeholders = ",".join(["%s"] * len(batch))
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT row_key,COUNT(*) FROM _online_source_rows AS source "
+                    "WHERE parser_type=%s AND row_key IN (" + placeholders + ") "
+                    "AND source.archived_at IS NULL "
+                    + active_source_sql_filter(parser_type, "source")
+                    + " GROUP BY row_key",
+                    [parser_type, *batch],
+                )
+                source_counts.update({
+                    str(row_key): int(count or 0)
+                    for row_key, count in await cur.fetchall()
+                })
+        result: list[dict] = []
+        for row_key, sources in by_row_key.items():
+            sources.sort(key=lambda source: (int(source["source_id"]), str(source["task_id"])))
+            canonical = dict(sources[0])
+            canonical_values = canonical.get("values") or {}
+            canonical["sources"] = sources
+            total_sources = source_counts.get(row_key, 0)
+            if total_sources != len(sources) or total_sources == 0:
+                raise ValueError("task source identity is inconsistent")
+            canonical["source_count"] = total_sources
+            canonical["conflict"] = any(
+                stable_json(source.get("values") or {}) != stable_json(canonical_values)
+                for source in sources[1:]
+            )
+            canonical["row_key"] = row_key
+            canonical["parser_type"] = parser_type
+            result.append(canonical)
+        return result
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, {"error": "projection_pending"}) from None
+
+
+async def _scan_task_read_model_records(
+    client,
+    *,
+    parser,
+    allowed_communities: list[str] | None,
+    scope: FlowScope,
+    inspector: str,
+    keyword: str,
+    filters: dict[str, list[str]] | None,
+    environment: str,
+    run_id: str,
+) -> list[dict]:
+    from services.task_read_model import (
+        query_task_read_model_group_ids,
+        read_task_read_model_group_records,
+    )
+    records = []
+    query_filters = {field: list(values) for field, values in (filters or {}).items() if values}
+    if scope == "mine":
+        scoped_inspector = inspector.strip()
+        requested_inspectors = query_filters.get("核查人")
+        if requested_inspectors:
+            query_filters["核查人"] = [
+                value for value in requested_inspectors
+                if value.strip().casefold() == scoped_inspector.casefold()
+            ]
+            if not query_filters["核查人"]:
+                return []
+        elif scoped_inspector:
+            query_filters["核查人"] = [scoped_inspector]
+        else:
+            return []
+
+    total = None
+    offset = 0
+    page_size = 400
+    allowed_set = None if allowed_communities is None else set(allowed_communities)
+    needle = keyword.strip().casefold()
+    while total is None or offset < total:
+        group_page = await query_task_read_model_group_ids(
+            client, environment, run_id, parser.table_name, query_filters,
+            allowed_communities, keyword if len(needle) >= 2 else None,
+            offset, page_size,
+        )
+        page_total = group_page.get("total")
+        group_tokens = group_page.get("group_tokens")
+        if (type(page_total) is not int or page_total < 0
+                or not isinstance(group_tokens, list)
+                or len(group_tokens) != min(page_size, max(0, page_total - offset))):
+            raise ValueError("task read-model group page contract invalid")
+        if total is None:
+            total = page_total
+        elif page_total != total:
+            raise ValueError("task read-model group total changed")
+        if not group_tokens:
+            break
+        groups = await read_task_read_model_group_records(
+            client, environment, run_id, parser.table_name, group_tokens,
+        )
+        if not isinstance(groups, list) or len(groups) != len(group_tokens):
+            raise ValueError("task read-model group page mismatch")
+        for group in groups:
+            sources = group.get("sources")
+            canonical = group.get("values")
+            row_key = group.get("row_key")
+            if (not isinstance(sources, list) or not sources
+                    or not isinstance(canonical, dict) or not isinstance(row_key, str)
+                    or group.get("source_count") != len(sources)
+                    or canonical != sources[0].get("values")
+                    or parser.make_row_key(canonical) != row_key):
+                raise ValueError("task read-model group identity mismatch")
+            if any(
+                not isinstance(source, dict)
+                or not isinstance(source.get("values"), dict)
+                or not isinstance(source.get("task_id"), str)
+                or type(source.get("source_id")) is not int
+                or type(source.get("revision")) is not int
+                for source in sources
+            ):
+                raise ValueError("task read-model group source invalid")
+            ordered = sorted(sources, key=lambda source: (source["source_id"], source["task_id"]))
+            if sources != ordered:
+                raise ValueError("task read-model group source order invalid")
+            communities = [parser.community_value(source["values"]).strip() for source in sources]
+            if allowed_set is not None and any(value not in allowed_set for value in communities):
+                raise ValueError("task read-model group scope mismatch")
+            if scope == "mine" and any(
+                str(source["values"].get("核查人") or "").strip().casefold()
+                != inspector.strip().casefold()
+                for source in sources
+            ):
+                continue
+            if any(
+                str(canonical.get(field, "") or "") not in accepted
+                for field, accepted in query_filters.items()
+            ):
+                continue
+            if needle and not any(needle in str(value or "").casefold() for value in canonical.values()):
+                continue
+            for source in sources:
+                records.append({
+                    **source,
+                    "row_key": row_key,
+                    "source_count": len(sources),
+                    "conflict": bool(group.get("conflict")),
+                })
+        offset += len(group_tokens)
+    return records
+
+
+async def _read_task_snapshots_for_source_rows(
+    parser_type: str,
+    source_rows: list[tuple],
+) -> dict[int, dict]:
+    """Read exact source snapshots from the active Redis generation."""
+    if not settings.TASK_READ_MODEL_ENABLED:
+        raise RuntimeError("task read model is not enabled")
+    run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+    secret = str(settings.TASK_EVENT_ENCRYPTION_KEY or "")
+    if not run_id or len(secret.encode()) < 32:
+        raise HTTPException(503, {"error": "projection_pending"})
+    try:
+        import redis.asyncio as redis
+        from services.task_read_model import (
+            read_task_snapshot, require_task_read_model_ready, task_read_model_keys,
+        )
+
+        client = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=5,
+        )
+        try:
+            await client.ping()
+            await require_task_read_model_ready(
+                client, settings.APP_ENVIRONMENT, run_id,
+            )
+            snapshots: dict[int, dict] = {}
+            for offset in range(0, len(source_rows), 200):
+                batch = source_rows[offset:offset + 200]
+                pipe = client.pipeline(transaction=False)
+                keyed_rows = []
+                for source in batch:
+                    source_id, physical_row, revision = int(source[0]), int(source[1]), int(source[2])
+                    task_id = stable_task_id(get_parser(parser_type).table_name, physical_row)
+                    task_key = task_read_model_keys(
+                        settings.APP_ENVIRONMENT, run_id, task_id,
+                    )[0]
+                    keyed_rows.append((source_id, task_id, task_key, revision))
+                    pipe.hgetall(task_key)
+                stored_rows = await pipe.execute()
+                if not isinstance(stored_rows, (list, tuple)) or len(stored_rows) != len(keyed_rows):
+                    raise ValueError("task snapshot read failed")
+                for (source_id, task_id, task_key, expected_revision), stored in zip(keyed_rows, stored_rows):
+                    if (
+                        not stored
+                        or stored.get("tombstone") == "1"
+                        or stored.get("source_id") != str(source_id)
+                        or int(stored.get("revision", 0) or 0) != expected_revision
+                    ):
+                        raise ValueError("task snapshot identity mismatch")
+                    values = await read_task_snapshot(
+                        client,
+                        task_key,
+                        environment=settings.APP_ENVIRONMENT,
+                        run_id=run_id,
+                        task_id=task_id,
+                        event_id=stored.get("event_id", ""),
+                        command_id=stored.get("command_id", ""),
+                        revision=expected_revision,
+                        source_id=source_id,
+                    )
+                    if not isinstance(values, dict):
+                        raise ValueError("task snapshot missing")
+                    snapshots[source_id] = values
+        finally:
+            await client.aclose()
+        return snapshots
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, {"error": "projection_pending"}) from None
+
+
+async def _read_task_view_states_for_records(records: list[dict]) -> dict[str, dict]:
+    if not settings.TASK_READ_MODEL_ENABLED:
+        raise RuntimeError("task read model is not enabled")
+    run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+    if not run_id:
+        raise HTTPException(503, {"error": "projection_pending"})
+    tasks = [
+        {"task_id": str(record.get("task_id") or ""),
+         "revision": int(record.get("revision") or 0)}
+        for record in records
+    ]
+    if not tasks:
+        return {}
+    try:
+        import redis.asyncio as redis
+        from services.task_read_model import require_task_read_model_ready
+        from services.task_view_state import read_task_view_states_for_tasks
+
+        client = redis.from_url(
+            settings.REDIS_URL, decode_responses=True,
+            socket_connect_timeout=3, socket_timeout=5,
+        )
+        try:
+            await client.ping()
+            await require_task_read_model_ready(
+                client, settings.APP_ENVIRONMENT, run_id,
+            )
+            return await read_task_view_states_for_tasks(
+                client, environment=settings.APP_ENVIRONMENT,
+                run_id=run_id, tasks=tasks,
+            )
+        finally:
+            await client.aclose()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, {"error": "projection_pending"}) from None
+
+
+async def _mobile_filter_options_from_read_model(
+    conn,
+    parser_type: str,
+    records: list[dict],
+    context: dict,
+    user: dict,
+    *,
+    communities: list[str] | None = None,
+    small_communities: list[str] | None = None,
+    match_statuses: list[str] | None = None,
+    results: list[str] | None = None,
+    review_stage: ReviewStage = "all",
+    include_assignment_metadata: bool = True,
+) -> dict:
+    parser = get_parser(parser_type)
+    workflow = TASK_WORKFLOWS[parser_type]
+    states_by_task = await _read_task_view_states_for_records(records)
+
+    entries = []
+    for record in records:
+        values = record["values"]
+        row_key = str(record["row_key"])
+        domains = states_by_task[str(record["task_id"])]
+        review_flow = domains["review"]["state"]
+        stage = str(review_flow.get("state")
+                    or workflow.review_stage(values))
+        if review_stage != "all" and stage != review_stage:
+            continue
+        community = parser.community_value(values).strip()
+        inspector = str(values.get("核查人") or "").strip()
+        result = str(values.get(workflow.result_field) or "").strip()
+        entries.append({
+            "row_key": row_key, "community": community, "inspector": inspector,
+            "result": result,
+            "address_match": domains["address_match"]["state"],
+            "watch": domains["watch"]["state"],
+        })
+
+    normalized_communities = list(dict.fromkeys(
+        str(value).strip() for value in (communities or []) if str(value).strip()
+    ))
+    for entry in entries:
+        candidate = entry["address_match"].get("candidate") or {}
+        entry["address_match"] = {
+            **entry["address_match"],
+            "small_community_name": candidate.get("name") or candidate.get("community_name") or "",
+        }
+        entry["small_community"] = str(
+            entry["address_match"].get("small_community_name") or ""
+        )
+        entry["match_status"] = str(entry["address_match"].get("status") or "unmatched")
+    community_entries = [
+        entry for entry in entries
+        if not normalized_communities or entry["community"] in normalized_communities
+    ]
+    normalized_small_communities = set(small_communities or [])
+    normalized_match_statuses = set(match_statuses or [])
+    scoped_entries = [
+        entry for entry in community_entries
+        if (not normalized_small_communities
+            or str(entry["address_match"].get("small_community_name") or "")
+            in normalized_small_communities)
+        and (not normalized_match_statuses
+             or str(entry["address_match"].get("status") or "unmatched")
+             in normalized_match_statuses)
+    ]
+    normalized_results = set(results or [])
+    inspector_entries = [
+        entry for entry in scoped_entries
+        if not normalized_results or entry["result"] in normalized_results
+    ]
+
+    def options_for(key: str, rows: list[dict], empty_label: str) -> list[dict]:
+        counts: dict[str, int] = {}
+        for entry in rows:
+            value = str(entry.get(key) or "").strip()
+            counts[value] = counts.get(value, 0) + 1
+        return [
+            {"value": value or EMPTY_FILTER_VALUE,
+             "label": value or empty_label, "count": count}
+            for value, count in sorted(counts.items(), key=lambda pair: (not pair[0], pair[0]))
+        ]
+
+    result_counts: dict[str, int] = {}
+    for entry in scoped_entries:
+        result_counts[entry["result"]] = result_counts.get(entry["result"], 0) + 1
+    result_options = [
+        {"value": "" if not value else value,
+         "label": value or "未填写", "count": result_counts.get(value, 0)}
+        for value in ["", *workflow.result_options]
+    ]
+    small_community_options = options_for(
+        "small_community", community_entries, "小区未关联",
+    )
+    match_status_options = options_for(
+        "match_status", community_entries, "未匹配",
+    )
+    assignment_enabled = (
+        include_assignment_metadata
+        and _can_assign_tasks(context)
+        and (has_permission(user, ONLINE_RAW_EDIT) or has_permission(user, ONLINE_TASK_MANAGE))
+    )
+    if assignment_enabled:
+        async with conn.cursor() as cur:
+            assignment_context = await inspector_option_context(
+                cur, _task_capability_user(user), assignment_only=True,
+            )
+    else:
+        assignment_context = {"community_aliases": {}, "inspectors_by_community": {}}
+    category_counts: dict[int, dict] = {}
+    for entry in entries:
+        seen_categories: set[int] = set()
+        for mark in entry["watch"].get("watch_marks", []):
+            if not isinstance(mark, dict):
+                continue
+            try:
+                category_id = int(mark.get("category_id"))
+            except (TypeError, ValueError):
+                continue
+            if category_id in seen_categories:
+                continue
+            seen_categories.add(category_id)
+            item = category_counts.setdefault(category_id, {
+                "value": category_id, "label": str(mark.get("name") or ""),
+                "color": str(mark.get("color") or ""),
+                "alert_level": str(mark.get("alert_level") or ""), "count": 0,
+            })
+            item["count"] += 1
+    watch_categories = sorted(
+        category_counts.values(), key=lambda item: (item["label"], item["value"]),
+    )
+    return {
+        "communities": options_for("community", entries, "社区未填写"),
+        "small_communities": small_community_options,
+        "match_statuses": match_status_options,
+        "results": result_options,
+        "inspectors": options_for("inspector", inspector_entries, "未分配核查人"),
+        "watch_categories": watch_categories,
+        "assignment": {
+            "enabled": assignment_enabled,
+            "community_aliases": assignment_context["community_aliases"],
+            "inspectors_by_community": assignment_context["inspectors_by_community"],
+        },
+    }
+
+
+def _merge_mobile_filter_option_batches(target: dict, current: dict) -> None:
+    for key in ("communities", "small_communities", "match_statuses", "results", "inspectors", "watch_categories"):
+        values_by_key = {
+            str(item.get("value")): item for item in target.get(key, [])
+        }
+        for item in current.get(key, []):
+            identity = str(item.get("value"))
+            if identity in values_by_key:
+                values_by_key[identity]["count"] = (
+                    int(values_by_key[identity].get("count") or 0)
+                    + int(item.get("count") or 0)
+                )
+            else:
+                values_by_key[identity] = dict(item)
+        values = list(values_by_key.values())
+        if key == "watch_categories":
+            values.sort(key=lambda item: (str(item.get("label") or ""), str(item.get("value") or "")))
+        else:
+            values.sort(key=lambda item: (
+                not bool(str(item.get("value") or "").strip()),
+                str(item.get("value") or "").casefold(),
+            ))
+        target[key] = values
+
+    target["assignment"] = current.get("assignment", target.get("assignment", {
+        "enabled": False, "community_aliases": {}, "inspectors_by_community": {},
+    }))
 
 
 @router.get("/my-history")
@@ -1424,6 +2018,7 @@ async def _analysis_filter_options(
     user: dict,
     data: AnalysisTaskSearch,
 ) -> dict:
+    _require_legacy_read_model_disabled()
     option_data = data.model_copy(update={
         "communities": [],
     })
@@ -1503,6 +2098,9 @@ async def _list_analysis_tasks_data(
     user: dict,
     conn,
 ) -> dict:
+    if settings.TASK_READ_MODEL_ENABLED:
+        return await _list_analysis_tasks_data_from_read_model(data, user, conn)
+    _require_legacy_read_model_disabled()
     parser_types = list(dict.fromkeys(data.parser_types))
     if not parser_types or any(parser_type not in UNVERIFIABLE_REVIEW_TYPES for parser_type in parser_types):
         raise HTTPException(400, "存在尚未接入研判工作台的业务表")
@@ -1620,6 +2218,422 @@ async def _list_analysis_tasks_data(
             "review_stage": data.review_stage, "communities": data.communities,
             "inspectors": data.inspectors, "watch_categories": data.watch_categories,
             "sort": data.sort, "keyword_present": bool(data.keyword.strip())},
+    }
+
+
+async def _iter_task_read_model_group_pages(
+    conn,
+    *,
+    parser,
+    context: dict,
+    scope: FlowScope,
+    filters: dict[str, list[str]],
+    keyword: str,
+    state_filters: dict[str, list[str]] | None = None,
+    page_size: int = 200,
+):
+    """Yield complete, authorized task groups in stable bounded pages."""
+    if scope == "all" and not context.get("admin_mode"):
+        raise HTTPException(403, "组员和组长只能查看本人或本社区任务")
+    allowed_communities = context.get("community_values")
+    if allowed_communities is not None and not allowed_communities:
+        return
+    scoped_inspector = str(context.get("name") or "").strip()
+    if scope == "mine" and not scoped_inspector:
+        return
+    run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+    if not run_id or len(str(settings.TASK_EVENT_ENCRYPTION_KEY or "").encode()) < 32:
+        raise HTTPException(503, {"error": "projection_pending"})
+
+    try:
+        import redis.asyncio as redis
+        from services.task_read_model import (
+            query_task_read_model_group_ids,
+            read_task_read_model_group_records,
+            require_task_read_model_ready,
+        )
+
+        client = redis.from_url(
+            settings.REDIS_URL, decode_responses=True,
+            socket_connect_timeout=3, socket_timeout=5,
+        )
+        try:
+            await client.ping()
+            await require_task_read_model_ready(client, settings.APP_ENVIRONMENT, run_id)
+            offset = 0
+            expected_total = None
+            normalized_filters = {key: list(values) for key, values in filters.items() if values}
+            normalized_keyword = keyword.strip().casefold()
+            while expected_total is None or offset < expected_total:
+                page = await query_task_read_model_group_ids(
+                    client, settings.APP_ENVIRONMENT, run_id, parser.table_name,
+                    normalized_filters, allowed_communities,
+                    keyword if len(normalized_keyword) >= 2 else None,
+                    offset, page_size, state_filters=state_filters,
+                )
+                total = page.get("total")
+                tokens = page.get("group_tokens")
+                if (type(total) is not int or total < 0 or not isinstance(tokens, list)
+                        or len(tokens) != min(page_size, max(0, total - offset))):
+                    raise ValueError("task read-model group page contract invalid")
+                if expected_total is None:
+                    expected_total = total
+                elif total != expected_total:
+                    raise ValueError("task read-model group total changed")
+                if not tokens:
+                    break
+                groups = await read_task_read_model_group_records(
+                    client, settings.APP_ENVIRONMENT, run_id, parser.table_name, tokens,
+                )
+                if not isinstance(groups, list) or len(groups) != len(tokens):
+                    raise ValueError("task read-model group page mismatch")
+
+                expected_sources: dict[int, tuple[str, int, str]] = {}
+                row_key_counts: dict[str, int] = {}
+                accepted = []
+                for group in groups:
+                    values = group.get("values")
+                    sources = group.get("sources")
+                    row_key = group.get("row_key")
+                    if (not isinstance(values, dict) or not isinstance(sources, list) or not sources
+                            or not isinstance(row_key, str) or parser.make_row_key(values) != row_key
+                            or values != sources[0].get("values")
+                            or type(group.get("source_count")) is not int
+                            or group["source_count"] != len(sources)
+                            or type(group.get("conflict")) is not bool):
+                        raise ValueError("task read-model group identity mismatch")
+                    if group["conflict"] != any(
+                        stable_json(source.get("values") or {}) != stable_json(values)
+                        for source in sources[1:]
+                    ):
+                        raise ValueError("task read-model group conflict mismatch")
+                    ordered = sorted(
+                        sources,
+                        key=lambda source: (int(source.get("source_id") or 0), str(source.get("task_id") or "")),
+                    )
+                    if sources != ordered:
+                        raise ValueError("task read-model group source order invalid")
+                    if scope == "mine" and any(
+                        str(source.get("values", {}).get("核查人") or "").strip().casefold()
+                        != scoped_inspector.casefold()
+                        for source in sources
+                    ):
+                        continue
+                    if normalized_keyword and not any(
+                        normalized_keyword in str(value or "").casefold()
+                        for value in values.values()
+                    ):
+                        continue
+                    if any(
+                        str(values.get(field, "") or "") not in set(allowed)
+                        for field, allowed in normalized_filters.items()
+                    ):
+                        continue
+                    accepted.append(group)
+                    row_key_counts[row_key] = len(sources)
+                    for source in sources:
+                        task_id = str(source.get("task_id") or "")
+                        table_name, separator, physical_text = task_id.rpartition(":")
+                        source_id = source.get("source_id")
+                        revision = source.get("revision")
+                        if (not separator or table_name != parser.table_name
+                                or not physical_text.isdigit()
+                                or type(source_id) is not int or source_id < 1
+                                or type(revision) is not int or revision < 1):
+                            raise ValueError("task read-model group source invalid")
+                        expected_sources[source_id] = (task_id, revision, row_key)
+
+                locators = {}
+                source_ids = list(expected_sources)
+                async with conn.cursor() as cur:
+                    for start in range(0, len(source_ids), 400):
+                        batch = source_ids[start:start + 400]
+                        if not batch:
+                            continue
+                        marks = ",".join(["%s"] * len(batch))
+                        await cur.execute(
+                            "SELECT id,physical_row,row_key,revision FROM _online_source_rows AS source "
+                            f"WHERE parser_type=%s AND id IN ({marks}) AND archived_at IS NULL "
+                            + active_source_sql_filter(parser.parser_type, "source"),
+                            [parser.parser_type, *batch],
+                        )
+                        for source_id, physical_row, row_key, revision in await cur.fetchall():
+                            locators[int(source_id)] = (
+                                f"{parser.table_name}:{int(physical_row)}", int(revision or 0), str(row_key),
+                            )
+                    for source_id, expected in expected_sources.items():
+                        if locators.get(source_id) != expected:
+                            raise ValueError("task source locator mismatch")
+                    row_keys = list(row_key_counts)
+                    for start in range(0, len(row_keys), 400):
+                        batch = row_keys[start:start + 400]
+                        if not batch:
+                            continue
+                        marks = ",".join(["%s"] * len(batch))
+                        await cur.execute(
+                            "SELECT row_key,COUNT(*) FROM _online_source_rows AS source "
+                            f"WHERE parser_type=%s AND row_key IN ({marks}) AND archived_at IS NULL "
+                            + active_source_sql_filter(parser.parser_type, "source")
+                            + " GROUP BY row_key",
+                            [parser.parser_type, *batch],
+                        )
+                        actual_counts = {str(key): int(count or 0) for key, count in await cur.fetchall()}
+                        for group in accepted:
+                            row_key = str(group["row_key"])
+                            if row_key in batch and actual_counts.get(row_key) != row_key_counts[row_key]:
+                                raise ValueError("task source group is incomplete")
+                offset += len(tokens)
+                if accepted:
+                    yield accepted
+        finally:
+            await client.aclose()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, {"error": "projection_pending"}) from None
+
+
+async def _indexed_task_state_counts(
+    parser,
+    context: dict,
+    *,
+    scope: FlowScope,
+    filters: dict[str, list[str]],
+    keyword: str,
+    dimensions: dict[str, list[str]],
+) -> dict[str, dict[str, int]] | None:
+    """Count canonical groups from state indexes when scope is index-expressible."""
+    if scope == "mine":
+        return None
+    communities = context.get("community_values")
+    if communities is not None and not communities:
+        return {field: {value: 0 for value in values} for field, values in dimensions.items()}
+    run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+    if not run_id or len(str(settings.TASK_EVENT_ENCRYPTION_KEY or "").encode()) < 32:
+        raise HTTPException(503, {"error": "projection_pending"})
+    try:
+        import redis.asyncio as redis
+        from services.task_read_model import (
+            count_task_read_model_groups,
+            require_task_read_model_ready,
+        )
+
+        client = redis.from_url(
+            settings.REDIS_URL, decode_responses=True,
+            socket_connect_timeout=3, socket_timeout=5,
+        )
+        try:
+            await client.ping()
+            await require_task_read_model_ready(client, settings.APP_ENVIRONMENT, run_id)
+            counts: dict[str, dict[str, int]] = {}
+            search = keyword if len(keyword.strip()) >= 2 else None
+            for field, values in dimensions.items():
+                counts[field] = {}
+                for value in values:
+                    counts[field][value] = await count_task_read_model_groups(
+                        client, settings.APP_ENVIRONMENT, run_id, parser.table_name,
+                        filters, communities, search,
+                        state_filters={field: [value]},
+                    )
+            return counts
+        finally:
+            await client.aclose()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, {"error": "projection_pending"}) from None
+
+
+async def _list_analysis_tasks_data_from_read_model(
+    data: AnalysisTaskSearch,
+    user: dict,
+    conn,
+) -> dict:
+    parser_types = list(dict.fromkeys(data.parser_types))
+    if not parser_types or any(parser_type not in UNVERIFIABLE_REVIEW_TYPES for parser_type in parser_types):
+        raise HTTPException(400, "存在尚未接入研判工作台的业务表")
+    context = await _flow_context(conn, user)
+    parser_types = sorted(parser_types)
+    facets = _empty_facets()
+    total = 0
+    page_offset = (data.page - 1) * data.page_size
+    output: list[dict] = []
+    for parser_type in parser_types:
+        parser = get_parser(parser_type)
+        filter_values = _task_index_filters(parser_type, inspectors=data.inspectors)
+        state_filters = {
+            **({"address_match.small_community_name": data.small_communities}
+               if data.small_communities else {}),
+            **({"address_match.status": data.match_status}
+               if data.match_status else {}),
+            **({"watch.category_id": [str(value) for value in data.watch_categories]}
+               if data.watch_categories else {}),
+        }
+        if data.review_stage != "all":
+            state_filters["review.state"] = [data.review_stage]
+        async for groups in _iter_task_read_model_group_pages(
+            conn, parser=parser, context=context, scope=data.scope,
+            filters=filter_values, keyword=data.keyword,
+        ):
+            records = [{
+                **group,
+                "parser_type": parser_type,
+            } for group in groups]
+            states_by_task = await _read_task_view_states_for_records(records)
+            for record in records:
+                values = record["values"]
+                row_key = str(record["row_key"])
+                domains = states_by_task.get(str(record["task_id"]), {})
+                states = {domain: value.get("state", {}) for domain, value in domains.items()}
+                review_flow = states.get("review")
+                address_match = states.get("address_match") or {}
+                candidate = address_match.get("candidate") or {}
+                address_match = {
+                    **address_match,
+                    "small_community_id": candidate.get("entry_id"),
+                    "small_community_name": candidate.get("name") or candidate.get("community_name", ""),
+                }
+                watch_status = states.get("watch") or {}
+                workflow = TASK_WORKFLOWS[parser_type]
+                state = workflow.state(values)
+                item = _task_record(
+                    parser_type, row_key, values,
+                    int(record["source_count"]), bool(record["conflict"]), False, state,
+                    watch_status, review_flow=review_flow,
+                    qmf_status=states.get("qmf"),
+                    residence_status=states.get("residence"),
+                    registration_link=states.get("registration"),
+                    address_match=address_match,
+                )
+                facets["total"] += 1
+                if state in facets["status_counts"]:
+                    facets["status_counts"][state] += 1
+                if item["priority"] in facets["priority_counts"]:
+                    facets["priority_counts"][item["priority"]] += 1
+                stage = str((review_flow or {}).get("state") or item["review_stage"])
+                if stage in facets["review_stage_counts"]:
+                    facets["review_stage_counts"][stage] += 1
+                registration_state = str((states.get("registration") or {}).get("status") or "")
+                if registration_state in {"review_required", "ambiguous", "conflict", "pending_review"}:
+                    facets["registration_review_count"] += 1
+                qmf_state = str((states.get("qmf") or {}).get("state") or "")
+                if qmf_state in facets["qmf_feedback_counts"]:
+                    facets["qmf_feedback_counts"][qmf_state] += 1
+                if not state_filters:
+                    if data.communities and str(item["community"]).strip() not in set(data.communities):
+                        continue
+                    if data.inspectors and str(item["inspector"]).strip() not in set(data.inspectors):
+                        continue
+                    if data.review_stage != "all" and stage != data.review_stage:
+                        continue
+                    if total >= page_offset and len(output) < data.page_size:
+                        output.append(item)
+                    total += 1
+
+        if data.scope != "mine":
+            indexed_review_counts = {key: 0 for key in facets["review_stage_counts"]}
+            indexed_qmf_counts = {key: 0 for key in facets["qmf_feedback_counts"]}
+            indexed_registration_count = 0
+            indexed_counts_available = False
+            for parser_type in parser_types:
+                parser = get_parser(parser_type)
+                counts = await _indexed_task_state_counts(
+                    parser, context, scope=data.scope,
+                    filters=_task_index_filters(parser_type, inspectors=data.inspectors),
+                    keyword=data.keyword,
+                    dimensions={
+                        "review.state": list(facets["review_stage_counts"]),
+                        "qmf.state": list(facets["qmf_feedback_counts"]),
+                        "registration.status": ["review_required"],
+                    },
+                )
+                if counts is None:
+                    continue
+                indexed_counts_available = True
+                for key in indexed_review_counts:
+                    indexed_review_counts[key] += counts["review.state"][key]
+                for key in indexed_qmf_counts:
+                    indexed_qmf_counts[key] += counts["qmf.state"][key]
+                indexed_registration_count += counts["registration.status"]["review_required"]
+            if indexed_counts_available:
+                facets["review_stage_counts"] = indexed_review_counts
+                facets["qmf_feedback_counts"] = indexed_qmf_counts
+                facets["registration_review_count"] = indexed_registration_count
+
+        if state_filters:
+            for parser_type in parser_types:
+                parser = get_parser(parser_type)
+                filter_values = _task_index_filters(parser_type, inspectors=data.inspectors)
+                async for groups in _iter_task_read_model_group_pages(
+                    conn, parser=parser, context=context, scope=data.scope,
+                    filters=filter_values, keyword=data.keyword,
+                    state_filters=state_filters,
+                ):
+                    records = [{**group, "parser_type": parser_type} for group in groups]
+                    states_by_task = await _read_task_view_states_for_records(records)
+                    for record in records:
+                        values = record["values"]
+                        row_key = str(record["row_key"])
+                        states = {
+                            domain: value.get("state", {})
+                            for domain, value in states_by_task[str(record["task_id"])].items()
+                        }
+                        review_flow = states.get("review")
+                        address_match = states.get("address_match") or {}
+                        candidate = address_match.get("candidate") or {}
+                        address_match = {
+                            **address_match,
+                            "small_community_id": candidate.get("entry_id"),
+                            "small_community_name": candidate.get("name") or candidate.get("community_name", ""),
+                        }
+                        watch_status = states.get("watch") or {}
+                        workflow = TASK_WORKFLOWS[parser_type]
+                        item = _task_record(
+                            parser_type, row_key, values,
+                            int(record["source_count"]), bool(record["conflict"]), False,
+                            workflow.state(values), watch_status, review_flow=review_flow,
+                            qmf_status=states.get("qmf"), residence_status=states.get("residence"),
+                            registration_link=states.get("registration"), address_match=address_match,
+                        )
+                        stage = str((review_flow or {}).get("state") or item["review_stage"])
+                        if data.communities and str(item["community"]).strip() not in set(data.communities):
+                            continue
+                        if data.inspectors and str(item["inspector"]).strip() not in set(data.inspectors):
+                            continue
+                        if data.small_communities and address_match["small_community_name"] not in set(data.small_communities):
+                            continue
+                        if data.match_status and str(address_match.get("status") or "unmatched") not in set(data.match_status):
+                            continue
+                        if data.review_stage != "all" and stage != data.review_stage:
+                            continue
+                        if data.watch_categories and not {
+                            int(mark.get("category_id"))
+                            for mark in watch_status.get("watch_marks", [])
+                            if isinstance(mark, dict) and str(mark.get("category_id", "")).isdigit()
+                        }.intersection(set(data.watch_categories)):
+                            continue
+                        if total >= page_offset and len(output) < data.page_size:
+                            output.append(item)
+                        total += 1
+    return {
+        "data": output,
+        "total": total,
+        "page": data.page,
+        "page_size": data.page_size,
+        "source_ready": True,
+        "message": "",
+        "facets": facets,
+        "priority_labels": PRIORITY_LABELS,
+        "filters": {
+            "parser_types": parser_types,
+            "scope": data.scope,
+            "review_stage": data.review_stage,
+            "communities": data.communities,
+            "inspectors": data.inspectors,
+            "watch_categories": data.watch_categories,
+            "sort": "stable_group_token",
+            "keyword_present": bool(data.keyword.strip()),
+        },
     }
 
 
@@ -1877,31 +2891,52 @@ async def _address_matches_by_rows(
 ) -> dict[str, dict]:
     if not row_keys:
         return {}
-    placeholders = ",".join(["%s"] * len(row_keys))
-    await cur.execute(
-        f"""
-        SELECT row_key, small_community_id, small_community_name,
-               address_match_status, address_match_score,
-               address_match_method, address_match_reason,
-               address_match_candidates, address_match_version
-        FROM _online_source_projection
-        WHERE parser_type=%s AND row_key IN ({placeholders})
-        """,
-        (parser_type, *row_keys),
-    )
-    return {
-        str(row[0]): {
-            "small_community_id": int(row[1]) if row[1] is not None else None,
-            "small_community_name": str(row[2] or ""),
-            "status": str(row[3] or "unmatched"),
-            "score": float(row[4] or 0),
-            "method": str(row[5] or ""),
-            "reason": str(row[6] or ""),
-            "candidates": json_value(row[7], []),
-            "version": str(row[8] or ""),
-        }
-        for row in await cur.fetchall()
-    }
+    matches = {}
+    for offset in range(0, len(row_keys), 400):
+        batch = row_keys[offset:offset + 400]
+        placeholders = ",".join(["%s"] * len(batch))
+        await cur.execute(
+            f"""
+            SELECT row_key,
+                   COALESCE(match.confirmed_entry_id, match.suggested_entry_id),
+                   COALESCE(confirmed_entry.name, suggested_entry.name, ''),
+                   match.match_status, match.match_score,
+                   match.match_method, match.match_reason, match.candidates_json,
+                   match.matcher_version
+            FROM _online_task_address_matches AS match
+            LEFT JOIN _police_address_entries AS confirmed_entry
+              ON confirmed_entry.id=match.confirmed_entry_id
+            LEFT JOIN _police_address_entries AS suggested_entry
+              ON suggested_entry.id=match.suggested_entry_id
+            WHERE match.parser_type=%s AND match.row_key IN ({placeholders})
+            """,
+            (parser_type, *batch),
+        )
+        matches.update({
+            str(row[0]): {
+                "small_community_id": int(row[1]) if row[1] is not None else None,
+                "small_community_name": str(row[2] or ""),
+                "status": str(row[3] or "unmatched"),
+                "score": float(row[4] or 0),
+                "method": str(row[5] or ""),
+                "reason": str(row[6] or ""),
+                "candidates": json_value(row[7], []),
+                "version": str(row[8] or ""),
+            }
+            for row in await cur.fetchall()
+        })
+    for row_key in row_keys:
+        matches.setdefault(str(row_key), {
+            "small_community_id": None,
+            "small_community_name": "",
+            "status": "unmatched",
+            "score": 0.0,
+            "method": "",
+            "reason": "",
+            "candidates": [],
+            "version": "",
+        })
+    return matches
 
 
 def _export_value(values: dict, *keys: str) -> str:
@@ -1983,6 +3018,11 @@ async def _mobile_export_workbook(
     user: dict,
     conn,
 ) -> tuple[BytesIO, int]:
+    if settings.TASK_READ_MODEL_ENABLED:
+        return await _mobile_export_workbook_from_read_model(
+            data=data, parser_type=parser_type, user=user, conn=conn,
+        )
+    _require_legacy_read_model_disabled()
     context = await _flow_context(conn, user)
     active_source_filter = (
         " AND source.spreadsheet_id=0 "
@@ -2071,6 +3111,161 @@ async def _mobile_export_workbook(
     return workbook, len(export_rows)
 
 
+async def _mobile_export_workbook_from_read_model(
+    *,
+    data: TaskSearch | AnalysisTaskSearch,
+    parser_type: str | None,
+    user: dict,
+    conn,
+) -> tuple[BytesIO, int]:
+    context = await _flow_context(conn, user)
+    if isinstance(data, AnalysisTaskSearch):
+        parser_types = list(dict.fromkeys(data.parser_types))
+        if not parser_types or any(value not in UNVERIFIABLE_REVIEW_TYPES for value in parser_types):
+            raise HTTPException(400, "存在尚未接入研判工作台的业务表")
+        include_internal_columns = True
+        type_label = "研判任务"
+        records = []
+        for current_type in parser_types:
+            records.extend(await _task_read_model_records(
+                conn, current_type, context, scope=data.scope, keyword=data.keyword,
+                filters=_task_index_filters(current_type, inspectors=data.inspectors),
+            ))
+    else:
+        if not parser_type or parser_type not in TASK_WORKFLOWS:
+            raise HTTPException(400, "该业务尚未接入手机任务工作台")
+        parser_types = [parser_type]
+        include_internal_columns = False
+        type_label = parser_type
+        records = await _task_read_model_records(
+            conn, parser_type, context, scope=data.scope, keyword=data.keyword,
+            filters=_task_index_filters(
+                parser_type, communities=data.communities,
+                inspectors=data.inspectors, results=data.results,
+            ),
+        )
+
+    states_by_task = await _read_task_view_states_for_records(records)
+
+    export_rows = []
+    for record in records:
+        current_type = str(record["parser_type"])
+        values = record["values"]
+        workflow = TASK_WORKFLOWS[current_type]
+        domains = states_by_task[str(record["task_id"])]
+        review_flow = domains["review"]["state"]
+        address_state = domains["address_match"]["state"]
+        candidate = address_state.get("candidate") or {}
+        address_match = {
+            **address_state,
+            "small_community_name": candidate.get("name") or candidate.get("community_name", ""),
+        }
+        watch_state = domains["watch"]["state"]
+        qmf_state = domains["qmf"]["state"]
+        registration_state = domains["registration"]["state"]
+        task_state = workflow.state(values)
+        if isinstance(data, AnalysisTaskSearch):
+            if data.communities and workflow.first_value(values, ("社区", "下发社区")) not in set(data.communities):
+                continue
+            if data.inspectors and str(values.get("核查人") or "").strip() not in set(data.inspectors):
+                continue
+            if data.watch_categories:
+                category_ids = {
+                    int(mark.get("category_id")) for mark in watch_state.get("watch_marks", [])
+                    if isinstance(mark, dict) and str(mark.get("category_id", "")).isdigit()
+                }
+                if not category_ids.intersection(set(data.watch_categories)):
+                    continue
+            if data.small_communities and str(address_match.get("small_community_name") or "") not in set(data.small_communities):
+                continue
+            if data.match_status and str(address_match.get("status") or "unmatched") not in set(data.match_status):
+                continue
+            stage = str((review_flow or {}).get("state") or workflow.review_stage(values))
+            if data.review_stage != "all" and stage != data.review_stage:
+                continue
+        else:
+            if data.communities and workflow.first_value(values, ("社区", "下发社区")) not in set(data.communities):
+                continue
+            if data.inspectors and str(values.get("核查人") or "").strip() not in set(data.inspectors):
+                continue
+            if data.small_communities and str(address_match.get("small_community_name") or "") not in set(data.small_communities):
+                continue
+            if data.match_status and str(address_match.get("status") or "unmatched") not in set(data.match_status):
+                continue
+            if data.results and str(values.get(workflow.result_field) or "").strip() not in set(data.results):
+                continue
+            if data.status == "pending" and task_state == "completed":
+                continue
+            if data.status in {"unchecked", "checked", "completed"} and task_state != data.status:
+                continue
+            if data.status == "review" and not workflow.needs_review(
+                values, source_count=record["source_count"], conflict=record["conflict"],
+            ):
+                continue
+            if data.status == "registration_review":
+                if str(registration_state.get("status") or "") not in {
+                    "review_required", "ambiguous", "conflict", "pending_review",
+                }:
+                    continue
+            stage = str((review_flow or {}).get("state") or workflow.review_stage(values))
+            if data.review_stage != "all" and stage != data.review_stage:
+                continue
+            if data.priority != "all" and _priority_bucket(
+                current_type, values, record["source_count"], record["conflict"], False, task_state,
+            ) != data.priority:
+                continue
+            if data.watch_categories:
+                category_ids = {
+                    int(mark.get("category_id")) for mark in watch_state.get("watch_marks", [])
+                    if isinstance(mark, dict) and str(mark.get("category_id", "")).isdigit()
+                }
+                if not category_ids.intersection(set(data.watch_categories)):
+                    continue
+            if data.qmf_feedback_states and str(qmf_state.get("status") or "") not in set(data.qmf_feedback_states):
+                continue
+        if data.keyword.strip() and data.keyword.strip().casefold() not in " ".join(
+            str(value) for value in values.values()
+        ).casefold():
+            continue
+        sources = sorted(record["sources"], key=lambda source: int(source["source_id"]))
+        source = sources[0] if sources else record
+        export_rows.append(_mobile_export_row(
+            current_type,
+            str(record["row_key"]),
+            values,
+            int(source["source_id"]) if source.get("source_id") is not None else None,
+            int(record["source_count"]),
+            bool(record["conflict"]),
+            False,
+            task_state,
+            int(source["revision"]) if source.get("revision") is not None else None,
+            str(source.get("source_row_hash") or ""),
+            review_flow,
+            include_internal=include_internal_columns,
+        ))
+    if include_internal_columns:
+        headers = [
+            "业务类型", "任务标识", "来源ID", "来源版本", "来源行哈希", "流程版本",
+            "姓名", "身份证号", "手机号", "原地址", "现住址", "社区", "核查人",
+            "任务状态", "研判阶段", "本次研判结果", "研判意见", "历史研判意见", "已有核查反馈", "核查结果", "截止日期",
+            "来源异常", "待同步",
+        ]
+    else:
+        headers = [
+            "姓名", "身份证号", "手机号", "原地址", "现住址", "社区", "核查人",
+            "任务状态", "研判阶段", "研判意见", "复核反馈", "核查结果", "截止日期",
+        ]
+    workbook = build_xlsx(
+        type_label,
+        headers,
+        export_rows,
+        dropdown_column="P" if include_internal_columns else None,
+        dropdown_values=("发现新线索", "未发现新线索"),
+        hidden_columns=("A", "C", "D", "E", "F") if include_internal_columns else (),
+    )
+    return workbook, len(export_rows)
+
+
 def _source_in_community(
     parser,
     values: dict,
@@ -2088,6 +3283,9 @@ async def get_mobile_task_home(
     user: dict = Depends(require_permission(ONLINE_RAW_VIEW)),
     conn=Depends(get_db),
 ):
+    if settings.TASK_READ_MODEL_ENABLED:
+        return await _get_mobile_task_home_from_read_model(scope, user, conn)
+    _require_legacy_read_model_disabled()
     context = await _flow_context(conn, user)
     async with conn.cursor() as cur:
         business_date = await get_business_date(cur)
@@ -2143,6 +3341,281 @@ async def get_mobile_task_home(
         "community": {
             "pending": sum(item["pending"] for item in community_totals),
         },
+        "daily_snapshot_available": bool(today.get("exists")),
+        "businesses": businesses,
+    }
+
+
+async def _get_mobile_task_home_from_read_model(scope: FlowScope, user: dict, conn) -> dict:
+    if scope == "all" and not is_flow_task_elevated(user):
+        raise HTTPException(403, "组员和组长只能查看本人或本社区任务")
+    context = await _flow_context(conn, user)
+    business_date = None
+    sync_row = None
+    async with conn.cursor() as cur:
+        business_date = await get_business_date(cur)
+        await cur.execute(
+            "SELECT MAX(finished_at) FROM _sync_log "
+            "WHERE status IN ('success', 'completed')"
+        )
+        sync_row = await cur.fetchone()
+    personal_scope: FlowScope = "all" if context["admin_mode"] else "mine"
+    community_scope: FlowScope = "all" if context["admin_mode"] else "community"
+
+    async def count_scope(current_scope: FlowScope) -> dict[str, dict[str, int]]:
+        if current_scope == "all" and not context["admin_mode"]:
+            raise HTTPException(403, "组员和组长只能查看本人或本社区任务")
+        allowed_communities = context.get("community_values")
+        if allowed_communities is not None and not allowed_communities:
+            return {
+                parser_type: {
+                    "unchecked": 0, "checked": 0, "completed": 0,
+                    "review": 0, "pending": 0,
+                }
+                for parser_type in set(MOBILE_TASK_TYPES) | set(SUMMARY_TASK_TYPES)
+            }
+        run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+        secret = str(settings.TASK_EVENT_ENCRYPTION_KEY or "")
+        allowed_set = None if allowed_communities is None else set(allowed_communities)
+        if not run_id or len(secret.encode("utf-8")) < 32:
+            raise HTTPException(503, {"error": "projection_pending"})
+        try:
+            import redis.asyncio as redis
+            from services.task_read_model import (
+                query_task_read_model_group_ids,
+                read_task_read_model_group_records,
+                require_task_read_model_ready,
+            )
+
+            client = redis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_connect_timeout=3,
+                socket_timeout=5,
+            )
+            try:
+                await client.ping()
+                await require_task_read_model_ready(
+                    client, settings.APP_ENVIRONMENT, run_id,
+                )
+                counts = {
+                    parser_type: {
+                        "unchecked": 0, "checked": 0, "completed": 0,
+                        "review": 0, "pending": 0,
+                    }
+                    for parser_type in set(MOBILE_TASK_TYPES) | set(SUMMARY_TASK_TYPES)
+                }
+                for parser_type in counts:
+                    parser = get_parser(parser_type)
+                    offset = 0
+                    total = None
+                    while total is None or offset < total:
+                        page = await query_task_read_model_group_ids(
+                            client, settings.APP_ENVIRONMENT, run_id,
+                            parser.table_name, {}, allowed_communities, None,
+                            offset, 400,
+                        )
+                        page_total = page.get("total")
+                        tokens = page.get("group_tokens")
+                        if (type(page_total) is not int or page_total < 0
+                                or not isinstance(tokens, list)
+                                or len(tokens) != min(400, max(0, page_total - offset))):
+                            raise ValueError("task read-model group page contract invalid")
+                        if total is None:
+                            total = page_total
+                        elif total != page_total:
+                            raise ValueError("task read-model group total changed")
+                        if not tokens:
+                            break
+                        groups = await read_task_read_model_group_records(
+                            client, settings.APP_ENVIRONMENT, run_id,
+                            parser.table_name, tokens,
+                        )
+                        if not isinstance(groups, list) or len(groups) != len(tokens):
+                            raise ValueError("task read-model group page mismatch")
+                        sources_by_id: dict[int, tuple[int, str, int, str]] = {}
+                        expected_sources: dict[int, tuple[str, int, str]] = {}
+                        for group in groups:
+                            sources = group.get("sources")
+                            values = group.get("values")
+                            row_key = group.get("row_key")
+                            if (not isinstance(sources, list) or not sources
+                                    or not isinstance(values, dict)
+                                    or not isinstance(row_key, str)
+                                    or parser.make_row_key(values) != row_key
+                                    or values != sources[0].get("values")
+                                    or type(group.get("source_count")) is not int
+                                    or group["source_count"] != len(sources)):
+                                raise ValueError("task read-model group identity mismatch")
+                            if (type(group.get("conflict")) is not bool
+                                    or group["conflict"] != any(
+                                        stable_json(source.get("values") or {})
+                                        != stable_json(values)
+                                        for source in sources[1:]
+                                    )):
+                                raise ValueError("task read-model group conflict mismatch")
+                            ordered = sorted(
+                                sources,
+                                key=lambda item: (int(item.get("source_id") or 0), str(item.get("task_id") or "")),
+                            )
+                            if sources != ordered:
+                                raise ValueError("task read-model group source order invalid")
+                            communities = [
+                                parser.community_value(source.get("values") or {}).strip()
+                                for source in sources
+                            ]
+                            if (allowed_set is not None
+                                    and any(value not in allowed_set for value in communities)):
+                                raise ValueError("task read-model group scope mismatch")
+                            if current_scope == "mine" and any(
+                                str(source["values"].get("核查人") or "").strip().casefold()
+                                != str(context["name"]).strip().casefold()
+                                for source in sources
+                            ):
+                                continue
+                            for source in sources:
+                                source_id = source.get("source_id")
+                                revision = source.get("revision")
+                                task_id = source.get("task_id")
+                                if (type(source_id) is not int or source_id < 1
+                                        or type(revision) is not int or revision < 1
+                                        or not isinstance(task_id, str)):
+                                    raise ValueError("task read-model group source invalid")
+                                table, separator, physical_text = task_id.rpartition(":")
+                                if (not separator or table != parser.table_name
+                                        or not physical_text.isdigit() or int(physical_text) < 1):
+                                    raise ValueError("task read-model group source identity invalid")
+                                if source_id in expected_sources:
+                                    raise ValueError("task read-model group source duplicated")
+                                expected_sources[source_id] = (task_id, revision, row_key)
+                        if expected_sources:
+                            source_ids = sorted(expected_sources)
+                            placeholders = ",".join(["%s"] * len(source_ids))
+                            row_keys = sorted({item[2] for item in expected_sources.values()})
+                            row_key_placeholders = ",".join(["%s"] * len(row_keys))
+                            async with conn.cursor() as cur:
+                                await cur.execute(
+                                    "SELECT source.id,source.physical_row,source.row_key,source.revision "
+                                    "FROM _online_source_rows AS source WHERE source.parser_type=%s "
+                                    f"AND source.id IN ({placeholders}) AND source.archived_at IS NULL "
+                                    + active_source_sql_filter(parser_type, "source"),
+                                    [parser_type, *source_ids],
+                                )
+                                for source_id, physical_row, row_key, revision in await cur.fetchall():
+                                    task_id, expected_revision, expected_row_key = expected_sources[int(source_id)]
+                                    if (int(revision or 0) != expected_revision
+                                            or int(physical_row) != int(task_id.rsplit(":", 1)[1])
+                                            or str(row_key) != expected_row_key):
+                                        raise ValueError("task read-model source locator mismatch")
+                                    sources_by_id[int(source_id)] = (
+                                        int(physical_row), str(row_key), int(revision), task_id,
+                                    )
+                                await cur.execute(
+                                    "SELECT source.row_key,COUNT(*) FROM _online_source_rows AS source "
+                                    "WHERE source.parser_type=%s AND source.row_key IN ("
+                                    + row_key_placeholders + ") AND source.archived_at IS NULL "
+                                    + active_source_sql_filter(parser_type, "source")
+                                    + " GROUP BY source.row_key",
+                                    [parser_type, *row_keys],
+                                )
+                                source_counts = {
+                                    str(row_key): int(count or 0)
+                                    for row_key, count in await cur.fetchall()
+                                }
+                            if set(sources_by_id) != set(expected_sources):
+                                raise ValueError("task read-model source locator missing")
+                            if any(
+                                source_counts.get(row_key, 0)
+                                != sum(1 for source in expected_sources.values() if source[2] == row_key)
+                                for row_key in row_keys
+                            ):
+                                raise ValueError("task read-model group source count mismatch")
+                        for group in groups:
+                            values = group["values"]
+                            row_key = group["row_key"]
+                            sources = group["sources"]
+                            if current_scope == "mine" and any(
+                                str(source["values"].get("核查人") or "").strip().casefold()
+                                != str(context["name"]).strip().casefold()
+                                for source in sources
+                            ):
+                                continue
+                            if not all(
+                                (int(source["source_id"]) in sources_by_id
+                                 and sources_by_id[int(source["source_id"])][1] == row_key)
+                                for source in sources
+                            ):
+                                continue
+                            state = TASK_WORKFLOWS[parser_type].state(values)
+                            if state in counts[parser_type]:
+                                counts[parser_type][state] += 1
+                            if TASK_WORKFLOWS[parser_type].needs_review(
+                                values, source_count=group["source_count"],
+                                conflict=group["conflict"],
+                            ):
+                                counts[parser_type]["review"] += 1
+                            if state != "completed":
+                                counts[parser_type]["pending"] += 1
+                        offset += len(tokens)
+                return counts
+            finally:
+                await client.aclose()
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(503, {"error": "projection_pending"}) from None
+
+    scope_results = {}
+    for current_scope in {scope, personal_scope, community_scope}:
+        scope_results[current_scope] = await count_scope(current_scope)
+
+    selected_counts = scope_results[scope]
+    selected: dict[str, dict] = {}
+    for parser_type in MOBILE_TASK_TYPES:
+        counts = selected_counts[parser_type]
+        selected[parser_type] = {
+            "parser_type": parser_type,
+            "label": TASK_WORKFLOWS[parser_type].label,
+            **counts,
+            "source_ready": True,
+        }
+    personal_pending = sum(
+        scope_results[personal_scope][parser_type]["pending"]
+        for parser_type in SUMMARY_TASK_TYPES
+    )
+    community_pending = sum(
+        scope_results[community_scope][parser_type]["pending"]
+        for parser_type in SUMMARY_TASK_TYPES
+    )
+
+    date_text = business_date.isoformat()
+    try:
+        today = await get_online_overview(
+            date_text, date_text, SUMMARY_TYPE, context["community_values"],
+            inspector=None if context["admin_mode"] else context["name"],
+            parser_types_override=list(SUMMARY_TASK_TYPES),
+        )
+    except (RuntimeError, ValueError):
+        today = {"exists": False}
+    businesses = sorted(
+        selected.values(), key=lambda item: (item["pending"] == 0, -item["pending"], item["label"]),
+    )
+    return {
+        "business_date": date_text,
+        "last_success_at": _iso_utc(sync_row[0]) if sync_row else None,
+        "scope": scope,
+        "admin_mode": context["admin_mode"],
+        "person": {
+            "name": context["name"], "position": context["position"],
+            "community": context["community"],
+        },
+        "personal": {
+            "pending": personal_pending,
+            "new_today": int(today.get("new_tasks") or 0) if today.get("exists") else None,
+            "carryover_today": int(today.get("carryover_tasks") or 0) if today.get("exists") else None,
+            "completed_today": int(today.get("completed_tasks") or 0) if today.get("exists") else None,
+        },
+        "community": {"pending": community_pending},
         "daily_snapshot_available": bool(today.get("exists")),
         "businesses": businesses,
     }
@@ -2238,6 +3711,7 @@ async def _task_filter_options(
     results: list[str] | None = None,
     review_stage: ReviewStage = "all",
 ) -> dict:
+    _require_legacy_read_model_disabled()
     capability_user = _task_capability_user(user)
     scope_where, scope_params = _scope_where(context, scope)
     where_sql = f"projection.parser_type=%s AND {scope_where}"
@@ -2375,6 +3849,11 @@ async def _list_mobile_tasks_data(
     user: dict,
     conn,
 ) -> dict:
+    if settings.TASK_READ_MODEL_ENABLED:
+        return await _list_mobile_tasks_data_from_read_model(
+            parser_type, data, user, conn,
+        )
+    _require_legacy_read_model_disabled()
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
@@ -2508,7 +3987,206 @@ async def _list_mobile_tasks_data(
             "watch_categories": data.watch_categories,
             "qmf_feedback_states": data.qmf_feedback_states,
             "priority": data.priority,
-            "sort": data.sort,
+            "sort": "stable_group_token",
+            "keyword_present": bool(data.keyword.strip()),
+        },
+    }
+
+
+async def _list_mobile_tasks_data_from_read_model(
+    parser_type: str,
+    data: TaskSearch,
+    user: dict,
+    conn,
+) -> dict:
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入手机任务工作台")
+    context = await _flow_context(conn, user)
+    parser = get_parser(parser_type)
+    index_filters = _task_index_filters(
+        parser_type, communities=data.communities or None,
+        inspectors=data.inspectors or None, results=data.results or None,
+    )
+    workflow = TASK_WORKFLOWS[parser_type]
+    state_filters = {
+        **({"address_match.small_community_name": data.small_communities}
+           if data.small_communities else {}),
+        **({"address_match.status": data.match_status}
+           if data.match_status else {}),
+        **({"watch.category_id": [str(value) for value in data.watch_categories]}
+           if data.watch_categories else {}),
+        **({"qmf.state": [str(value) for value in data.qmf_feedback_states]}
+           if data.qmf_feedback_states else {}),
+    }
+    if data.review_stage != "all" and supports_unverifiable_review(parser_type):
+        state_filters["review.state"] = [data.review_stage]
+    if data.status == "registration_review":
+        state_filters["registration.status"] = ["review_required"]
+    facets = _empty_facets()
+    total = 0
+    page_offset = (data.page - 1) * data.page_size
+    output: list[dict] = []
+    async for groups in _iter_task_read_model_group_pages(
+        conn, parser=parser, context=context, scope=data.scope,
+        filters=index_filters, keyword=data.keyword,
+    ):
+        records = [{**group, "parser_type": parser_type} for group in groups]
+        states_by_task = await _read_task_view_states_for_records(records)
+        for record in records:
+            values = record["values"]
+            row_key = str(record["row_key"])
+            domains = states_by_task.get(str(record["task_id"]), {})
+            states = {domain: (value or {}).get("state", {}) for domain, value in domains.items()}
+            review_flow = states.get("review") if supports_unverifiable_review(parser_type) else None
+            qmf_status = states.get("qmf")
+            residence_status = states.get("residence")
+            registration_link = states.get("registration")
+            watch_status = states.get("watch") or {}
+            address_match = states.get("address_match") or {}
+            candidate = address_match.get("candidate") or {}
+            address_match = {
+                **address_match,
+                "small_community_id": candidate.get("entry_id"),
+                "small_community_name": candidate.get("name") or candidate.get("community_name", ""),
+            }
+            state = workflow.state(values)
+            item = _task_record(
+                parser_type, row_key, values,
+                int(record["source_count"]), bool(record["conflict"]), False, state,
+                watch_status, review_flow=review_flow, qmf_status=qmf_status,
+                residence_status=residence_status,
+                registration_link=registration_link, address_match=address_match,
+            )
+            facets["total"] += 1
+            if item["priority"] in facets["priority_counts"]:
+                facets["priority_counts"][item["priority"]] += 1
+            if state in facets["status_counts"]:
+                facets["status_counts"][state] += 1
+            stage = str((review_flow or {}).get("state") or item["review_stage"])
+            if stage in facets["review_stage_counts"]:
+                facets["review_stage_counts"][stage] += 1
+            registration_state = str((registration_link or {}).get("status") or "")
+            if registration_state in {"review_required", "ambiguous", "conflict", "pending_review"}:
+                facets["registration_review_count"] += 1
+            qmf_state = str((qmf_status or {}).get("state") or "")
+            if qmf_state in facets["qmf_feedback_counts"]:
+                facets["qmf_feedback_counts"][qmf_state] += 1
+            if not state_filters:
+                if data.status == "pending" and state == "completed":
+                    continue
+                if data.status in {"unchecked", "checked", "completed"} and state != data.status:
+                    continue
+                if data.status == "review" and not item["needs_review"]:
+                    continue
+                if data.status == "registration_review" and registration_state != "review_required":
+                    continue
+                if data.review_stage != "all" and item["review_stage"] != data.review_stage:
+                    continue
+                if data.priority != "all" and item["priority"] != data.priority:
+                    continue
+                if data.qmf_feedback_states and qmf_state not in set(data.qmf_feedback_states):
+                    continue
+                if total >= page_offset and len(output) < data.page_size:
+                    output.append(item)
+                total += 1
+
+    if data.scope != "mine":
+        counts = await _indexed_task_state_counts(
+            parser, context, scope=data.scope,
+            filters=index_filters, keyword=data.keyword,
+            dimensions={
+                **({"review.state": [
+                    "initial_pending", "initial_extension", "deep_pending", "deep_extension",
+                ]} if supports_unverifiable_review(parser_type) else {}),
+                "qmf.state": list(facets["qmf_feedback_counts"]),
+                "registration.status": ["review_required"],
+            },
+        )
+        if counts is not None:
+            facets["qmf_feedback_counts"] = counts["qmf.state"]
+            facets["registration_review_count"] = counts["registration.status"]["review_required"]
+            if "review.state" in counts:
+                facets["review_stage_counts"] = counts["review.state"]
+
+    if state_filters:
+        async for groups in _iter_task_read_model_group_pages(
+            conn, parser=parser, context=context, scope=data.scope,
+            filters=index_filters, keyword=data.keyword,
+            state_filters=state_filters,
+        ):
+            records = [{**group, "parser_type": parser_type} for group in groups]
+            states_by_task = await _read_task_view_states_for_records(records)
+            for record in records:
+                values = record["values"]
+                row_key = str(record["row_key"])
+                states = {
+                    domain: (value or {}).get("state", {})
+                    for domain, value in states_by_task[str(record["task_id"])].items()
+                }
+                review_flow = states.get("review") if supports_unverifiable_review(parser_type) else None
+                qmf_status = states.get("qmf")
+                residence_status = states.get("residence")
+                registration_link = states.get("registration")
+                watch_status = states.get("watch") or {}
+                address_match = states.get("address_match") or {}
+                candidate = address_match.get("candidate") or {}
+                address_match = {
+                    **address_match,
+                    "small_community_id": candidate.get("entry_id"),
+                    "small_community_name": candidate.get("name") or candidate.get("community_name", ""),
+                }
+                state = workflow.state(values)
+                item = _task_record(
+                    parser_type, row_key, values,
+                    int(record["source_count"]), bool(record["conflict"]), False, state,
+                    watch_status, review_flow=review_flow, qmf_status=qmf_status,
+                    residence_status=residence_status, registration_link=registration_link,
+                    address_match=address_match,
+                )
+                registration_state = str((registration_link or {}).get("status") or "")
+                qmf_state = str((qmf_status or {}).get("state") or "")
+                if data.status == "pending" and state == "completed":
+                    continue
+                if data.status in {"unchecked", "checked", "completed"} and state != data.status:
+                    continue
+                if data.status == "review" and not item["needs_review"]:
+                    continue
+                if data.status == "registration_review" and registration_state != "review_required":
+                    continue
+                if data.review_stage != "all" and item["review_stage"] != data.review_stage:
+                    continue
+                if data.priority != "all" and item["priority"] != data.priority:
+                    continue
+                if data.qmf_feedback_states and qmf_state not in set(data.qmf_feedback_states):
+                    continue
+                if total >= page_offset and len(output) < data.page_size:
+                    output.append(_task_record(
+                        parser_type, row_key, values,
+                        int(record["source_count"]), bool(record["conflict"]), False, state,
+                        watch_status, "", qmf_status=qmf_status if state == "completed" else None,
+                        residence_status=residence_status, registration_link=registration_link,
+                        review_flow=review_flow, address_match=address_match,
+                    ))
+                total += 1
+    return {
+        "data": output,
+        "total": total,
+        "page": data.page,
+        "page_size": data.page_size,
+        "source_ready": True,
+        "message": "",
+        "facets": facets,
+        "priority_labels": PRIORITY_LABELS,
+        "filters": {
+            "scope": data.scope,
+            "status": data.status,
+            "review_stage": data.review_stage,
+            "communities": data.communities,
+            "inspectors": data.inspectors,
+            "watch_categories": data.watch_categories,
+            "qmf_feedback_states": data.qmf_feedback_states,
+            "priority": data.priority,
+            "sort": "stable_group_token",
             "keyword_present": bool(data.keyword.strip()),
         },
     }
@@ -2531,6 +4209,41 @@ async def get_mobile_task_analysis_filter_options(
         review_stage=review_stage,
         communities=community,
     )
+    if settings.TASK_READ_MODEL_ENABLED:
+        if review_stage not in {"all", "initial_pending", "initial_extension", "deep_pending", "deep_extension"}:
+            raise HTTPException(400, "研判阶段无效")
+        merged = {
+            "communities": [], "inspectors": [], "watch_categories": [],
+            "small_communities": [], "match_statuses": [], "results": [],
+            "assignment": {"enabled": False, "community_aliases": {},
+                           "inspectors_by_community": {}},
+        }
+        for current_type in parser_types:
+            parser = get_parser(current_type)
+            async for groups in _iter_task_read_model_group_pages(
+                conn, parser=parser, context=context, scope="all",
+                filters={}, keyword="",
+                state_filters=(
+                    {"review.state": [review_stage]}
+                    if review_stage != "all" else None
+                ),
+            ):
+                records = [{**group, "parser_type": current_type} for group in groups]
+                batch = await _mobile_filter_options_from_read_model(
+                    conn, current_type, records, context, user,
+                    communities=community,
+                    review_stage=review_stage,
+                    include_assignment_metadata=False,
+                )
+                _merge_mobile_filter_option_batches(merged, batch)
+        metadata = await _mobile_filter_options_from_read_model(
+            conn, parser_types[0], [], context, user,
+        )
+        merged["assignment"] = metadata["assignment"]
+        return {
+            "source_ready": True,
+            **merged,
+        }
     async with conn.cursor() as cur:
         ready = all([
             await _task_source_ready(cur, value)
@@ -2679,6 +4392,74 @@ async def get_mobile_task_filter_options(
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入手机任务工作台")
     context = await _flow_context(conn, user)
+    if settings.TASK_READ_MODEL_ENABLED:
+        options = {
+            "communities": [], "small_communities": [], "match_statuses": [],
+            "results": [], "inspectors": [], "watch_categories": [],
+            "assignment": {"enabled": False, "community_aliases": {},
+                           "inspectors_by_community": {}},
+        }
+        parser = get_parser(parser_type)
+        async for groups in _iter_task_read_model_group_pages(
+            conn, parser=parser, context=context, scope=scope,
+            filters=_task_index_filters(parser_type, communities=community),
+            keyword="",
+            state_filters=(
+                {"review.state": [review_stage]}
+                if review_stage != "all" and supports_unverifiable_review(parser_type)
+                else None
+            ),
+        ):
+            records = [{**group, "parser_type": parser_type} for group in groups]
+            batch = await _mobile_filter_options_from_read_model(
+                conn, parser_type, records, context, user,
+                communities=community,
+                small_communities=small_community,
+                match_statuses=match_status,
+                results=result,
+                review_stage=review_stage,
+                include_assignment_metadata=False,
+            )
+            _merge_mobile_filter_option_batches(options, batch)
+        if small_community or match_status:
+            scoped_options = {
+                "communities": [], "small_communities": [], "match_statuses": [],
+                "results": [], "inspectors": [], "watch_categories": [],
+                "assignment": {"enabled": False, "community_aliases": {},
+                               "inspectors_by_community": {}},
+            }
+            selected_state_filters = {
+                **({"address_match.small_community_name": small_community}
+                   if small_community else {}),
+                **({"address_match.status": match_status}
+                   if match_status else {}),
+                **({"review.state": [review_stage]}
+                   if review_stage != "all" and supports_unverifiable_review(parser_type)
+                   else {}),
+            }
+            async for groups in _iter_task_read_model_group_pages(
+                conn, parser=parser, context=context, scope=scope,
+                filters=_task_index_filters(parser_type, communities=community),
+                keyword="", state_filters=selected_state_filters,
+            ):
+                records = [{**group, "parser_type": parser_type} for group in groups]
+                batch = await _mobile_filter_options_from_read_model(
+                    conn, parser_type, records, context, user,
+                    communities=community,
+                    small_communities=small_community,
+                    match_statuses=match_status,
+                    results=result,
+                    review_stage=review_stage,
+                    include_assignment_metadata=False,
+                )
+                _merge_mobile_filter_option_batches(scoped_options, batch)
+            options["results"] = scoped_options["results"]
+            options["inspectors"] = scoped_options["inspectors"]
+        metadata = await _mobile_filter_options_from_read_model(
+            conn, parser_type, [], context, user,
+        )
+        options["assignment"] = metadata["assignment"]
+        return {"source_ready": True, **options}
     async with conn.cursor() as cur:
         if not await _task_source_ready(cur, parser_type):
             return {
@@ -2761,13 +4542,20 @@ async def select_mobile_tasks_for_assignment(
     user: dict = Depends(get_current_user),
     conn=Depends(get_db),
 ):
+    if settings.TASK_READ_MODEL_ENABLED:
+        return await _select_mobile_tasks_for_assignment_from_read_model(
+            parser_type, data, user, conn,
+        )
     """Resolve every currently eligible task for the complete filter result."""
+    _require_legacy_read_model_disabled()
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
     user = _require_task_edit_user(user)
     context = await _flow_context(conn, user)
     if not _can_assign_tasks(context):
         raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
+    if data.scope == "all" and not context.get("admin_mode"):
+        raise HTTPException(403, "组员和组长只能查看本人或本社区任务")
 
     where_sql, query_params = _task_where(context, parser_type, data)
     assignment_source_condition = "TRIM(COALESCE(projection.community,''))<>''"
@@ -2833,6 +4621,311 @@ async def select_mobile_tasks_for_assignment(
     }
 
 
+async def _iter_assignment_read_model_groups(
+    parser_type: str,
+    conn,
+    context: dict,
+    *,
+    scope: FlowScope,
+    filters: dict[str, list[str]] | None = None,
+    state_filters: dict[str, list[str]] | None = None,
+    keyword: str = "",
+):
+    """Yield verified canonical task groups in bounded Redis pages."""
+    parser = get_parser(parser_type)
+    communities = context.get("community_values")
+    if communities is not None and not communities:
+        return
+    query_filters = {field: list(values) for field, values in (filters or {}).items() if values}
+    inspector = str(context.get("name") or "").strip()
+    if scope == "mine":
+        inspectors = query_filters.get("核查人")
+        if inspectors:
+            query_filters["核查人"] = [
+                value for value in inspectors
+                if value.strip().casefold() == inspector.casefold()
+            ]
+            if not query_filters["核查人"]:
+                return
+        elif inspector:
+            query_filters["核查人"] = [inspector]
+        else:
+            return
+
+    run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+    secret = str(settings.TASK_EVENT_ENCRYPTION_KEY or "")
+    if not run_id or len(secret.encode("utf-8")) < 32:
+        raise HTTPException(503, {"error": "projection_pending"})
+    try:
+        import redis.asyncio as redis
+        from services.task_read_model import (
+            query_task_read_model_group_ids,
+            read_task_read_model_group_records,
+            require_task_read_model_ready,
+        )
+
+        client = redis.from_url(
+            settings.REDIS_URL, decode_responses=True,
+            socket_connect_timeout=3, socket_timeout=5,
+        )
+        try:
+            await client.ping()
+            await require_task_read_model_ready(client, settings.APP_ENVIRONMENT, run_id)
+            total = None
+            offset = 0
+            page_size = 400
+            allowed_set = None if communities is None else set(communities)
+            needle = str(keyword or "").strip().casefold()
+            while total is None or offset < total:
+                page = await query_task_read_model_group_ids(
+                    client, settings.APP_ENVIRONMENT, run_id, parser.table_name,
+                    query_filters, communities,
+                    keyword if len(needle) >= 2 else None,
+                    offset, page_size, state_filters=state_filters,
+                )
+                page_total = page.get("total")
+                tokens = page.get("group_tokens")
+                if (type(page_total) is not int or page_total < 0
+                        or not isinstance(tokens, list)
+                        or len(tokens) != min(page_size, max(0, page_total - offset))):
+                    raise ValueError("assignment group page contract invalid")
+                if total is None:
+                    total = page_total
+                elif total != page_total:
+                    raise ValueError("assignment group total changed")
+                if not tokens:
+                    break
+                groups = await read_task_read_model_group_records(
+                    client, settings.APP_ENVIRONMENT, run_id, parser.table_name, tokens,
+                )
+                if not isinstance(groups, list) or len(groups) != len(tokens):
+                    raise ValueError("assignment group page mismatch")
+                source_entries = []
+                candidate_groups = []
+                for group in groups:
+                    sources = group.get("sources")
+                    canonical = group.get("values")
+                    row_key = group.get("row_key")
+                    if (not isinstance(sources, list) or not sources
+                            or not isinstance(canonical, dict)
+                            or not isinstance(row_key, str)
+                            or parser.make_row_key(canonical) != row_key
+                            or canonical != sources[0].get("values")
+                            or group.get("source_count") != len(sources)
+                            or type(group.get("conflict")) is not bool):
+                        raise ValueError("assignment group identity mismatch")
+                    ordered = sorted(
+                        sources, key=lambda source: (int(source.get("source_id") or 0),
+                                                     str(source.get("task_id") or "")),
+                    )
+                    if sources != ordered:
+                        raise ValueError("assignment group canonical order mismatch")
+                    if allowed_set is not None and any(
+                        parser.community_value(source.get("values") or {}).strip() not in allowed_set
+                        for source in sources
+                    ):
+                        raise ValueError("assignment group scope mismatch")
+                    if scope == "mine" and any(
+                        str(source.get("values", {}).get("核查人") or "").strip().casefold()
+                        != inspector.casefold() for source in sources
+                    ):
+                        continue
+                    if any(
+                        str(canonical.get(field, "") or "") not in accepted
+                        for field, accepted in query_filters.items()
+                    ):
+                        continue
+                    if needle and not any(
+                        needle in str(value or "").casefold() for value in canonical.values()
+                    ):
+                        continue
+                    candidate_groups.append(group)
+                    for source in sources:
+                        task_id = str(source.get("task_id") or "")
+                        table_name, separator, raw_physical = task_id.rpartition(":")
+                        source_id = source.get("source_id")
+                        revision = source.get("revision")
+                        if (not separator or table_name != parser.table_name
+                                or not raw_physical.isdigit() or int(raw_physical) < 1
+                                or type(source_id) is not int or source_id < 1
+                                or type(revision) is not int or revision < 1):
+                            raise ValueError("assignment group source invalid")
+                        source_entries.append((source_id, int(raw_physical), revision,
+                                               row_key, task_id, source))
+
+                locators: dict[int, tuple[int, int, str, str]] = {}
+                source_ids = [entry[0] for entry in source_entries]
+                for batch_start in range(0, len(source_ids), 400):
+                    batch = source_ids[batch_start:batch_start + 400]
+                    marks = ",".join(["%s"] * len(batch))
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "SELECT id,revision,physical_row,row_key,row_hash "
+                            "FROM _online_source_rows AS source WHERE parser_type=%s "
+                            "AND source.archived_at IS NULL "
+                            f"AND id IN ({marks}) "
+                            f"{active_source_sql_filter(parser_type)}",
+                            [parser_type, *batch],
+                        )
+                        for source_id, revision, physical_row, row_key, row_hash in await cur.fetchall():
+                            source_id = int(source_id)
+                            if source_id in locators:
+                                raise ValueError("assignment source locator is ambiguous")
+                            locators[source_id] = (
+                                int(revision or 0), int(physical_row), str(row_key), str(row_hash or ""),
+                            )
+                if len(locators) != len(source_entries):
+                    raise ValueError("assignment source locator is missing")
+                verified_groups = []
+                for group in candidate_groups:
+                    row_key = group["row_key"]
+                    verified_sources = []
+                    for source in group["sources"]:
+                        source_id = int(source["source_id"])
+                        expected_task_id = str(source["task_id"])
+                        table_name, _separator, raw_physical = expected_task_id.rpartition(":")
+                        locator = locators.get(source_id)
+                        if (locator is None or locator[0] != int(source["revision"])
+                                or locator[1] != int(raw_physical)
+                                or locator[2] != row_key):
+                            raise ValueError("assignment source locator mismatch")
+                        verified_sources.append({**source, "source_row_hash": locator[3]})
+                    verified_groups.append({
+                        **group, "sources": verified_sources,
+                        "canonical_source": verified_sources[0],
+                    })
+                offset += len(tokens)
+                yield verified_groups
+        finally:
+            await client.aclose()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(503, {"error": "projection_pending"}) from None
+
+
+async def _select_mobile_tasks_for_assignment_from_read_model(
+    parser_type: str,
+    data: TaskSearch,
+    user: dict,
+    conn,
+) -> dict:
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
+    if data.scope == "all" and not context.get("admin_mode"):
+        raise HTTPException(403, "组员和组长只能查看本人或本社区任务")
+    workflow = TASK_WORKFLOWS[parser_type]
+    parser = get_parser(parser_type)
+    requested_communities = set(data.communities)
+    requested_inspectors = set(data.inspectors)
+    selected: list[dict] = []
+    filters = _task_index_filters(
+        parser_type, communities=data.communities,
+        inspectors=data.inspectors, results=data.results,
+    )
+    async for group_page in _iter_assignment_read_model_groups(
+        parser_type, conn, context, scope=data.scope,
+        filters=filters,
+        state_filters={
+            **({"address_match.small_community_name": data.small_communities} if data.small_communities else {}),
+            **({"address_match.status": data.match_status} if data.match_status else {}),
+            **({"watch.category_id": [str(value) for value in data.watch_categories]} if data.watch_categories else {}),
+            **({"qmf.state": data.qmf_feedback_states} if data.qmf_feedback_states else {}),
+        },
+        keyword=data.keyword or "",
+    ):
+        candidates = []
+        for group in group_page:
+            record = {
+                **group["canonical_source"],
+                "values": group["values"], "row_key": group["row_key"],
+                "source_count": group["source_count"], "conflict": group["conflict"],
+                "sources": group["sources"],
+            }
+            values = record["values"]
+            community = parser.community_value(values).strip()
+            inspector = str(values.get("核查人") or "").strip()
+            state = workflow.state(values)
+            if requested_communities and community not in requested_communities:
+                continue
+            if requested_inspectors and inspector not in requested_inspectors:
+                continue
+            if data.results and str(values.get(workflow.result_field) or "").strip() not in set(data.results):
+                continue
+            if data.status == "pending" and state == "completed":
+                continue
+            if data.status in {"unchecked", "checked", "completed"} and state != data.status:
+                continue
+            if data.status == "review" and not workflow.needs_review(
+                values, source_count=record["source_count"], conflict=record["conflict"],
+            ):
+                continue
+            if data.review_stage != "all" and workflow.review_stage(values) != data.review_stage:
+                continue
+            if data.priority != "all" and _priority_bucket(
+                parser_type, values, record["source_count"], record["conflict"], False, state,
+            ) != data.priority:
+                continue
+            if inspector or not community or record["source_count"] != 1 or record["conflict"]:
+                continue
+            candidates.append(record)
+        states_by_task = await _read_task_view_states_for_records(candidates)
+        for record in candidates:
+            values = record["values"]
+            domains = states_by_task[str(record["task_id"])]
+            address_state = domains["address_match"]["state"]
+            candidate = address_state.get("candidate") or {}
+            address_match = {
+                **address_state,
+                "small_community_name": candidate.get("name") or candidate.get("community_name", ""),
+            }
+            if (data.small_communities and str(address_match.get("small_community_name") or "")
+                    not in set(data.small_communities)):
+                continue
+            if (data.match_status and str(address_match.get("status") or "unmatched")
+                    not in set(data.match_status)):
+                continue
+            watch_state = domains["watch"]["state"]
+            if data.watch_categories and not {
+                int(mark.get("category_id")) for mark in watch_state.get("watch_marks", [])
+                if isinstance(mark, dict) and str(mark.get("category_id", "")).isdigit()
+            }.intersection(set(data.watch_categories)):
+                continue
+            qmf_state = domains["qmf"]["state"]
+            if (data.qmf_feedback_states
+                    and str(qmf_state.get("status") or "") not in set(data.qmf_feedback_states)):
+                continue
+            selected.append(record)
+            if len(selected) > MAX_BULK_ASSIGNMENT_TASKS:
+                raise HTTPException(
+                    409,
+                    f"当前筛选可分配任务超过 {MAX_BULK_ASSIGNMENT_TASKS} 条，请继续缩小筛选范围",
+                )
+
+    async with conn.cursor() as cur:
+        assignment_context = await inspector_option_context(cur, user, assignment_only=True)
+    aliases = assignment_context["community_aliases"]
+    formal_communities = {aliases.get(
+        get_parser(parser_type).community_value(record["values"]).strip(), ""
+    ) for record in selected}
+    if "" in formal_communities:
+        raise HTTPException(403, "部分任务社区不在当前账号可分配范围内")
+    if len(formal_communities) > 1:
+        raise HTTPException(400, "请先筛选到一个社区，再全选当前筛选结果")
+    formal_community = next(iter(formal_communities), "")
+    if formal_community and not assignment_context["inspectors_by_community"].get(formal_community):
+        raise HTTPException(400, "该社区当前没有在岗组员可分配")
+    return {
+        "row_keys": [str(record["row_key"]) for record in selected],
+        "total": len(selected),
+        "community": formal_community,
+    }
+
+
 ADDRESS_MANUAL_UNMATCHED_LABELS = MANUAL_UNMATCHED_REASON_LABELS
 
 
@@ -2856,37 +4949,73 @@ async def get_mobile_task_address_match_options(
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
     context = await _flow_context(conn, user)
-    scope_where, scope_params = _scope_where(
-        context,
-        "all" if context.get("admin_mode") else "community",
-    )
-    async with conn.cursor() as cur:
-        await cur.execute(
-            f"""
-            SELECT projection.community, projection.source_count,
-                   projection.conflict, address_match.original_address,
-                   source.id, source.revision, source.row_hash,
-                   projection.small_community_id, projection.small_community_name,
-                   projection.address_match_status, projection.address_match_reason,
-                   projection.address_match_candidates, projection.source_revision,
-                   projection.values_json, address_match.manual_unmatched_reason
-            FROM _online_source_projection AS projection
-            LEFT JOIN _online_task_address_matches AS address_match
-              ON address_match.parser_type=projection.parser_type
-             AND address_match.row_key=projection.row_key
-            JOIN _online_source_rows AS source
-              ON source.parser_type=projection.parser_type
-             AND source.row_key=projection.row_key
-             AND source.archived_at IS NULL
-            WHERE projection.parser_type=%s AND projection.row_key=%s
-              AND source.spreadsheet_id=0
-              AND source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')
-              AND {scope_where}
-            ORDER BY source.id LIMIT 1
-            """,
-            (parser_type, row_key, *scope_params),
+    task = None
+    if settings.TASK_READ_MODEL_ENABLED:
+        records = await _task_read_model_records(
+            conn, parser_type, context,
+            scope="all" if context.get("admin_mode") else "community",
         )
-        task = await cur.fetchone()
+        record = next((item for item in records if item["row_key"] == row_key), None)
+        if not record:
+            raise HTTPException(404, "任务不存在或不在当前账号可查看范围内")
+        sources = record.get("sources") or []
+        if not sources:
+            raise HTTPException(503, {"error": "projection_pending"})
+        source = sources[0]
+        values = record["values"]
+        parser = get_parser(parser_type)
+        task_community_raw = parser.community_value(values).strip()
+        source_id = int(source["source_id"])
+        revision = int(source["revision"])
+        row_hash = str(source.get("source_row_hash") or "")
+        domains = await _read_task_view_states_for_records([record])
+        address_state = domains[str(record["task_id"])]["address_match"]["state"]
+        candidate = address_state.get("candidate") or {}
+        original_address = str(values.get("現住址") or values.get("地址") or "")
+        task = (
+            task_community_raw,
+            int(record["source_count"]),
+            int(bool(record["conflict"])),
+            original_address, source_id, revision, row_hash,
+            candidate.get("entry_id"), candidate.get("community_name", ""),
+            address_state.get("status", "unmatched"),
+            address_state.get("reason", ""), address_state.get("candidates", []),
+            revision, values, address_state.get("manual_unmatched_reason", ""),
+        )
+    else:
+        _require_legacy_read_model_disabled()
+        scope_where, scope_params = _scope_where(
+            context,
+            "all" if context.get("admin_mode") else "community",
+        )
+    async with conn.cursor() as cur:
+        if not settings.TASK_READ_MODEL_ENABLED:
+            await cur.execute(
+                f"""
+                SELECT projection.community, projection.source_count,
+                       projection.conflict, address_match.original_address,
+                       source.id, source.revision, source.row_hash,
+                       projection.small_community_id, projection.small_community_name,
+                       projection.address_match_status, projection.address_match_reason,
+                       projection.address_match_candidates, projection.source_revision,
+                       projection.values_json, address_match.manual_unmatched_reason
+                FROM _online_source_projection AS projection
+                LEFT JOIN _online_task_address_matches AS address_match
+                  ON address_match.parser_type=projection.parser_type
+                 AND address_match.row_key=projection.row_key
+                JOIN _online_source_rows AS source
+                  ON source.parser_type=projection.parser_type
+                 AND source.row_key=projection.row_key
+                 AND source.archived_at IS NULL
+                WHERE projection.parser_type=%s AND projection.row_key=%s
+                  AND source.spreadsheet_id=0
+                  AND source.source_kind IN ('local_table','local_dispatch','one_time_continuation_import')
+                  AND {scope_where}
+                ORDER BY source.id LIMIT 1
+                """,
+                (parser_type, row_key, *scope_params),
+            )
+            task = await cur.fetchone()
         if not task:
             raise HTTPException(404, "任务不存在或不在当前账号可查看范围内")
 
@@ -2952,24 +5081,27 @@ async def get_mobile_task_address_match_options(
         if selected and not any(int(row[0]) == int(selected[0]) for row in entries):
             entries = [selected, *entries]
 
-        await cur.execute(
-            """
-            SELECT reason_code, created_at, source_id, source_revision
-            FROM _online_task_address_unmatched_events
-            WHERE parser_type=%s AND row_key=%s
-            ORDER BY id DESC LIMIT 20
-            """,
-            (parser_type, row_key),
-        )
-        history = [
-            {
-                "reason_code": str(row[0] or ""),
-                "created_at": _iso_utc(row[1]),
-                "source_id": int(row[2]) if row[2] is not None else None,
-                "source_revision": int(row[3]) if row[3] is not None else None,
-            }
-            for row in await cur.fetchall()
-        ]
+        if settings.TASK_READ_MODEL_ENABLED:
+            history = list(address_state.get("history") or [])
+        else:
+            await cur.execute(
+                """
+                SELECT reason_code, created_at, source_id, source_revision
+                FROM _online_task_address_unmatched_events
+                WHERE parser_type=%s AND row_key=%s
+                ORDER BY id DESC LIMIT 20
+                """,
+                (parser_type, row_key),
+            )
+            history = [
+                {
+                    "reason_code": str(row[0] or ""),
+                    "created_at": _iso_utc(row[1]),
+                    "source_id": int(row[2]) if row[2] is not None else None,
+                    "source_revision": int(row[3]) if row[3] is not None else None,
+                }
+                for row in await cur.fetchall()
+            ]
 
         can_manage = _can_assign_tasks(context) and (
             has_permission(user, ONLINE_RAW_EDIT)
@@ -3101,70 +5233,132 @@ async def mark_mobile_task_address_manual_unmatched(
             annotation_key = annotation_hmac(
                 original_address, current_address, community_name
             )
-            await record_feedback_unmatched(
+            async def authorize(_command_cur, locked_source):
+                if (
+                    locked_source is None
+                    or int(locked_source["revision"]) != int(projection[5])
+                    or int(locked_source["physical_row"]) != int(projection[7])
+                ):
+                    raise HTTPException(409, "任务已发生变化，请刷新后重新标注")
+                if not context.get("admin_mode"):
+                    allowed = {
+                        str(value).strip()
+                        for value in context.get("community_values") or []
+                        if str(value).strip()
+                    }
+                    if community_name not in allowed:
+                        raise HTTPException(404, "任务不存在或不在当前账号可操作范围内")
+                else:
+                    allowed = {"*"}
+                return TaskAuthorizationResult(
+                    policy_key="online.address_match.manual_unmatched",
+                    scope_values=tuple(sorted(allowed)),
+                )
+
+            async def mutate(command_cur, _locked_source):
+                await record_feedback_unmatched(
+                    command_cur,
+                    parser_type=parser_type,
+                    row_key=row_key,
+                    address=original_address,
+                    community_name=community_name,
+                    current_address=current_address,
+                    reason_code=data.reason_code,
+                    recorded_by=int(user["id"]),
+                    source_id=int(projection[4]),
+                    source_revision=next_revision,
+                )
+                await command_cur.execute(
+                    """
+                    INSERT INTO _online_task_address_matches (
+                        parser_type, row_key, original_address,
+                        suggested_entry_id, suggested_community_id,
+                        suggested_community_name, match_status, match_score,
+                        match_method, match_reason, candidates_json,
+                        matcher_version, confirmed_entry_id, confirmed_by,
+                        confirmed_at, manual_unmatched_reason,
+                        manual_unmatched_address_hmac, manual_unmatched_by,
+                        manual_unmatched_at
+                    ) VALUES (%s,%s,%s,NULL,NULL,'','manual_unmatched',0,
+                              '人工标注',%s,JSON_ARRAY(),%s,NULL,%s,NULL,
+                              %s,%s,%s,UTC_TIMESTAMP())
+                    ON DUPLICATE KEY UPDATE
+                        original_address=VALUES(original_address),
+                        suggested_entry_id=NULL, suggested_community_id=NULL,
+                        suggested_community_name='', match_status='manual_unmatched',
+                        match_score=0, match_method='人工标注',
+                        match_reason=VALUES(match_reason), candidates_json=JSON_ARRAY(),
+                        matcher_version=VALUES(matcher_version), confirmed_entry_id=NULL,
+                        confirmed_by=VALUES(confirmed_by), confirmed_at=NULL,
+                        manual_unmatched_reason=VALUES(manual_unmatched_reason),
+                        manual_unmatched_address_hmac=VALUES(manual_unmatched_address_hmac),
+                        manual_unmatched_by=VALUES(manual_unmatched_by),
+                        manual_unmatched_at=UTC_TIMESTAMP()
+                    """,
+                    (
+                        parser_type, row_key, original_address or current_address,
+                        ADDRESS_MANUAL_UNMATCHED_LABELS[data.reason_code], MATCHER_VERSION,
+                        int(user["id"]), data.reason_code, annotation_key, int(user["id"]),
+                    ),
+                )
+                await command_cur.execute(
+                    "UPDATE _online_source_rows SET revision=%s WHERE id=%s AND revision=%s",
+                    (next_revision, int(projection[4]), int(projection[5])),
+                )
+                if command_cur.rowcount != 1:
+                    raise HTTPException(409, "任务已发生变化，请刷新后重新标注")
+                await command_cur.execute(
+                    "UPDATE _local_source_records SET revision=%s,updated_at=UTC_TIMESTAMP() "
+                    "WHERE parser_type=%s AND local_task_id=%s AND status='active' AND revision=%s",
+                    (next_revision, parser_type, int(projection[7]), int(projection[5])),
+                )
+                if command_cur.rowcount != 1:
+                    raise HTTPException(409, "本地任务来源已变化，请刷新后重新标注")
+                from services.task_view_state import (
+                    enqueue_source_task_view_state, task_view_state_events_enabled,
+                )
+                if task_view_state_events_enabled():
+                    await enqueue_source_task_view_state(
+                        command_cur, source_id=int(projection[4]), domain="address_match",
+                        state={"status": "manual_unmatched", "reason_code": data.reason_code,
+                               "matcher_version": MATCHER_VERSION},
+                        operation_id=f"address-manual-unmatched-{projection[4]}-{next_revision}",
+                    )
+                from services.business_time import get_business_date
+                from services.online_summary_updates import enqueue_online_summary_update
+                await enqueue_online_summary_update(
+                    command_cur, task_id=int(projection[7]), parser_type=parser_type,
+                    row_key=row_key, revision=next_revision,
+                    business_date=await get_business_date(command_cur),
+                    operation_id=f"address-manual-unmatched-{projection[4]}-{next_revision}",
+                )
+                await rebuild_projection_rows(command_cur, parser_type, [row_key])
+                address_match = (await _address_matches_by_rows(
+                    command_cur, parser_type, [row_key],
+                )).get(row_key)
+                return TaskMutationResult(
+                    revision=next_revision,
+                    snapshot={**source_values, "address_match": {
+                        "status": "manual_unmatched", "reason_code": data.reason_code,
+                    }},
+                    changed_fields=("small_community",),
+                    result=address_match,
+                )
+
+            command = await TaskCommandService.execute(
                 cur,
-                parser_type=parser_type,
-                row_key=row_key,
-                address=original_address,
-                community_name=community_name,
-                current_address=current_address,
-                reason_code=data.reason_code,
-                recorded_by=int(user["id"]),
-                source_id=int(projection[4]),
-                source_revision=next_revision,
-            )
-            await cur.execute(
-                """
-                INSERT INTO _online_task_address_matches (
-                    parser_type, row_key, original_address,
-                    suggested_entry_id, suggested_community_id,
-                    suggested_community_name, match_status, match_score,
-                    match_method, match_reason, candidates_json,
-                    matcher_version, confirmed_entry_id, confirmed_by,
-                    confirmed_at, manual_unmatched_reason,
-                    manual_unmatched_address_hmac, manual_unmatched_by,
-                    manual_unmatched_at
-                ) VALUES (%s,%s,%s,NULL,NULL,'','manual_unmatched',0,
-                          '人工标注',%s,JSON_ARRAY(),%s,NULL,%s,NULL,
-                          %s,%s,%s,UTC_TIMESTAMP())
-                ON DUPLICATE KEY UPDATE
-                    original_address=VALUES(original_address),
-                    suggested_entry_id=NULL, suggested_community_id=NULL,
-                    suggested_community_name='', match_status='manual_unmatched',
-                    match_score=0, match_method='人工标注',
-                    match_reason=VALUES(match_reason), candidates_json=JSON_ARRAY(),
-                    matcher_version=VALUES(matcher_version), confirmed_entry_id=NULL,
-                    confirmed_by=VALUES(confirmed_by), confirmed_at=NULL,
-                    manual_unmatched_reason=VALUES(manual_unmatched_reason),
-                    manual_unmatched_address_hmac=VALUES(manual_unmatched_address_hmac),
-                    manual_unmatched_by=VALUES(manual_unmatched_by),
-                    manual_unmatched_at=UTC_TIMESTAMP()
-                """,
-                (
-                    parser_type, row_key, original_address or current_address,
-                    ADDRESS_MANUAL_UNMATCHED_LABELS[data.reason_code], MATCHER_VERSION,
-                    int(user["id"]), data.reason_code, annotation_key, int(user["id"]),
+                spec=TaskCommandSpec(
+                    actor_id=int(user["id"]), environment=settings.APP_ENVIRONMENT,
+                    parser_type=parser_type,
+                    task_id=stable_task_id(get_parser(parser_type).table_name, int(projection[7])),
+                    source_id=int(projection[4]), action="address_conflict_resolve",
+                    event_type="online.task.changed", expected_revision=int(projection[5]),
+                    audiences=("authenticated",),
                 ),
+                authorize=authorize,
+                mutate=mutate,
             )
-            await cur.execute(
-                "UPDATE _online_source_rows SET revision=%s WHERE id=%s",
-                (next_revision, int(projection[4])),
-            )
-            await cur.execute(
-                "UPDATE _local_source_records SET revision=%s,updated_at=UTC_TIMESTAMP() "
-                "WHERE parser_type=%s AND local_task_id=%s AND status='active'",
-                (next_revision, parser_type, int(projection[7])),
-            )
-            from services.business_time import get_business_date
-            from services.online_summary_updates import enqueue_online_summary_update
-            await enqueue_online_summary_update(
-                cur, task_id=int(projection[7]), parser_type=parser_type,
-                row_key=row_key, revision=next_revision,
-                business_date=await get_business_date(cur),
-                operation_id=f"address-manual-unmatched-{projection[4]}-{next_revision}",
-            )
-            await rebuild_projection_rows(cur, parser_type, [row_key])
-            result = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)
+            result = command.result
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -3208,7 +5402,8 @@ async def confirm_mobile_task_address_match(
                 f"""
                 SELECT projection.community, projection.source_count,
                        projection.conflict, address_match.original_address,
-                       source.id, source.revision, source.row_hash, source.physical_row
+                       source.id, source.revision, source.row_hash, source.physical_row,
+                       source.values_json
                 FROM _online_source_projection AS projection
                 LEFT JOIN _online_task_address_matches AS address_match
                   ON address_match.parser_type=projection.parser_type
@@ -3257,75 +5452,138 @@ async def confirm_mobile_task_address_match(
             entry_community = aliases.get(str(entry[3] or "").strip(), "")
             if not task_community or not entry_community or task_community != entry_community:
                 raise HTTPException(409, "所选小区与任务正式社区不一致，请先处理地址冲突")
-            await record_feedback_confirmation(
-                cur,
-                parser_type=parser_type,
-                row_key=row_key,
-                address=str(projection[3] or ""),
-                community_name=str(entry[3] or ""),
-                community_id=int(entry[2]),
-                confirmed_entry_id=int(entry[0]),
-                confirmed_by=int(user["id"]),
-            )
-            await cur.execute(
-                """
-                INSERT INTO _online_task_address_matches (
-                    parser_type, row_key, original_address,
-                    suggested_entry_id, suggested_community_id,
-                    suggested_community_name, match_status, match_score,
-                    match_method, match_reason, candidates_json,
-                    matcher_version, confirmed_entry_id, confirmed_by,
-                    confirmed_at
-                )
-                SELECT parser_type, row_key, '', %s, %s, %s,
-                       'confirmed', 1, '人工确认', '管理员已确认小区归属',
-                       JSON_ARRAY(), %s, %s, %s, UTC_TIMESTAMP()
-                FROM _online_source_projection
-                WHERE parser_type=%s AND row_key=%s
-                ON DUPLICATE KEY UPDATE
-                    suggested_entry_id=VALUES(suggested_entry_id),
-                    suggested_community_id=VALUES(suggested_community_id),
-                    suggested_community_name=VALUES(suggested_community_name),
-                    match_status='confirmed', match_score=1,
-                    match_method='人工确认',
-                    match_reason='管理员已确认小区归属',
-                    matcher_version=VALUES(matcher_version),
-                    confirmed_entry_id=VALUES(confirmed_entry_id),
-                    confirmed_by=VALUES(confirmed_by),
-                    confirmed_at=VALUES(confirmed_at),
-                    manual_unmatched_reason=NULL,
-                    manual_unmatched_address_hmac=NULL,
-                    manual_unmatched_by=NULL,
-                    manual_unmatched_at=NULL
-                """,
-                (
-                    int(entry[0]), int(entry[2]), str(entry[3] or ""),
-                    MATCHER_VERSION, int(entry[0]), int(user["id"]),
-                    parser_type, row_key,
-                ),
-            )
-            # A confirmation changes task metadata even when source values
-            # are unchanged. Advance the same fence used by subsequent edits.
             next_revision = int(projection[5]) + 1
-            await cur.execute(
-                "UPDATE _online_source_rows SET revision=%s WHERE id=%s",
-                (next_revision, int(projection[4])),
+
+            async def authorize(_command_cur, locked_source):
+                if (
+                    locked_source is None
+                    or int(locked_source["revision"]) != int(projection[5])
+                    or int(locked_source["physical_row"]) != int(projection[7])
+                ):
+                    raise HTTPException(409, "任务已发生变化，请刷新后重新确认小区")
+                if not context.get("admin_mode"):
+                    allowed = {
+                        str(value).strip()
+                        for value in context.get("community_values") or []
+                        if str(value).strip()
+                    }
+                    if task_community not in allowed:
+                        raise HTTPException(404, "任务不存在或不在当前账号可操作范围内")
+                else:
+                    allowed = {"*"}
+                return TaskAuthorizationResult(
+                    policy_key="online.address_match.confirm",
+                    scope_values=tuple(sorted(allowed)),
+                )
+
+            async def mutate(command_cur, _locked_source):
+                await record_feedback_confirmation(
+                    command_cur,
+                    parser_type=parser_type,
+                    row_key=row_key,
+                    address=str(projection[3] or ""),
+                    community_name=str(entry[3] or ""),
+                    community_id=int(entry[2]),
+                    confirmed_entry_id=int(entry[0]),
+                    confirmed_by=int(user["id"]),
+                )
+                await command_cur.execute(
+                    """
+                    INSERT INTO _online_task_address_matches (
+                        parser_type, row_key, original_address,
+                        suggested_entry_id, suggested_community_id,
+                        suggested_community_name, match_status, match_score,
+                        match_method, match_reason, candidates_json,
+                        matcher_version, confirmed_entry_id, confirmed_by,
+                        confirmed_at
+                    )
+                    SELECT parser_type, row_key, '', %s, %s, %s,
+                           'confirmed', 1, '人工确认', '管理员已确认小区归属',
+                           JSON_ARRAY(), %s, %s, %s, UTC_TIMESTAMP()
+                    FROM _online_source_projection
+                    WHERE parser_type=%s AND row_key=%s
+                    ON DUPLICATE KEY UPDATE
+                        suggested_entry_id=VALUES(suggested_entry_id),
+                        suggested_community_id=VALUES(suggested_community_id),
+                        suggested_community_name=VALUES(suggested_community_name),
+                        match_status='confirmed', match_score=1,
+                        match_method='人工确认',
+                        match_reason='管理员已确认小区归属',
+                        matcher_version=VALUES(matcher_version),
+                        confirmed_entry_id=VALUES(confirmed_entry_id),
+                        confirmed_by=VALUES(confirmed_by),
+                        confirmed_at=VALUES(confirmed_at),
+                        manual_unmatched_reason=NULL,
+                        manual_unmatched_address_hmac=NULL,
+                        manual_unmatched_by=NULL,
+                        manual_unmatched_at=NULL
+                    """,
+                    (
+                        int(entry[0]), int(entry[2]), str(entry[3] or ""),
+                        MATCHER_VERSION, int(entry[0]), int(user["id"]),
+                        parser_type, row_key,
+                    ),
+                )
+                await command_cur.execute(
+                    "UPDATE _online_source_rows SET revision=%s WHERE id=%s AND revision=%s",
+                    (next_revision, int(projection[4]), int(projection[5])),
+                )
+                if command_cur.rowcount != 1:
+                    raise HTTPException(409, "任务已发生变化，请刷新后重新确认小区")
+                await command_cur.execute(
+                    "UPDATE _local_source_records SET revision=%s,updated_at=UTC_TIMESTAMP() "
+                    "WHERE parser_type=%s AND local_task_id=%s AND status='active' AND revision=%s",
+                    (next_revision, parser_type, int(projection[7]), int(projection[5])),
+                )
+                if command_cur.rowcount != 1:
+                    raise HTTPException(409, "本地任务来源已变化，请刷新后重新确认小区")
+                from services.task_view_state import (
+                    enqueue_source_task_view_state, task_view_state_events_enabled,
+                )
+                if task_view_state_events_enabled():
+                    await enqueue_source_task_view_state(
+                        command_cur, source_id=int(projection[4]), domain="address_match",
+                        state={"status": "confirmed", "small_community_id": int(entry[0]),
+                               "small_community_name": str(entry[1] or ""),
+                               "community_id": int(entry[2]), "matcher_version": MATCHER_VERSION},
+                        operation_id=f"address-confirm-{projection[4]}-{next_revision}",
+                    )
+                from services.business_time import get_business_date
+                from services.online_summary_updates import enqueue_online_summary_update
+                await enqueue_online_summary_update(
+                    command_cur, task_id=int(projection[7]), parser_type=parser_type,
+                    row_key=row_key, revision=next_revision,
+                    business_date=await get_business_date(command_cur),
+                    operation_id=f"address-confirm-{projection[4]}-{next_revision}",
+                )
+                await rebuild_projection_rows(command_cur, parser_type, [row_key])
+                address_match = (await _address_matches_by_rows(
+                    command_cur, parser_type, [row_key],
+                )).get(row_key)
+                return TaskMutationResult(
+                    revision=next_revision,
+                    snapshot={**json_value(projection[8], {}), "address_match": {
+                        "status": "confirmed", "small_community_id": int(entry[0]),
+                        "community_id": int(entry[2]),
+                    }},
+                    changed_fields=("small_community",),
+                    result=address_match,
+                )
+
+            command = await TaskCommandService.execute(
+                cur,
+                spec=TaskCommandSpec(
+                    actor_id=int(user["id"]), environment=settings.APP_ENVIRONMENT,
+                    parser_type=parser_type,
+                    task_id=stable_task_id(get_parser(parser_type).table_name, int(projection[7])),
+                    source_id=int(projection[4]), action="address_confirm",
+                    event_type="online.task.changed", expected_revision=int(projection[5]),
+                    audiences=("authenticated",),
+                ),
+                authorize=authorize,
+                mutate=mutate,
             )
-            await cur.execute(
-                "UPDATE _local_source_records SET revision=%s,updated_at=UTC_TIMESTAMP() "
-                "WHERE parser_type=%s AND local_task_id=%s AND status='active'",
-                (next_revision, parser_type, int(projection[7])),
-            )
-            from services.business_time import get_business_date
-            from services.online_summary_updates import enqueue_online_summary_update
-            await enqueue_online_summary_update(
-                cur, task_id=int(projection[7]), parser_type=parser_type,
-                row_key=row_key, revision=next_revision,
-                business_date=await get_business_date(cur),
-                operation_id=f"address-confirm-{projection[4]}-{next_revision}",
-            )
-            await rebuild_projection_rows(cur, parser_type, [row_key])
-            result = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)
+            result = command.result
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -3469,6 +5727,11 @@ async def get_mobile_task_assignment_workbench(
     out of the SQL path; the projection now stores its normalized sort key.
     """
     started_at = time.monotonic()
+    if settings.TASK_READ_MODEL_ENABLED:
+        return await _get_mobile_task_assignment_workbench_from_read_model(
+            parser_type, user, conn, started_at=started_at,
+        )
+    _require_legacy_read_model_disabled()
     if parser_type not in TASK_WORKFLOWS:
         raise HTTPException(400, "该业务尚未接入任务工作台")
     user = _require_task_edit_user(user)
@@ -3590,6 +5853,116 @@ async def get_mobile_task_assignment_workbench(
     }
 
 
+async def _get_mobile_task_assignment_workbench_from_read_model(
+    parser_type: str,
+    user: dict,
+    conn,
+    *,
+    started_at: float,
+) -> dict:
+    if parser_type not in TASK_WORKFLOWS:
+        raise HTTPException(400, "该业务尚未接入任务工作台")
+    user = _require_task_edit_user(user)
+    context = await _flow_context(conn, user)
+    if not _can_assign_tasks(context):
+        raise HTTPException(403, "只有组长及有权管理任务的上级岗位可以批量分配核查人")
+    scope: FlowScope = "all" if context.get("admin_mode") else "community"
+    workflow = TASK_WORKFLOWS[parser_type]
+    parser = get_parser(parser_type)
+    async with conn.cursor() as cur:
+        assignment_context = await inspector_option_context(
+            cur, user, assignment_only=True,
+        )
+    aliases = assignment_context["community_aliases"]
+    inspectors_by_community = assignment_context["inspectors_by_community"]
+    items: list[dict[str, str]] = []
+    community_counts: dict[str, int] = {}
+    available_total = 0
+    displayed: list[dict] = []
+    assigned_count_rows: dict[str, dict[str, int]] = {}
+    async for group_page in _iter_assignment_read_model_groups(
+        parser_type, conn, context, scope=scope,
+    ):
+        for group in group_page:
+            record = {
+                **group["canonical_source"],
+                "values": group["values"], "row_key": group["row_key"],
+                "source_count": group["source_count"], "conflict": group["conflict"],
+                "sources": group["sources"],
+            }
+            values = record["values"]
+            community = parser.community_value(values).strip()
+            if not community or record["source_count"] != 1 or record["conflict"]:
+                continue
+            assigned = str(values.get("核查人") or "").strip()
+            state = workflow.state(values)
+            if assigned:
+                if state != "completed":
+                    formal = aliases.get(community, "") or community
+                    counts = assigned_count_rows.setdefault(formal, {})
+                    counts[assigned] = counts.get(assigned, 0) + 1
+                continue
+            if state == "completed":
+                continue
+            available_total += 1
+            if len(displayed) < MAX_BULK_ASSIGNMENT_TASKS:
+                summary = workflow.summary(values)
+                address = str(summary.get("address") or "未填写地址").strip()
+                displayed.append({
+                    **record,
+                    "community_raw": community,
+                    "address": address,
+                    "source": str(summary.get("source") or workflow.label).strip(),
+                })
+    states_by_task = await _read_task_view_states_for_records(displayed)
+    for record in displayed:
+        raw_community = record["community_raw"]
+        community = aliases.get(raw_community, "") or raw_community or "社区未识别"
+        community_counts[community] = community_counts.get(community, 0) + 1
+        address_state = states_by_task[str(record["task_id"])]["address_match"]["state"]
+        candidate = address_state.get("candidate") or {}
+        items.append({
+            "row_key": str(record["row_key"]),
+            "community": community,
+            "small_community": str(candidate.get("name") or candidate.get("community_name") or ""),
+            "match_status": str(address_state.get("status") or "unmatched"),
+            "source": record["source"],
+            "address": record["address"],
+        })
+    assigned_totals = {
+        community: sum(counts.values())
+        for community, counts in assigned_count_rows.items()
+    }
+    all_communities = set(community_counts) | set(assigned_totals)
+    return {
+        "data": items,
+        "total": available_total,
+        "displayed_total": len(items),
+        "limited": available_total > len(items),
+        "limit": MAX_BULK_ASSIGNMENT_TASKS,
+        "communities": [
+            {"value": community, "label": community,
+             "count": community_counts.get(community, 0),
+             "assigned_count": assigned_totals.get(community, 0)}
+            for community in sorted(all_communities)
+        ],
+        "inspectors_by_community": {
+            community: list(inspectors_by_community.get(community) or [])
+            for community in all_communities
+        },
+        "inspector_counts_by_community": {
+            community: {
+                inspector: assigned_count_rows.get(community, {}).get(inspector, 0)
+                for inspector in inspectors_by_community.get(community) or []
+            }
+            for community in all_communities
+        },
+        "assigned_totals_by_community": assigned_totals,
+        "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+        "query_mode": "redis_read_model",
+    }
+
+
 @router.get("/{parser_type}")
 async def list_mobile_tasks(
     parser_type: str,
@@ -3654,32 +6027,124 @@ async def _mobile_task_detail_data(
     detail_scope: FlowScope = "all" if context["admin_mode"] else "community"
     scope_where, scope_params = _scope_where(context, detail_scope)
     async with conn.cursor() as cur:
-        if not await _task_source_ready(cur, parser_type):
-            raise HTTPException(
-                409,
-                "本地任务来源尚未建立"
-                if local_data_source_enabled()
-                else "来源定位尚未建立，请等待一次正常同步",
+        if settings.TASK_READ_MODEL_ENABLED:
+            await cur.execute(
+                f"""
+                SELECT id, physical_row, revision, row_hash,
+                       spreadsheet_id, sheet_id
+                FROM _online_source_rows AS source
+                WHERE source.parser_type=%s AND source.row_key=%s
+                  AND source.archived_at IS NULL
+                  {active_source_sql_filter(parser_type, 'source')}
+                ORDER BY spreadsheet_id, physical_row
+                """,
+                (parser_type, row_key),
             )
-        await cur.execute(
-            f"""
-            SELECT values_json, source_count, conflict, pending_state, task_state
-            FROM _online_source_projection AS projection
-            WHERE projection.parser_type=%s AND projection.row_key=%s
-              AND {scope_where}
-            """,
-            (parser_type, row_key, *scope_params),
-        )
-        parent_row = await cur.fetchone()
-        if not parent_row:
-            raise HTTPException(404, "任务不存在或不属于当前社区")
-        parent_values = json_value(parent_row[0], {})
-        review_by_row = await review_flows_by_rows(cur, [(parser_type, row_key)])
-        review_flow = review_by_row.get((parser_type, row_key))
-        if review_flow:
-            review_flow["events"] = await review_events_for_flow(cur, int(review_flow["id"]))
+            locator_rows = await cur.fetchall()
+            if not locator_rows:
+                raise HTTPException(404, "任务不存在或不属于当前社区")
+            snapshot_rows = await _read_task_snapshots_for_source_rows(
+                parser_type,
+                [(int(row[0]), int(row[1]), int(row[2] or 0)) for row in locator_rows],
+            )
+            if len(snapshot_rows) != len(locator_rows):
+                raise HTTPException(503, {"error": "projection_pending"})
+            visible_sources = [
+                row for row in locator_rows
+                if _source_in_community(
+                    parser, snapshot_rows[int(row[0])], context["community_values"],
+                )
+            ]
+            if not visible_sources:
+                raise HTTPException(404, "任务不存在或不属于当前社区")
+            raw_sources = [
+                (
+                    int(row[0]), int(row[1]), None, None, int(row[2] or 0),
+                    str(row[3] or ""), int(row[4] or 0), str(row[5] or ""),
+                )
+                for row in visible_sources
+            ]
+            read_model_values = {
+                int(row[0]): snapshot_rows[int(row[0])] for row in visible_sources
+            }
+            visible_values = list(read_model_values.values())
+            first_values = visible_values[0]
+            conflict = len(locator_rows) != len(visible_values) or any(
+                stable_json(values) != stable_json(first_values)
+                for values in visible_values[1:]
+            )
+            parent_row = (
+                None, len(locator_rows), int(conflict), "",
+                TASK_WORKFLOWS[parser_type].state(first_values),
+            )
+            parent_values = dict(first_values)
+        else:
+            if not await _task_source_ready(cur, parser_type):
+                raise HTTPException(
+                    409,
+                    "本地任务来源尚未建立"
+                    if local_data_source_enabled()
+                    else "来源定位尚未建立，请等待一次正常同步",
+                )
+            await cur.execute(
+                f"""
+                SELECT values_json, source_count, conflict, pending_state, task_state
+                FROM _online_source_projection AS projection
+                WHERE projection.parser_type=%s AND projection.row_key=%s
+                  AND {scope_where}
+                """,
+                (parser_type, row_key, *scope_params),
+            )
+            parent_row = await cur.fetchone()
+            if not parent_row:
+                raise HTTPException(404, "任务不存在或不属于当前社区")
+            parent_values = json_value(parent_row[0], {})
+            await cur.execute(
+                f"""
+                SELECT id, physical_row, values_json, cell_meta_json,
+                       revision, row_hash, spreadsheet_id, sheet_id
+                FROM _online_source_rows AS source
+                WHERE source.parser_type=%s AND source.row_key=%s
+                  AND source.archived_at IS NULL
+                  {active_source_sql_filter(parser_type, 'source')}
+                ORDER BY spreadsheet_id, physical_row
+                """,
+                (parser_type, row_key),
+            )
+            raw_sources = await cur.fetchall()
+            read_model_values: dict[int, dict] = {}
+        domain_states: dict = {}
+        if settings.TASK_READ_MODEL_ENABLED:
+            state_tasks = [
+                {"task_id": stable_task_id(parser.table_name, int(row[1])),
+                 "revision": int(row[4] or 0)}
+                for row in raw_sources
+            ]
+            all_states = await _read_task_view_states_for_records(state_tasks)
+            if state_tasks:
+                domain_states = all_states[state_tasks[0]["task_id"]]
+            review_state = (domain_states.get("review") or {}).get("state", {})
+            review_flow = (
+                {**review_state, "id": int(review_state["flow_id"])}
+                if review_state.get("flow_id") else None
+            )
+            if review_flow:
+                review_flow["events"] = await review_events_for_flow(
+                    cur, int(review_flow["id"]),
+                )
+        else:
+            review_by_row = await review_flows_by_rows(cur, [(parser_type, row_key)])
+            review_flow = review_by_row.get((parser_type, row_key))
+            if review_flow:
+                review_flow["events"] = await review_events_for_flow(cur, int(review_flow["id"]))
         if not analysis_mode:
-            dependency_blocked = await online_task_blocked(cur, parser_type, row_key)
+            if settings.TASK_READ_MODEL_ENABLED:
+                graph_state = (domain_states.get("task_graph") or {}).get("state")
+                if not isinstance(graph_state, dict):
+                    raise HTTPException(503, {"error": "projection_pending"})
+                dependency_blocked = graph_state.get("blocked") is True
+            else:
+                dependency_blocked = await online_task_blocked(cur, parser_type, row_key)
         if analysis_mode and not (
             review_flow and review_flow.get("state") in {
                 INITIAL_PENDING, INITIAL_EXTENSION, DEEP_PENDING, DEEP_EXTENSION,
@@ -3688,21 +6153,10 @@ async def _mobile_task_detail_data(
             "waiting_analysis", "analyzed"
         }:
             raise HTTPException(404, "该任务当前不属于网格核查研判范围")
-        await cur.execute(
-            f"""
-            SELECT id, physical_row, values_json, cell_meta_json,
-                   revision, row_hash, spreadsheet_id, sheet_id
-            FROM _online_source_rows AS source
-            WHERE source.parser_type=%s AND source.row_key=%s
-              AND source.archived_at IS NULL
-              {active_source_sql_filter(parser_type)}
-            ORDER BY spreadsheet_id, physical_row
-            """,
-            (parser_type, row_key),
-        )
-        raw_sources = await cur.fetchall()
-        local_changes = await load_local_changes(
-            cur, [int(row[0]) for row in raw_sources]
+        local_changes = (
+            {}
+            if settings.TASK_READ_MODEL_ENABLED
+            else await load_local_changes(cur, [int(row[0]) for row in raw_sources])
         )
         enabled = local_data_source_enabled() or await _writeback_enabled(cur)
         assignment_context = (
@@ -3713,29 +6167,40 @@ async def _mobile_task_detail_data(
             )
             else None
         )
-        watch_by_row = await task_watch_payload(cur, parser_type, [row_key]) \
-            if settings.REGISTRY_FEATURE_ENABLED else {}
-        qmf_by_row = await _qmf_status_by_rows(
-            cur,
-            parser_type,
-            [(row_key, parent_row[0])],
-        )
-        residence_by_row = await residence_status_by_rows(
-            cur,
-            parser_type,
-            [(row_key, parent_row[0])],
-        )
-        registration_by_row = await registration_links_by_rows(
-            cur,
-            parser_type,
-            [row_key],
-        )
+        if settings.TASK_READ_MODEL_ENABLED:
+            watch_by_row = {
+                row_key: (domain_states.get("watch") or {}).get("state", {})
+            }
+            qmf_by_row = {
+                row_key: (domain_states.get("qmf") or {}).get("state", {})
+            }
+            residence_by_row = {
+                row_key: (domain_states.get("residence") or {}).get("state", {})
+            }
+            registration_by_row = {
+                row_key: (domain_states.get("registration") or {}).get("state", {})
+            }
+            address_state = (domain_states.get("address_match") or {}).get("state", {})
+            address_candidate = address_state.get("candidate") or {}
+            address_match = {
+                **address_state,
+                "small_community_id": address_candidate.get("entry_id"),
+                "small_community_name": address_candidate.get("name") or address_candidate.get("community_name", ""),
+            }
+        else:
+            watch_by_row = await task_watch_payload(
+                cur, parser_type, [row_key],
+                task_values_by_row={row_key: parent_values},
+            ) if settings.REGISTRY_FEATURE_ENABLED else {}
+            qmf_by_row = await _qmf_status_by_rows(
+                cur, parser_type, [(row_key, stable_json(parent_values))],
+            )
+            residence_by_row = await residence_status_by_rows(
+                cur, parser_type, [(row_key, stable_json(parent_values))],
+            )
+            registration_by_row = await registration_links_by_rows(cur, parser_type, [row_key])
+            address_match = (await _address_matches_by_rows(cur, parser_type, [row_key])).get(row_key)
         registration_link = registration_by_row.get(row_key)
-        address_match = (await _address_matches_by_rows(
-            cur,
-            parser_type,
-            [row_key],
-        )).get(row_key)
 
         sources = []
         for (
@@ -3749,8 +6214,10 @@ async def _mobile_task_detail_data(
             sheet_id,
         ) in raw_sources:
             source_changes = local_changes.get(int(source_id), [])
-            values = overlay_local_values(
-                json_value(raw_values, {}), source_changes
+            values = (
+                read_model_values[int(source_id)]
+                if settings.TASK_READ_MODEL_ENABLED
+                else overlay_local_values(json_value(raw_values, {}), source_changes)
             )
             # 同一业务主键偶尔会跨社区重复。父投影可以用于定位任务，
             # 但详情绝不能因此暴露其他社区的腾讯原始行。
@@ -3882,12 +6349,8 @@ async def _mobile_task_detail_data(
     workflow = TASK_WORKFLOWS[parser_type]
     qmf_config = await load_qmf_config(conn)
     qmf_allowed = has_permission(user, QMF_REGISTRATION_EXECUTE)
-    effective_source_count = len(sources)
-    effective_conflict = (
-        effective_source_count > 1
-        if local_data_source_enabled()
-        else bool(parent_row[2])
-    )
+    effective_source_count = int(parent_row[1] or 0)
+    effective_conflict = bool(parent_row[2])
     qmf_preview = preview_capability(
         allowed=qmf_allowed,
         parser_type=parser_type,
@@ -4007,8 +6470,10 @@ async def _mobile_task_inline_editors_data(
                 "reason": str(exc.detail),
             }
             continue
-        if len(detail["sources"]) != 1 or (
-            not local_data_source_enabled() and detail["task"]["conflict"]
+        if (
+            len(detail["sources"]) != 1
+            or int(detail["task"].get("source_count") or 0) != 1
+            or bool(detail["task"].get("conflict"))
         ):
             items[row_key] = {
                 "available": False,
@@ -4273,6 +6738,80 @@ async def get_mobile_task_detail(
 
 async def _mobile_task_save_context(conn, parser_type: str, row_key: str) -> dict:
     """Load only the task state changed by an incremental save."""
+    if settings.TASK_READ_MODEL_ENABLED:
+        source_rows = []
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT source.id,source.physical_row,source.revision "
+                "FROM _online_source_rows AS source "
+                "WHERE source.parser_type=%s AND source.row_key=%s "
+                "AND source.archived_at IS NULL "
+                + active_source_sql_filter(parser_type, "source")
+                + " ORDER BY source.physical_row,source.id",
+                (parser_type, row_key),
+            )
+            source_rows = await cur.fetchall()
+            if not source_rows:
+                return {}
+            snapshots = await _read_task_snapshots_for_source_rows(
+                parser_type, source_rows,
+            )
+            state_tasks = [
+                {
+                    "task_id": stable_task_id(
+                        get_parser(parser_type).table_name, int(source[1]),
+                    ),
+                    "revision": int(source[2] or 0),
+                }
+                for source in source_rows
+            ]
+            states_by_task = await _read_task_view_states_for_records(state_tasks)
+            values_by_source = [
+                (int(source[0]), snapshots[int(source[0])])
+                for source in source_rows
+            ]
+            values = values_by_source[0][1]
+            source_count = len(values_by_source)
+            conflict = any(
+                stable_json(snapshot) != stable_json(values)
+                for _source_id, snapshot in values_by_source[1:]
+            )
+            domains = states_by_task[state_tasks[0]["task_id"]]
+            registration_link = domains["registration"]["state"]
+            review_flow = domains["review"]["state"]
+            address_state = domains["address_match"]["state"]
+            address_candidate = address_state.get("candidate") or {}
+            address_match = {
+                **address_state,
+                "small_community_id": address_candidate.get("entry_id"),
+                "small_community_name": address_candidate.get("name") or address_candidate.get("community_name", ""),
+            }
+        task = _task_record(
+            parser_type,
+            row_key,
+            values,
+            source_count,
+            conflict,
+            False,
+            TASK_WORKFLOWS[parser_type].state(values),
+            registration_link=registration_link,
+            review_flow=review_flow,
+            address_match=address_match,
+        )
+        return {
+            "task_update": {
+                key: task[key]
+                for key in (
+                    "row_key", "summary", "community", "inspector", "state",
+                    "needs_review", "review_stage", "review_flow", "source_count",
+                    "conflict", "pending_sync", "sync_state", "priority",
+                    "registration_link", "address_match",
+                )
+            },
+            "registration_link": registration_link,
+            "review_flow": review_flow,
+        }
+
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT values_json,source_count,conflict,pending_state,task_state "
@@ -4531,6 +7070,7 @@ async def claim_mobile_task(
         user=user,
         conn=conn,
         explicit_text_edit=True,
+        audit_action="claim",
         current_values_validator=validate_unassigned,
         registration_mode=registration_mode,
         transaction_prepare=transaction_prepare,
@@ -4721,87 +7261,7 @@ async def resolve_mobile_task_sync_conflict(
     user: dict = Depends(get_current_user),
     conn=Depends(get_db),
 ):
-    if parser_type not in TASK_WORKFLOWS:
-        raise HTTPException(400, "该业务尚未接入手机任务工作台")
-    fields = list(dict.fromkeys(str(field).strip() for field in data.fields if str(field).strip()))
-    if not fields:
-        raise HTTPException(400, "请选择需要处理的冲突字段")
-
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "SELECT row_key FROM _online_source_rows WHERE id=%s AND parser_type=%s",
-            (source_id, parser_type),
-        )
-        row = await cur.fetchone()
-        if not row:
-            raise HTTPException(404, "来源行不存在")
-        row_key = str(row[0])
-
-    analysis_fields = set(TASK_WORKFLOWS[parser_type].analysis_fields)
-    analysis_mode = any(field in analysis_fields for field in fields)
-    if analysis_mode and any(field not in analysis_fields for field in fields):
-        raise HTTPException(400, "核查字段和研判字段的冲突请分别处理")
-    scoped_user = (
-        _require_analysis_user(user)
-        if analysis_mode else _require_task_edit_user(user)
-    )
-    detail = await _mobile_task_detail_data(
-        parser_type,
-        row_key,
-        scoped_user,
-        conn,
-        analysis_mode=analysis_mode,
-    )
-    source = next((item for item in detail["sources"] if item["id"] == source_id), None)
-    if not source:
-        raise HTTPException(404, "来源行不存在或不属于当前社区")
-    conflict_fields = {
-        item["field"] for item in source.get("sync_fields", [])
-        if item.get("status") == "conflict"
-    }
-    if any(field not in conflict_fields for field in fields):
-        raise HTTPException(409, "所选字段已不处于同步冲突状态，请刷新后重试")
-    if any(field not in source.get("editable_fields", []) for field in fields):
-        raise HTTPException(403, "当前账号无权处理所选字段")
-
-    try:
-        result = await resolve_source_conflict(
-            conn,
-            source_id=source_id,
-            choice=data.choice,
-            fields=fields,
-        )
-    except LookupError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    await record_admin_audit(
-        scoped_user,
-        "online.writeback.resolve_conflict",
-        target_type="online_source_row",
-        target_name=f"{parser_type}:{source_id}",
-        detail={"choice": data.choice, "columns": fields},
-        **request_audit_fields(request),
-    )
-    if data.choice == "platform":
-        launch_local_change_processing(source_id)
-    return {
-        "message": (
-            (
-                "已采用平台值并保存到本地任务池"
-                if local_data_source_enabled()
-                else "已采用平台值，正在重新同步腾讯表格"
-            )
-            if data.choice == "platform"
-            else (
-                "已采用本地任务值"
-                if local_data_source_enabled()
-                else "已采用腾讯值"
-            )
-        ),
-        **result,
-    }
+    raise HTTPException(410, "腾讯数据源已下线，不能处理旧同步冲突")
 
 
 @router.post("/{parser_type}/bulk-assign")

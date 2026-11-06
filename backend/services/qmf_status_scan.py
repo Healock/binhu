@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -91,55 +92,121 @@ async def archive_due_qmf_tasks() -> int:
         try:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT snapshot.row_key FROM _qmf_status_snapshots AS snapshot "
+                    "SELECT snapshot.row_key,source.id,source.physical_row,source.revision,source.values_json "
+                    "FROM _qmf_status_snapshots AS snapshot "
                     "JOIN _online_source_projection AS projection "
                     " ON projection.parser_type=snapshot.parser_type AND projection.row_key=snapshot.row_key "
+                    "LEFT JOIN _online_source_rows AS source "
+                    " ON source.parser_type=snapshot.parser_type AND source.row_key=snapshot.row_key "
+                    " AND source.archived_at IS NULL "
                     "WHERE snapshot.parser_type=%s AND snapshot.feedback_state='completed_match' "
                     "AND snapshot.archived_at IS NULL AND snapshot.archive_due_at IS NOT NULL "
                     "AND snapshot.archive_due_at<=UTC_TIMESTAMP() AND projection.task_state='completed' "
-                    "FOR UPDATE",
+                    "ORDER BY snapshot.row_key,source.id FOR UPDATE",
                     (MODEL_THREE_PARSER,),
                 )
-                keys = [str(row[0]) for row in await cur.fetchall() if row[0]]
+                selected = await cur.fetchall()
+                keys = list(dict.fromkeys(str(row[0]) for row in selected if row[0]))
                 if not keys:
                     await conn.commit()
                     return 0
-                placeholders = ",".join(["%s"] * len(keys))
+                source_counts: dict[str, int] = {}
+                for row in selected:
+                    if row[1] is not None:
+                        key = str(row[0])
+                        source_counts[key] = source_counts.get(key, 0) + 1
+                if any(count != 1 for count in source_counts.values()):
+                    raise RuntimeError("qmf_archive_source_ambiguous")
+                if any(row[1] is None or row[2] is None or row[3] is None for row in selected):
+                    raise RuntimeError("qmf_archive_source_missing")
+                from config import settings
+                from services.domain_events import stable_task_id
+                from services.task_commands import (
+                    TaskAuthorizationResult, TaskCommandService, TaskCommandSpec,
+                    TaskMutationResult,
+                )
                 columns = ["截止时间", "核查人", "姓名", "身份证号", "联系方式", "地址", "下发社区", "核查结果", "备注"]
                 quoted = ",".join(f"`{column}`" for column in columns)
-                await cur.execute(
-                    f"INSERT INTO OnlineDataArchive.t_suspect_unrevoked_archive "
-                    f"(_row_key,{quoted},_archive_reason) "
-                    f"SELECT _row_key,{quoted},'qmf_feedback_match' FROM t_suspect_unrevoked "
-                    f"WHERE _row_key IN ({placeholders})",
-                    keys,
-                )
-                await cur.execute(
-                    "UPDATE _local_source_records SET status='archived', "
-                    "archived_at=UTC_TIMESTAMP(), revision=revision+1, "
-                    "updated_at=UTC_TIMESTAMP() "
-                    f"WHERE parser_type=%s AND business_key IN ({placeholders}) "
-                    "AND status='active'",
-                    (MODEL_THREE_PARSER, *keys),
-                )
-                await cur.execute(
-                    f"DELETE FROM t_suspect_unrevoked WHERE _row_key IN ({placeholders})", keys
-                )
-                await cur.execute(
-                    f"DELETE FROM _online_source_rows WHERE parser_type=%s AND row_key IN ({placeholders}) "
-                    "AND archived_at IS NULL",
-                    (MODEL_THREE_PARSER, *keys),
-                )
-                await cur.execute(
-                    f"DELETE FROM _online_source_projection WHERE parser_type=%s AND row_key IN ({placeholders})",
-                    (MODEL_THREE_PARSER, *keys),
-                )
+                for row_key, source_id, physical_row, revision, raw_values in selected:
+                    values = raw_values if isinstance(raw_values, dict) else _json(raw_values)
+                    if not values:
+                        raise RuntimeError("qmf_archive_source_snapshot_missing")
+                    operation_id = str(uuid.uuid4())
+
+                    async def authorize(_command_cur, locked_source):
+                        if locked_source is None:
+                            raise RuntimeError("qmf_archive_source_missing")
+                        return TaskAuthorizationResult(
+                            policy_key="system.qmf_feedback_archive",
+                            scope_values=(MODEL_THREE_PARSER,),
+                        )
+
+                    async def mutate(command_cur, locked_source):
+                        if not locked_source:
+                            raise RuntimeError("qmf_archive_source_missing")
+                        snapshot_values = locked_source["values"] or values
+                        await command_cur.execute(
+                            f"INSERT INTO OnlineDataArchive.t_suspect_unrevoked_archive "
+                            f"(_row_key,{quoted},_archive_reason) "
+                            f"SELECT _row_key,{quoted},'qmf_feedback_match' "
+                            "FROM t_suspect_unrevoked WHERE _row_key=%s",
+                            (str(row_key),),
+                        )
+                        if command_cur.rowcount != 1:
+                            raise RuntimeError("qmf_archive_current_row_missing")
+                        await command_cur.execute(
+                            "UPDATE _local_source_records SET status='archived', "
+                            "archived_at=UTC_TIMESTAMP(), revision=revision+1, "
+                            "updated_at=UTC_TIMESTAMP() WHERE parser_type=%s "
+                            "AND business_key=%s AND status='active'",
+                            (MODEL_THREE_PARSER, str(row_key)),
+                        )
+                        await command_cur.execute(
+                            "DELETE FROM t_suspect_unrevoked WHERE _row_key=%s",
+                            (str(row_key),),
+                        )
+                        if command_cur.rowcount != 1:
+                            raise RuntimeError("qmf_archive_current_row_missing")
+                        await command_cur.execute(
+                            "DELETE FROM _online_source_rows WHERE id=%s AND parser_type=%s "
+                            "AND row_key=%s AND revision=%s AND archived_at IS NULL",
+                            (int(source_id), MODEL_THREE_PARSER, str(row_key), int(revision)),
+                        )
+                        if command_cur.rowcount != 1:
+                            raise RuntimeError("qmf_archive_source_revision_conflict")
+                        await command_cur.execute(
+                            "DELETE FROM _online_source_projection WHERE parser_type=%s AND row_key=%s",
+                            (MODEL_THREE_PARSER, str(row_key)),
+                        )
+                        await command_cur.execute(
+                            "UPDATE _qmf_status_snapshots SET archived_at=UTC_TIMESTAMP() "
+                            "WHERE parser_type=%s AND row_key=%s AND archived_at IS NULL",
+                            (MODEL_THREE_PARSER, str(row_key)),
+                        )
+                        return TaskMutationResult(
+                            revision=int(revision) + 1,
+                            snapshot={**snapshot_values, "_task_lifecycle": "archived"},
+                            changed_fields=("task_state", "online_summary"),
+                            operation_id=operation_id,
+                        )
+
+                    await TaskCommandService.execute(
+                        cur,
+                        spec=TaskCommandSpec(
+                            actor_id=0,
+                            environment=settings.APP_ENVIRONMENT,
+                            parser_type=MODEL_THREE_PARSER,
+                            task_id=stable_task_id("t_suspect_unrevoked", int(physical_row)),
+                            source_id=int(source_id),
+                            action="archive",
+                            event_type="online.task.archived",
+                            expected_revision=int(revision),
+                            audiences=("authenticated",),
+                        ),
+                        authorize=authorize,
+                        mutate=mutate,
+                    )
                 await reconcile_projection_task_graph(cur, MODEL_THREE_PARSER)
-                await cur.execute(
-                    f"UPDATE _qmf_status_snapshots SET archived_at=UTC_TIMESTAMP() "
-                    f"WHERE parser_type=%s AND row_key IN ({placeholders})",
-                    (MODEL_THREE_PARSER, *keys),
-                )
             await conn.commit()
             return len(keys)
         except Exception:
@@ -508,6 +575,16 @@ async def _origin_for_item(item: dict[str, Any], state: str) -> str:
             return "binhu_automatic" if await cur.fetchone() else "legacy_manual_or_other"
 
 
+async def _emit_qmf_view_state(cur, *, source_id: int, state: dict[str, Any]) -> None:
+    from services.task_view_state import (
+        enqueue_source_task_view_state, task_view_state_events_enabled,
+    )
+    if task_view_state_events_enabled():
+        await enqueue_source_task_view_state(
+            cur, source_id=source_id, domain="qmf", state=state,
+        )
+
+
 async def persist_realtime_qmf_status(
     conn,
     *,
@@ -542,6 +619,9 @@ async def persist_realtime_qmf_status(
     }
     if status.state not in accepted_states:
         return
+    transaction_started = callable(getattr(conn, "begin", None))
+    if transaction_started:
+        await conn.begin()
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT COALESCE(identity_hmac, '') FROM _online_source_projection "
@@ -596,6 +676,18 @@ async def persist_realtime_qmf_status(
                 status.state,
             ),
         )
+        await _emit_qmf_view_state(
+            cur, source_id=int(source_id),
+            state={
+                "status": str(status.state),
+                "result": str(status.result or ""),
+                "platform_result": normalize_qmf_status_result(platform_result),
+                "checked_at": str(status.checked_at or ""),
+                "origin": str(origin or ""),
+            },
+        )
+    if transaction_started:
+        await conn.commit()
 
 
 async def _finish_item(
@@ -623,8 +715,10 @@ async def _finish_item(
     safe_code = (error_code or (state if is_error else ""))[:64]
     pool = _pool()
     async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
                 """
                 UPDATE _qmf_status_scan_items
                 SET status=%s,feedback_state=%s,feedback_result=%s,
@@ -644,7 +738,7 @@ async def _finish_item(
                     run_id,
                 ),
             )
-            await cur.execute(
+                await cur.execute(
                 """
                 INSERT INTO _qmf_status_snapshots (
                     parser_type,row_key,source_id,source_revision,
@@ -678,11 +772,28 @@ async def _finish_item(
                     state, state,
                 ),
             )
-            await cur.execute(
+                await _emit_qmf_view_state(
+                cur, source_id=int(item["source_id"]),
+                state={
+                    "status": str(state),
+                    "result": str(feedback_result or ""),
+                    "platform_result": normalize_qmf_status_result(
+                        item["expected_result"]
+                    ),
+                    "checked_at": str(checked_at or ""),
+                    "origin": str(origin or ""),
+                    "error_code": str(safe_code or ""),
+                },
+            )
+                await cur.execute(
                 f"UPDATE _qmf_status_scan_runs SET processed_count=processed_count+1, "
                 f"{bucket}={bucket}+1 WHERE id=%s",
-                (run_id,),
-            )
+                    (run_id,),
+                )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
 
 
 async def _finish_run(run_id: int, *, stopped_code: str = "") -> None:

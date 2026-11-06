@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import defaultdict
+import uuid
 from hashlib import sha256
 from typing import Any
 
 from config import settings
 from database import db_manager
-from routers.query import _oauth_client, _refresh_spreadsheet, _writeback_enabled
 from services.online_source import (
     acquire_sheet_lock,
     rebuild_projection,
@@ -68,6 +67,7 @@ _ALLOWED_ERROR_CODES = {
     "reconciled_by_sync",
     "archive_content_conflict",
     "current_row_changed_after_external_delete",
+    "external_data_source_retired",
     "registration_archive_evidence_changed",
 }
 
@@ -514,33 +514,74 @@ async def _reconcile_deleted_archive_item(conn, item: tuple) -> str:
                         exc, stage="review_flow_archive", fallback=fallback
                     ) from exc
             if source_exists:
-                await cur.execute(
-                    "DELETE FROM _online_source_rows WHERE id=%s AND parser_type=%s "
-                    "AND row_key=%s AND revision=%s AND row_hash=%s",
-                    (
-                        source_id,
-                        parser_type,
-                        row_key,
-                        expected_revision,
-                        expected_hash,
-                    ),
+                if task_id is None:
+                    raise ArchiveStageError("source_identity_missing", "reconcile_source_remove")
+                from config import settings
+                from services.domain_events import stable_task_id
+                from services.task_commands import (
+                    TaskAuthorizationResult, TaskCommandService, TaskCommandSpec,
+                    TaskMutationResult,
                 )
-                if cur.rowcount != 1:
-                    raise ArchiveStageError(
-                        "current_row_changed_after_external_delete", "reconcile_source_remove"
+
+                async def authorize(_command_cur, locked_source):
+                    if locked_source is None:
+                        raise ArchiveStageError(
+                            "current_row_changed_after_external_delete", "reconcile_source"
+                        )
+                    return TaskAuthorizationResult(
+                        policy_key="system.fullchain_archive_reconcile",
+                        scope_values=(str(parser_type),),
                     )
-                if task_id is not None:
+
+                async def mutate(command_cur, locked_source):
+                    if not locked_source:
+                        raise ArchiveStageError(
+                            "current_row_changed_after_external_delete", "reconcile_source"
+                        )
+                    await command_cur.execute(
+                        "DELETE FROM _online_source_rows WHERE id=%s AND parser_type=%s "
+                        "AND row_key=%s AND revision=%s AND row_hash=%s",
+                        (source_id, parser_type, row_key, expected_revision, expected_hash),
+                    )
+                    if command_cur.rowcount != 1:
+                        raise ArchiveStageError(
+                            "current_row_changed_after_external_delete", "reconcile_source_remove"
+                        )
                     from services.business_time import get_business_date
                     from services.online_summary_updates import enqueue_online_summary_update
+                    operation_id = str(uuid.uuid4())
                     await enqueue_online_summary_update(
-                        cur,
+                        command_cur,
                         task_id=task_id,
                         parser_type=str(parser_type),
                         row_key=str(row_key),
-                        revision=int(expected_revision),
-                        business_date=await get_business_date(cur),
-                        operation_id=f"archive-{int(export_id)}-{int(source_id)}",
+                        revision=int(expected_revision) + 1,
+                        business_date=await get_business_date(command_cur),
+                        operation_id=operation_id,
                     )
+                    return TaskMutationResult(
+                        revision=int(expected_revision) + 1,
+                        snapshot={**snapshot, "_task_lifecycle": "archived"},
+                        changed_fields=("task_state", "online_summary"),
+                        operation_id=operation_id,
+                    )
+
+                await TaskCommandService.execute(
+                    cur,
+                    spec=TaskCommandSpec(
+                        actor_id=0,
+                        environment=settings.APP_ENVIRONMENT,
+                        parser_type=str(parser_type),
+                        task_id=stable_task_id(parser.table_name, int(task_id)),
+                        source_id=int(source_id),
+                        action="archive",
+                        event_type="online.task.archived",
+                        expected_revision=int(expected_revision),
+                        audiences=("authenticated",),
+                    ),
+                    authorize=authorize,
+                    mutate=mutate,
+                )
             await cur.execute(
                 "UPDATE _fullchain_archive_export_items "
                 "SET status='success',error_code='',error_stage='',error_fingerprint='',"
@@ -624,7 +665,10 @@ async def _refresh_export_counts(conn, export_ids: set[int]) -> None:
 
 
 async def reconcile_deleted_archive_items(export_id: int | None = None) -> int:
-    """仅用冻结快照和平台数据库补偿腾讯已确认删除的归档条目。"""
+    """保留的旧腾讯删除对账入口已永久停用。"""
+    return 0
+
+    # Historical implementation retained below as migration evidence only.
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     reconciled = 0
@@ -1042,33 +1086,84 @@ async def _run_local_archive_export(conn, export_id: int) -> None:
                         or str(source[1] or "") != str(row[3] or "")
                     ):
                         raise RuntimeError("source_row_changed")
-                    await _stage_platform_archive(
-                        conn, parser, export_id, str(row[1]), values
+                    from config import settings
+                    from services.domain_events import stable_task_id
+                    from services.task_commands import (
+                        TaskAuthorizationResult, TaskCommandService, TaskCommandSpec,
+                        TaskMutationResult,
                     )
-                    await cur.execute(
-                        "UPDATE _online_source_rows SET archived_at=UTC_TIMESTAMP(), "
-                        "revision=revision+1 WHERE id=%s",
-                        (source_id,),
+
+                    async def authorize(_command_cur, locked_source):
+                        if locked_source is None:
+                            raise RuntimeError("source_row_changed")
+                        return TaskAuthorizationResult(
+                            policy_key="system.fullchain_archive",
+                            scope_values=(parser_type,),
+                        )
+
+                    async def mutate(command_cur, locked_source):
+                        if not locked_source:
+                            raise RuntimeError("source_row_changed")
+                        await command_cur.execute(
+                            "SELECT row_hash FROM _online_source_rows WHERE id=%s FOR UPDATE",
+                            (source_id,),
+                        )
+                        current_hash = await command_cur.fetchone()
+                        if not current_hash or str(current_hash[0] or "") != str(row[3] or ""):
+                            raise RuntimeError("source_row_changed")
+                        await _stage_platform_archive(
+                            conn, parser, export_id, str(row[1]), values
+                        )
+                        await command_cur.execute(
+                            "UPDATE _online_source_rows SET archived_at=UTC_TIMESTAMP(), "
+                            "revision=revision+1 WHERE id=%s AND revision=%s AND archived_at IS NULL",
+                            (source_id, int(source[0])),
+                        )
+                        if command_cur.rowcount != 1:
+                            raise RuntimeError("source_row_changed")
+                        await command_cur.execute(
+                            "UPDATE _local_source_records SET status='archived',archived_at=UTC_TIMESTAMP(), "
+                            "revision=revision+1, updated_at=UTC_TIMESTAMP() "
+                            "WHERE source_kind=%s AND source_ref=%s AND status='active'",
+                            (str(row[5] or "local_table"), str(row[6] or "")),
+                        )
+                        from services.business_time import get_business_date
+                        from services.online_summary_updates import enqueue_online_summary_update
+                        operation_id = f"local-archive-{export_id}-{source_id}"
+                        await enqueue_online_summary_update(
+                            command_cur, task_id=int(source[3]), parser_type=parser_type,
+                            row_key=str(row[1]), revision=int(source[0]) + 1,
+                            business_date=await get_business_date(command_cur),
+                            operation_id=operation_id,
+                        )
+                        from services.online_source import rebuild_projection
+                        await rebuild_projection(command_cur, parser_type, reconcile_graph=False)
+                        if supports_unverifiable_review(parser_type):
+                            await mark_flow_archived(command_cur, parser_type, str(row[1]), export_id)
+                        await _mark_item(command_cur, export_id, source_id, "success")
+                        return TaskMutationResult(
+                            revision=int(source[0]) + 1,
+                            snapshot={**values, "_task_lifecycle": "archived"},
+                            changed_fields=("task_state", "online_summary"),
+                            operation_id=operation_id,
+                        )
+
+                    await TaskCommandService.execute(
+                        cur,
+                        spec=TaskCommandSpec(
+                            actor_id=0,
+                            environment=settings.APP_ENVIRONMENT,
+                            parser_type=parser_type,
+                            task_id=stable_task_id(parser.table_name, int(source[3])),
+                            source_id=source_id,
+                            action="archive",
+                        event_type="online.task.archived",
+                            expected_revision=int(source[0]),
+                            audiences=("authenticated",),
+                        ),
+                        authorize=authorize,
+                        mutate=mutate,
                     )
-                    await cur.execute(
-                        "UPDATE _local_source_records SET status='archived',archived_at=UTC_TIMESTAMP(), "
-                        "revision=revision+1, updated_at=UTC_TIMESTAMP() "
-                        "WHERE source_kind=%s AND source_ref=%s",
-                        (str(row[5] or "local_table"), str(row[6] or "")),
-                    )
-                    from services.business_time import get_business_date
-                    from services.online_summary_updates import enqueue_online_summary_update
-                    await enqueue_online_summary_update(
-                        cur, task_id=int(source[3]), parser_type=parser_type,
-                        row_key=str(row[1]), revision=int(source[0]) + 1,
-                        business_date=await get_business_date(cur),
-                        operation_id=f"local-archive-{export_id}-{source_id}",
-                    )
-                    from services.online_source import rebuild_projection
-                    await rebuild_projection(cur, parser_type, reconcile_graph=False)
-                    if supports_unverifiable_review(parser_type):
-                        await mark_flow_archived(cur, parser_type, str(row[1]), export_id)
-                    await _mark_item(cur, export_id, source_id, "success")
                 await conn.commit()
             except Exception:
                 await conn.rollback()
@@ -1109,252 +1204,25 @@ async def run_fullchain_archive_export(export_id: int) -> None:
             # “腾讯删除后对账”路径，避免发布被无意义的兼容检查拖慢。
             await _run_local_archive_export(conn, export_id)
             return
-        # 兼容旧部署：只有明确处于腾讯模式时才执行历史删除对账。
-        await reconcile_deleted_archive_items(export_id)
+        # Tencent has been retired as an online data source. A stale or
+        # misconfigured deployment must fail closed instead of entering the
+        # historical external delete workflow.
+        await conn.begin()
         async with conn.cursor() as cur:
-            await cur.execute("SELECT parser_type FROM _fullchain_archive_exports WHERE id=%s", (export_id,))
-            export_row = await cur.fetchone()
-            export_parser_type = str((export_row or ("全链条",))[0] or "全链条")
             await cur.execute("""
                 UPDATE _fullchain_archive_exports
-                SET status='running',phase='deleting',started_at=COALESCE(started_at,UTC_TIMESTAMP())
-                WHERE id=%s AND status IN ('queued','waiting_lock')
+                SET status='error',phase='finished',
+                    error_message='外部数据源已停用，本地任务归档未执行',
+                    finished_at=UTC_TIMESTAMP()
+                WHERE id=%s AND status IN ('queued','waiting_lock','running')
             """, (export_id,))
             await cur.execute("""
-                SELECT item.source_id,item.spreadsheet_id,item.sheet_id,item.physical_row,
-                       item.expected_revision,item.expected_row_hash,
-                       COALESCE(source.values_json,item.source_values_json),
-                       item.row_key,source.parser_type,spreadsheet.file_id,spreadsheet.data_sheet_id,
-                       spreadsheet.header_row,spreadsheet.name,item.external_delete_state,
-                       item.category,item.registration_confirmed_at,item.registration_status,
-                       item.registration_identity_hmac,item.registration_property_id,
-                       item.registration_property_version,item.candidate_rule_version
-                FROM _fullchain_archive_export_items item
-                LEFT JOIN _online_source_rows source ON source.id=item.source_id
-                LEFT JOIN _config_spreadsheets spreadsheet ON spreadsheet.id=item.spreadsheet_id
-                WHERE item.export_id=%s AND item.status <> 'success'
-                  AND item.external_delete_state <> 'deleted'
-                ORDER BY item.spreadsheet_id,item.sheet_id,item.physical_row DESC
+                UPDATE _fullchain_archive_export_items
+                SET status='error',error_code='external_data_source_retired',
+                    error_stage='source_identity',last_attempt_at=UTC_TIMESTAMP()
+                WHERE export_id=%s AND status <> 'success'
             """, (export_id,))
-            rows = await cur.fetchall()
-
-        groups: dict[tuple[int, str], list[tuple]] = defaultdict(list)
-        for row in rows:
-            groups[(int(row[1]), str(row[2]))].append(row)
-        success = conflicts = errors = 0
-        lock_waiting = False
-        for (spreadsheet_id, sheet_id), items in groups.items():
-            client = None
-            locked = False
-            try:
-                async with conn.cursor() as cur:
-                    if not await _writeback_enabled(cur):
-                        raise RuntimeError("online_writeback_disabled")
-                    if not await _acquire_sheet_lock_with_retry(cur, spreadsheet_id):
-                        raise RuntimeError("spreadsheet_locked")
-                    locked = True
-                    await cur.execute("SELECT id,name,file_id,data_sheet_id,header_row,parser_type FROM _config_spreadsheets WHERE id=%s", (spreadsheet_id,))
-                    spreadsheet_row = await cur.fetchone()
-                if not spreadsheet_row or not spreadsheet_row[2]:
-                    raise RuntimeError("spreadsheet_unavailable")
-                if str(spreadsheet_row[5] or "") != export_parser_type:
-                    raise RuntimeError("spreadsheet_unavailable")
-                spreadsheet = {
-                    "id": int(spreadsheet_row[0]), "name": str(spreadsheet_row[1]),
-                    "file_id": str(spreadsheet_row[2]), "data_sheet_id": str(spreadsheet_row[3]),
-                    "header_row": int(spreadsheet_row[4] or 1), "parser_type": str(spreadsheet_row[5]),
-                }
-                parser = get_parser(export_parser_type)
-                async with conn.cursor() as cur:
-                    client = await _oauth_client(cur)
-                source_columns = await resolve_source_columns(client, spreadsheet, parser)
-                successful_source_ids: list[int] = []
-                for row in items:
-                    source_id, _, _, physical_row, revision, expected_hash = row[:6]
-                    try:
-                        delete_state = str(row[13] or "pending")
-                        await _delete_source_row_once(
-                            conn,
-                            client,
-                            export_id=export_id,
-                            source_id=int(source_id),
-                            parser_type=export_parser_type,
-                            spreadsheet=spreadsheet,
-                            sheet_id=sheet_id,
-                            physical_row=int(physical_row),
-                            expected_revision=int(revision),
-                            expected_hash=str(expected_hash),
-                            source_columns=source_columns,
-                            parser=parser,
-                            external_delete_state=delete_state,
-                            row_key=str(row[7]),
-                            category=str(row[14] or ""),
-                            registration_confirmed_at=row[15],
-                            registration_status=str(row[16] or ""),
-                            registration_identity_hmac=str(row[17] or ""),
-                            registration_property_id=(
-                                int(row[18]) if row[18] is not None else None
-                            ),
-                            registration_property_version=(
-                                int(row[19]) if row[19] is not None else None
-                            ),
-                            candidate_rule_version=str(row[20] or ""),
-                        )
-                        delete_state = "deleted"
-                        if row[6] is None:
-                            raise ArchiveStageError(
-                                "source_snapshot_missing", "source_snapshot"
-                            )
-                        import json
-                        try:
-                            source_values = json.loads(row[6] or "{}")
-                        except (TypeError, ValueError) as exc:
-                            raise ArchiveStageError(
-                                "source_snapshot_missing",
-                                "source_snapshot",
-                                fingerprint=_error_fingerprint(
-                                    "source_snapshot_missing", "source_snapshot", exc
-                                ),
-                            ) from exc
-                        if not isinstance(source_values, dict):
-                            raise ArchiveStageError(
-                                "source_snapshot_missing", "source_snapshot"
-                            )
-                        await _commit_platform_archive(
-                            conn,
-                            parser,
-                            export_id=export_id,
-                            source_id=int(source_id),
-                            task_id=int(physical_row),
-                            source_revision=int(revision),
-                            parser_type=export_parser_type,
-                            row_key=str(row[7]),
-                            values=source_values,
-                        )
-                        successful_source_ids.append(int(source_id))
-                        success += 1
-                    except Exception as exc:
-                        code = _safe_error_code(exc, "tencent_delete_failed")
-                        stage = exc.stage if isinstance(exc, ArchiveStageError) else "external_delete"
-                        fingerprint = (
-                            exc.fingerprint
-                            if isinstance(exc, ArchiveStageError)
-                            else _error_fingerprint(code, stage, exc)
-                        )
-                        async with conn.cursor() as cur:
-                            await _mark_item(
-                                cur,
-                                export_id,
-                                int(source_id),
-                                "conflict",
-                                code,
-                                error_stage=stage,
-                                platform_archive_state=(
-                                    "failed" if delete_state == "deleted" else None
-                                ),
-                                error_fingerprint=fingerprint,
-                            )
-                        conflicts += 1
-                try:
-                    await _refresh_spreadsheet(conn, client, spreadsheet)
-                except Exception:
-                    # Rows are already deleted; normal sync will retry cache refresh.
-                    pass
-                if successful_source_ids:
-                    placeholders = ",".join(["%s"] * len(successful_source_ids))
-                    async with conn.cursor() as cur:
-                        await cur.execute(
-                            f"SELECT COUNT(*) FROM _online_source_rows WHERE id IN ({placeholders})",
-                            successful_source_ids,
-                        )
-                        remaining = int((await cur.fetchone())[0] or 0)
-                    if remaining:
-                        # Refresh failure or a later source-position conflict means the
-                        # export file remains valid, but the current task cannot yet be
-                        # hidden. Mark it for explicit reconciliation.
-                        async with conn.cursor() as cur:
-                            for source_id in successful_source_ids:
-                                await _mark_item(
-                                    cur,
-                                    export_id,
-                                    source_id,
-                                    "conflict",
-                                    "cache_refresh_pending",
-                                    error_stage="cache_refresh",
-                                    platform_archive_state="archived",
-                                    error_fingerprint=_error_fingerprint(
-                                        "cache_refresh_pending", "cache_refresh"
-                                    ),
-                                )
-                        success -= len(successful_source_ids)
-                        conflicts += len(successful_source_ids)
-            except Exception as exc:
-                code = _safe_error_code(exc, "archive_group_failed")
-                stage = exc.stage if isinstance(exc, ArchiveStageError) else "archive_group"
-                fingerprint = (
-                    exc.fingerprint
-                    if isinstance(exc, ArchiveStageError)
-                    else _error_fingerprint(code, stage, exc)
-                )
-                async with conn.cursor() as cur:
-                    for row in items:
-                        if code == "spreadsheet_locked":
-                            await _mark_item(
-                                cur, export_id, int(row[0]), "queued", code,
-                                error_stage=stage, error_fingerprint=fingerprint,
-                            )
-                        else:
-                            await _mark_item(
-                                cur, export_id, int(row[0]), "error", code,
-                                error_stage=stage, error_fingerprint=fingerprint,
-                            )
-                if code == "spreadsheet_locked":
-                    lock_waiting = True
-                else:
-                    errors += len(items)
-            finally:
-                if client:
-                    await client.close()
-                if locked:
-                    from services.online_source import release_sheet_lock
-                    async with conn.cursor() as cur:
-                        await release_sheet_lock(cur, spreadsheet_id)
-
-        # 腾讯删除后的刷新可能已经用 online_removed 原因完成平台历史归档；
-        # 在本轮结束前立刻对账一次，不要求等待服务重启。
-        await reconcile_deleted_archive_items(export_id)
-
-        if lock_waiting:
-            async with conn.cursor() as cur:
-                await cur.execute("""
-                    UPDATE _fullchain_archive_exports
-                    SET status='queued',phase='waiting_lock',
-                        error_message='腾讯表正在写回，归档任务将在锁释放后自动继续'
-                    WHERE id=%s
-                """, (export_id,))
-            raise _ArchiveLockRetry
-
-        # 重试时只读取尚未成功的条目，因此统计必须以数据库内的最终状态为准，
-        # 不能沿用本次进程启动时的局部计数。
-        async with conn.cursor() as cur:
-            await cur.execute("""
-                SELECT
-                    SUM(status='success'), SUM(status='conflict'), SUM(status='error')
-                FROM _fullchain_archive_export_items WHERE export_id=%s
-            """, (export_id,))
-            counts = await cur.fetchone()
-            success = int((counts[0] if counts else 0) or 0)
-            conflicts = int((counts[1] if counts else 0) or 0)
-            errors = int((counts[2] if counts else 0) or 0)
-        status = "completed" if conflicts == 0 and errors == 0 else "partial"
-        async with conn.cursor() as cur:
-            await cur.execute("""
-                UPDATE _fullchain_archive_exports SET status=%s,phase='finished',
-                    success_count=%s,conflict_count=%s,error_count=%s,
-                    error_message=%s,finished_at=UTC_TIMESTAMP()
-                WHERE id=%s
-            """, (status, success, conflicts, errors,
-                   "部分归档未完成，请按明细中的处理阶段和错误类型核对" if status != "completed" else "", export_id))
+        await conn.commit()
     finally:
         pool.release(conn)
 

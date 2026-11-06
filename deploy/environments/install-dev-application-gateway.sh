@@ -11,7 +11,7 @@ control_commit="$(tr -d '\r\n' < "$2")"
 command -v useradd >/dev/null && command -v visudo >/dev/null && command -v openssl >/dev/null || { echo 'required tools missing' >&2; exit 1; }
 install -d -o root -g root -m 0755 /usr/local/libexec/binhu-dev-application/deploy/environments
 install -o root -g root -m 0644 deploy/__init__.py /usr/local/libexec/binhu-dev-application/deploy/__init__.py
-for module in artifact.py database_identity.py development_application_gateway.py image.py runtime.py update.py; do
+for module in artifact.py database_identity.py development_application_gateway.py development_department_gateway.py image.py runtime.py update.py; do
   install -o root -g root -m 0644 \
     "deploy/environments/$module" \
     "/usr/local/libexec/binhu-dev-application/deploy/environments/$module"
@@ -38,6 +38,7 @@ binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-applicati
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway apply *
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway accept *
 binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway restore-services *
+binhu-dev-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-dev-application-gateway department-seed *
 EOF
 chmod 0440 /etc/sudoers.d/binhu-dev-application
 visudo -cf /etc/sudoers.d/binhu-dev-application >/dev/null

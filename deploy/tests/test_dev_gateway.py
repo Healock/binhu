@@ -106,7 +106,7 @@ class DevGatewayContractTests(unittest.TestCase):
         text = IMPLEMENTATION.read_text(encoding="utf-8")
         self.assertIn('pipeline-job.jar', text)
         self.assertIn('candidate Flink artifact hash mismatch', text)
-        self.assertIn('candidate PipelineJob source hash mismatch', text)
+        self.assertIn('candidate task read-model source hash mismatch', text)
 
     def test_installer_is_dev_scoped(self):
         text = (ROOT / "deploy/environments/event_pipeline/install-dev-gateway.sh").read_text(encoding="utf-8")

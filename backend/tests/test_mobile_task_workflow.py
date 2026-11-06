@@ -167,7 +167,7 @@ class MobileTaskWorkflowTests(unittest.TestCase):
 
     def test_inline_editors_deduplicate_rows_and_skip_photo_queries(self):
         detail = {
-            "task": {"conflict": False},
+            "task": {"conflict": False, "source_count": 1},
             "sources": [{"id": 7}],
         }
         detail_mock = AsyncMock(return_value=detail)

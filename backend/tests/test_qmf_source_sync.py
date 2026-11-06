@@ -24,7 +24,7 @@ class _Cursor:
         self.executed.append(normalized)
         if normalized.startswith("SELECT _row_key,"):
             self.rows = []
-        elif normalized.startswith("SELECT id,row_key,physical_row,values_json"):
+        elif normalized.startswith("SELECT id,row_key,physical_row,revision,values_json"):
             self.rows = []
         else:
             raise AssertionError(f"unexpected SQL: {normalized}")

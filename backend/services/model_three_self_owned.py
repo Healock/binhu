@@ -1,8 +1,8 @@
 """辖区自购自住人员资产资料。
 
 资料导入时校验身份证并保存 HMAC，姓名、身份证号和个人联系电话进入受权限
-保护的人员档案；匹配当前及后续模型三任务后将空白/无法核实结果更新为
-“近期返吴”。不调用全民防写接口，也不保存原始名单行或工作簿。
+保护的人员档案。模型三只保留人员档案标签和匹配摘要，不能把全民防结果写回
+在线任务的“核查结果”；任务结果必须由平台任务流程产生。
 """
 
 from __future__ import annotations
@@ -21,8 +21,7 @@ from openpyxl import load_workbook
 from config import settings
 from services.qmf_registration import valid_identity, normalize_identity
 from services.registry_security import hmac_digest, normalize_phone
-from services.online_source import source_row_hash, rebuild_projection_rows
-from services.parsers import get_parser
+from services.online_source import rebuild_projection_rows
 from services.watch_matching import sync_current_task_snapshots_for_keys
 
 
@@ -521,8 +520,12 @@ async def _store_people_and_tags(
 
 
 async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[str, Any]:
-    """Apply the retained roster to current model-three tasks without external writes."""
-    parser = get_parser(MODEL_THREE_PARSER)
+    """Match the retained roster without mutating the authoritative task result.
+
+    全民防是外部只读来源。历史实现把匹配结果写入模型三任务的“核查结果”，
+    这会绕过平台命令状态机和权限边界；当前只返回匹配/跳过统计，供导入批次
+    保存标签快照，任务结果仍由正常任务写入口维护。
+    """
     roster_filter = "AND roster.batch_id=%s" if batch_id is not None else "AND batch.status='completed'"
     params: tuple[Any, ...] = (MODEL_THREE_PARSER, batch_id) if batch_id is not None else (MODEL_THREE_PARSER,)
     await cur.execute(
@@ -555,29 +558,10 @@ async def apply_self_owned_matches(cur, *, batch_id: int | None = None) -> dict[
         ):
             skipped += 1
             continue
-        await cur.execute(
-            "SELECT id,values_json FROM _online_source_rows WHERE parser_type=%s AND row_key=%s",
-            (MODEL_THREE_PARSER, str(row_key)),
-        )
-        source_rows = await cur.fetchall()
-        if len(source_rows) != 1:
-            skipped += 1
-            continue
-        for source_id, source_json in source_rows:
-            source_values = source_json if isinstance(source_json, dict) else json.loads(source_json or "{}")
-            source_values["核查结果"] = "近期返吴"
-            encoded = json.dumps(source_values, ensure_ascii=False, sort_keys=True)
-            await cur.execute(
-                "UPDATE _online_source_rows SET values_json=%s,row_hash=%s,revision=revision+1,"
-                "refreshed_at=UTC_TIMESTAMP() WHERE id=%s",
-                (encoded, source_row_hash(source_values), int(source_id)),
-            )
-        await cur.execute(
-            f"UPDATE `{parser.table_name}` SET `核查结果`=%s WHERE `_row_key`=%s",
-            ("近期返吴", str(row_key)),
-        )
-        updated += 1
-        updated_row_keys.append(str(row_key))
+        # The roster match is retained as a protected personnel fact.  It must
+        # not update the online task or emit a task command: external read-only
+        # data cannot impersonate an authorized task mutation.
+        skipped += 1
     return {
         "matched_tasks": len(matched),
         "updated_tasks": updated,

@@ -83,7 +83,7 @@ test('场所登记管理支持删除确认且移除旧版单独 XLSX 导出入�
 test('场所登记支持按条件查询并导出包含照片的 ZIP', () => {
   const page = readFileSync(new URL('../src/pages/VenueCodeManagement.tsx', import.meta.url), 'utf8')
   const client = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
-  assert.match(page, /姓名、身份证号、手机号、地址/)
+  assert.match(page, /姓名、身份证号、手机号或地址/)
   assert.match(page, /DatePicker.RangePicker/)
   assert.match(page, /downloadUrl\(/)
   assert.match(page, /getVenueVisitsZipUrl\(visitFilters\)/)

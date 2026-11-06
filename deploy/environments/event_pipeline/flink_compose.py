@@ -16,8 +16,10 @@ ROOT = Path("/srv/binhu-environments/development-eventbus")
 TARGET = ROOT / "flink-pipeline-compose.json"
 EVIDENCE_ROOT = Path("/srv/deploy-backups/environment-triad")
 NETWORK = "binhu-development-eventbus_internal"
+BACKEND_NETWORK = "binhu-development_internal"
 CHECKPOINT_VOLUME = "binhu-development_flink-checkpoints"
 PIPELINE_SQL = PurePosixPath("/srv/binhu-environments/development-pipeline/pipeline.sql")
+PIPELINE_TASK_ENV = PurePosixPath("/srv/binhu-environments/development-pipeline/flink-task.env")
 ARTIFACT_NAMES = (
     "flink-sql-connector-kafka-3.3.0-1.20.jar",
     "flink-connector-jdbc-3.3.0-1.20.jar",
@@ -118,6 +120,7 @@ def specification(image: str, artifact_root: Path) -> dict:
         "name": PROJECT,
         "networks": {
             "internal": {"name": NETWORK, "ipam": {}, "external": True},
+            "backend": {"name": BACKEND_NETWORK, "external": True},
         },
         "services": {
             "jobmanager": {
@@ -133,6 +136,8 @@ def specification(image: str, artifact_root: Path) -> dict:
                 **common,
                 "mem_limit": APPROVED_TASKMANAGER_MEM_LIMIT,
                 "command": ["taskmanager"],
+                "env_file": [str(PIPELINE_TASK_ENV)],
+                "networks": {"internal": None, "backend": None},
                 "environment": {
                     "JOB_MANAGER_RPC_ADDRESS": "jobmanager",
                     "TASK_MANAGER_NUMBER_OF_TASK_SLOTS": "3",

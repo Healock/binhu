@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
+os.environ.setdefault("TASK_EVENT_ENCRYPTION_KEY", "test-only-task-event-key-not-for-runtime")
 
 from services.qmf_status import (
     QmfLegacyStatus,
@@ -35,6 +36,8 @@ class _Cursor:
     def __init__(self, rows=None):
         self.statements = []
         self.rows = rows or []
+        self.fetchone_value = None
+        self.rowcount = 1
 
     async def __aenter__(self):
         return self
@@ -43,13 +46,26 @@ class _Cursor:
         return None
 
     async def execute(self, sql, params=None):
-        self.statements.append((" ".join(str(sql).split()), params))
+        normalized = " ".join(str(sql).split())
+        self.statements.append((normalized, params))
+        self.rowcount = 1
+        if normalized.startswith("SELECT parser_type,physical_row,revision,archived_at,values_json"):
+            source_id = params[0]
+            matched = next((row for row in self.rows if row[1] == source_id), None)
+            self.fetchone_value = (
+                ("疑似未注销模型三", matched[2], matched[3], None, matched[4])
+                if matched else None
+            )
+        elif normalized.startswith("SELECT parser_type,physical_row,revision,archived_at FROM _online_source_rows"):
+            self.fetchone_value = None
+        else:
+            self.fetchone_value = self.rows[0] if self.rows else None
 
     async def fetchall(self):
         return self.rows
 
     async def fetchone(self):
-        return self.rows[0] if self.rows else None
+        return self.fetchone_value
 
 
 class _Connection:
@@ -110,23 +126,39 @@ class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
         return cursor.statements
 
     async def test_archive_updates_local_ledger_before_removing_tasks(self):
-        statements = await self._run_archive([("fixture-a",), ("fixture-b",)])
-        ledger_index = next(i for i, (sql, _) in enumerate(statements) if sql.startswith("UPDATE _local_source_records"))
-        sql, params = statements[ledger_index]
-        self.assertIn("status='archived'", sql)
-        self.assertIn("revision=revision+1", sql)
-        self.assertIn("AND status='active'", sql)
-        self.assertEqual(params, ("疑似未注销模型三", "fixture-a", "fixture-b"))
-        self.assertLess(ledger_index, next(i for i, (sql, _) in enumerate(statements) if sql.startswith("DELETE FROM t_suspect_unrevoked")))
+        rows = [
+            ("fixture-a", 101, 10, 4, '{"社区":"测试社区"}'),
+            ("fixture-b", 102, 11, 7, '{"社区":"测试社区"}'),
+        ]
+        statements = await self._run_archive(rows)
+        ledger_updates = [
+            (i, sql, params) for i, (sql, params) in enumerate(statements)
+            if sql.startswith("UPDATE _local_source_records")
+        ]
+        self.assertEqual([params for _, _, params in ledger_updates], [
+            ("疑似未注销模型三", "fixture-a"),
+            ("疑似未注销模型三", "fixture-b"),
+        ])
+        self.assertTrue(all("status='archived'" in sql and "revision=revision+1" in sql and "AND status='active'" in sql for _, sql, _ in ledger_updates))
+        for index, _, _ in ledger_updates:
+            self.assertLess(index, next(i for i, (sql, _) in enumerate(statements[index + 1:], index + 1) if sql.startswith("DELETE FROM t_suspect_unrevoked")))
+        self.assertEqual(sum("INSERT INTO `_task_command_records`" in sql for sql, _ in statements), len(rows))
+        self.assertEqual(sum("INSERT INTO `_domain_event_outbox`" in sql for sql, _ in statements), len(rows))
         self.assertTrue(any("DELETE FROM _online_source_rows" in sql and "archived_at IS NULL" in sql for sql, _ in statements))
         self.assertFalse(any("INSERT IGNORE" in sql for sql, _ in statements))
 
     async def test_archive_rolls_back_when_ledger_update_fails(self):
-        statements = await self._run_archive([("fixture-a",)], "UPDATE _local_source_records")
+        statements = await self._run_archive(
+            [("fixture-a", 101, 10, 4, '{"社区":"测试社区"}')],
+            "UPDATE _local_source_records",
+        )
         self.assertFalse(any(sql.startswith("DELETE") for sql, _ in statements))
 
     async def test_archive_rolls_back_if_archive_insert_fails(self):
-        statements = await self._run_archive([("fixture-a",)], "INSERT INTO OnlineDataArchive")
+        statements = await self._run_archive(
+            [("fixture-a", 101, 10, 4, '{"社区":"测试社区"}')],
+            "INSERT INTO OnlineDataArchive",
+        )
         self.assertFalse(any(sql.startswith("DELETE") for sql, _ in statements))
 
     async def test_no_due_tasks_does_not_mutate_ledgers(self):

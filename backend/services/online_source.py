@@ -433,6 +433,7 @@ async def rebuild_projection(
 
     projection_rows = []
     address_match_rows = []
+    address_view_states: dict[str, dict[str, Any]] = {}
     merged_rows: dict[str, tuple[dict[str, str], bool]] = {}
     for row_key, source_rows in grouped.items():
         parent = dict(source_rows[0])
@@ -611,6 +612,15 @@ async def rebuild_projection(
             stored.get("confirmed_by") if stored else None,
             stored.get("confirmed_at") if stored else None,
         ))
+        address_view_states[row_key] = {
+            "status": str(address_match.get("status") or "unmatched"),
+            "score": float(address_match.get("score") or 0),
+            "method": str(address_match.get("method") or ""),
+            "reason": str(address_match.get("reason") or ""),
+            "version": str(address_match.get("version") or matcher.version),
+            "candidate": match_candidate,
+            "candidates": address_match.get("candidates") or [],
+        }
         projection_rows.append((
             parser_type,
             row_key,
@@ -684,6 +694,16 @@ async def rebuild_projection(
             """,
             address_match_rows,
         )
+        from services.task_view_state import (
+            enqueue_source_task_view_state, task_view_state_events_enabled,
+        )
+        if task_view_state_events_enabled():
+            for row_key, state in address_view_states.items():
+                for source in source_contexts.get(row_key, []):
+                    await enqueue_source_task_view_state(
+                        cur, source_id=int(source["id"]), domain="address_match",
+                        state=state,
+                    )
 
     if target_keys:
         placeholders = ",".join(["%s"] * len(target_keys))

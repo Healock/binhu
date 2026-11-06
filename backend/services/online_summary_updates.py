@@ -8,11 +8,14 @@ projection.  The trigger deliberately contains no task body or person data.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
+import json
 import re
 import asyncio
+import hmac
 import os
 import time
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +26,212 @@ from config import settings
 _PARSER_TYPE_LIMIT = 50
 _ROW_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+def online_summary_fact_outbox_schema_sql() -> str:
+    """Return the explicit migration DDL; runtime startup must not run it."""
+    return """
+    CREATE TABLE IF NOT EXISTS _online_summary_fact_outbox (
+        event_id CHAR(36) NOT NULL PRIMARY KEY,
+        business_date DATE NOT NULL,
+        parser_type VARCHAR(80) NOT NULL,
+        row_key_hmac CHAR(64) NOT NULL,
+        task_id VARCHAR(160) NOT NULL,
+        source_id BIGINT UNSIGNED NOT NULL,
+        task_revision BIGINT UNSIGNED NOT NULL,
+        status VARCHAR(24) NOT NULL,
+        error_code VARCHAR(64) NOT NULL DEFAULT '',
+        fact_json JSON DEFAULT NULL,
+        attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+        available_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+        locked_by VARCHAR(96) NULL,
+        locked_until DATETIME(6) NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        published_at DATETIME(6) NULL,
+        UNIQUE KEY uk_online_summary_fact_revision
+            (business_date, parser_type, row_key_hmac, task_revision),
+        INDEX idx_online_summary_fact_due (status, available_at, created_at, event_id),
+        INDEX idx_online_summary_fact_expired (status, locked_until, created_at, event_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
+    """
+
+
+def _summary_fact_feature_enabled() -> bool:
+    return (
+        os.environ.get("ONLINE_SUMMARY_FACT_OUTBOX_ENABLED", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
+
+
+async def _load_summary_task_identity(row: dict[str, Any]) -> str:
+    from services.parsers import get_parser
+
+    parser = get_parser(row["parser_type"])
+    pool = _summary_pool()
+    conn = await _acquire(pool)
+    try:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT physical_row FROM _online_source_rows "
+                "WHERE id=%s AND parser_type=%s AND row_key=%s LIMIT 1",
+                (row["task_id"], row["parser_type"], row["row_key"]),
+            )
+            source = await cur.fetchone()
+    finally:
+        pool.release(conn)
+    if not source or type(source[0]) is not int or source[0] < 1:
+        raise RuntimeError("online_summary_fact_source_identity_missing")
+    return f"{parser.table_name}:{source[0]}"
+
+
+def _summary_fact_uuid(label: str, seed: str, secret: str) -> str:
+    digest = hmac.digest(
+        secret.encode("utf-8"),
+        b"binhu/online-summary-fact-id/v1\0" + label.encode() + b"\0" + seed.encode(),
+        "sha256",
+    )[:16]
+    return str(uuid.UUID(bytes=digest, version=5))
+
+
+def _summary_fact_identifiers(row: dict[str, Any], secret: str) -> dict[str, str]:
+    seed = "|".join((
+        str(settings.APP_ENVIRONMENT), str(row["parser_type"]), str(row["row_key"]),
+        row["business_date"].isoformat(), str(row["revision"]),
+    ))
+    return {
+        "event_id": _summary_fact_uuid("event", seed, secret),
+        "command_id": _summary_fact_uuid("command", seed, secret),
+        "operation_id": _summary_fact_uuid(
+            "operation", str(row.get("operation_id") or "") + "|" + seed, secret,
+        ),
+    }
+
+
+async def _write_online_summary_fact(
+    cur,
+    *,
+    row: dict[str, Any],
+    current: dict[str, Any] | None,
+    previous: tuple | None,
+    historical_previous: tuple | None,
+    values: dict[str, Any],
+    transition: int,
+    revision_gap: bool,
+    task_identity: str,
+) -> None:
+    """Append a privacy-safe fact or a durable rebuild marker in ledger tx."""
+    if not _summary_fact_feature_enabled():
+        return
+    secret = os.environ.get("ONLINE_SUMMARY_FACT_HMAC_KEY", "")
+    if len(secret.encode("utf-8")) < 32:
+        raise RuntimeError("online_summary_fact_hmac_key_missing")
+    if settings.APP_ENVIRONMENT not in {"development", "staging"}:
+        raise RuntimeError("online_summary_fact_environment_unsupported")
+    if not settings.TASK_READ_MODEL_RUN_ID:
+        raise RuntimeError("online_summary_fact_run_id_missing")
+    from services.online_summary_read_model import (
+        build_online_summary_fact,
+        summary_fact_rebuild_reason,
+    )
+
+    identity = _summary_fact_identifiers(row, secret)
+    task_id = task_identity
+    rebuild_reason = summary_fact_rebuild_reason(
+        current_present=current is not None,
+        has_same_day_previous=previous is not None,
+        has_historical_previous=historical_previous is not None,
+        revision_gap=revision_gap,
+    )
+    if rebuild_reason:
+        error_code = rebuild_reason
+        await cur.execute(
+            "INSERT INTO _online_summary_fact_outbox "
+            "(event_id,business_date,parser_type,row_key_hmac,task_id,source_id,task_revision,status,error_code) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,'rebuild_required',%s) "
+            "ON DUPLICATE KEY UPDATE event_id=event_id",
+            (
+                identity["event_id"], row["business_date"], row["parser_type"],
+                _summary_row_key_hmac(row, secret), task_id, row["task_id"],
+                row["revision"], error_code,
+            ),
+        )
+        return
+
+    if current is None:
+        base = previous or historical_previous
+        if base is None:
+            return
+        community, inspector = str(base[3] or ""), str(base[4] or "")
+        task_state = str(base[0] or "unchecked")
+        unable_to_verify = int(previous[6] or 0) if previous else 0
+        reached_bottom = int(previous[7] or 0) if previous else 0
+        activity_kind = "removed"
+        deleted = True
+    else:
+        community, inspector = str(values["community"] or ""), str(values["inspector"] or "")
+        task_state = str(values["task_state"])
+        unable_to_verify = int(values["unable_to_verify"] or 0)
+        reached_bottom = int(values["reached_bottom"] or 0)
+        activity_kind = (
+            "new" if previous is None and historical_previous is None
+            else "state_transition" if transition
+            else "changed"
+        )
+        deleted = False
+    if not community or not inspector:
+        await cur.execute(
+            "INSERT INTO _online_summary_fact_outbox "
+            "(event_id,business_date,parser_type,row_key_hmac,task_id,source_id,task_revision,status,error_code) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,'rebuild_required','first_ownership_missing') "
+            "ON DUPLICATE KEY UPDATE event_id=event_id",
+            (
+                identity["event_id"], row["business_date"], row["parser_type"],
+                _summary_row_key_hmac(row, secret), task_id, row["task_id"], row["revision"],
+            ),
+        )
+        return
+    fact = build_online_summary_fact(
+        **identity,
+        environment=settings.APP_ENVIRONMENT,
+        run_id=settings.TASK_READ_MODEL_RUN_ID,
+        task_id=task_id,
+        row_key=row["row_key"],
+        source_id=int(row["task_id"]),
+        revision=int(row["revision"]),
+        task_revision=int(row["revision"]),
+        business_date=row["business_date"].isoformat(),
+        parser_type=row["parser_type"],
+        first_community=community,
+        first_inspector=inspector,
+        task_state=task_state,
+        included=int(values["included"]),
+        online_present=int(values["online_present"]),
+        unable_to_verify=unable_to_verify,
+        reached_bottom=reached_bottom,
+        effective_workload=int(values["effective_workload"]),
+        activity_kind=activity_kind,
+        occurred_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        secret=secret,
+        deleted=deleted,
+    )
+    payload = json.dumps(fact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    await cur.execute(
+        "INSERT INTO _online_summary_fact_outbox "
+        "(event_id,business_date,parser_type,row_key_hmac,task_id,source_id,task_revision,status,fact_json) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,'pending',%s) "
+        "ON DUPLICATE KEY UPDATE event_id=event_id",
+        (
+            fact["event_id"], row["business_date"], row["parser_type"], fact["row_key_hmac"],
+            task_id, row["task_id"], row["revision"], payload,
+        ),
+    )
+
+
+def _summary_row_key_hmac(row: dict[str, Any], secret: str) -> str:
+    from services.online_summary_read_model import summary_dimension_token
+
+    return summary_dimension_token(
+        row["row_key"], dimension="task_row", environment=settings.APP_ENVIRONMENT,
+        secret=secret,
+    )
 
 
 class UnsupportedSummaryParser(ValueError):
@@ -445,6 +654,10 @@ async def _ensure_incremental_report_tables(
 
 async def _apply_update(row: dict[str, Any]) -> None:
     current = await _load_authoritative_task(row)
+    task_identity = (
+        await _load_summary_task_identity(row)
+        if _summary_fact_feature_enabled() else ""
+    )
     if current is not None:
         if int(current["task_id"]) != int(row["task_id"]):
             raise StaleSummaryTrigger("superseded_by_task_identity")
@@ -474,6 +687,7 @@ async def _apply_update(row: dict[str, Any]) -> None:
                     return
                 previous_state = str(previous[0]) if previous else None
                 previous_workload = int(previous[1] or 0) if previous else 0
+                transition = 0
                 historical_previous = None
                 if previous is None:
                     # A trigger may be the first event for a new business
@@ -543,12 +757,27 @@ async def _apply_update(row: dict[str, Any]) -> None:
                             previous_workload, historical_workload, transition
                         ),
                     }
+                revision_gap = bool(
+                    previous is not None
+                    and int(row["revision"]) > int(previous[2] or 0) + 1
+                )
                 await _assert_authoritative_fence(row, current)
                 await cur.execute(
                     "INSERT INTO _daily_task_ledger (report_date,parser_type,row_key,source,included,online_present,community,inspector,task_state,unable_to_verify,reached_bottom,effective_workload,source_revision) "
                     "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                     "ON DUPLICATE KEY UPDATE source=VALUES(source),included=VALUES(included),online_present=VALUES(online_present),community=VALUES(community),inspector=VALUES(inspector),task_state=VALUES(task_state),unable_to_verify=VALUES(unable_to_verify),reached_bottom=VALUES(reached_bottom),effective_workload=VALUES(effective_workload),source_revision=VALUES(source_revision),updated_at=CURRENT_TIMESTAMP",
                     (row["business_date"], row["parser_type"], row["row_key"], values["source"], values["included"], values["online_present"], values["community"], values["inspector"], values["task_state"], values["unable_to_verify"], values["reached_bottom"], values["effective_workload"], row["revision"]),
+                )
+                await _write_online_summary_fact(
+                    cur,
+                    row=row,
+                    current=current,
+                    previous=previous,
+                    historical_previous=historical_previous,
+                    values=values,
+                    transition=transition,
+                    revision_gap=revision_gap,
+                    task_identity=task_identity,
                 )
                 await _refresh_affected_report_groups(
                     cur,

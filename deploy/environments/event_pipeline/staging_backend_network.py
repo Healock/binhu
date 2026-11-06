@@ -57,7 +57,7 @@ def validate_network(network: dict) -> None:
     for item in (network.get("Containers") or {}).values():
         name = item.get("Name", "")
         if name not in SERVICES and not re.fullmatch(
-                r"binhu-staging-event-pipeline-stg-[0-9]{8}-[0-9]{2}-(business-bridge|backend-outbox-relay)-1", name):
+                r"binhu-staging-event-pipeline-stg-[0-9]{8}-[0-9]{2}-(business-bridge|backend-outbox-relay|taskmanager)-1", name):
             raise ValueError("staging_access_network_foreign_member")
         container = inspect("container", name)
         labels = container.get("Config", {}).get("Labels", {}) or {}
@@ -67,7 +67,7 @@ def validate_network(network: dict) -> None:
             expected = name.rsplit("-", 3)[0]  # validate by exact compose name below
             project = labels.get("com.docker.compose.project", "")
             if (not re.fullmatch(r"binhu-staging-event-pipeline-stg-[0-9]{8}-[0-9]{2}", project)
-                    or name not in {project + "-business-bridge-1", project + "-backend-outbox-relay-1"}):
+                    or name not in {project + "-business-bridge-1", project + "-backend-outbox-relay-1", project + "-taskmanager-1"}):
                 raise ValueError("staging_access_network_foreign_member")
 
 

@@ -140,9 +140,18 @@ def _manifest_from_payload(archive: tarfile.TarFile, members: list[tarfile.TarIn
         source_path = Path(source_tmp.name)
     try:
         with tarfile.open(source_path, "r:gz") as source:
-            item = source.extractfile("deploy/environments/event_pipeline/PipelineJob.java")
-            if item is None or hashlib.sha256(item.read()).hexdigest() != str(pipeline_job.get("source_sha256", "")):
-                fail("candidate PipelineJob source hash mismatch")
+            hashes = []
+            for name in (
+                "deploy/environments/event_pipeline/PipelineJob.java",
+                "deploy/environments/event_pipeline/TaskReadModelRedisSink.java",
+            ):
+                item = source.extractfile(name)
+                if item is None:
+                    fail("candidate task read-model source missing")
+                hashes.append((name, hashlib.sha256(item.read()).hexdigest()))
+            source_hash = hashlib.sha256(json.dumps(hashes, separators=(",", ":")).encode()).hexdigest()
+            if source_hash != str(pipeline_job.get("source_sha256", "")):
+                fail("candidate task read-model source hash mismatch")
     finally:
         source_path.unlink(missing_ok=True)
     return payload
