@@ -95,8 +95,8 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
         raise ValueError("Flink SQL environment filter does not match run identity")
     if any(item["topic"] != topic_for(environment) for item in kafka_sources.values()):
         raise ValueError("Flink Kafka topic does not match environment identity")
-    if schema_versions != {"4", "5", "6"}:
-        raise ValueError("Flink SQL task/view-state schema versions are incomplete")
+    if schema_versions != {"4", "6"}:
+        raise ValueError("Flink SQL projection schema versions are incomplete")
     expected_sources = {
         "dev_events": {"consumer_group": f"{run_id}-flink", "topic": topic_for(environment)},
         "dev_task_events_redis": {
