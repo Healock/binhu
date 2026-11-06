@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -83,6 +84,8 @@ class FlinkSubmissionContractTests(unittest.TestCase):
 
     def test_job_attaches_redis_sink_to_the_submitted_stream_graph(self):
         source = open("deploy/environments/event_pipeline/PipelineJob.java", encoding="utf-8").read()
+        self.assertIn("args.length != 1", source)
+        self.assertIn("String runId = args[0];", source)
         self.assertIn("StreamTableEnvironment.create", source)
         self.assertIn("statementSet.attachAsDataStream()", source)
         self.assertIn("stream.execute(runId)", source)
@@ -144,13 +147,32 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             client.upload_jar("/tmp/other.jar")
         self.assertIn("path=@/tmp/dev-pipeline-job.jar", calls[0])
 
+    def test_run_jar_passes_the_validated_run_id_as_a_program_argument(self):
+        class Result:
+            returncode = 0
+            stdout = '{"jobid":"' + "a" * 32 + '"}\n__BINHU_HTTP_STATUS__:200'
+
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            return Result()
+
+        client = flink_submission.FlinkRest("dev-jobmanager", runner=runner)
+        self.assertEqual(client.run_jar("dev-pipeline-job.jar", RUN_ID), "a" * 32)
+        payload_index = calls[0].index("--data-binary") + 1
+        payload = json.loads(calls[0][payload_index])
+        self.assertEqual(payload["programArgsList"], [RUN_ID])
+        with self.assertRaisesRegex(ValueError, "pipeline run ID"):
+            client.run_jar("dev-pipeline-job.jar", "invalid")
+
     def test_uncertain_submission_reconciles_running_job_without_resubmit(self):
         class Client:
             def __init__(self):
                 self.run_calls = 0
                 self.overview_calls = 0
 
-            def run_jar(self, _jar_id):
+            def run_jar(self, _jar_id, _run_id):
                 self.run_calls += 1
                 raise flink_submission.FlinkRestError(
                     "flink_rest_transport_failed", "/jars/job.jar/run",
@@ -170,7 +192,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
 
     def test_uncertain_submission_preserves_transport_error_when_no_job_appears(self):
         class Client:
-            def run_jar(self, _jar_id):
+            def run_jar(self, _jar_id, _run_id):
                 raise flink_submission.FlinkRestError(
                     "flink_rest_timeout", "/jars/job.jar/run",
                 )
@@ -189,7 +211,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
                 self.run_calls = 0
                 self.overview_calls = 0
 
-            def run_jar(self, _jar_id):
+            def run_jar(self, _jar_id, _run_id):
                 self.run_calls += 1
                 raise flink_submission.FlinkRestError(
                     "flink_rest_transport_failed", "/jars/job.jar/run",
