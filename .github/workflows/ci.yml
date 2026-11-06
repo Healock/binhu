@@ -144,6 +144,7 @@ jobs:
           BINHU_MYSQL_PASSWORD: compose-validation
           BINHU_REDIS_PASSWORD: compose-validation
           BINHU_ENCRYPTION_KEY: compose-validation
+          BINHU_TASK_EVENT_ENCRYPTION_KEY: compose-validation
           BINHU_OPS_AGENT_TOKEN: compose-validation
         run: docker compose config --quiet
       - name: Run release notes tests
