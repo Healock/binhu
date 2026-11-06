@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from .runtime import configuration
+from .runtime import backend_relay_configuration, configuration
 from .services.kafka_delivery_store import SCHEMA_SQL
 from .flink_sql import render
 
