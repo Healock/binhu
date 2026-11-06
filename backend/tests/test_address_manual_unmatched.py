@@ -375,6 +375,17 @@ class ManualUnmatchedEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.conn.state["summary_updates"].append(kwargs)
 
         self.enqueue = AsyncMock(side_effect=enqueue)
+        async def execute_command(cur, **kwargs):
+            source = {
+                "revision": kwargs["spec"].expected_revision,
+                "physical_row": 101,
+                "values": {"原地址": "虚构原始地址", "现住址": "虚构现住址", "社区": "测试社区"},
+            }
+            authorization = await kwargs["authorize"](cur, source)
+            self.command_authorization = authorization
+            return await kwargs["mutate"](cur, source)
+
+        self.command = AsyncMock(side_effect=execute_command)
         self.matches = AsyncMock(return_value={
             "synthetic-row": {
                 "status": "manual_unmatched",
@@ -392,6 +403,7 @@ class ManualUnmatchedEndpointTests(unittest.IsolatedAsyncioTestCase):
             patch("routers.mobile_tasks.record_admin_audit", self.audit),
             patch("services.business_time.get_business_date", AsyncMock(return_value=date(2026, 9, 8))),
             patch("services.online_summary_updates.enqueue_online_summary_update", self.enqueue),
+            patch("routers.mobile_tasks.TaskCommandService.execute", self.command),
         ]
         for item in self.patches:
             self.enterContext(item)
@@ -421,6 +433,14 @@ class ManualUnmatchedEndpointTests(unittest.IsolatedAsyncioTestCase):
             self.conn.cursor_instance, "全链条", ["synthetic-row"],
         )
         self.assertEqual(self.conn.state["summary_updates"][0]["revision"], 6)
+        self.command.assert_awaited_once()
+        spec = self.command.await_args.kwargs["spec"]
+        self.assertEqual(spec.action, "address_conflict_resolve")
+        self.assertEqual(spec.expected_revision, 5)
+        self.assertEqual(
+            self.command_authorization.policy_key,
+            "online.address_match.manual_unmatched",
+        )
         self.feedback.assert_awaited_once()
         self.audit.assert_awaited_once()
 

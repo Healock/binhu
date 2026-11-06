@@ -27,6 +27,8 @@ class Delivery:
     attempt: int
     channel: str
     event_type: str = "task.saved"
+    schema_version: int = 4
+    environment: str = "development"
 
 
 def retry_delay(attempt: int, *, jitter: bool = True) -> float:
@@ -57,7 +59,10 @@ class KafkaRelay:
             return "idle"
         if delivery.channel not in {"events", "dlq"}:
             raise ValueError("unsupported delivery channel")
-        topic = delivery_topic(delivery.event_type, delivery.channel)
+        topic = delivery_topic(
+            delivery.event_type, delivery.channel, delivery.schema_version,
+            delivery.environment,
+        )
         try:
             await asyncio.wait_for(
                 self.producer.send_and_wait(topic, value=delivery.payload, key=delivery.key),

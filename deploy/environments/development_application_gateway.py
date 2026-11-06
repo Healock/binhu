@@ -456,6 +456,16 @@ def status() -> dict:
     return {"gateway": "dev-application", "environment": "development", "runs": runs[-10:]}
 
 
+def department_seed(run_id: str, phase: str) -> dict:
+    from .development_department_gateway import apply as seed_apply
+    from .development_department_gateway import measure as seed_measure
+    from .development_department_gateway import verify as seed_verify
+    actions = {"measure": seed_measure, "apply": seed_apply, "verify": seed_verify}
+    if phase not in actions:
+        refuse("fixed Dev department seed phase required")
+    return actions[phase](run_id)
+
+
 def main() -> None:
     import fcntl
     if os.name != "posix" or os.geteuid() != 0:
@@ -469,6 +479,8 @@ def main() -> None:
         try:
             if sys.argv[1:] == ["status"]:
                 result = status()
+            elif len(sys.argv) == 4 and sys.argv[1] == "department-seed":
+                result = department_seed(sys.argv[2], sys.argv[3])
             elif len(sys.argv) == 6 and sys.argv[1] == "prepare":
                 result = prepare(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
             elif len(sys.argv) == 4 and sys.argv[1] in {"measure", "reconcile", "apply"}:
@@ -486,7 +498,7 @@ def main() -> None:
             if action != "prepare":
                 reason = _operation_failure_code(error)
                 _audit(action, run_id=run_id, outcome="failed", details={"reason": reason})
-                if run_id and action != "restore-services":
+                if run_id and RUN_RE.fullmatch(run_id) and action != "restore-services":
                     root = _run_root(run_id)
                     if root.is_dir() and not root.is_symlink():
                         write_json(root / f"{action}-failure-{time.time_ns()}.json", {

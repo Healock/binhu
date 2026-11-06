@@ -117,12 +117,15 @@ async def sync_current_task_snapshots(
     )
 
 
-async def sync_current_task_snapshots_for_keys(cur, parser_type: str, row_keys: list[str]) -> None:
+async def sync_current_task_snapshots_for_keys(cur, parser_type: str, row_keys: list[str]) -> int:
     """增量投影时只同步受影响任务的人员标签快照。"""
     if not settings.REGISTRY_FEATURE_ENABLED or not row_keys:
-        return
+        return 0
     placeholders = ",".join(["%s"] * len(row_keys))
     registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+    online = settings.MYSQL_ONLINE_DATA_DB.replace("`", "")
+    if not SAFE_IDENTIFIER.fullmatch(registry) or not SAFE_IDENTIFIER.fullmatch(online):
+        raise ValueError("task view state database identity invalid")
     await cur.execute(
         f"""
         INSERT IGNORE INTO `{registry}`.online_task_watch_snapshots (
@@ -135,15 +138,22 @@ async def sync_current_task_snapshots_for_keys(cur, parser_type: str, row_keys: 
                COALESCE(projection.first_dispatch_at, projection.updated_at),
                assignment.id, COALESCE(version_info.version_no, 1),
                'active', 'incremental_match', UTC_TIMESTAMP()
-        FROM _online_source_projection projection
+        FROM `{online}`._online_source_projection projection
         JOIN `{registry}`.watch_people person
           ON person.identity_hmac=projection.identity_hmac
          AND person.status='active'
         JOIN `{registry}`.watch_assignments assignment
           ON assignment.person_id=person.id
-         AND assignment.valid_from<=COALESCE(projection.first_dispatch_at, projection.updated_at)
-         AND (assignment.valid_to IS NULL OR assignment.valid_to>=COALESCE(projection.first_dispatch_at, projection.updated_at))
-         AND (assignment.released_at IS NULL OR assignment.released_at>COALESCE(projection.first_dispatch_at, projection.updated_at))
+         AND (
+             (assignment.valid_from<=COALESCE(projection.first_dispatch_at, projection.updated_at)
+              AND (assignment.valid_to IS NULL OR assignment.valid_to>=COALESCE(projection.first_dispatch_at, projection.updated_at))
+              AND (assignment.released_at IS NULL OR assignment.released_at>COALESCE(projection.first_dispatch_at, projection.updated_at)))
+             OR (projection.parser_type='疑似未注销模型三'
+                 AND assignment.status='active'
+                 AND assignment.valid_from<=UTC_TIMESTAMP()
+                 AND (assignment.valid_to IS NULL OR assignment.valid_to>=UTC_TIMESTAMP())
+                 AND (assignment.released_at IS NULL OR assignment.released_at>UTC_TIMESTAMP()))
+         )
         LEFT JOIN (
             SELECT assignment_id, MAX(version_no) AS version_no
             FROM `{registry}`.watch_assignment_versions GROUP BY assignment_id
@@ -153,6 +163,41 @@ async def sync_current_task_snapshots_for_keys(cur, parser_type: str, row_keys: 
         """,
         (parser_type, *row_keys),
     )
+    inserted = max(0, int(cur.rowcount or 0))
+    await emit_watch_view_states_for_tasks(cur, parser_type, row_keys)
+    return inserted
+
+
+async def sync_current_watch_snapshots_for_identities(
+    cur, identity_hmacs: list[str],
+) -> int:
+    """Refresh only live task snapshots affected by a batch of people identities."""
+    unique = list(dict.fromkeys(
+        str(value).strip() for value in identity_hmacs if str(value).strip()
+    ))
+    if not unique or not settings.REGISTRY_FEATURE_ENABLED:
+        return 0
+    online = settings.MYSQL_ONLINE_DATA_DB.replace("`", "")
+    if not SAFE_IDENTIFIER.fullmatch(online):
+        raise ValueError("task view state database identity invalid")
+    affected: dict[str, list[str]] = {}
+    for offset in range(0, len(unique), 400):
+        batch = unique[offset:offset + 400]
+        placeholders = ",".join(["%s"] * len(batch))
+        await cur.execute(
+            f"SELECT parser_type,row_key FROM `{online}`.`_online_source_projection` "
+            f"WHERE identity_hmac IN ({placeholders}) ORDER BY parser_type,row_key",
+            batch,
+        )
+        for parser_type, row_key in await cur.fetchall():
+            affected.setdefault(str(parser_type), []).append(str(row_key))
+    refreshed = 0
+    for parser_type, row_keys in affected.items():
+        for offset in range(0, len(row_keys), 300):
+            refreshed += await sync_current_task_snapshots_for_keys(
+                cur, parser_type, row_keys[offset:offset + 300],
+            )
+    return refreshed
 
 
 async def _snapshot_assignment_row(
@@ -203,12 +248,25 @@ async def backfill_assignment_snapshots(conn, assignment_id: int) -> int:
         current_rows = await cur.fetchall()
         for parser_type, row_key, raw_values, first_dispatch_at, updated_at in current_rows:
             dispatch_at = first_dispatch_at or updated_at or datetime.utcnow()
-            if dispatch_at < valid_from or (valid_to and dispatch_at > valid_to) or (released_at and dispatch_at >= released_at):
+            in_dispatch_window = not (
+                dispatch_at < valid_from
+                or (valid_to and dispatch_at > valid_to)
+                or (released_at and dispatch_at >= released_at)
+            )
+            current_model_three_assignment = (
+                str(parser_type) == "疑似未注销模型三"
+                and valid_from <= datetime.utcnow()
+                and (valid_to is None or valid_to >= datetime.utcnow())
+                and (released_at is None or released_at > datetime.utcnow())
+            )
+            if not in_dispatch_window and not current_model_three_assignment:
                 continue
             await _snapshot_assignment_row(
                 cur, parser_type=str(parser_type), row_key=str(row_key), identity_hmac=identity_hmac,
                 dispatch_at=dispatch_at, assignment_id=assignment_id,
-                assignment_version=version_no, reason="historical_backfill",
+                assignment_version=version_no,
+                reason=("current_active_assignment" if current_model_three_assignment and not in_dispatch_window
+                        else "historical_backfill"),
             )
             inserted += int(cur.rowcount or 0)
 
@@ -316,10 +374,97 @@ async def backfill_assignment_snapshots(conn, assignment_id: int) -> int:
                     assignment_version=version_no, reason="historical_backfill",
                 )
                 inserted += int(cur.rowcount or 0)
+
+        await emit_watch_view_states_for_assignment(cur, assignment_id)
     return inserted
 
 
-async def task_watch_payload(cur, parser_type: str, row_keys: list[str]) -> dict[str, dict]:
+async def emit_watch_view_states_for_assignment(cur, assignment_id: int) -> None:
+    """Publish the complete watch state for tasks affected by one assignment."""
+    from services.task_view_state import (
+        enqueue_source_task_view_state, task_view_state_events_enabled,
+    )
+
+    if not task_view_state_events_enabled():
+        return
+    await cur.execute(
+        "SELECT DISTINCT parser_type,row_key FROM online_task_watch_snapshots "
+        "WHERE assignment_id=%s ORDER BY parser_type,row_key",
+        (assignment_id,),
+    )
+    affected_by_type: dict[str, list[str]] = {}
+    for parser_type, row_key in await cur.fetchall():
+        affected_by_type.setdefault(str(parser_type), []).append(str(row_key))
+    for parser_type, row_keys in affected_by_type.items():
+        await emit_watch_view_states_for_tasks(cur, parser_type, row_keys)
+
+
+async def emit_watch_view_states_for_tasks(
+    cur, parser_type: str, row_keys: list[str],
+) -> None:
+    """Publish complete watch state after task or assignment snapshots change."""
+    from services.task_view_state import (
+        enqueue_source_task_view_state, task_view_state_events_enabled,
+    )
+
+    if not task_view_state_events_enabled() or not row_keys:
+        return
+    online = settings.MYSQL_ONLINE_DATA_DB.replace("`", "")
+    registry = settings.MYSQL_REGISTRY_DB.replace("`", "")
+    if not SAFE_IDENTIFIER.fullmatch(online) or not SAFE_IDENTIFIER.fullmatch(registry):
+        raise ValueError("task view state database identity invalid")
+    for offset in range(0, len(row_keys), 300):
+        batch = list(dict.fromkeys(row_keys[offset:offset + 300]))
+        placeholders = ",".join(["%s"] * len(batch))
+        await cur.execute(
+            f"SELECT source.id,source.row_key,snapshot.first_dispatch_at,"
+            f"category.id,category.name,category.color,category.alert_level,"
+            f"assignment.status,assignment.source_type,snapshot.snapshot_status,"
+            f"snapshot.snapshot_reason FROM `{online}`.`_online_source_rows` source "
+            f"LEFT JOIN `{registry}`.`online_task_watch_snapshots` snapshot "
+            "ON snapshot.parser_type=source.parser_type AND snapshot.row_key=source.row_key "
+            f"LEFT JOIN `{registry}`.`watch_assignments` assignment "
+            "ON assignment.id=snapshot.assignment_id "
+            f"LEFT JOIN `{registry}`.`watch_categories` category "
+            "ON category.id=assignment.category_id "
+            "WHERE source.parser_type=%s AND source.row_key IN (" + placeholders + ") "
+            "AND source.archived_at IS NULL ORDER BY source.id,category.sort_order,category.id",
+            (parser_type, *batch),
+        )
+        states: dict[int, dict] = {}
+        for row in await cur.fetchall():
+            source_id = int(row[0])
+            state = states.setdefault(source_id, {
+                "row_key": str(row[1]), "first_dispatch_at": "", "watch_marks": [],
+            })
+            if row[3] is None:
+                continue
+            state["first_dispatch_at"] = state["first_dispatch_at"] or str(row[2] or "")
+            state["watch_marks"].append({
+                "category_id": int(row[3]), "name": str(row[4] or ""),
+                "color": str(row[5] or ""), "alert_level": str(row[6] or ""),
+                "assignment_status": str(row[7] or ""), "source_type": str(row[8] or ""),
+                "snapshot_status": str(row[9] or ""), "snapshot_reason": str(row[10] or ""),
+            })
+        for source_id, state in states.items():
+            marks = state.pop("watch_marks")
+            await enqueue_source_task_view_state(
+                cur, source_id=source_id, domain="watch",
+                state={
+                    "status": "active" if marks else "none",
+                    "first_dispatch_at": state["first_dispatch_at"],
+                    "watch_marks": marks,
+                },
+            )
+
+
+async def task_watch_payload(
+    cur,
+    parser_type: str,
+    row_keys: list[str],
+    *,
+    task_values_by_row: dict[str, dict] | None = None,
+) -> dict[str, dict]:
     if not row_keys:
         return {}
     placeholders = ",".join(["%s"] * len(row_keys))
@@ -358,6 +503,73 @@ async def task_watch_payload(cur, parser_type: str, row_keys: list[str]) -> dict
     # still needs to be visible on the live task.  Fill only missing
     # row/assignment pairs from the current active assignment state.
     if parser_type == "疑似未注销模型三":
+        if settings.TASK_READ_MODEL_ENABLED:
+            from services.parsers import get_parser
+
+            parser = get_parser(parser_type)
+            identities: dict[str, tuple[str, datetime]] = {}
+            for row_key in row_keys:
+                values = (task_values_by_row or {}).get(row_key)
+                if not isinstance(values, dict):
+                    continue
+                identity_hmac = projection_identity(parser_type, values, parser.COLUMNS)
+                if identity_hmac:
+                    identities[row_key] = (
+                        identity_hmac,
+                        parse_dispatch_time(values, _dispatch_fields(parser_type, parser.COLUMNS)),
+                    )
+            if identities:
+                identity_values = list(dict.fromkeys(value[0] for value in identities.values()))
+                identity_placeholders = ",".join(["%s"] * len(identity_values))
+                await cur.execute(
+                    f"""
+                    SELECT person.identity_hmac, category.id, category.name,
+                           category.color, category.alert_level, assignment.status,
+                           assignment.source_type, assignment.id
+                    FROM `{registry}`.watch_people person
+                    JOIN `{registry}`.watch_assignments assignment
+                      ON assignment.person_id=person.id
+                     AND assignment.status='active'
+                     AND assignment.valid_from<=UTC_TIMESTAMP()
+                     AND (assignment.valid_to IS NULL OR assignment.valid_to>=UTC_TIMESTAMP())
+                     AND (assignment.released_at IS NULL OR assignment.released_at>UTC_TIMESTAMP())
+                    JOIN `{registry}`.watch_categories category
+                      ON category.id=assignment.category_id AND category.is_active=1
+                    WHERE person.identity_hmac IN ({identity_placeholders})
+                      AND person.status='active'
+                    ORDER BY category.sort_order, category.id
+                    """,
+                    tuple(identity_values),
+                )
+                by_identity: dict[str, list[str]] = {}
+                for row_key, (identity_hmac, _dispatch_at) in identities.items():
+                    by_identity.setdefault(identity_hmac, []).append(row_key)
+                existing = {
+                    (row_key, int(mark["category_id"]))
+                    for row_key, payload in result.items()
+                    for mark in payload["watch_marks"]
+                }
+                for row in await cur.fetchall():
+                    identity_hmac = str(row[0] or "")
+                    category_id = int(row[1])
+                    for row_key in by_identity.get(identity_hmac, []):
+                        if (row_key, category_id) in existing:
+                            continue
+                        item = result.setdefault(
+                            row_key,
+                            {"first_dispatch_at": identities[row_key][1], "watch_marks": []},
+                        )
+                        item["watch_marks"].append({
+                            "category_id": int(row[1]), "name": str(row[2]),
+                            "color": str(row[3]), "alert_level": str(row[4]),
+                            "assignment_status": str(row[5]),
+                            "source_type": str(row[6]),
+                            "snapshot_status": "active",
+                            "snapshot_reason": "current_registry_tag",
+                        })
+                        existing.add((row_key, category_id))
+            return result
+
         await cur.execute(
             f"""
             SELECT projection.row_key, projection.first_dispatch_at,

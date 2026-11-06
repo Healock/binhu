@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import copy
 from decimal import Decimal
 import importlib.util
@@ -41,6 +42,7 @@ from deploy.environments.event_pipeline.dual_track_monitor import (
 from deploy.environments.event_pipeline.business_bridge import event_to_task_event
 from deploy.environments.event_pipeline.verify import fixture, acceptance_event_ids
 from deploy.environments.event_pipeline.services.backend_outbox_relay import BackendOutboxRelay
+import hashlib
 
 
 def settings():
@@ -48,6 +50,7 @@ def settings():
             "MYSQL_HOST": "dev-derived-mysql", "MYSQL_DATABASE": "Dev_EventPipeline",
             "MYSQL_USER": "dev_pipeline", "MYSQL_PASSWORD": "a" * 48,
             "REDIS_HOST": "dev-derived-redis", "REDIS_PASSWORD": "b" * 48,
+            "BACKEND_REDIS_URL": "redis://:fixture@redis:6379/0",
             "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092"}
 
 
@@ -114,8 +117,58 @@ class FlinkStateContractTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "PipelineJob.java").read_text(encoding="utf-8")
         self.assertIn("createStatementSet()", source)
         self.assertIn("addInsertSql(command)", source)
-        self.assertIn("statementSet.execute()", source)
+        self.assertIn("statementSet.attachAsDataStream()", source)
+        self.assertIn("stream.execute(runId)", source)
+        self.assertIn('name("task-read-model-redis")', source)
+        self.assertIn('FROM dev_task_events_redis WHERE environment=', source)
+        sink = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "TaskReadModelRedisSink.java").read_text(encoding="utf-8")
+        self.assertIn('"task.archived"', sink)
+        self.assertIn('"t_suspect_unrevoked"', sink)
+        self.assertIn('timestamp.matches(', sink)
         self.assertNotIn("statementSet.addInsertSql(command);\n                    }\n                    table.executeSql(command)", source)
+        self.assertIn("schema_version=4 OR schema_version=5 OR schema_version=6", source)
+        self.assertIn("schemaVersion == 5", sink)
+        self.assertIn("task-view-state-v1", sink)
+        self.assertIn("row_group_token", sink)
+        self.assertIn(":group:", sink)
+        self.assertIn(":gidx:all", sink)
+        self.assertIn(":gidx-community:", sink)
+        self.assertIn("group-community", sink)
+        self.assertIn("rebuild_group(old_group)", sink)
+        self.assertIn("rebuild_group(new_group)", sink)
+        self.assertIn("legacyRowGroupToken", sink)
+        self.assertIn("groupToken(parser, md5(key.toString()))", sink)
+        self.assertIn("case \"t_police_stats\"", sink)
+        self.assertIn("case \"t_suzhou_police\"", sink)
+
+    def test_view_state_sink_maintains_hmac_task_and_canonical_group_indexes(self):
+        sink = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "TaskReadModelRedisSink.java").read_text(encoding="utf-8")
+        self.assertIn('token("state:" + domain + ":" + field, value)', sink)
+        self.assertIn(':stateidx:v1:', sink)
+        self.assertIn(':view-state:" + taskId + ":" + domain + ":index:v1:members', sink)
+        self.assertIn(':gidx-state:v1:', sink)
+        self.assertIn('return "binhu:task-rm:v4:" + environment + ":" + runId', sink)
+        self.assertIn("rebuild_group_state(old_group)", sink)
+        self.assertIn("rebuild_group_state(new_group)", sink)
+        self.assertIn("rebuild_domain_group(row_group)", sink)
+        self.assertIn("task_revision') == task_revision", sink)
+        self.assertIn("'removed') == '0'", sink)
+        self.assertIn("SISMEMBER',index_key,canonical_task", sink)
+        self.assertIn("ZRANGE',members,0,0)[1]", sink)
+        self.assertIn("STATE_ENUMS.getOrDefault(domain, Set.of()).contains(value)", sink)
+        self.assertIn('stateIndexKey(domain, "category_id", value)', sink)
+        self.assertIn('stateIndexKey(domain, "small_community_name", value)', sink)
+
+    def test_schema_registry_contract_accepts_v4_v6_tasks_and_v5_view_states(self):
+        contract = schema_registry.schema("development")
+        alternatives = contract["oneOf"]
+        versions = {
+            tuple(item["properties"]["schema_version"]["const"] for _ in [0])
+            for item in alternatives
+        }
+        self.assertEqual(versions, {(4,), (5,), (6,)})
+        self.assertIn("view_domain", contract["properties"])
+        self.assertIn("task_revision", contract["properties"])
 
     def test_control_failure_detail_is_safe_and_keeps_flink_gate_reason(self):
         self.assertEqual(
@@ -141,18 +194,100 @@ class FlinkStateContractTests(unittest.TestCase):
 
 
 class BusinessBridgeTests(unittest.TestCase):
+    def test_business_bridge_preserves_encrypted_view_state_contract(self):
+        event_id = "11111111-1111-4111-8111-111111111111"
+        operation_id = "22222222-2222-4222-8222-222222222222"
+        aad = json.dumps({
+            "contract": "binhu.task-view-state.v1", "domain": "task_graph",
+            "domain_revision": 4, "environment": "development",
+            "event_id": event_id, "run_id": "dev-view-state-test",
+            "task_id": "t_fullchain:17", "task_revision": 9,
+        }, sort_keys=True, separators=(",", ":")).encode()
+        sealed = b"ciphertext"
+        envelope = {
+            "algorithm": "AES-256-GCM", "key_version": "task-view-state-v1",
+            "nonce": base64.urlsafe_b64encode(b"0123456789ab").decode().rstrip("="),
+            "ciphertext": base64.urlsafe_b64encode(sealed).decode().rstrip("="),
+            "aad": base64.urlsafe_b64encode(aad).decode().rstrip("="),
+            "ciphertext_sha256": hashlib.sha256(sealed).hexdigest(),
+        }
+        source = {
+            "schema_version": 5, "event_id": event_id,
+            "event_type": "online.task.view_state_changed", "domain": "online",
+            "aggregate_type": "task_view_state", "aggregate_id": "t_fullchain:17",
+            "task_id": "t_fullchain:17", "source_id": 17,
+            "operation_id": operation_id, "aggregate_revision": 4,
+            "occurred_at": "2026-11-05T00:00:00Z",
+            "view_state": {"domain": "task_graph", "task_revision": 9, "removed": False},
+            "encrypted_payload": envelope,
+        }
+
+        converted = event_to_task_event(source, "dev-view-state-test")
+
+        self.assertEqual(converted["schema_version"], 5)
+        self.assertEqual(converted["view_domain"], "task_graph")
+        self.assertEqual(converted["task_revision"], 9)
+        self.assertEqual(converted["encrypted_payload"], envelope)
+        self.assertEqual(validate_event(converted), converted)
+
     def test_business_bridge_strips_body_and_maps_stable_metadata(self):
-        source = {"event_id": "11111111-1111-4111-8111-111111111111",
-                  "event_type": "online.task.changed", "aggregate_id": "全链条:opaque-row-key",
-                  "aggregate_revision": 7, "occurred_at": "2026-09-12T00:00:00Z",
+        ciphertext = b"opaque-ciphertext"
+        event_id = "11111111-1111-4111-8111-111111111111"
+        command_id = "33333333-3333-4333-8333-333333333333"
+        operation_id = "22222222-2222-4222-8222-222222222222"
+        aad = json.dumps({"command_id": command_id, "contract": "binhu.task-snapshot.v2",
+                          "environment": "development", "event_id": event_id,
+                          "revision": 7, "task_id": "t_fullchain:1"},
+                         sort_keys=True, separators=(",", ":")).encode()
+        source = {"schema_version": 4, "command_id": command_id, "event_id": event_id,
+                  "event_type": "online.task.changed", "domain": "online",
+                  "aggregate_type": "online_task", "aggregate_id": "t_fullchain:1",
+                  "task_id": "t_fullchain:1", "source_id": 9,
+                  "operation_id": operation_id,
+                  "changed_fields": ["check_result"], "aggregate_revision": 7,
+                  "occurred_at": "2026-09-12T00:00:00Z",
+                  "encrypted_payload": {"algorithm": "AES-256-GCM", "key_version": "task-event-v2",
+                      "nonce": "MDEyMzQ1Njc4OWFi", "ciphertext": "b3BhcXVlLWNpcGhlcnRleHQ",
+                      "aad": __import__("base64").urlsafe_b64encode(aad).decode().rstrip("="),
+                      "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest()},
                   "detail": "must never be copied"}
         converted = event_to_task_event(source, "dev-acceptance-01")
         self.assertIsNotNone(converted)
-        self.assertEqual(converted["task_id"].split(":")[0], "t_fullchain")
+        self.assertEqual(converted["task_id"], "t_fullchain:1")
         self.assertEqual(converted["revision"], 7)
-        self.assertEqual(converted["event_id"], converted["operation_id"])
+        self.assertEqual(converted["operation_id"], source["operation_id"])
+        self.assertEqual(converted["schema_version"], 4)
+        self.assertEqual(converted["command_id"], command_id)
+        self.assertEqual(converted["encrypted_payload"], source["encrypted_payload"])
         self.assertNotIn("detail", converted)
         self.assertEqual(event_to_task_event(source, "dev-acceptance-01"), converted)
+
+    def test_business_bridge_extracts_authenticated_group_token_for_v6(self):
+        event_id = "11111111-1111-4111-8111-111111111111"
+        command_id = "33333333-3333-4333-8333-333333333333"
+        operation_id = "22222222-2222-4222-8222-222222222222"
+        token = "a" * 64
+        aad = json.dumps({"command_id": command_id, "contract": "binhu.task-snapshot.v3",
+                          "environment": "development", "event_id": event_id,
+                          "revision": 7, "row_group_token": token,
+                          "task_id": "t_fullchain:1"},
+                         sort_keys=True, separators=(",", ":")).encode()
+        ciphertext = b"opaque-ciphertext"
+        source = {"schema_version": 6, "command_id": command_id, "event_id": event_id,
+                  "event_type": "online.task.changed", "domain": "online",
+                  "aggregate_type": "online_task", "aggregate_id": "t_fullchain:1",
+                  "task_id": "t_fullchain:1", "source_id": 9,
+                  "operation_id": operation_id,
+                  "changed_fields": ["check_result"], "aggregate_revision": 7,
+                  "occurred_at": "2026-09-12T00:00:00Z",
+                  "encrypted_payload": {"algorithm": "AES-256-GCM", "key_version": "task-event-v3",
+                      "nonce": "MDEyMzQ1Njc4OWFi", "ciphertext": "b3BhcXVlLWNpcGhlcnRleHQ",
+                      "aad": base64.urlsafe_b64encode(aad).decode().rstrip("="),
+                      "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest()}}
+        converted = event_to_task_event(source, "dev-acceptance-01")
+        self.assertEqual(converted["row_group_token"], token)
+        self.assertEqual(converted["schema_version"], 6)
+        self.assertEqual(validate_event(converted), converted)
 
     def test_business_bridge_rejects_unknown_events(self):
         source = {"event_id": "11111111-1111-4111-8111-111111111111",
@@ -615,6 +750,7 @@ volumes:
 
             with patch.object(control, "ROOT", root), patch.object(control, "measure", return_value={}), \
                     patch.object(control.subprocess, "run", side_effect=run), \
+                    patch.object(control, "_ensure_summary_topics", return_value=["dev.online-summary.facts.v1"]), \
                     patch.object(control, "_submit_and_verify_flink", side_effect=ValueError("identity mismatch")):
                 with self.assertRaisesRegex(ValueError, "identity mismatch"):
                     control.apply()
@@ -634,8 +770,8 @@ volumes:
 
         identity = {
             "run_id": run_id,
-            "consumer_group": f"{run_id}-flink",
-            "topic": "dev.task.events.v1",
+            "consumer_groups": [f"{run_id}-flink", f"{run_id}-flink-redis"],
+            "topics": ["dev.task.read-model.v4"],
             "environment": "development",
         }
         candidate = {
@@ -646,7 +782,7 @@ volumes:
         verified = {
             "run_id": run_id,
             "job_count": 1,
-            "consumer_group": f"{run_id}-flink",
+            "consumer_groups": [f"{run_id}-flink", f"{run_id}-flink-redis"],
             "job_ids": ["jid-current"],
         }
         with tempfile.TemporaryDirectory() as tmp, \
@@ -688,10 +824,12 @@ volumes:
         for service in spec["services"].values():
             self.assertEqual(service["labels"], {"binhu.environment": "development"})
             self.assertEqual(service["environment"]["APP_ENVIRONMENT"], "development")
-            self.assertEqual(set(service["networks"]), {"internal"})
+            expected_networks = {"internal", "backend"} if service is spec["services"]["taskmanager"] else {"internal"}
+            self.assertEqual(set(service["networks"]), expected_networks)
             self.assertEqual(service["pids_limit"], 256)
             self.assertEqual(service["volumes"][0]["source"], "flink-checkpoints")
         taskmanager = spec["services"]["taskmanager"]
+        self.assertEqual(taskmanager["env_file"], ["/srv/binhu-environments/development-pipeline/flink-task.env"])
         self.assertEqual(taskmanager["environment"]["TASK_MANAGER_NUMBER_OF_TASK_SLOTS"], "3")
         self.assertIn("taskmanager.numberOfTaskSlots: 3", taskmanager["environment"]["FLINK_PROPERTIES"])
         self.assertEqual(
@@ -793,16 +931,38 @@ volumes:
         schema = schema_registry.schema()
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(schema["properties"]["environment"], {"const": "development"})
-        response = {"schemaType": "JSON", "schema": json.dumps(schema), "id": 1, "version": 1}
-        with patch.object(schema_registry, "request", return_value=response):
-            self.assertTrue(schema_registry.verify()["verified"])
-        response["schema"] = "{}"
-        with patch.object(schema_registry, "request", return_value=response), self.assertRaises(ValueError):
+        def response(path, method="GET", body=None, *, subject=schema_registry.SUBJECT):
+            contract = (schema_registry.summary_schema("development")
+                        if subject == schema_registry.summary_subject_for("development")
+                        else schema)
+            return {"schemaType": "JSON", "schema": json.dumps(contract), "id": 1, "version": 1}
+        with patch.object(schema_registry, "request", side_effect=response):
+            verified = schema_registry.verify()
+            self.assertTrue(verified["verified"])
+            self.assertIn("online_summary", verified["subjects"])
+        with patch.object(schema_registry, "request", return_value={"schemaType": "JSON", "schema": "{}", "id": 1, "version": 1}), self.assertRaises(ValueError):
             schema_registry.verify()
         with self.assertRaises(ValueError):
             schema_registry.request("/subjects/production/versions")
         with self.assertRaises(ValueError):
             schema_registry.NoRedirect().redirect_request(None, None, 302, None, None, "https://external.invalid")
+
+    def test_summary_topic_creation_is_fixed_and_replicated(self):
+        from deploy.environments.event_pipeline.control import _ensure_summary_topics
+        calls = []
+        with patch("deploy.environments.event_pipeline.control._run_checked",
+            side_effect=lambda command: calls.append(command) or SimpleNamespace(stdout="dev.online-summary.facts.v1 dev.online-summary.facts.dlq.v1"),
+        ):
+            topics = _ensure_summary_topics("development")
+        self.assertEqual(topics, ["dev.online-summary.facts.v1", "dev.online-summary.facts.dlq.v1"])
+        self.assertTrue(all("--replication-factor" in command for command in calls[:2]))
+
+    def test_delivery_ledger_event_identity_is_scoped_to_run(self):
+        self.assertIn("PRIMARY KEY (run_id, event_id)", kafka_delivery_store.SCHEMA_SQL)
+        migration = Path("deploy/environments/event_pipeline/delivery_schema_migrate.py").read_text(encoding="utf-8")
+        self.assertIn("DROP PRIMARY KEY, ", migration)
+        self.assertIn("ADD PRIMARY KEY (run_id,event_id)", migration)
+        self.assertIn("delivery_primary_key_missing", migration)
 
     def test_apicurio_endpoint_and_durable_dev_registry(self):
         self.assertEqual(schema_registry.BASE, "http://schema-registry:8080/apis/ccompat/v7")
@@ -848,11 +1008,22 @@ volumes:
                "BACKEND_REDIS_URL": "redis://:synthetic@redis:6379/0"}
         result = backend_relay_configuration(env)
         self.assertEqual(result["BACKEND_MYSQL_DATABASE"], "Dev_OnlineData")
+        self.assertFalse(result["BACKEND_SUMMARY_FACT_RELAY_ENABLED"])
+        enabled = backend_relay_configuration({
+            **env, "BACKEND_SUMMARY_FACT_RELAY_ENABLED": "true",
+            "BACKEND_SUMMARY_MYSQL_DATABASE": "Dev_daily_report",
+        })
+        self.assertTrue(enabled["BACKEND_SUMMARY_FACT_RELAY_ENABLED"])
         for key, value in (("APP_ENVIRONMENT", "production"),
                            ("BACKEND_MYSQL_HOST", "binhu-mysql"),
                            ("BACKEND_REDIS_URL", "redis://production:6379/0")):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 backend_relay_configuration({**env, key: value})
+        with self.assertRaises(ValueError):
+            backend_relay_configuration({
+                **env, "BACKEND_SUMMARY_FACT_RELAY_ENABLED": "true",
+                "BACKEND_SUMMARY_MYSQL_DATABASE": "daily_report",
+            })
 
     def test_compose_includes_isolated_backend_outbox_relay(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
@@ -873,6 +1044,7 @@ volumes:
         self.assertEqual(control.expected_networks("backend-outbox-relay"), {"binhu-development_internal"})
         self.assertEqual(control.expected_networks("business-bridge"), {"binhu-development-eventbus_internal", "binhu-development_internal"})
         self.assertEqual(control.expected_networks("relay"), {"binhu-development-eventbus_internal"})
+        self.assertEqual(control.expected_networks("taskmanager"), {"binhu-development-eventbus_internal", "binhu-development_internal"})
 
     def test_compose_includes_isolated_python_metadata_worker(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
@@ -1185,7 +1357,9 @@ volumes:
                     {**event(), "run_id": "dev-x'; DROP TABLE x"}):
             with self.assertRaises(EventContractError):
                 validate_event(bad)
-        self.assertEqual(delivery_topic("task.saved", "events"), "dev.task.events.v1")
+        self.assertEqual(delivery_topic("task.saved", "events", 1), "dev.task.events.v1")
+        self.assertEqual(delivery_topic("task.saved", "events", 4), "dev.task.read-model.v4")
+        self.assertEqual(delivery_topic("task.view_state.changed", "events", 5), "dev.task.read-model.v4")
         with self.assertRaises(EventContractError):
             delivery_topic("venue.sync.requested", "events")
 
@@ -1224,11 +1398,14 @@ volumes:
         sql = render(settings())
         for expected in ("MAX(revision)", "run_id = 'dev-test-1'", "environment = 'development'",
                          "PRIMARY KEY (run_id, task_id, source_id)", "execution.checkpointing.interval",
-                         "dev.task.events.v1", "Dev_EventPipeline", "dev_task_metadata",
+                         "dev.task.read-model.v4", "Dev_EventPipeline", "dev_task_metadata",
+                         "CREATE TABLE dev_task_events_redis",
+                         "'properties.group.id' = 'dev-test-1-flink'",
+                         "'properties.group.id' = 'dev-test-1-flink-redis'",
                          "event_count", "changed_field_count", "CARDINALITY(changed_fields)",
                          "dev_unique_events", "COUNT(DISTINCT event_id)",
                          "MAX(CARDINALITY(changed_fields)) AS changed_field_count",
-                         "GROUP BY schema_version, event_id, event_type, task_id, source_id, revision",
+                         "GROUP BY schema_version, event_id, command_id, event_type, task_id, source_id, revision",
                          "SUM(changed_field_count)",
                          "SUM(CASE WHEN event_type='task.created' THEN 1 ELSE 0 END)",
                          "SUM(CASE WHEN event_type='task.deleted' THEN 1 ELSE 0 END)"):
@@ -1518,6 +1695,22 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(service["networks"], ["internal"])
         self.assertNotIn("backend", service["networks"])
+
+    def test_task_transport_workers_bind_complete_candidate_contract(self):
+        images = {name: "sha256:" + char * 64 for name, char in
+                  (("mysql", "1"), ("redis", "2"), ("worker", "3"), ("flink", "4"))}
+        services = compose(images)["services"]
+        for name, filenames in event_prepare.WORKER_SERVICE_MODULES.items():
+            service = services[name]
+            for filename in filenames:
+                module = event_prepare.WORKER_CANDIDATE_MODULES[filename]
+                with self.subTest(service=name, module=module):
+                    self.assertIn(
+                        f"./{filename}:/opt/dev-pipeline/event_pipeline/{module}:ro",
+                        service["volumes"],
+                    )
+                    self.assertIn(filename, event_prepare.PUBLIC_CANDIDATE_FILES)
+                    self.assertTrue((Path(event_prepare.__file__).parent / module).is_file())
 
     def test_parallel_relay_workers_share_producer_but_not_delivery_store(self):
         pool, producer = object(), object()

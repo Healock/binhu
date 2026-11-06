@@ -206,6 +206,42 @@ async def record_registration_event(
             actor_user_id,
         ),
     )
+    await emit_registration_view_state(cur, parser_type, row_key, source_id=source_id)
+
+
+async def emit_registration_view_state(
+    cur, parser_type: str, row_key: str, *, source_id: int | None = None,
+) -> None:
+    from services.task_view_state import (
+        enqueue_source_task_view_state, task_view_state_events_enabled,
+    )
+    if not task_view_state_events_enabled():
+        return
+    await cur.execute(
+        "SELECT source_id,property_id,property_version,status,reason_code,match_count,"
+        "selected_by,confirmed_by,manual_reason FROM _task_registration_links "
+        "WHERE parser_type=%s AND row_key=%s",
+        (parser_type, row_key),
+    )
+    link = await cur.fetchone()
+    if not link:
+        return
+    current_source_id = int(link[0] or source_id or 0)
+    if current_source_id < 1:
+        return
+    await enqueue_source_task_view_state(
+        cur, source_id=current_source_id, domain="registration",
+        state={
+            "status": str(link[3] or ""),
+            "reason_code": str(link[4] or ""),
+            "property_id": int(link[1]) if link[1] is not None else None,
+            "property_version": int(link[2]) if link[2] is not None else None,
+            "match_count": int(link[5] or 0),
+            "selected_by": int(link[6]) if link[6] is not None else None,
+            "confirmed_by": int(link[7]) if link[7] is not None else None,
+            "manual_reason": str(link[8] or ""),
+        },
+    )
 
 
 async def ensure_missing_registration_review(
@@ -259,6 +295,9 @@ async def ensure_missing_registration_review(
             task_community[:200],
             reason_code,
         ),
+    )
+    await emit_registration_view_state(
+        cur, parser_type, row_key, source_id=unique_source.get("id"),
     )
 
 
@@ -483,6 +522,7 @@ async def save_pending_registration_address(
         (parser_type, row_key, source_id, source_revision, source_row_hash[:64],
          task_community[:200], user_id),
     )
+    await emit_registration_view_state(cur, parser_type, row_key, source_id=source_id)
 
 
 async def migrate_registration_link(

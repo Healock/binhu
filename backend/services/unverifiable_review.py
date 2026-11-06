@@ -470,6 +470,28 @@ async def _event(
         flow_id, stage, action, outcome, text or None, actor_user_id,
         int(automatic), source_revision, source_row_hash, safe_reason_code,
     ))
+    from services.task_view_state import (
+        enqueue_source_task_view_state, task_view_state_events_enabled,
+    )
+    if task_view_state_events_enabled():
+        await cur.execute(
+            "SELECT id,source_id,state,flow_version,review_due_date,feedback_submitted,"
+            "safe_reason_code FROM _unverifiable_review_flows WHERE id=%s",
+            (flow_id,),
+        )
+        row = await cur.fetchone()
+        if row and row[1] is not None:
+            await enqueue_source_task_view_state(
+                cur, source_id=int(row[1]), domain="review",
+                state={
+                    "flow_id": int(row[0]),
+                    "state": str(row[2] or ""),
+                    "flow_version": int(row[3] or 0),
+                    "review_due_date": _iso(row[4]),
+                    "feedback_submitted": bool(row[5]),
+                    "safe_reason_code": str(row[6] or ""),
+                },
+            )
 
 
 async def ensure_flow_for_values(

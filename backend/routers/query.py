@@ -73,6 +73,19 @@ from services.work_activity import (
 )
 from services.domain_events import enqueue_event
 from services.derived_projection_adapter import read_derived_projection, selected_engine
+from services.domain_events import (
+    stable_task_id,
+    task_changed_field_categories,
+    task_event_type_for_action,
+)
+from services.task_commands import (
+    TaskCommandService,
+    TaskAuthorizationResult,
+    TaskCommandSpec,
+    TaskCommandRevisionConflict,
+    TaskCommandSourceUnavailable,
+    TaskMutationResult,
+)
 from services.task_assignment_responsibility import (
     capture_first_assignment,
     migrate_responsibility_row_key,
@@ -222,33 +235,85 @@ async def _create_local_source_rows_bulk(
             results: list[dict] = []
             for entry in normalized:
                 values, row_key = entry["values"], entry["row_key"]
-                await cur.execute(
-                    f"INSERT INTO `{parser.table_name}` (_row_key, "
-                    + ", ".join(f"`{column}`" for column in parser.COLUMNS)
-                    + ") VALUES (" + ", ".join(["%s"] * (len(parser.COLUMNS) + 1)) + ")",
-                    [row_key, *[values[column] for column in parser.COLUMNS]],
+                command_result: dict[str, Any] = {}
+
+                async def authorize_create(command_cur, _current_source):
+                    formal = await validate_new_row_scope(
+                        command_cur, user, parser, values,
+                    )
+                    if formal:
+                        values[parser.COMMUNITY_COLUMN] = formal
+                        entry["row_key"] = parser.make_row_key(values)
+                    command_result["row_key"] = parser.make_row_key(values)
+                    scope = str(values.get(parser.COMMUNITY_COLUMN) or "").strip()
+                    return TaskAuthorizationResult(
+                        policy_key="online.raw.row_manage",
+                        scope_values=(scope,) if scope else (),
+                    )
+
+                async def create_mutation(command_cur, _current_source):
+                    current_key = command_result["row_key"]
+                    await command_cur.execute(
+                        f"INSERT INTO `{parser.table_name}` (_row_key, "
+                        + ", ".join(f"`{column}`" for column in parser.COLUMNS)
+                        + ") VALUES (" + ", ".join(["%s"] * (len(parser.COLUMNS) + 1)) + ")",
+                        [current_key, *[values[column] for column in parser.COLUMNS]],
+                    )
+                    physical_row = int(command_cur.lastrowid)
+                    row_hash = local_row_hash(values)
+                    await command_cur.execute(
+                        "INSERT INTO _online_source_rows (spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,values_json,cell_meta_json,revision,refreshed_at,source_kind,source_ref) "
+                        "VALUES (0,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),'local_table',%s)",
+                        (parser_type, local_sheet_id(parser_type), physical_row, current_key, row_hash, stable_json(values), stable_json({column: {"type": "text"} for column in parser.COLUMNS}), f"{parser.table_name}:{physical_row}"),
+                    )
+                    source_id = int(command_cur.lastrowid)
+                    await command_cur.execute(
+                        "INSERT INTO _local_source_records (parser_type,local_task_id,business_key,source_kind,source_ref,values_json,content_hash,status) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active')",
+                        (parser_type, physical_row, current_key, f"{parser.table_name}:{physical_row}", stable_json(values), row_hash),
+                    )
+                    task_id = stable_task_id(parser.table_name, physical_row)
+                    command_result.update({
+                        "physical_row": physical_row,
+                        "source_id": source_id,
+                        "task_id": task_id,
+                        "row_key": current_key,
+                    })
+                    return TaskMutationResult(
+                        revision=1,
+                        snapshot=values,
+                        changed_fields=("task_state",),
+                        task_id=task_id,
+                        source_id=source_id,
+                    )
+
+                await TaskCommandService.execute(
+                    cur,
+                    spec=TaskCommandSpec(
+                        actor_id=int(user.get("id") or 0),
+                        environment=settings.APP_ENVIRONMENT,
+                        parser_type=parser_type,
+                        task_id=None,
+                        source_id=None,
+                        action="create",
+                        event_type="online.task.created",
+                        expected_revision=None,
+                        audiences=("authenticated",),
+                    ),
+                    authorize=authorize_create,
+                    mutate=create_mutation,
                 )
-                physical_row = int(cur.lastrowid)
-                row_hash = local_row_hash(values)
-                await cur.execute(
-                    "INSERT INTO _online_source_rows (spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,values_json,cell_meta_json,revision,refreshed_at,source_kind,source_ref) "
-                    "VALUES (0,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),'local_table',%s)",
-                    (parser_type, local_sheet_id(parser_type), physical_row, row_key, row_hash, stable_json(values), stable_json({column: {"type": "text"} for column in parser.COLUMNS}), f"{parser.table_name}:{physical_row}"),
-                )
-                await cur.execute(
-                    "INSERT INTO _local_source_records (parser_type,local_task_id,business_key,source_kind,source_ref,values_json,content_hash,status) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active')",
-                    (parser_type, physical_row, row_key, f"{parser.table_name}:{physical_row}", stable_json(values), row_hash),
-                )
-                results.append({"draft_id": entry["item"].draft_id, "physical_row": physical_row, "row_key": row_key, "values": values})
-            await rebuild_projection_rows(cur, parser_type, [entry["row_key"] for entry in normalized], reconcile_graph=False)
-            for result in results:
-                await enqueue_event(cur, domain="online", event_type="online.task.created", aggregate_type="online_task", aggregate_id=f"{parser_type}:{result['row_key']}", aggregate_revision=1, audiences=["authenticated"])
-            for result in results:
-                await cur.execute("SELECT id, revision FROM _online_source_rows WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s AND archived_at IS NULL LIMIT 1", (parser_type, result["row_key"]))
-                source_row = await cur.fetchone()
-                if not source_row:
-                    raise HTTPException(500, "本地来源记录创建失败")
-                result.update(source_id=int(source_row[0]), revision=int(source_row[1] or 1))
+                results.append({
+                    "draft_id": entry["item"].draft_id,
+                    "physical_row": command_result["physical_row"],
+                    "row_key": command_result["row_key"],
+                    "values": values,
+                    "source_id": command_result["source_id"],
+                    "revision": 1,
+                })
+            await rebuild_projection_rows(
+                cur, parser_type, [result["row_key"] for result in results],
+                reconcile_graph=False,
+            )
             await conn.commit()
             transaction_started = False
         await record_admin_audit(user, "online.local_bulk_create", target_type="local_source_rows", target_name=parser_type, detail={"parser_type": parser_type, "count": len(results)}, conn=conn, **request_audit_fields(request))
@@ -1113,157 +1178,191 @@ async def _update_local_source_fields_once(
             if await cur.fetchone():
                 raise HTTPException(409, "修改后会形成重复业务主键，请先处理重复任务")
 
-        # 同步更新对应的本地业务表和统一来源记录，整个过程在同一事务内完成。
-        assignments = ", ".join(f"`{column}`=%s" for column in ordered_columns)
-        previous_source = (source.get("source_kind"), source.get("source_ref"))
-        await cur.execute(
-            f"UPDATE `{parser.table_name}` SET {assignments}, `_row_key`=%s, _last_updated_at=UTC_TIMESTAMP() "
-            "WHERE _row_key=%s",
-            [*(after[column] for column in ordered_columns), new_key, source["row_key"]],
-        )
-        if cur.rowcount != 1:
-            raise HTTPException(409, "本地任务已被删除或更新，请刷新后重试")
-        await cur.execute(
-            "UPDATE _online_source_rows SET row_key=%s,row_hash=%s,values_json=%s,"
-            "revision=revision+1,refreshed_at=UTC_TIMESTAMP(),source_kind='local_table',source_ref=%s "
-            "WHERE id=%s AND revision=%s",
-            (new_key, local_row_hash(after), stable_json(after), source_ref, source_id, locked_revision),
-        )
-        if cur.rowcount != 1:
-            raise HTTPException(409, "该任务已被更新，请刷新后重试")
-        if previous_source and (
-            str(previous_source[0] or "") != "local_table"
-            or str(previous_source[1] or "") != source_ref
-        ):
-            await cur.execute(
-                "UPDATE _local_source_records SET status='superseded',updated_at=UTC_TIMESTAMP() "
-                "WHERE source_kind=%s AND source_ref=%s",
-                (str(previous_source[0] or ""), str(previous_source[1] or "")),
+        async def authorize_edit(_command_cur, current_source):
+            if not current_source:
+                raise HTTPException(404, "本地任务不存在或已归档")
+            if system_managed_columns is None:
+                try:
+                    await validate_row_changes(
+                        _command_cur, user, parser, current_values, after,
+                        ordered_columns,
+                    )
+                except PermissionError as exc:
+                    raise HTTPException(403, str(exc)) from exc
+            scope = parser.community_value(after)
+            return TaskAuthorizationResult(
+                policy_key="online.raw.edit",
+                scope_values=(scope,) if scope else (),
             )
-        await cur.execute(
-            "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
-            "business_key=%s, values_json=%s, content_hash=%s, "
-            "revision=%s, status='active', archived_at=NULL, "
-            "updated_at=UTC_TIMESTAMP() WHERE source_kind='local_table' AND source_ref=%s",
-            (
-                parser_type, int(source["physical_row"]), new_key,
-                stable_json(after), local_row_hash(after), locked_revision + 1,
-                source_ref,
-            ),
-        )
-        if cur.rowcount == 0:
-            await cur.execute(
-                "INSERT INTO _local_source_records ("
-                "parser_type,local_task_id,business_key,source_kind,source_ref,"
-                "values_json,content_hash,status,revision) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active',%s)",
+
+        audit_id = 0
+        async def mutate_edit(command_cur, current_source):
+            nonlocal audit_id
+            previous_source = (source.get("source_kind"), source.get("source_ref"))
+            assignments = ", ".join(f"`{column}`=%s" for column in ordered_columns)
+            await command_cur.execute(
+                f"UPDATE `{parser.table_name}` SET {assignments}, `_row_key`=%s, _last_updated_at=UTC_TIMESTAMP() "
+                "WHERE _row_key=%s",
+                [*(after[column] for column in ordered_columns), new_key, source["row_key"]],
+            )
+            if command_cur.rowcount != 1:
+                raise HTTPException(409, "本地任务已被删除或更新，请刷新后重试")
+            await command_cur.execute(
+                "UPDATE _online_source_rows SET row_key=%s,row_hash=%s,values_json=%s,"
+                "revision=revision+1,refreshed_at=UTC_TIMESTAMP(),source_kind='local_table',source_ref=%s "
+                "WHERE id=%s AND revision=%s",
+                (new_key, local_row_hash(after), stable_json(after), source_ref, source_id, locked_revision),
+            )
+            if command_cur.rowcount != 1:
+                raise HTTPException(409, "该任务已被更新，请刷新后重试")
+            if previous_source and (
+                str(previous_source[0] or "") != "local_table"
+                or str(previous_source[1] or "") != source_ref
+            ):
+                await command_cur.execute(
+                    "UPDATE _local_source_records SET status='superseded',updated_at=UTC_TIMESTAMP() "
+                    "WHERE source_kind=%s AND source_ref=%s",
+                    (str(previous_source[0] or ""), str(previous_source[1] or "")),
+                )
+            await command_cur.execute(
+                "UPDATE _local_source_records SET parser_type=%s, local_task_id=%s, "
+                "business_key=%s, values_json=%s, content_hash=%s, "
+                "revision=%s, status='active', archived_at=NULL, "
+                "updated_at=UTC_TIMESTAMP() WHERE source_kind='local_table' AND source_ref=%s",
                 (
-                    parser_type, int(source["physical_row"]), new_key, source_ref,
+                    parser_type, int(source["physical_row"]), new_key,
                     stable_json(after), local_row_hash(after), locked_revision + 1,
+                    source_ref,
                 ),
             )
-        audit_id = await _insert_writeback_audit(
-            cur,
-            user=user,
-            action=audit_action,
-            parser_type=parser_type,
-            spreadsheet_id=0,
-            sheet_id=local_sheet_id(parser_type),
-            physical_row=source["physical_row"],
-            column_name="、".join(ordered_columns),
-            row_key_before=source["row_key"],
-            row_key_after=new_key,
-            before_values=None if redact_audit_values else current_values,
-            after_values=None if redact_audit_values else after,
-            sync_status="local",
-            operation_id=operation_id,
-        )
-        if transaction_callback is not None:
-            await transaction_callback(
-                cur=cur,
-                source=source,
-                before=current_values,
-                after=after,
-                row_key_before=str(source["row_key"]),
-                row_key_after=str(new_key),
-                revision=locked_revision + 1,
-            )
-        await migrate_responsibility_row_key(
-            cur,
-            parser_type,
-            str(source["row_key"]),
-            str(new_key),
-        )
-        if (
-            "核查人" in ordered_columns
-            and not str(current_values.get("核查人") or "").strip()
-            and str(after.get("核查人") or "").strip()
-        ):
-            await capture_first_assignment(
-                cur,
+            if command_cur.rowcount == 0:
+                await command_cur.execute(
+                    "INSERT INTO _local_source_records ("
+                    "parser_type,local_task_id,business_key,source_kind,source_ref,"
+                    "values_json,content_hash,status,revision) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active',%s)",
+                    (
+                        parser_type, int(source["physical_row"]), new_key, source_ref,
+                        stable_json(after), local_row_hash(after), locked_revision + 1,
+                    ),
+                )
+            audit_id = await _insert_writeback_audit(
+                command_cur,
+                user=user,
+                action=audit_action,
                 parser_type=parser_type,
-                row_key=str(new_key),
-                community=parser.community_value(after),
-                inspector=str(after.get("核查人") or ""),
-                actor_user_id=int(user.get("id")) if user.get("id") else None,
-                source="task_assignment",
+                spreadsheet_id=0,
+                sheet_id=local_sheet_id(parser_type),
+                physical_row=source["physical_row"],
+                column_name="、".join(ordered_columns),
+                row_key_before=source["row_key"],
+                row_key_after=new_key,
+                before_values=None if redact_audit_values else current_values,
+                after_values=None if redact_audit_values else after,
+                sync_status="local",
+                operation_id=operation_id,
             )
-        if record_unverifiable_save:
-            from services.unverifiable_review import record_task_save
-            try:
-                await record_task_save(
-                    cur,
-                    parser_type=parser_type,
+            if transaction_callback is not None:
+                await transaction_callback(
+                    cur=command_cur,
                     source=source,
                     before=current_values,
                     after=after,
-                    changes=normalized_changes,
+                    row_key_before=str(source["row_key"]),
                     row_key_after=str(new_key),
                     revision=locked_revision + 1,
-                    actor_user_id=int(user.get("id")) if user.get("id") else None,
                 )
-            except ValueError as exc:
-                raise HTTPException(409, str(exc)) from exc
-        await update_lightweight_projection(
-            cur,
-            parser_type=parser_type,
-            row_key_before=str(source["row_key"]),
-            row_key_after=str(new_key),
-            values=after,
-            revision=locked_revision + 1,
-        )
-        await enqueue_projection_jobs(
-            cur,
-            parser_type=parser_type,
-            row_keys=[str(source["row_key"]), str(new_key)],
-            source_id=source_id,
-            revision=locked_revision + 1,
-            operation_id=operation_id,
-        )
-        # The summary trigger is part of the same authoritative local
-        # transaction.  It contains identifiers and revision only; the
-        # bounded consumer re-reads the task row before applying a delta.
-        await enqueue_online_summary_update(
-            cur,
-            task_id=int(source["physical_row"]),
-            parser_type=parser_type,
-            row_key=str(new_key),
-            revision=locked_revision + 1,
-            business_date=await get_business_date(cur),
-            operation_id=operation_id,
-        )
+            await migrate_responsibility_row_key(
+                command_cur, parser_type, str(source["row_key"]), str(new_key),
+            )
+            if (
+                "核查人" in ordered_columns
+                and not str(current_values.get("核查人") or "").strip()
+                and str(after.get("核查人") or "").strip()
+            ):
+                await capture_first_assignment(
+                    command_cur,
+                    parser_type=parser_type,
+                    row_key=str(new_key),
+                    community=parser.community_value(after),
+                    inspector=str(after.get("核查人") or ""),
+                    actor_user_id=int(user.get("id")) if user.get("id") else None,
+                    source="task_assignment",
+                )
+            if record_unverifiable_save:
+                from services.unverifiable_review import record_task_save
+                try:
+                    await record_task_save(
+                        command_cur,
+                        parser_type=parser_type,
+                        source=source,
+                        before=current_values,
+                        after=after,
+                        changes=normalized_changes,
+                        row_key_after=str(new_key),
+                        revision=locked_revision + 1,
+                        actor_user_id=int(user.get("id")) if user.get("id") else None,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+            await update_lightweight_projection(
+                command_cur,
+                parser_type=parser_type,
+                row_key_before=str(source["row_key"]),
+                row_key_after=str(new_key),
+                values=after,
+                revision=locked_revision + 1,
+            )
+            await enqueue_projection_jobs(
+                command_cur,
+                parser_type=parser_type,
+                row_keys=[str(source["row_key"]), str(new_key)],
+                source_id=source_id,
+                revision=locked_revision + 1,
+                operation_id=operation_id,
+            )
+            await enqueue_online_summary_update(
+                command_cur,
+                task_id=int(source["physical_row"]),
+                parser_type=parser_type,
+                row_key=str(new_key),
+                revision=locked_revision + 1,
+                business_date=await get_business_date(command_cur),
+                operation_id=operation_id,
+            )
+            return TaskMutationResult(
+                revision=locked_revision + 1,
+                snapshot=after,
+                changed_fields=tuple(
+                    task_changed_field_categories(parser_type, ordered_columns)
+                ),
+                operation_id=operation_id,
+            )
+
         community = parser.community_value(after)
         audiences = ["authenticated"]
         if community:
             audiences.append(f"community:{community}")
-        await enqueue_event(
-            cur,
-            domain="online",
-            event_type="online.task.changed",
-            aggregate_type="online_task",
-            aggregate_id=f"{parser_type}:{new_key}",
-            aggregate_revision=locked_revision + 1,
-            audiences=audiences,
-        )
+        try:
+            await TaskCommandService.execute(
+                cur,
+                spec=TaskCommandSpec(
+                    actor_id=int(user.get("id") or 0),
+                    environment=settings.APP_ENVIRONMENT,
+                    parser_type=parser_type,
+                    task_id=stable_task_id(parser.table_name, int(source["physical_row"])),
+                    source_id=source_id,
+                    action=TaskCommandService.normalize_action(audit_action),
+                    event_type=task_event_type_for_action(audit_action),
+                    expected_revision=locked_revision,
+                    audiences=tuple(audiences),
+                ),
+                authorize=authorize_edit,
+                mutate=mutate_edit,
+            )
+        except TaskCommandRevisionConflict as exc:
+            raise HTTPException(409, "该任务已被更新，请刷新后重试") from exc
+        except TaskCommandSourceUnavailable as exc:
+            raise HTTPException(404, "本地任务不存在或已归档") from exc
         activity_credited = await task_update_is_credited_to(
             cur,
             parser_type,
@@ -1353,9 +1452,11 @@ async def update_source_fields(
     redact_audit_values: bool = False,
     system_managed_columns: set[str] | None = None,
 ) -> dict:
-    """在一把工作表锁内批量校验、写入并回读同一腾讯来源行。"""
+    """更新本地权威任务行；历史腾讯数据源写入永久停用。"""
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
+    if not local_data_source_enabled():
+        raise HTTPException(410, "腾讯数据源已下线")
     if local_data_source_enabled():
         try:
             return await _update_local_source_fields(
@@ -1702,9 +1803,11 @@ async def queue_source_fields(
     transaction_callback=None,
     record_unverifiable_save: bool = True,
 ) -> dict:
-    """先保存平台有效值，再由后台按字段安全写回腾讯。"""
+    """通过本地事务更新任务；旧腾讯写回路径永久停用。"""
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
+    if not local_data_source_enabled():
+        raise HTTPException(410, "腾讯数据源已下线")
     if local_data_source_enabled():
         return await _update_local_source_fields(
             parser_type=parser_type,
@@ -1958,15 +2061,7 @@ async def queue_source_fields(
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from exc
             await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
-            await enqueue_event(
-                cur,
-                domain="online",
-                event_type="online.task.changed",
-                aggregate_type="online_task",
-                aggregate_id=f"{parser_type}:{new_key}",
-                aggregate_revision=revision,
-                audiences=["authenticated"],
-            )
+            raise HTTPException(410, "腾讯数据源已下线")
             await reconcile_online_task_graph(
                 cur,
                 parser_type=parser_type,
@@ -2506,6 +2601,448 @@ async def _projection_query(
     }
 
 
+def _read_model_grid_condition(value: str, model: dict) -> bool:
+    """Evaluate the supported AG Grid filter subset against a decrypted row."""
+    conditions = model.get("conditions")
+    if isinstance(conditions, list) and conditions:
+        results = [_read_model_grid_condition(value, item) for item in conditions[:2]
+                   if isinstance(item, dict)]
+        if not results:
+            return True
+        return all(results) if str(model.get("operator") or "and").lower() == "and" else any(results)
+    filter_type = str(model.get("type") or "contains")
+    expected = str(model.get("filter", "") or "")
+    actual = str(value or "")
+    normalized, target = actual.casefold(), expected.casefold()
+    if filter_type == "blank":
+        return not actual.strip()
+    if filter_type == "notBlank":
+        return bool(actual.strip())
+    if filter_type in {"equals", "notEqual", "contains", "notContains", "startsWith", "endsWith"}:
+        matched = {
+            "equals": normalized == target,
+            "notEqual": normalized != target,
+            "contains": target in normalized,
+            "notContains": target not in normalized,
+            "startsWith": normalized.startswith(target),
+            "endsWith": normalized.endswith(target),
+        }[filter_type]
+        return matched
+    if filter_type in {"greaterThan", "lessThan", "greaterThanOrEqual", "lessThanOrEqual"}:
+        try:
+            left, right = Decimal(actual), Decimal(expected)
+        except (InvalidOperation, ValueError):
+            return False
+        return {
+            "greaterThan": left > right,
+            "lessThan": left < right,
+            "greaterThanOrEqual": left >= right,
+            "lessThanOrEqual": left <= right,
+        }[filter_type]
+    return target in normalized
+
+
+async def _task_read_model_query(
+    *, parser_type: str, page: int, page_size: int, keyword: str | None,
+    sort_by: str | None, sort_order: str, filters: str | None,
+    grid_filters: str | None, user: dict, conn,
+) -> dict:
+    if settings.APP_ENVIRONMENT not in {"development", "staging"}:
+        raise HTTPException(503, {"error": "projection_unavailable"})
+    run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+    secret = str(settings.TASK_EVENT_ENCRYPTION_KEY or "")
+    if not run_id or len(secret.encode("utf-8")) < 32:
+        raise HTTPException(503, {"error": "projection_unavailable"})
+    parser = get_parser(parser_type)
+    scopes = effective_view_communities(user)
+    allowed_communities = None
+    if scopes is not None:
+        allowed_communities = await community_names_for_scopes(conn, scopes)
+        if not allowed_communities:
+            return {
+                "data": [], "total": 0, "page": page, "page_size": page_size,
+                "columns": parser.COLUMNS, "source_ready": True,
+                "data_source_mode": "local", "writeback_enabled": True,
+                "can_add": False, "required_fields": new_row_required_fields(parser),
+                "pending_count": 0, "data_version": 0,
+                "row_manage_message": "当前账号尚未分配社区部门，暂无业务数据",
+                "dependent_options": {}, "scope_message": "当前账号尚未分配社区部门，暂无业务数据",
+            }
+    parsed_filters: dict[str, list[str]] = {}
+    if filters:
+        try:
+            raw = json.loads(filters)
+            if isinstance(raw, dict):
+                parsed_filters = {
+                    str(column): [str(value) for value in values]
+                    for column, values in raw.items()
+                    if column in parser.COLUMNS and isinstance(values, list) and values
+                }
+        except (TypeError, json.JSONDecodeError):
+            parsed_filters = {}
+    parsed_grid: dict[str, dict] = {}
+    if grid_filters:
+        try:
+            raw = json.loads(grid_filters)
+            if isinstance(raw, dict):
+                parsed_grid = {
+                    str(column): model for column, model in raw.items()
+                    if column in parser.COLUMNS and isinstance(model, dict)
+                }
+        except (TypeError, json.JSONDecodeError):
+            parsed_grid = {}
+    normalized_keyword = str(keyword or "").strip()
+    if normalized_keyword and not 2 <= len(normalized_keyword) <= 120:
+        raise HTTPException(422, {"error": "invalid_projection_search"})
+    try:
+        import redis.asyncio as redis
+        from services.task_read_model import (
+            TASK_READ_MODEL_SCAN_BATCH_MAX,
+            close_task_read_model_scan,
+            create_task_read_model_scan,
+            query_task_read_model_group_ids,
+            read_task_read_model_group_records,
+            read_task_read_model_scan,
+            read_task_read_model_scan_records,
+            require_task_read_model_ready,
+            task_read_model_watermark,
+        )
+
+        client = redis.from_url(settings.REDIS_URL, decode_responses=True,
+                                socket_connect_timeout=3, socket_timeout=5)
+        try:
+            await client.ping()
+            await require_task_read_model_ready(client, settings.APP_ENVIRONMENT, run_id)
+            grouped: dict[str, dict[str, Any]] = {}
+            group_page_total: int | None = None
+            if parsed_grid:
+                # Grid operators are not covered by the exact-value Redis
+                # indexes. Preserve the complete scan/filter path so paging
+                # never happens before an unsupported filter is applied.
+                scan = await create_task_read_model_scan(
+                    client, environment=settings.APP_ENVIRONMENT, run_id=run_id,
+                    parser_type=parser.table_name, communities=None,
+                    filters={}, search=None,
+                    secret=secret,
+                )
+                scan_id = scan["scan_id"]
+                scan_total = scan["total"]
+                if (type(scan_total) is not int or scan_total < 0
+                        or (scan_id is None and scan_total != 0)
+                        or (scan_id is not None and (
+                            not isinstance(scan_id, str)
+                            or re.fullmatch(r"[0-9a-f]{32}", scan_id) is None
+                        ))):
+                    raise RuntimeError("task read-model scan contract invalid")
+                cursor = 0
+                try:
+                    while scan_id is not None and cursor < scan_total:
+                        scan_page = await read_task_read_model_scan(
+                            client, environment=settings.APP_ENVIRONMENT, run_id=run_id,
+                            parser_type=parser.table_name, scan_id=scan_id,
+                            cursor=cursor, limit=TASK_READ_MODEL_SCAN_BATCH_MAX,
+                        )
+                        if scan_page.get("total") != scan_total:
+                            raise RuntimeError("task read-model scan total changed")
+                        candidates = scan_page.get("records")
+                        if not isinstance(candidates, list) or not candidates:
+                            raise RuntimeError("task read-model scan cursor stalled")
+                        if len(candidates) > TASK_READ_MODEL_SCAN_BATCH_MAX:
+                            raise RuntimeError("task read-model scan page exceeded limit")
+                        task_rows = await read_task_read_model_scan_records(
+                            client, environment=settings.APP_ENVIRONMENT, run_id=run_id,
+                            parser_type=parser.table_name, records=candidates,
+                        )
+                        if len(task_rows) != len(candidates):
+                            raise RuntimeError("task read-model scan records mismatch")
+                        for item in task_rows:
+                            values = item.get("values")
+                            if not isinstance(values, dict):
+                                raise RuntimeError("task read-model scan snapshot invalid")
+                            row_key = parser.make_row_key(values)
+                            source = {
+                                "task_id": item["task_id"],
+                                "source_id": int(item["source_id"]),
+                                "revision": int(item["revision"]),
+                            }
+                            community = parser.community_value(values)
+                            group = grouped.get(row_key)
+                            if group is None:
+                                grouped[row_key] = {
+                                    "row_key": row_key,
+                                    "values": dict(values),
+                                    "source_order": (source["source_id"], source["task_id"]),
+                                    "sources": [source],
+                                    "communities": {community},
+                                    "conflict": False,
+                                    "updated_at": str(item.get("updated_at") or ""),
+                                }
+                                continue
+                            group["sources"].append(source)
+                            group["communities"].add(community)
+                            group["conflict"] = group["conflict"] or group["values"] != values
+                            group["updated_at"] = max(
+                                group["updated_at"], str(item.get("updated_at") or ""),
+                            )
+                            source_order = (source["source_id"], source["task_id"])
+                            if source_order < group["source_order"]:
+                                group["values"] = dict(values)
+                                group["source_order"] = source_order
+                        next_cursor = scan_page.get("next_cursor")
+                        expected_next = cursor + len(candidates)
+                        if (expected_next > scan_total
+                                or (expected_next < scan_total and next_cursor != expected_next)
+                                or (expected_next == scan_total and next_cursor is not None)):
+                            raise RuntimeError("task read-model scan cursor stalled")
+                        cursor = next_cursor if next_cursor is not None else scan_total
+                finally:
+                    if scan_id is not None:
+                        await close_task_read_model_scan(
+                            client, environment=settings.APP_ENVIRONMENT, run_id=run_id,
+                            parser_type=parser.table_name, scan_id=scan_id,
+                        )
+            else:
+                group_page = await query_task_read_model_group_ids(
+                    client,
+                    settings.APP_ENVIRONMENT,
+                    run_id,
+                    parser.table_name,
+                    parsed_filters,
+                    allowed_communities,
+                    normalized_keyword or None,
+                    (page - 1) * page_size,
+                    page_size,
+                )
+                # Group pagination is ordered by the opaque stable group token.
+                # sort_by/sort_order cannot be honored without paging by the
+                # requested plaintext column, so this bounded path deliberately
+                # uses the stable non-sensitive order accepted for this view.
+                group_page_total = group_page.get("total")
+                group_tokens = group_page.get("group_tokens")
+                offset = (page - 1) * page_size
+                if (
+                    type(group_page_total) is not int
+                    or group_page_total < 0
+                    or not isinstance(group_tokens, list)
+                    or len(group_tokens) > page_size
+                    or len(group_tokens) != min(page_size, max(0, group_page_total - offset))
+                    or any(
+                        not isinstance(token, str)
+                        or re.fullmatch(r"[0-9a-f]{64}", token) is None
+                        for token in group_tokens
+                    )
+                ):
+                    raise RuntimeError("task read-model group page contract invalid")
+                task_groups = await read_task_read_model_group_records(
+                    client,
+                    settings.APP_ENVIRONMENT,
+                    run_id,
+                    parser.table_name,
+                    group_tokens,
+                )
+                if not isinstance(task_groups, list) or len(task_groups) != len(group_tokens):
+                    raise RuntimeError("task read-model group page mismatch")
+                allowed_set = (
+                    None if allowed_communities is None
+                    else {str(value).strip() for value in allowed_communities}
+                )
+                for item in task_groups:
+                    values = item.get("values")
+                    sources = item.get("sources")
+                    row_key = str(item.get("row_key") or "")
+                    if (
+                        item.get("parser_type") != parser.table_name
+                        or not isinstance(values, dict)
+                        or not row_key
+                        or parser.make_row_key(values) != row_key
+                        or not isinstance(sources, list)
+                        or not sources
+                    ):
+                        raise RuntimeError("task read-model group identity invalid")
+                    normalized_sources = []
+                    source_values = []
+                    for source_item in sources:
+                        source_id = source_item.get("source_id")
+                        revision = source_item.get("revision")
+                        task_id = source_item.get("task_id")
+                        source_snapshot = source_item.get("values")
+                        if (
+                            type(source_id) is not int or source_id < 1
+                            or type(revision) is not int or revision < 1
+                            or not isinstance(task_id, str)
+                            or not isinstance(source_snapshot, dict)
+                        ):
+                            raise RuntimeError("task read-model group source invalid")
+                        task_table, separator, physical_id = task_id.rpartition(":")
+                        if (
+                            not separator or task_table != parser.table_name
+                            or not physical_id.isdigit() or int(physical_id) < 1
+                        ):
+                            raise RuntimeError("task read-model group source invalid")
+                        source_community = parser.community_value(source_snapshot).strip()
+                        if parser.make_row_key(source_snapshot) != row_key:
+                            raise RuntimeError("task read-model group member mismatch")
+                        if allowed_set is not None and source_community not in allowed_set:
+                            raise RuntimeError("task read-model group scope mismatch")
+                        normalized_sources.append({
+                            "task_id": task_id,
+                            "source_id": source_id,
+                            "revision": revision,
+                        })
+                        source_values.append(source_snapshot)
+                    expected_sources = sorted(
+                        normalized_sources,
+                        key=lambda source: (source["source_id"], source["task_id"]),
+                    )
+                    if normalized_sources != expected_sources:
+                        raise RuntimeError("task read-model group source order invalid")
+                    if (
+                        type(item.get("source_count")) is not int
+                        or item["source_count"] != len(normalized_sources)
+                        or item.get("source_id") != normalized_sources[0]["source_id"]
+                        or item.get("task_id") != normalized_sources[0]["task_id"]
+                        or item.get("revision") != normalized_sources[0]["revision"]
+                        or values != source_values[0]
+                    ):
+                        raise RuntimeError("task read-model group canonical source invalid")
+                    expected_conflict = any(
+                        source_values[0] != other for other in source_values[1:]
+                    )
+                    if type(item.get("conflict")) is not bool or item["conflict"] != expected_conflict:
+                        raise RuntimeError("task read-model group conflict mismatch")
+                    grouped[row_key] = {
+                        "row_key": row_key,
+                        "values": values,
+                        "sources": normalized_sources,
+                        "source_values": source_values,
+                        "updated_at": str(item.get("updated_at") or ""),
+                        "conflict": expected_conflict,
+                    }
+            watermark = await task_read_model_watermark(
+                client, settings.APP_ENVIRONMENT, run_id,
+            )
+        finally:
+            await client.aclose()
+    except Exception:
+        raise HTTPException(503, {"error": "projection_pending"}) from None
+
+    rows = []
+    if group_page_total is not None:
+        total = group_page_total
+        rows = list(grouped.values())
+    else:
+        allowed_set = None if allowed_communities is None else {str(v).strip() for v in allowed_communities}
+        needle = normalized_keyword.casefold()
+        for group in grouped.values():
+            sources = group["sources"]
+            sources.sort(key=lambda item: (item["source_id"], item["task_id"]))
+            values = group["values"]
+            communities = group["communities"]
+            if allowed_set is not None and any(value not in allowed_set for value in communities):
+                continue
+            if any(str(values.get(column, "") or "") not in accepted
+                   for column, accepted in parsed_filters.items()):
+                continue
+            if any(not _read_model_grid_condition(str(values.get(column, "") or ""), model)
+                   for column, model in parsed_grid.items()):
+                continue
+            if needle and not any(needle in str(value or "").casefold() for value in values.values()):
+                continue
+            rows.append({
+                "row_key": group["row_key"],
+                "values": values,
+                "sources": sources,
+                "updated_at": group["updated_at"],
+                "conflict": group["conflict"],
+            })
+        if sort_by in parser.COLUMNS:
+            rows.sort(key=lambda item: (str(item["values"].get(sort_by, "") or "").casefold(), item["row_key"]),
+                      reverse=sort_order == "desc")
+        else:
+            rows.sort(key=lambda item: (item["updated_at"], item["row_key"]), reverse=sort_order != "asc")
+        total = len(rows)
+        rows = rows[(page - 1) * page_size:page * page_size]
+
+    async with conn.cursor() as cur:
+        source_ids = sorted({
+            int(source["source_id"])
+            for item in rows
+            for source in item["sources"]
+        })
+        if source_ids:
+            marks = ",".join(["%s"] * len(source_ids))
+            await cur.execute(
+                "SELECT id,revision,physical_row,row_key FROM _online_source_rows WHERE parser_type=%s "
+                f"AND archived_at IS NULL AND id IN ({marks}) "
+                f"{active_source_sql_filter(parser_type)}",
+                [parser_type, *source_ids],
+            )
+            authoritative_sources = {
+                int(row[0]): {
+                    "revision": int(row[1]),
+                    "task_id": f"{parser.table_name}:{int(row[2])}",
+                    "row_key": str(row[3]),
+                }
+                for row in await cur.fetchall()
+            }
+            for item in rows:
+                for source in item["sources"]:
+                    source_id = int(source["source_id"])
+                    authoritative = authoritative_sources.get(source_id)
+                    if (
+                        authoritative is None
+                        or authoritative["revision"] != int(source["revision"])
+                        or authoritative["task_id"] != str(source["task_id"])
+                        or authoritative["row_key"] != str(item["row_key"])
+                    ):
+                        raise HTTPException(503, {"error": "projection_pending"})
+        await cur.execute(
+            "SELECT cell_meta_json FROM _online_source_rows WHERE parser_type=%s "
+            "AND archived_at IS NULL ORDER BY id LIMIT 1", (parser_type,),
+        )
+        metadata_row = await cur.fetchone()
+        source_metadata = json_value(metadata_row[0], {}) if metadata_row else {}
+        inspector_context = await inspector_option_context(cur, user)
+        column_metadata = await _managed_column_metadata(
+            cur, parser, source_metadata, inspector_context=inspector_context,
+        )
+        data = []
+        for item in rows:
+            sources = item["sources"]
+            values = item["values"]
+            source = sources[0]
+            source_id = int(source["source_id"])
+            physical_row = int(source["task_id"].rsplit(":", 1)[1])
+            conflict = bool(item["conflict"])
+            capabilities = await _query_row_edit_capabilities(cur, user, parser, values)
+            record = {column: str(values.get(column, "") or "") for column in parser.COLUMNS}
+            record.update({
+                "__row_key": item["row_key"], "__source_count": len(sources),
+                "__conflict": conflict, "__pending": False, "__source_id": source_id,
+                "__revision": int(source["revision"]),
+                "__row_hash": local_row_hash(values), "__physical_row": physical_row,
+                "__editable_fields": capabilities["editable_fields"] if len(sources) == 1 and not conflict else [],
+                "__can_delete": bool(len(sources) == 1 and not conflict and can_manage_rows(user)),
+                "__inspector_mismatch": bool(
+                    "核查人" in parser.COLUMNS and inspector_assignment_mismatch(
+                        inspector_context, parser.community_value(values), values.get("核查人"),
+                    )
+                ),
+            })
+            data.append(record)
+    row_manage_allowed = can_manage_rows(user)
+    return {
+        "data": data, "total": total, "page": page, "page_size": page_size,
+        "columns": parser.COLUMNS,
+        "column_meta": [{"field": column, **column_metadata[column]} for column in parser.COLUMNS],
+        "source_ready": True, "data_source_mode": "local", "writeback_enabled": True,
+        "can_add": row_manage_allowed, "required_fields": new_row_required_fields(parser),
+        "pending_count": 0, "data_version": watermark,
+        "row_manage_message": "", "dependent_options": inspector_context,
+        "scope_message": "",
+    }
+
+
 @router.get("/{parser_type}/version")
 async def query_data_version(
     parser_type: str,
@@ -2515,6 +3052,23 @@ async def query_data_version(
     del user
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
+    if settings.TASK_READ_MODEL_ENABLED:
+        run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
+        try:
+            import redis.asyncio as redis
+            from services.task_read_model import require_task_read_model_ready, task_read_model_watermark
+            client = redis.from_url(settings.REDIS_URL, decode_responses=True,
+                                    socket_connect_timeout=3, socket_timeout=5)
+            try:
+                await client.ping()
+                await require_task_read_model_ready(client, settings.APP_ENVIRONMENT, run_id)
+                return {"data_version": await task_read_model_watermark(
+                    client, settings.APP_ENVIRONMENT, run_id,
+                )}
+            finally:
+                await client.aclose()
+        except Exception:
+            raise HTTPException(503, {"error": "projection_pending"}) from None
     async with conn.cursor() as cur:
         return {"data_version": await _source_data_version(cur, parser_type)}
 
@@ -2538,6 +3092,12 @@ async def query_data(
     if not isinstance(user, dict):
         user = {"data_scope": "all", "permission_scopes": {}}
     if source == "online":
+        if settings.TASK_READ_MODEL_ENABLED:
+            return await _task_read_model_query(
+                parser_type=parser_type, page=page, page_size=page_size,
+                keyword=keyword, sort_by=sort_by, sort_order=sort_order,
+                filters=filters, grid_filters=grid_filters, user=user, conn=conn,
+            )
         if local_data_source_enabled():
             return await _projection_query(
                 parser_type=parser_type,
@@ -2666,6 +3226,8 @@ async def create_source_row(
 ):
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
+    if not local_data_source_enabled():
+        raise HTTPException(410, "腾讯数据源已下线")
     parser = get_parser(parser_type)
     if local_data_source_enabled():
         result = (await _create_local_source_rows_bulk(
@@ -2714,77 +3276,109 @@ async def create_source_row(
             )
             if await cur.fetchone():
                 raise HTTPException(409, "本地任务池中已经存在相同业务主键")
-            await cur.execute(
-                f"INSERT INTO `{parser.table_name}` (_row_key, "
-                + ", ".join(f"`{column}`" for column in parser.COLUMNS)
-                + ") VALUES ("
-                + ", ".join(["%s"] * (len(parser.COLUMNS) + 1))
-                + ")",
-                [new_key, *[values[column] for column in parser.COLUMNS]],
-            )
-            physical_row = int(cur.lastrowid)
-            await cur.execute(
-                "INSERT INTO _online_source_rows ("
-                "spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,"
-                "values_json,cell_meta_json,revision,refreshed_at,source_kind,source_ref"
-                ") VALUES (0,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),'local_table',%s)",
-                (
-                    parser_type,
-                    local_sheet_id(parser_type),
-                    physical_row,
-                    new_key,
-                    local_row_hash(values),
-                    stable_json(values),
-                    stable_json({column: {"type": "text"} for column in parser.COLUMNS}),
-                    f"{parser.table_name}:{physical_row}",
-                ),
-            )
-            await cur.execute(
-                "INSERT INTO _local_source_records ("
-                "parser_type,local_task_id,business_key,source_kind,source_ref,"
-                "values_json,content_hash,status) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active')",
-                (
-                    parser_type, physical_row, new_key,
-                    f"{parser.table_name}:{physical_row}",
-                    stable_json(values), local_row_hash(values),
-                ),
-            )
-            await rebuild_projection_rows(cur, parser_type, [new_key], reconcile_graph=False)
-            await enqueue_event(
+            command_result: dict[str, Any] = {}
+
+            async def authorize_create(command_cur, _current_source):
+                formal_scope = await validate_new_row_scope(
+                    command_cur, user, parser, values,
+                )
+                if formal_scope:
+                    values[parser.COMMUNITY_COLUMN] = formal_scope
+                    command_result["row_key"] = parser.make_row_key(values)
+                else:
+                    command_result["row_key"] = new_key
+                scope = str(values.get(parser.COMMUNITY_COLUMN) or "").strip()
+                return TaskAuthorizationResult(
+                    policy_key="online.raw.row_manage",
+                    scope_values=(scope,) if scope else (),
+                )
+
+            async def create_mutation(command_cur, _current_source):
+                current_key = command_result["row_key"]
+                await command_cur.execute(
+                    f"INSERT INTO `{parser.table_name}` (_row_key, "
+                    + ", ".join(f"`{column}`" for column in parser.COLUMNS)
+                    + ") VALUES ("
+                    + ", ".join(["%s"] * (len(parser.COLUMNS) + 1))
+                    + ")",
+                    [current_key, *[values[column] for column in parser.COLUMNS]],
+                )
+                physical_row = int(command_cur.lastrowid)
+                row_hash = local_row_hash(values)
+                await command_cur.execute(
+                    "INSERT INTO _online_source_rows ("
+                    "spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,"
+                    "values_json,cell_meta_json,revision,refreshed_at,source_kind,source_ref"
+                    ") VALUES (0,%s,%s,%s,%s,%s,%s,%s,1,UTC_TIMESTAMP(),'local_table',%s)",
+                    (
+                        parser_type,
+                        local_sheet_id(parser_type),
+                        physical_row,
+                        current_key,
+                        row_hash,
+                        stable_json(values),
+                        stable_json({column: {"type": "text"} for column in parser.COLUMNS}),
+                        f"{parser.table_name}:{physical_row}",
+                    ),
+                )
+                source_id = int(command_cur.lastrowid)
+                await command_cur.execute(
+                    "INSERT INTO _local_source_records ("
+                    "parser_type,local_task_id,business_key,source_kind,source_ref,"
+                    "values_json,content_hash,status) VALUES (%s,%s,%s,'local_table',%s,%s,%s,'active')",
+                    (
+                        parser_type, physical_row, current_key,
+                        f"{parser.table_name}:{physical_row}",
+                        stable_json(values), row_hash,
+                    ),
+                )
+                await rebuild_projection_rows(
+                    command_cur, parser_type, [current_key], reconcile_graph=False,
+                )
+                task_id = stable_task_id(parser.table_name, physical_row)
+                command_result.update({
+                    "physical_row": physical_row,
+                    "source_id": source_id,
+                    "task_id": task_id,
+                })
+                return TaskMutationResult(
+                    revision=1,
+                    snapshot=values,
+                    changed_fields=("task_state",),
+                    task_id=task_id,
+                    source_id=source_id,
+                )
+
+            await TaskCommandService.execute(
                 cur,
-                domain="online",
-                event_type="online.task.created",
-                aggregate_type="online_task",
-                aggregate_id=f"{parser_type}:{new_key}",
-                aggregate_revision=1,
-                audiences=["authenticated"],
+                spec=TaskCommandSpec(
+                    actor_id=int(user.get("id") or 0),
+                    environment=settings.APP_ENVIRONMENT,
+                    parser_type=parser_type,
+                    task_id=None,
+                    source_id=None,
+                    action="create",
+                    event_type="online.task.created",
+                    expected_revision=None,
+                    audiences=("authenticated",),
+                ),
+                authorize=authorize_create,
+                mutate=create_mutation,
             )
-            # The business-table auto-increment id is only the local physical
-            # row used by the compatibility layer.  API callers must receive
-            # the stable source-row id used by edit/detail endpoints.
-            await cur.execute(
-                "SELECT id, revision FROM _online_source_rows "
-                "WHERE spreadsheet_id=0 AND parser_type=%s AND row_key=%s "
-                "AND archived_at IS NULL LIMIT 1",
-                (parser_type, new_key),
-            )
-            source_row = await cur.fetchone()
-            if not source_row:
-                raise HTTPException(500, "本地来源记录创建失败")
             await conn.commit()
             await record_admin_audit(
                 user,
                 "online.local_create",
                 target_type="local_source_row",
-                target_name=f"{parser_type}:{physical_row}",
+                target_name=f"{parser_type}:{command_result['physical_row']}",
                 detail={"parser_type": parser_type},
                 **request_audit_fields(request),
             )
             return {
                 "message": "已创建本地业务数据",
-                "source_id": int(source_row[0]),
-                "row_key": new_key,
-                "revision": int(source_row[1] or 1),
+                "source_id": command_result["source_id"],
+                "row_key": command_result["row_key"],
+                "revision": 1,
                 "values": values,
             }
         spreadsheets = await _enabled_spreadsheets(cur, parser_type)
@@ -2935,6 +3529,8 @@ async def delete_source_row(
 ):
     if parser_type not in QUERY_TYPES:
         raise HTTPException(400, "不支持的业务类型")
+    if not local_data_source_enabled():
+        raise HTTPException(410, "腾讯数据源已下线")
     if not can_manage_rows(user):
         raise HTTPException(403, "当前岗位不能新增或删除腾讯原始行")
     parser = get_parser(parser_type)
@@ -2942,39 +3538,87 @@ async def delete_source_row(
         await conn.begin()
         try:
             async with conn.cursor() as cur:
-                source = await _load_source_row(cur, parser_type, source_id, lock=True)
-                if source["revision"] != expected_revision:
+                source_preview = await _load_source_row(
+                    cur, parser_type, source_id, lock=False,
+                )
+                if int(source_preview["revision"]) != expected_revision:
                     raise HTTPException(409, "该任务已被更新，请刷新后重试")
-                archive_columns = ["_row_key", *parser.COLUMNS]
-                quoted = ", ".join(f"`{column}`" for column in archive_columns)
-                await cur.execute(
-                    f"INSERT INTO OnlineDataArchive.`{parser.table_name}_archive` ({quoted}) "
-                    f"SELECT {quoted} FROM `{parser.table_name}` WHERE id=%s",
-                    (source["physical_row"],),
+                task_id = stable_task_id(
+                    parser.table_name, int(source_preview["physical_row"]),
                 )
-                if cur.rowcount != 1:
-                    raise HTTPException(404, "本地任务不存在或已归档")
-                await cur.execute(
-                    f"DELETE FROM `{parser.table_name}` WHERE id=%s",
-                    (source["physical_row"],),
-                )
-                await cur.execute(
-                    "UPDATE _local_source_records SET status='archived', archived_at=UTC_TIMESTAMP(), "
-                    "updated_at=UTC_TIMESTAMP() WHERE source_kind=%s AND source_ref=%s",
-                    (source["source_kind"], source["source_ref"]),
-                )
-                await cur.execute("DELETE FROM _online_local_changes WHERE source_id=%s", (source_id,))
-                await cur.execute("DELETE FROM _online_source_rows WHERE id=%s", (source_id,))
-                await rebuild_projection_rows(cur, parser_type, [str(source["row_key"])])
-                await enqueue_event(
-                    cur,
-                    domain="online",
-                    event_type="online.task.deleted",
-                    aggregate_type="online_task",
-                    aggregate_id=f"{parser_type}:{source['row_key']}",
-                    aggregate_revision=source["revision"] + 1,
-                    audiences=["authenticated"],
-                )
+                async def authorize_delete(_command_cur, current_source):
+                    if not current_source:
+                        raise HTTPException(404, "本地任务不存在或已归档")
+                    if not can_manage_rows(user):
+                        raise HTTPException(403, "当前岗位不能归档本地任务")
+                    scope = str(current_source["values"].get(parser.COMMUNITY_COLUMN) or "").strip()
+                    return TaskAuthorizationResult(
+                        policy_key="online.raw.row_manage",
+                        scope_values=(scope,) if scope else (),
+                    )
+
+                async def delete_mutation(command_cur, current_source):
+                    physical_row = int(current_source["physical_row"])
+                    row_key = parser.make_row_key(current_source["values"])
+                    archive_columns = ["_row_key", *parser.COLUMNS]
+                    quoted = ", ".join(f"`{column}`" for column in archive_columns)
+                    await command_cur.execute(
+                        f"INSERT INTO OnlineDataArchive.`{parser.table_name}_archive` ({quoted}) "
+                        f"SELECT {quoted} FROM `{parser.table_name}` WHERE id=%s",
+                        (physical_row,),
+                    )
+                    if command_cur.rowcount != 1:
+                        raise HTTPException(404, "本地任务不存在或已归档")
+                    await command_cur.execute(
+                        f"DELETE FROM `{parser.table_name}` WHERE id=%s",
+                        (physical_row,),
+                    )
+                    if command_cur.rowcount != 1:
+                        raise HTTPException(409, "本地任务已发生变化，请刷新后重试")
+                    source_ref = f"{parser.table_name}:{physical_row}"
+                    await command_cur.execute(
+                        "UPDATE _local_source_records SET status='archived', archived_at=UTC_TIMESTAMP(), "
+                        "updated_at=UTC_TIMESTAMP() WHERE source_kind='local_table' AND source_ref=%s",
+                        (source_ref,),
+                    )
+                    await command_cur.execute(
+                        "DELETE FROM _online_local_changes WHERE source_id=%s",
+                        (source_id,),
+                    )
+                    await command_cur.execute(
+                        "DELETE FROM _online_source_rows WHERE id=%s AND revision=%s",
+                        (source_id, expected_revision),
+                    )
+                    if command_cur.rowcount != 1:
+                        raise HTTPException(409, "本地任务已发生变化，请刷新后重试")
+                    await rebuild_projection_rows(command_cur, parser_type, [row_key])
+                    return TaskMutationResult(
+                        revision=expected_revision + 1,
+                        snapshot=current_source["values"],
+                        changed_fields=("task_state",),
+                    )
+
+                try:
+                    await TaskCommandService.execute(
+                        cur,
+                        spec=TaskCommandSpec(
+                            actor_id=int(user.get("id") or 0),
+                            environment=settings.APP_ENVIRONMENT,
+                            parser_type=parser_type,
+                            task_id=task_id,
+                            source_id=source_id,
+                            action="delete",
+                            event_type="online.task.deleted",
+                            expected_revision=expected_revision,
+                            audiences=("authenticated",),
+                        ),
+                        authorize=authorize_delete,
+                        mutate=delete_mutation,
+                    )
+                except TaskCommandRevisionConflict as exc:
+                    raise HTTPException(409, "该任务已被更新，请刷新后重试") from exc
+                except TaskCommandSourceUnavailable as exc:
+                    raise HTTPException(404, "本地任务不存在或已归档") from exc
                 await conn.commit()
         except Exception:
             await conn.rollback()

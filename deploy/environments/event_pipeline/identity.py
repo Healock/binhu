@@ -29,10 +29,20 @@ def environment_for_run_id(run_id: object) -> str:
 
 def topic_for(environment: str) -> str:
     if environment == "development":
-        return "dev.task.events.v1"
+        return "dev.task.read-model.v4"
     if environment == "staging":
-        return "staging.task.events.v1"
+        return "staging.task.read-model.v4"
     raise ValueError("non-Production pipeline topic required")
+
+
+def summary_topic_for(environment: str, *, dead_letter: bool = False) -> str:
+    if environment == "development":
+        prefix = "dev"
+    elif environment == "staging":
+        prefix = "staging"
+    else:
+        raise ValueError("non-Production pipeline topic required")
+    return f"{prefix}.online-summary.facts{'.dlq' if dead_letter else ''}.v1"
 
 
 def source_name(environment: str, engine: str) -> str:
@@ -42,4 +52,4 @@ def source_name(environment: str, engine: str) -> str:
     return f"{engine}-{suffix}"
 
 
-__all__ = ["environment_for_run_id", "source_name", "topic_for", "validate_identity"]
+__all__ = ["environment_for_run_id", "source_name", "topic_for", "summary_topic_for", "validate_identity"]

@@ -11,6 +11,7 @@ import tempfile
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
 from . import flink_submission
+from .identity import summary_topic_for
 
 
 FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
@@ -76,7 +77,7 @@ def safe_control_failure_detail(error: Exception) -> str:
     """Return only a fixed, non-sensitive Dev control gate reason."""
     detail = str(error)
     if detail in _SAFE_CONTROL_FAILURES or re.fullmatch(
-        r"Flink runtime missing INSERT sink: dev_[A-Za-z0-9_]+(?:,dev_[A-Za-z0-9_]+)*", detail
+        r"Flink runtime (?:missing INSERT sink|unexpected sink): [A-Za-z0-9_,.-]+", detail
     ) or re.fullmatch(r"flink_rest_http_[0-9]{3}", detail):
         return detail
     return type(error).__name__
@@ -88,6 +89,8 @@ def expected_networks(service):
         return {NETWORK, "binhu-development_internal"}
     if service == "backend-outbox-relay":
         return {"binhu-development_internal"}
+    if service == "taskmanager":
+        return {NETWORK, "binhu-development_internal"}
     return {NETWORK}
 
 
@@ -167,16 +170,28 @@ def _run_checked(command: list[str], *, timeout: int = 120) -> subprocess.Comple
     return result
 
 
-def _consumer_groups(expected_group: str) -> list[str]:
-    result = _run_checked([
-        "docker", "exec", KAFKA_CONTAINER,
-        "/opt/kafka/bin/kafka-consumer-groups.sh",
-        "--bootstrap-server", "kafka-1:9092",
-        "--describe", "--group", expected_group,
-    ])
-    if "dev.task.events.v1" not in result.stdout:
-        raise ValueError("Dev Flink consumer group has no task topic assignment")
-    return [expected_group]
+def _consumer_groups(expected_groups: list[str]) -> list[str]:
+    expected = set(expected_groups)
+    run_id = expected_groups[0].removesuffix("-flink") if expected_groups else ""
+    canonical = {f"{run_id}-flink", f"{run_id}-flink-redis"}
+    if expected != canonical:
+        raise ValueError("Dev Flink consumer groups do not match current run")
+    topic = flink_submission.topic_for("development")
+    for expected_group in sorted(expected):
+        result = _run_checked([
+            "docker", "exec", KAFKA_CONTAINER,
+            "/opt/kafka/bin/kafka-consumer-groups.sh",
+            "--bootstrap-server", "kafka-1:9092",
+            "--describe", "--group", expected_group,
+        ])
+        assignments = {
+            parts[1]
+            for line in result.stdout.splitlines()
+            if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected_group
+        }
+        if assignments and assignments != {topic}:
+            raise ValueError("Dev Flink consumer group has no task topic assignment")
+    return sorted(expected)
 
 
 def _validate_flink_sql(manifest: dict) -> dict:
@@ -274,7 +289,7 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
         jar_id = client.upload_jar(candidate_jar["container_path"])
         client.run_jar(jar_id)
     verified = flink_submission.wait_for_runtime(
-        client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_group"]),
+        client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_groups"]),
         expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
     )
     runtime_path = evidence / "flink-runtime.json"
@@ -282,6 +297,25 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
                                         "candidate_jar": candidate_jar}, indent=2) + "\n", encoding="utf-8")
     runtime_path.chmod(0o600)
     return verified
+
+
+def _ensure_summary_topics(environment: str) -> list[str]:
+    """Create only the fixed non-Production online-summary topics."""
+    topics = (summary_topic_for(environment), summary_topic_for(environment, dead_letter=True))
+    for topic in topics:
+        _run_checked([
+            "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
+            "--bootstrap-server", "kafka-1:9092", "--create", "--if-not-exists",
+            "--topic", topic, "--partitions", "3", "--replication-factor", "3",
+            "--config", "min.insync.replicas=2",
+        ])
+    description = _run_checked([
+        "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
+        "--bootstrap-server", "kafka-1:9092", "--describe",
+    ]).stdout
+    if any(topic not in description for topic in topics):
+        raise ValueError("Dev online-summary topic verification failed")
+    return list(topics)
 
 
 def apply():
@@ -316,6 +350,10 @@ def apply():
     path.chmod(0o600)
     if result.returncode:
         raise ValueError("startup failed; preserve private diagnostics")
+    summary_topics = _ensure_summary_topics("development")
+    topics_path = evidence / "online-summary-topics.json"
+    topics_path.write_text(json.dumps({"environment": "development", "topics": summary_topics}, indent=2) + "\n")
+    topics_path.chmod(0o600)
     migration = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
                                 "run", "--rm", "--no-deps", "relay", "python", "-m",
                                 "event_pipeline.delivery_schema_migrate"],

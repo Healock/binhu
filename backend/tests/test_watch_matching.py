@@ -73,3 +73,64 @@ async def test_model_three_payload_does_not_duplicate_existing_snapshot(monkeypa
 
     assert len(result["row-1"]["watch_marks"]) == 1
     assert result["row-1"]["watch_marks"][0]["snapshot_reason"] == "initial_match"
+
+
+@pytest.mark.asyncio
+async def test_read_model_current_tag_uses_task_snapshot_without_old_projection(monkeypatch):
+    from datetime import datetime
+
+    monkeypatch.setattr(watch_matching.settings, "REGISTRY_FEATURE_ENABLED", True)
+    monkeypatch.setattr(watch_matching.settings, "TASK_READ_MODEL_ENABLED", True)
+    monkeypatch.setattr(watch_matching.settings, "MYSQL_REGISTRY_DB", "RegistryData")
+    monkeypatch.setattr(
+        watch_matching, "projection_identity",
+        lambda *_args: "synthetic-identity-hmac",
+    )
+    monkeypatch.setattr(
+        watch_matching, "parse_dispatch_time",
+        lambda *_args: datetime(2026, 11, 5),
+    )
+    cursor = _PayloadCursor(
+        snapshot_rows=[],
+        current_rows=[(
+            "synthetic-identity-hmac", 7, "自购自住", "#16a34a", "notice",
+            "active", "asset_import", 91,
+        )],
+    )
+
+    result = await watch_matching.task_watch_payload(
+        cursor,
+        "疑似未注销模型三",
+        ["row-1"],
+        task_values_by_row={"row-1": {"身份证号": "synthetic-id"}},
+    )
+
+    assert result["row-1"]["watch_marks"] == [{
+        "category_id": 7,
+        "name": "自购自住",
+        "color": "#16a34a",
+        "alert_level": "notice",
+        "assignment_status": "active",
+        "source_type": "asset_import",
+        "snapshot_status": "active",
+        "snapshot_reason": "current_registry_tag",
+    }]
+    assert len(cursor.calls) == 2
+    assert all("_online_source_projection" not in sql for sql, _params in cursor.calls)
+    assert cursor.calls[1][1] == ("synthetic-identity-hmac",)
+
+
+@pytest.mark.asyncio
+async def test_read_model_current_tag_skips_when_task_snapshot_is_missing(monkeypatch):
+    monkeypatch.setattr(watch_matching.settings, "REGISTRY_FEATURE_ENABLED", True)
+    monkeypatch.setattr(watch_matching.settings, "TASK_READ_MODEL_ENABLED", True)
+    monkeypatch.setattr(watch_matching.settings, "MYSQL_REGISTRY_DB", "RegistryData")
+    cursor = _PayloadCursor(snapshot_rows=[], current_rows=[])
+
+    result = await watch_matching.task_watch_payload(
+        cursor, "疑似未注销模型三", ["row-1"],
+    )
+
+    assert result == {}
+    assert len(cursor.calls) == 1
+    assert all("_online_source_projection" not in sql for sql, _params in cursor.calls)

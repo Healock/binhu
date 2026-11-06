@@ -558,20 +558,40 @@ async def _save_result(
 ) -> None:
     pool = _pool()
     async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE _residence_registration_status "
-                "SET status=%s,error_code=%s,duration_ms=%s,checked_at=UTC_TIMESTAMP() "
-                "WHERE parser_type=%s AND row_key=%s",
-                (
-                    status,
-                    error_code[:64],
-                    max(0, int(duration_ms)) if duration_ms is not None else None,
-                    parser_type,
-                    row_key,
-                ),
-            )
-        await conn.commit()
+        await conn.begin()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE _residence_registration_status "
+                    "SET status=%s,error_code=%s,duration_ms=%s,checked_at=UTC_TIMESTAMP() "
+                    "WHERE parser_type=%s AND row_key=%s",
+                    (
+                        status,
+                        error_code[:64],
+                        max(0, int(duration_ms)) if duration_ms is not None else None,
+                        parser_type,
+                        row_key,
+                    ),
+                )
+                from services.task_view_state import (
+                    enqueue_source_task_view_state, task_view_state_events_enabled,
+                )
+                if task_view_state_events_enabled():
+                    await cur.execute(
+                        "SELECT id FROM _online_source_rows WHERE parser_type=%s "
+                        "AND row_key=%s AND archived_at IS NULL ORDER BY id LIMIT 2",
+                        (parser_type, row_key),
+                    )
+                    sources = await cur.fetchall()
+                    if len(sources) == 1:
+                        await enqueue_source_task_view_state(
+                            cur, source_id=int(sources[0][0]), domain="residence",
+                            state={"status": str(status), "error_code": error_code[:64]},
+                        )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
 
 
 async def _process_one(

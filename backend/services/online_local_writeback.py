@@ -7,6 +7,7 @@ from contextlib import suppress
 from typing import Any
 import uuid
 
+from config import settings
 from database import db_manager
 from services.business_time import get_business_date
 from services.local_source import (
@@ -271,7 +272,7 @@ async def _refresh_audit_status(cur, audit_ids: set[int]) -> None:
         )
 
 
-async def apply_local_system_changes(
+async def _apply_local_system_changes_mutation(
     cur,
     *,
     source: dict[str, Any],
@@ -279,7 +280,7 @@ async def apply_local_system_changes(
     user: dict[str, Any] | None = None,
     action: str = "system_local_update",
     rebuild: bool = True,
-) -> tuple[int, int, dict[str, str], str]:
+) -> tuple[int, int, dict[str, str], str, str, list[str]]:
     """Apply a trusted server-side change directly to the local task source.
 
     This is intentionally separate from the Tencent writeback queue.  System
@@ -459,7 +460,110 @@ async def apply_local_system_changes(
         business_date=await get_business_date(cur),
         operation_id=operation_id,
     )
-    return audit_id, next_revision, after, new_key
+    return audit_id, next_revision, after, new_key, operation_id, changed
+
+
+async def apply_local_system_changes(
+    cur,
+    *,
+    source: dict[str, Any],
+    changes: dict[str, str],
+    user: dict[str, Any] | None = None,
+    action: str = "system_local_update",
+    rebuild: bool = True,
+) -> tuple[int, int, dict[str, str], str]:
+    """Execute a local task mutation through the shared command transaction."""
+    from services.domain_events import stable_task_id, task_changed_field_categories, task_event_type_for_action
+    from services.task_commands import (
+        TaskAuthorizationResult,
+        TaskCommandService,
+        TaskCommandSpec,
+        TaskMutationResult,
+    )
+
+    parser_type = str(source.get("spreadsheet", {}).get("parser_type") or "")
+    parser = get_parser(parser_type)
+    source_id = int(source["id"])
+    expected_revision = int(source.get("revision") or 0)
+    actor = user or {"id": 0, "username": "system"}
+    normalized_action = TaskCommandService.normalize_action(action)
+    task_id = stable_task_id(parser.table_name, int(source.get("physical_row") or 0))
+    community = parser.community_value(source.get("values") or {})
+    audiences = ("authenticated", f"community:{community}") if community else ("authenticated",)
+
+    async def authorize(_cur, current_source):
+        if current_source is None:
+            raise PermissionError("task command source is unavailable")
+        actor_name = str(actor.get("username") or "").strip().lower()
+        if int(actor.get("id") or 0) == 0 or actor_name == "system":
+            return TaskAuthorizationResult(
+                policy_key="system_task_workflow",
+                scope_values=(f"parser:{parser_type}",),
+            )
+        from services.permissions import ONLINE_RAW_EDIT, ONLINE_TASK_MANAGE, has_permission
+
+        can_edit = has_permission(actor, ONLINE_RAW_EDIT)
+        can_manage = has_permission(actor, ONLINE_TASK_MANAGE)
+        if not (can_edit or can_manage):
+            raise PermissionError("task command permission denied")
+        if can_manage:
+            return TaskAuthorizationResult(
+                policy_key="online_task_manage",
+                scope_values=("all_communities",),
+            )
+        allowed_communities = {
+            str(value).strip() for value in actor.get("community_names") or []
+            if str(value).strip()
+        }
+        current_community = parser.community_value(current_source.get("values") or {})
+        if not current_community or current_community not in allowed_communities:
+            raise PermissionError("task command community scope denied")
+        return TaskAuthorizationResult(
+            policy_key="online_raw_edit",
+            scope_values=tuple(sorted(allowed_communities)),
+        )
+
+    async def mutate(_cur, locked_source):
+        current_source = {
+            **source,
+            "revision": locked_source["revision"],
+            "physical_row": locked_source["physical_row"],
+            "values": locked_source["values"],
+        }
+        result = await _apply_local_system_changes_mutation(
+            cur,
+            source=current_source,
+            changes=changes,
+            user=actor,
+            action=action,
+            rebuild=rebuild,
+        )
+        audit_id, revision, snapshot, new_key, operation_id, changed = result
+        return TaskMutationResult(
+            revision=revision,
+            snapshot=snapshot,
+            changed_fields=tuple(task_changed_field_categories(parser_type, changed)),
+            result=(audit_id, revision, snapshot, new_key),
+            operation_id=operation_id,
+        )
+
+    outcome = await TaskCommandService.execute(
+        cur,
+        spec=TaskCommandSpec(
+            actor_id=int(actor.get("id") or 0),
+            environment=settings.APP_ENVIRONMENT,
+            parser_type=parser_type,
+            task_id=task_id,
+            source_id=source_id,
+            action=normalized_action,
+            event_type=task_event_type_for_action(action),
+            expected_revision=expected_revision,
+            audiences=audiences,
+        ),
+        authorize=authorize,
+        mutate=mutate,
+    )
+    return outcome.result
 
 
 async def enqueue_local_changes(
@@ -470,8 +574,9 @@ async def enqueue_local_changes(
     user: dict,
     audit_id: int,
 ) -> int:
-    if local_data_source_enabled():
-        raise RuntimeError("local_data_source_requires_direct_transaction")
+    raise RuntimeError("external_data_source_retired")
+    # Retained below only as historical compatibility reference. The active
+    # local task path must use apply_local_system_changes / TaskCommandService.
     source_id = int(source["id"])
     affected_audits = {int(audit_id)}
     async with conn.cursor() as cur:
@@ -608,87 +713,7 @@ async def resolve_source_conflict(
     choice: str,
     fields: list[str],
 ) -> dict[str, Any]:
-    if local_data_source_enabled():
-        raise ValueError("本地数据源已启用，不再处理腾讯同步冲突")
-    await conn.begin()
-    try:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT parser_type, physical_row, row_key FROM _online_source_rows "
-                "WHERE id=%s FOR UPDATE",
-                (source_id,),
-            )
-            row = await cur.fetchone()
-            if not row:
-                raise LookupError("来源行已经变化")
-            parser_type = str(row[0])
-            physical_row = int(row[1])
-            source_row_key = str(row[2])
-            params: list[Any] = [source_id]
-            field_clause = ""
-            if fields:
-                placeholders = ", ".join(["%s"] * len(fields))
-                field_clause = f" AND field_name IN ({placeholders})"
-                params.extend(fields)
-            await cur.execute(
-                "SELECT id, audit_id, remote_value, error_code, field_name, row_key "
-                "FROM _online_local_changes "
-                "WHERE source_id=%s AND status='conflict'" + field_clause + " FOR UPDATE",
-                params,
-            )
-            conflicts = await cur.fetchall()
-            if not conflicts:
-                raise ValueError("没有可处理的同步冲突")
-            audit_ids = {int(item[1]) for item in conflicts}
-            ids = [int(item[0]) for item in conflicts]
-            placeholders = ", ".join(["%s"] * len(ids))
-            if choice == "platform":
-                if any(str(item[3] or "") == "source_missing" for item in conflicts):
-                    raise ValueError("腾讯来源行已不存在，不能再用平台值覆盖")
-                validate_conflict_source_identity(
-                    source_row_key,
-                    [str(item[5] or "") for item in conflicts],
-                )
-                await cur.execute(
-                    f"UPDATE _online_local_changes SET base_value=COALESCE(remote_value,''), "
-                    f"status='pending', attempt_count=0, next_attempt_at=NULL, "
-                    f"error_code='', last_error='' WHERE id IN ({placeholders})",
-                    ids,
-                )
-            elif choice == "tencent":
-                await cur.execute(
-                    f"DELETE FROM _online_local_changes WHERE id IN ({placeholders})",
-                    ids,
-                )
-            else:
-                raise ValueError("未知冲突处理方式")
-            await cur.execute(
-                "UPDATE _online_source_rows SET revision=revision+1, "
-                "refreshed_at=UTC_TIMESTAMP() WHERE id=%s",
-                (source_id,),
-            )
-            if choice == "tencent" and physical_row < 0:
-                await cur.execute(
-                    "SELECT 1 FROM _online_local_changes WHERE source_id=%s "
-                    "AND status IN ('pending','processing','retry','conflict') LIMIT 1",
-                    (source_id,),
-                )
-                if not await cur.fetchone():
-                    await cur.execute(
-                        "DELETE FROM _online_source_rows WHERE id=%s",
-                        (source_id,),
-                    )
-            await _refresh_audit_status(cur, audit_ids)
-            await rebuild_projection(cur, parser_type)
-        await conn.commit()
-    except Exception:
-        await conn.rollback()
-        raise
-    return {
-        "choice": choice,
-        "fields": [str(item[4]) for item in conflicts],
-        "sync_state": "pending" if choice == "platform" else "",
-    }
+    raise ValueError("腾讯数据源已下线，不能处理旧同步冲突")
 
 
 async def _oauth_client(cur) -> TxDocsClient:

@@ -1,4 +1,4 @@
-"""Strict metadata-only events for the isolated Kafka Dev POC.
+"""Strict task events with encrypted business snapshots for the isolated pipeline.
 
 This module defines a new Kafka contract.  It deliberately does not reuse the
 Redis/outbox ``domain_events`` schema: Kafka consumers receive only stable
@@ -8,6 +8,8 @@ boundary.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -17,8 +19,9 @@ from typing import Any
 from ..identity import environment_for_run_id
 
 
-SCHEMA_VERSION = 1
-MAX_EVENT_BYTES = 16 * 1024
+SCHEMA_VERSION = 6
+LEGACY_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4})
+MAX_EVENT_BYTES = 256 * 1024
 MAX_INT64 = 2**63 - 1
 
 EVENT_TYPES = frozenset(
@@ -34,6 +37,8 @@ EVENT_TYPES = frozenset(
         "photo.attached",
         "venue.visited",
         "external.stats.updated",
+        "task.view_state.changed",
+        "task.view_state.removed",
     }
 )
 
@@ -53,6 +58,7 @@ CHANGED_FIELDS = frozenset(
         "photo_attachment",
         "venue_visit",
         "external_stat",
+        "online_summary",
     }
 )
 
@@ -69,6 +75,16 @@ EVENT_FIELDS = (
     "environment",
     "run_id",
 )
+OPTIONAL_EVENT_FIELDS = ("encrypted_payload", "row_group_token")
+V4_EVENT_FIELDS = ("command_id", *EVENT_FIELDS)
+V4_REQUIRED_FIELDS = (*V4_EVENT_FIELDS, "encrypted_payload")
+V6_EVENT_FIELDS = (*EVENT_FIELDS, "command_id")
+V6_REQUIRED_FIELDS = (*V6_EVENT_FIELDS, "row_group_token", "encrypted_payload")
+V5_EVENT_FIELDS = (*EVENT_FIELDS, "view_domain", "task_revision")
+V5_REQUIRED_FIELDS = (*V5_EVENT_FIELDS, "encrypted_payload")
+VIEW_STATE_DOMAINS = frozenset({
+    "address_match", "watch", "qmf", "residence", "registration", "review", "task_graph",
+})
 
 # A local source reference is generated from one of these registered parser
 # tables and a positive local row id.  Keep this contract allowlist fixed: a
@@ -184,29 +200,56 @@ def _validate_changed_fields(value: Any) -> list[str]:
 
 
 def validate_task_event(event: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate and canonicalize one metadata-only Kafka task event.
+    """Validate and canonicalize one Kafka task event.
 
-    The returned dictionary is a fresh object.  It has no unknown properties,
-    no task body, and a deterministic ``changed_fields`` order.  Kafka
-    serialization should use :func:`serialize_task_event`.
+    The returned dictionary is a fresh object with no unknown properties and
+    deterministic metadata ordering. Any business snapshot is an opaque,
+    authenticated encryption envelope.
     """
     if not isinstance(event, Mapping):
         raise _invalid("event")
 
-    allowed = frozenset(EVENT_FIELDS)
+    if not isinstance(event, Mapping):
+        raise _invalid("event")
+
+    version_value = event.get("schema_version")
+    if type(version_value) is not int or version_value not in (*LEGACY_SCHEMA_VERSIONS, SCHEMA_VERSION, 5):
+        raise _invalid("schema_version")
+    contract_fields = (
+        V5_EVENT_FIELDS if version_value == 5
+        else V6_EVENT_FIELDS if version_value == SCHEMA_VERSION
+        else V4_EVENT_FIELDS if version_value == 4
+        else EVENT_FIELDS
+    )
+    allowed = frozenset((*contract_fields, *OPTIONAL_EVENT_FIELDS))
     if any(not isinstance(key, str) or key not in allowed for key in event):
         raise _invalid("properties")
-    if any(field not in event for field in EVENT_FIELDS):
+    if any(field not in event for field in contract_fields):
         raise _invalid("required properties")
 
-    schema_version = event["schema_version"]
-    if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
-        raise _invalid("schema_version")
+    schema_version = version_value
+    command_id = _validate_uuid(event["command_id"], "command_id") if schema_version in {4, SCHEMA_VERSION} else None
+    row_group_token = None
 
     event_id = _validate_uuid(event["event_id"], "event_id")
     event_type = event["event_type"]
     if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
         raise _invalid("event_type")
+    if schema_version == SCHEMA_VERSION and event_type != "task.deleted":
+        row_group_token = event.get("row_group_token")
+        if not isinstance(row_group_token, str) or not re.fullmatch(r"[0-9a-f]{64}", row_group_token):
+            raise _invalid("row_group_token")
+    view_domain = None
+    task_revision = None
+    if schema_version == 5:
+        if event_type not in {"task.view_state.changed", "task.view_state.removed"}:
+            raise _invalid("event_type")
+        view_domain = event.get("view_domain")
+        if view_domain not in VIEW_STATE_DOMAINS:
+            raise _invalid("view_domain")
+        task_revision = _validate_int(event.get("task_revision"), "task_revision", minimum=1)
+    elif event_type in {"task.view_state.changed", "task.view_state.removed"}:
+        raise _invalid("schema_version")
 
     task_id = _validate_task_id(event["task_id"])
     source_id = _validate_int(event["source_id"], "source_id", minimum=1)
@@ -214,6 +257,87 @@ def validate_task_event(event: Mapping[str, Any]) -> dict[str, Any]:
     operation_id = _validate_uuid(event["operation_id"], "operation_id")
     changed_fields = _validate_changed_fields(event["changed_fields"])
     timestamp = _validate_timestamp(event["timestamp"])
+    encrypted_payload = event.get("encrypted_payload")
+    if encrypted_payload is not None:
+        expected_payload_fields = {
+            "algorithm", "key_version", "nonce", "ciphertext", "aad",
+            "ciphertext_sha256",
+        }
+        if not isinstance(encrypted_payload, Mapping) or set(encrypted_payload) != expected_payload_fields:
+            raise _invalid("encrypted_payload")
+        if schema_version in {4, SCHEMA_VERSION}:
+            expected_key_version = "task-event-v3" if schema_version == SCHEMA_VERSION else "task-event-v2"
+            if (encrypted_payload.get("algorithm") != "AES-256-GCM"
+                    or encrypted_payload.get("key_version") != expected_key_version):
+                raise _invalid("encrypted_payload")
+            encoded = encrypted_payload.get("ciphertext")
+            nonce = encrypted_payload.get("nonce")
+            aad = encrypted_payload.get("aad")
+            digest = encrypted_payload.get("ciphertext_sha256")
+            if (not isinstance(encoded, str) or not encoded or len(encoded) > MAX_EVENT_BYTES
+                    or not isinstance(nonce, str) or len(nonce) != 16
+                    or not isinstance(aad, str) or not aad
+                    or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+                raise _invalid("encrypted_payload")
+            try:
+                ciphertext = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+                nonce_bytes = base64.b64decode(nonce + "=" * (-len(nonce) % 4), altchars=b"-_", validate=True)
+                aad_bytes = base64.b64decode(aad + "=" * (-len(aad) % 4), altchars=b"-_", validate=True)
+            except (ValueError, TypeError):
+                raise _invalid("encrypted_payload") from None
+            if len(nonce_bytes) != 12 or hashlib.sha256(ciphertext).hexdigest() != digest:
+                raise _invalid("encrypted_payload")
+            expected_aad = {
+                "command_id": command_id,
+                "contract": "binhu.task-snapshot.v3" if schema_version == SCHEMA_VERSION else "binhu.task-snapshot.v2",
+                "environment": event["environment"],
+                "event_id": event_id,
+                "revision": revision,
+                "task_id": task_id,
+            }
+            if schema_version == SCHEMA_VERSION:
+                expected_aad["row_group_token"] = row_group_token
+            if aad_bytes != _dump(expected_aad).encode("utf-8"):
+                raise _invalid("encrypted_payload")
+        elif schema_version == 5:
+            if (encrypted_payload.get("algorithm") != "AES-256-GCM"
+                    or encrypted_payload.get("key_version") != "task-view-state-v1"):
+                raise _invalid("encrypted_payload")
+            encoded = encrypted_payload.get("ciphertext")
+            nonce = encrypted_payload.get("nonce")
+            aad = encrypted_payload.get("aad")
+            digest = encrypted_payload.get("ciphertext_sha256")
+            if (not isinstance(encoded, str) or not encoded or len(encoded) > MAX_EVENT_BYTES
+                    or not isinstance(nonce, str) or len(nonce) != 16
+                    or not isinstance(aad, str) or not aad
+                    or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+                raise _invalid("encrypted_payload")
+            try:
+                ciphertext = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+                nonce_bytes = base64.b64decode(nonce + "=" * (-len(nonce) % 4), altchars=b"-_", validate=True)
+                aad_bytes = base64.b64decode(aad + "=" * (-len(aad) % 4), altchars=b"-_", validate=True)
+            except (ValueError, TypeError):
+                raise _invalid("encrypted_payload") from None
+            expected_aad = {
+                "contract": "binhu.task-view-state.v1",
+                "domain": view_domain,
+                "domain_revision": revision,
+                "environment": event["environment"],
+                "event_id": event_id,
+                "run_id": event["run_id"],
+                "task_id": task_id,
+                "task_revision": task_revision,
+            }
+            if (len(nonce_bytes) != 12
+                    or hashlib.sha256(ciphertext).hexdigest() != digest
+                    or aad_bytes != _dump(expected_aad).encode("utf-8")):
+                raise _invalid("encrypted_payload")
+    if schema_version in {4, SCHEMA_VERSION} and event_type != "task.deleted" and encrypted_payload is None:
+        raise _invalid("encrypted_payload")
+    if schema_version in {4, SCHEMA_VERSION} and event_type == "task.deleted" and encrypted_payload is not None:
+        raise _invalid("encrypted_payload")
+    if schema_version == 5 and encrypted_payload is None:
+        raise _invalid("encrypted_payload")
 
     run_id = event["run_id"]
     if not isinstance(run_id, str):
@@ -227,7 +351,7 @@ def validate_task_event(event: Mapping[str, Any]) -> dict[str, Any]:
         raise _invalid("environment")
 
     normalized = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "event_id": event_id,
         "event_type": event_type,
         "task_id": task_id,
@@ -239,6 +363,15 @@ def validate_task_event(event: Mapping[str, Any]) -> dict[str, Any]:
         "environment": expected_environment,
         "run_id": run_id,
     }
+    if command_id is not None:
+        normalized["command_id"] = command_id
+    if row_group_token is not None:
+        normalized["row_group_token"] = row_group_token
+    if schema_version == 5:
+        normalized["view_domain"] = view_domain
+        normalized["task_revision"] = task_revision
+    if encrypted_payload is not None:
+        normalized["encrypted_payload"] = dict(encrypted_payload)
     if len(_dump(normalized).encode("utf-8")) > MAX_EVENT_BYTES:
         raise _invalid("size")
     return normalized

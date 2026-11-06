@@ -18,9 +18,8 @@ from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id, topic_
 from .projection_definitions import BASE_PROJECTION_NAMES, projection_names
 
 
-# Kept as a compatibility alias for callers that only need the mandatory base
-# projection.  A rendered pipeline may expose additional metadata sinks.
-EXPECTED_SINKS = BASE_PROJECTION_NAMES
+EXPECTED_SINKS = BASE_PROJECTION_NAMES | frozenset(("task-read-model-redis",))
+EXPECTED_SOURCES = frozenset(("dev_events", "dev_task_events_redis"))
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
 REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
 # Flink may accept the JAR before the JobGraph has finished planning and
@@ -71,17 +70,38 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
     if not isinstance(sql, str):
         raise ValueError("Flink SQL is not text")
     run_id = _one(r"pipeline\.name'\s*=\s*'([^']+)'", sql, "run_id")
-    group = _one(r"properties\.group\.id'\s*=\s*'([^']+)'", sql, "consumer group")
-    topic = _one(r"'topic'\s*=\s*'([^']+)'", sql, "topic")
+    kafka_sources = {}
+    for table, _columns, options in re.findall(
+        r"CREATE\s+TABLE\s+([A-Za-z0-9_]+)\s*\((.*?)\)\s*WITH\s*\((.*?)\)\s*;",
+        sql, flags=re.IGNORECASE | re.DOTALL,
+    ):
+        group = _one(r"properties\.group\.id'\s*=\s*'([^']+)'", options, "consumer group")
+        topic = _one(r"'topic'\s*=\s*'([^']+)'", options, "topic")
+        if table in kafka_sources:
+            raise ValueError("Flink Kafka source identity is duplicated")
+        kafka_sources[table] = {"consumer_group": group, "topic": topic}
     filtered_runs = set(re.findall(r"run_id\s*=\s*'([^']+)'", sql, flags=re.IGNORECASE))
     environments = set(re.findall(r"environment\s*=\s*'([^']+)'", sql, flags=re.IGNORECASE))
+    schema_versions = set(re.findall(r"schema_version\s*=\s*([0-9]+)", sql, flags=re.IGNORECASE))
+    for match in re.findall(r"schema_version\s+IN\s*\(([^)]+)\)", sql, flags=re.IGNORECASE):
+        schema_versions.update(re.findall(r"[0-9]+", match))
     if filtered_runs != {run_id}:
         raise ValueError("Flink SQL run_id filter does not match pipeline identity")
     environment = environment_for_run_id(run_id)
     if environments != {environment}:
         raise ValueError("Flink SQL environment filter does not match run identity")
-    if topic != topic_for(environment):
+    if any(item["topic"] != topic_for(environment) for item in kafka_sources.values()):
         raise ValueError("Flink Kafka topic does not match environment identity")
+    if schema_versions != {"4", "5", "6"}:
+        raise ValueError("Flink SQL task/view-state schema versions are incomplete")
+    expected_sources = {
+        "dev_events": {"consumer_group": f"{run_id}-flink", "topic": topic_for(environment)},
+        "dev_task_events_redis": {
+            "consumer_group": f"{run_id}-flink-redis", "topic": topic_for(environment),
+        },
+    }
+    if kafka_sources != expected_sources:
+        raise ValueError("Flink SQL consumer groups do not match manifest")
     sinks = frozenset(re.findall(
         r"INSERT\s+INTO\s+(dev_[A-Za-z0-9_]+)\b", sql, flags=re.IGNORECASE,
     ))
@@ -92,8 +112,11 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
     if not sinks <= allowed:
         unknown = ",".join(sorted(sinks - allowed))
         raise ValueError(f"Flink SQL contains unsupported INSERT sink: {unknown}")
-    return {"run_id": run_id, "consumer_group": group, "topic": topic,
-            "environment": environment, "sinks": sorted(sinks)}
+    sinks = sinks | frozenset(("task-read-model-redis",))
+    return {"run_id": run_id,
+            "consumer_groups": sorted(item["consumer_group"] for item in kafka_sources.values()),
+            "topics": sorted({item["topic"] for item in kafka_sources.values()}),
+            "sources": kafka_sources, "environment": environment, "sinks": sorted(sinks)}
 
 
 def parse_runtime_identity(runtime: str) -> str:
@@ -121,14 +144,31 @@ def validate_sql_identity(sql: str, expected_run_id: str) -> dict[str, str]:
     identity = parse_sql_identity(sql)
     if identity["run_id"] != expected_run_id:
         raise ValueError("Flink SQL run_id does not match manifest")
-    if identity["consumer_group"] != f"{expected_run_id}-flink":
-        raise ValueError("Flink SQL consumer group does not match manifest")
+    if set(identity["consumer_groups"]) != {
+        f"{expected_run_id}-flink", f"{expected_run_id}-flink-redis",
+    }:
+        raise ValueError("Flink SQL consumer groups do not match manifest")
     return identity
 
 
-def _job_text(job: dict[str, Any]) -> str:
+def _job_descriptions(job: dict[str, Any]) -> list[str]:
     plan = job.get("plan") or {}
-    return "\n".join(str(node.get("description", "")) for node in plan.get("nodes", []))
+    nodes = plan.get("nodes", [])
+    if not isinstance(nodes, list):
+        return []
+    return [str(node.get("description", "")) for node in nodes if isinstance(node, dict)]
+
+
+def _named_operators(descriptions: list[str], kind: str) -> list[str]:
+    return [
+        match.group(1)
+        for description in descriptions
+        for match in re.finditer(
+            rf"(?:^|\s){kind}:\s*([A-Za-z0-9_.-]+)(?=$|[\s\[(:])",
+            description,
+            flags=re.IGNORECASE,
+        )
+    ]
 
 
 def validate_job_graph(
@@ -143,7 +183,8 @@ def validate_job_graph(
     # name is the stable run identity; SQL identity is checked before submit.
     if str(job.get("name", "")) != expected_run_id:
         raise FlinkRuntimeValidationError("Flink JobGraph run_id does not match", "job_name")
-    text = _job_text(job)
+    descriptions = _job_descriptions(job)
+    text = "\n".join(descriptions)
     # Table plans in Flink 1.20 do not always include connector options.  The
     # SQL identity fence and Kafka group check cover that case.  If a plan does
     # expose a topic marker, it must still be the fixed environment topic.
@@ -151,7 +192,13 @@ def validate_job_graph(
     if topic_markers and topic_markers != {topic_for(environment)}:
         raise FlinkRuntimeValidationError("Flink JobGraph topic does not match environment identity", "job_topic")
     required = frozenset(expected_sinks or EXPECTED_SINKS)
-    sinks = {sink for sink in projection_names() if sink in text}
+    sources = _named_operators(descriptions, "Source")
+    if len(sources) != len(EXPECTED_SOURCES) or set(sources) != EXPECTED_SOURCES:
+        raise FlinkRuntimeValidationError("Flink runtime Kafka sources do not match", "job_source")
+    sinks = set(_named_operators(descriptions, "Sink"))
+    if sinks - required:
+        unexpected = ",".join(sorted(sinks - required))
+        raise FlinkRuntimeValidationError(f"Flink runtime unexpected sink: {unexpected}", "job_sinks")
     if not required <= sinks:
         missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
@@ -189,14 +236,17 @@ def validate_runtime(
     required = frozenset(expected_sinks or EXPECTED_SINKS)
     job_reports = [validate_job_graph(item, expected_run_id, required) for item in jobs]
     sinks = {sink for report in job_reports for sink in report["sinks"]}
+    if sinks - required:
+        unexpected = ",".join(sorted(sinks - required))
+        raise FlinkRuntimeValidationError(f"Flink runtime unexpected sink: {unexpected}", "job_sinks")
     if not required <= sinks:
         missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
-    expected_group = f"{expected_run_id}-flink"
-    if set(consumer_groups) != {expected_group}:
+    expected_groups = {f"{expected_run_id}-flink", f"{expected_run_id}-flink-redis"}
+    if set(consumer_groups) != expected_groups:
         raise FlinkRuntimeValidationError("Flink consumer group does not match current run", "consumer_group")
     return {"run_id": expected_run_id, "job_count": len(jobs),
-            "consumer_group": expected_group,
+            "consumer_groups": sorted(expected_groups),
             "job_ids": sorted(str(item.get("jid")) for item in jobs),
             "sinks": sorted(sinks)}
 

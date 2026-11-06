@@ -14,6 +14,10 @@
 
 [返回未来计划总目录](../future-plans.md)。相关独立计划：[生产接口拥堵治理](production-congestion-observability.md)、[腾讯表时代数据模型退场](legacy-task-model-retirement.md)。
 
+### 事件保留策略增补（2026-11-04）
+
+事件传输层的保留边界和源码清理机制已整理到[事件保留与清理](../event-retention.md)：Redis Stream 保留 7 天且最多 100 万条，Kafka Staging broker 默认保留 7 天；Development broker 配置和 topic 实际保留值仍待核验。MySQL Outbox 与 Kafka delivery ledger 仅清理成功发布满 30 天的记录，每 6 小时最多 200 条。清理默认关闭，失败、阻塞、隔离和死信状态不自动删除。当前只完成源码和文档变更，未迁移或清理任何环境数据库；真实 MySQL 索引、批量删除、Kafka 自然过期和审计保留要求仍待目标环境核验。
+
 ## 原事件总线计划与执行台账（恢复原文）
 
 ### PR #512 收尾（2026-09-08）

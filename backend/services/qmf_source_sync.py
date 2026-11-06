@@ -9,13 +9,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from typing import Any
 
 from database import db_manager
+from config import settings
 from services.external_acquisition_jobs import JobContext
 from services.online_source import rebuild_projection, rebuild_projection_rows, source_row_hash
 from services.parsers import get_parser
 from services.model_three_self_owned import apply_self_owned_matches
+from services.domain_events import task_changed_field_categories
+from services.task_commands import (
+    TaskAuthorizationResult,
+    TaskCommandService,
+    TaskCommandSpec,
+    TaskMutationResult,
+)
 from services.qmf_source import (
     MODEL_THREE_PARSER,
     QMF_SOURCE_SHEET_ID,
@@ -102,35 +111,79 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any], *, require_complet
                     for row in await cur.fetchall()
                 }
                 await cur.execute(
-                    "SELECT id,row_key,physical_row,values_json FROM _online_source_rows "
+                    "SELECT id,row_key,physical_row,revision,values_json FROM _online_source_rows "
                     "WHERE spreadsheet_id=%s AND parser_type=%s AND sheet_id=%s FOR UPDATE",
                     (QMF_SOURCE_SPREADSHEET_ID, MODEL_THREE_PARSER, QMF_SOURCE_SHEET_ID),
                 )
                 cache_rows = {}
                 used_physical: set[int] = set()
-                for source_id, row_key, physical_row, values_json in await cur.fetchall():
+                for source_id, row_key, physical_row, revision, values_json in await cur.fetchall():
                     cache_rows[str(row_key)] = {
                         "id": int(source_id),
                         "physical_row": int(physical_row),
-                        "values": values_json,
+                        "revision": int(revision or 1),
+                        "values": values_json if isinstance(values_json, dict) else json.loads(values_json or "{}"),
                     }
                     used_physical.add(int(physical_row))
+
+                async def authorize_source_sync(_command_cur, _locked_source):
+                    return TaskAuthorizationResult(
+                        policy_key="system.qmf_source_sync",
+                        scope_values=(MODEL_THREE_PARSER,),
+                    )
 
                 for row_key, values in table_rows.items():
                     if row_key in cache_rows:
                         continue
                     physical = _physical_row(row_key, used_physical)
-                    await cur.execute(
-                        "INSERT INTO _online_source_rows "
-                        "(spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,values_json,cell_meta_json) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                        (
-                            QMF_SOURCE_SPREADSHEET_ID, MODEL_THREE_PARSER, QMF_SOURCE_SHEET_ID,
-                            physical, row_key, source_row_hash(values),
-                            json.dumps(values, ensure_ascii=False, sort_keys=True),
-                            "{}",
-                        ),
+                    stable_task_id = f"{parser.table_name}:{int(physical)}"
+                    changed_fields = task_changed_field_categories(
+                        MODEL_THREE_PARSER, values.keys(),
                     )
+
+                    async def register_existing_source(command_cur, _locked_source):
+                        await command_cur.execute(
+                            "INSERT INTO _online_source_rows "
+                            "(spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,values_json,cell_meta_json) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (
+                                QMF_SOURCE_SPREADSHEET_ID, MODEL_THREE_PARSER, QMF_SOURCE_SHEET_ID,
+                                physical, row_key, source_row_hash(values),
+                                json.dumps(values, ensure_ascii=False, sort_keys=True),
+                                "{}",
+                            ),
+                        )
+                        return TaskMutationResult(
+                            revision=1,
+                            snapshot=values,
+                            changed_fields=tuple(changed_fields),
+                            source_id=int(command_cur.lastrowid),
+                            task_id=stable_task_id,
+                            operation_id=str(uuid.uuid4()),
+                        )
+
+                    registered = await TaskCommandService.execute(
+                        cur,
+                        spec=TaskCommandSpec(
+                            actor_id=0,
+                            environment=settings.APP_ENVIRONMENT,
+                            parser_type=MODEL_THREE_PARSER,
+                            task_id=stable_task_id,
+                            source_id=None,
+                            action="create",
+                            event_type="online.task.created",
+                            expected_revision=None,
+                            audiences=("authenticated",),
+                        ),
+                        authorize=authorize_source_sync,
+                        mutate=register_existing_source,
+                    )
+                    cache_rows[str(row_key)] = {
+                        "id": int(registered.source_id),
+                        "physical_row": int(physical),
+                        "revision": 1,
+                        "values": values,
+                    }
 
                 # 来源只提供未核查行；本地核查结果和备注始终由业务表保留。
                 for index, incoming in enumerate(rows, 1):
@@ -138,28 +191,120 @@ async def _sync_rows(ctx: JobContext, result: dict[str, Any], *, require_complet
                     existing = table_rows.get(row_key, {})
                     merged = dict(existing)
                     merged.update({field: incoming.get(field, "") for field in source_fields})
+                    if str(existing.get("核查人") or "").strip():
+                        merged["核查人"] = existing["核查人"]
                     values = [merged.get(column, "") for column in parser.COLUMNS]
-                    await cur.execute(
-                        f"INSERT INTO {parser.table_name} (_row_key,{quoted}) VALUES (%s,{','.join(['%s'] * len(parser.COLUMNS))}) "
-                        f"ON DUPLICATE KEY UPDATE {table_update}",
-                        (row_key, *values),
-                    )
                     physical = cache_rows.get(row_key, {}).get("physical_row") or _physical_row(row_key, used_physical)
                     cache_payload = {column: merged.get(column, "") for column in parser.COLUMNS}
                     encoded = json.dumps(cache_payload, ensure_ascii=False, sort_keys=True)
+
+                    async def upsert_business_task(command_cur):
+                        await command_cur.execute(
+                            f"INSERT INTO {parser.table_name} (_row_key,{quoted}) "
+                            f"VALUES (%s,{','.join(['%s'] * len(parser.COLUMNS))}) "
+                            f"ON DUPLICATE KEY UPDATE {table_update}",
+                            (row_key, *values),
+                        )
+
                     if row_key in cache_rows:
-                        await cur.execute(
-                            "UPDATE _online_source_rows SET physical_row=%s,row_hash=%s,values_json=%s,revision=revision+1,refreshed_at=UTC_TIMESTAMP() "
-                            "WHERE id=%s",
-                            (physical, source_row_hash(cache_payload), encoded, cache_rows[row_key]["id"]),
-                        )
+                        prior_values = cache_rows[row_key]["values"]
+                        changed = {
+                            column for column in parser.COLUMNS
+                            if str(prior_values.get(column, "") or "")
+                            != str(cache_payload.get(column, "") or "")
+                        }
+                        source_id = cache_rows[row_key]["id"]
+                        revision = cache_rows[row_key]["revision"]
+                        if changed:
+                            changed_fields = task_changed_field_categories(MODEL_THREE_PARSER, changed)
+                            operation_id = str(uuid.uuid4())
+
+                            async def update_task(command_cur, locked_source):
+                                if locked_source is None:
+                                    raise RuntimeError("qmf_source_revision_conflict")
+                                await upsert_business_task(command_cur)
+                                await command_cur.execute(
+                                    "UPDATE _online_source_rows SET physical_row=%s,row_hash=%s,values_json=%s,revision=revision+1,refreshed_at=UTC_TIMESTAMP() "
+                                    "WHERE id=%s AND revision=%s AND archived_at IS NULL",
+                                    (physical, source_row_hash(cache_payload), encoded, source_id, revision),
+                                )
+                                if command_cur.rowcount != 1:
+                                    raise RuntimeError("qmf_source_revision_conflict")
+                                return TaskMutationResult(
+                                    revision=int(revision) + 1,
+                                    snapshot=cache_payload,
+                                    changed_fields=tuple(changed_fields),
+                                    operation_id=operation_id,
+                                )
+
+                            await TaskCommandService.execute(
+                                cur,
+                                spec=TaskCommandSpec(
+                                    actor_id=0,
+                                    environment=settings.APP_ENVIRONMENT,
+                                    parser_type=MODEL_THREE_PARSER,
+                                    task_id=f"{parser.table_name}:{int(physical)}",
+                                    source_id=int(source_id),
+                                    action="edit",
+                                    event_type="online.task.changed",
+                                    expected_revision=int(revision),
+                                    audiences=("authenticated",),
+                                ),
+                                authorize=authorize_source_sync,
+                                mutate=update_task,
+                            )
+                            cache_rows[row_key] = {
+                                "id": int(source_id),
+                                "physical_row": int(physical),
+                                "revision": int(revision) + 1,
+                                "values": cache_payload,
+                            }
                     else:
-                        await cur.execute(
-                            "INSERT INTO _online_source_rows "
-                            "(spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,values_json,cell_meta_json) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                            (QMF_SOURCE_SPREADSHEET_ID, MODEL_THREE_PARSER, QMF_SOURCE_SHEET_ID,
-                             physical, row_key, source_row_hash(cache_payload), encoded, "{}"),
+                        changed_fields = task_changed_field_categories(
+                            MODEL_THREE_PARSER, cache_payload.keys(),
                         )
+                        operation_id = str(uuid.uuid4())
+
+                        async def create_task(command_cur, _locked_source):
+                            await upsert_business_task(command_cur)
+                            await command_cur.execute(
+                                "INSERT INTO _online_source_rows "
+                                "(spreadsheet_id,parser_type,sheet_id,physical_row,row_key,row_hash,values_json,cell_meta_json) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                                (QMF_SOURCE_SPREADSHEET_ID, MODEL_THREE_PARSER, QMF_SOURCE_SHEET_ID,
+                                 physical, row_key, source_row_hash(cache_payload), encoded, "{}"),
+                            )
+                            return TaskMutationResult(
+                                revision=1,
+                                snapshot=cache_payload,
+                                changed_fields=tuple(changed_fields),
+                                operation_id=operation_id,
+                                source_id=int(command_cur.lastrowid),
+                                task_id=f"{parser.table_name}:{int(physical)}",
+                            )
+
+                        created = await TaskCommandService.execute(
+                            cur,
+                            spec=TaskCommandSpec(
+                                actor_id=0,
+                                environment=settings.APP_ENVIRONMENT,
+                                parser_type=MODEL_THREE_PARSER,
+                                task_id=f"{parser.table_name}:{int(physical)}",
+                                source_id=None,
+                                action="create",
+                                event_type="online.task.created",
+                                expected_revision=None,
+                                audiences=("authenticated",),
+                            ),
+                            authorize=authorize_source_sync,
+                            mutate=create_task,
+                        )
+                        cache_rows[row_key] = {
+                            "id": int(created.source_id),
+                            "physical_row": int(physical),
+                            "revision": 1,
+                            "values": cache_payload,
+                        }
                     table_rows[row_key] = merged
                     await ctx.update(
                         phase="写入本地任务",

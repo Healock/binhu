@@ -19,6 +19,7 @@ class ConfirmationCursor:
         self.conn = conn
         self.row = None
         self.executions = []
+        self.rowcount = 1
 
     async def __aenter__(self):
         return self
@@ -34,7 +35,7 @@ class ConfirmationCursor:
             self.row = (
                 "测试社区", state["source_count"], state["conflict"],
                 state["original_address"], 11, state["source_revision"],
-                state["row_hash"], 101,
+                state["row_hash"], 101, state["values_json"],
             ) if self.conn.visible else None
         elif sql.startswith("SELECT entry.id"):
             self.row = (params[0], "虚构小区", 9, "测试社区")
@@ -44,7 +45,7 @@ class ConfirmationCursor:
             assert params[1] == 11, "must update the locked source identity"
             state["source_revision"] = params[0]
         elif sql.startswith("UPDATE _local_source_records SET revision="):
-            assert params[1:] == ("全链条", 101), "must update the same local task"
+            assert params[1:3] == ("全链条", 101), "must update the same local task"
             state["local_revision"] = params[0]
         else:
             raise AssertionError(f"Unexpected endpoint SQL: {sql}")
@@ -64,6 +65,7 @@ class ConfirmationConnection:
             "conflict": False,
             "row_hash": "synthetic-content-hash",
             "original_address": "虚构测试地址",
+            "values_json": '{"社区":"测试社区","地址":"虚构测试地址"}',
             "match": {"status": "suggested", "confirmed_entry_id": None},
             "feedback": [],
             "summary_updates": [],
@@ -112,6 +114,19 @@ class AddressConfirmationRevisionTests(unittest.IsolatedAsyncioTestCase):
 
         self.feedback = AsyncMock(side_effect=feedback)
         self.enqueue = AsyncMock(side_effect=enqueue)
+        async def execute_command(cur, **kwargs):
+            self.assertIs(cur, self.conn._cursor)
+            spec = kwargs["spec"]
+            source = {
+                "revision": spec.expected_revision,
+                "physical_row": 101,
+                "values": {"社区": "测试社区", "地址": "虚构测试地址"},
+            }
+            authorization = await kwargs["authorize"](cur, source)
+            self.command_authorization = authorization
+            return await kwargs["mutate"](cur, source)
+
+        self.command = AsyncMock(side_effect=execute_command)
         self.rebuild = AsyncMock()
         self.audit = AsyncMock()
         for target, mock in {
@@ -125,6 +140,7 @@ class AddressConfirmationRevisionTests(unittest.IsolatedAsyncioTestCase):
             "routers.mobile_tasks.record_admin_audit": self.audit,
             "services.business_time.get_business_date": AsyncMock(return_value=date(2026, 9, 7)),
             "services.online_summary_updates.enqueue_online_summary_update": self.enqueue,
+            "routers.mobile_tasks.TaskCommandService.execute": self.command,
         }.items():
             self.enterContext(patch(target, mock))
 
@@ -151,6 +167,12 @@ class AddressConfirmationRevisionTests(unittest.IsolatedAsyncioTestCase):
             "revision": 6, "business_date": date(2026, 9, 7),
             "operation_id": "address-confirm-11-6",
         }])
+        self.command.assert_awaited_once()
+        spec = self.command.await_args.kwargs["spec"]
+        self.assertEqual(spec.action, "address_confirm")
+        self.assertEqual(spec.expected_revision, 5)
+        self.assertEqual(self.command_authorization.policy_key, "online.address_match.confirm")
+        self.assertEqual(self.command_authorization.scope_values, ("测试社区",))
         confirm_sql = next(
             sql for sql, _ in self.conn._cursor.executions
             if sql.startswith("INSERT INTO _online_task_address_matches")

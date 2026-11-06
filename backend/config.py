@@ -2,6 +2,7 @@
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
+from urllib.parse import urlsplit
 
 from app_version import is_semver
 
@@ -75,8 +76,31 @@ class Settings(BaseSettings):
             raise ValueError("客户端最低支持版本必须使用 SemVer")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_task_read_model_identity(self):
+        if not self.TASK_READ_MODEL_ENABLED:
+            return self
+        if self.APP_ENVIRONMENT not in {"development", "staging"}:
+            raise ValueError("task read model may only be enabled in isolated environments")
+        if len(self.TASK_EVENT_ENCRYPTION_KEY.encode("utf-8")) < 32:
+            raise ValueError("task read model requires its dedicated encryption key")
+        redis_target = urlsplit(self.REDIS_URL)
+        if (redis_target.scheme != "redis"
+                or redis_target.hostname not in {"redis", "environment-redis"}
+                or redis_target.port != 6379 or redis_target.path != "/0"
+                or not redis_target.password or redis_target.query or redis_target.fragment):
+            raise ValueError("task read model requires the isolated application Redis target")
+        if self.APP_ENVIRONMENT == "development" and not self.TASK_READ_MODEL_RUN_ID.startswith("dev-"):
+            raise ValueError("task read model run identity mismatch")
+        if self.APP_ENVIRONMENT == "staging" and not self.TASK_READ_MODEL_RUN_ID.startswith("STG-"):
+            raise ValueError("task read model run identity mismatch")
+        return self
+
     # Encryption
     ENCRYPTION_KEY: str
+    TASK_EVENT_ENCRYPTION_KEY: str = ""
+    TASK_READ_MODEL_ENABLED: bool = False
+    TASK_READ_MODEL_RUN_ID: str = ""
     REGISTRY_HMAC_KEY: str = ""
 
     @property
@@ -264,6 +288,9 @@ class Settings(BaseSettings):
     REDIS_STREAM_MAX_ENTRIES: int = 1_000_000
     REDIS_MAX_MEMORY_BYTES: int = 1_073_741_824
     REALTIME_EVENTS_ENABLED: bool = True
+    # Transport history cleanup is opt-in until each environment confirms its
+    # audit boundary and applies the retention indexes.
+    EVENT_TRANSPORT_CLEANUP_ENABLED: bool = False
 
     # Public machine-to-machine house candidate lookup. Keep disabled until
     # production has an approved Ed25519 key set and Redis-backed controls.

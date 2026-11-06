@@ -1,8 +1,23 @@
 # 开发与运维手册
 
+## 指令核查读模型迁移与验证准备
+
+Dev/Staging 的指令核查验收须使用同一候选源码与加密事件合同。启动新 Backend 前先备份目标环境数据库，依次执行 `migrations.task_command_read_model` 和 `migrations.task_view_state_revisions` 的 `measure → migrate --apply → verify`；启用在线汇总时还须执行 `migrations.online_summary_fact_outbox`。这些命令不能用启动建表代替。Dev 只使用可追踪、可清理的合成数据；通过后才推进 Staging，不修改 Production。
+
+`migrations.task_read_model_backfill` 按来源 ID 每页最多 250 条读取，再写命令与 Outbox；不能在同一游标执行写入后继续读取旧结果集。回填仅发出加密事件，不直接填充 Redis；`task_read_model_activation measure` 用于对账，`verify` 会修改 Redis readiness 标记，应按写操作执行。
+
+Dev 沿用固定 worker 镜像时，运行时 dispatcher、业务桥、Outbox relay、事件合同和汇总合同必须由候选只读挂载并纳入 manifest 哈希。只替换 Flink JAR 或看到容器启动不代表新业务链路生效。实际验收须绑定合成任务的 command/event ID、Kafka offset、Flink checkpoint、Redis revision 和 API 读回结果，并覆盖删除、重复、乱序、故障 503 与恢复对账。
+
 ## 诊断、变更与证据边界
 
 需要确认生产服务器当前状态时，先复用已登记的持久 SSH stdio MCP，并限定为一次有开始和结束边界的只读检查。只读取必要的版本、容器/进程状态、有限时间窗口日志、网络/磁盘/内存指标、部署台账和公开清单；输出必须脱敏。MCP 不能执行写文件、重启、清理、迁移、配置修改或外部平台操作，也不能替代发布网关。
+
+### 连接和网关最小化
+
+- 日常服务器访问、只读诊断和普通运维优先复用已登记的 SSH/MCP 连接。固定目标、账号、密钥和 known_hosts 是连接配置问题，不能通过临时切换 Remote SSH、裸 SSH、Workflow 或新增网关来回避。
+- 默认不新增运维网关、Workflow 或连接相关 PR。单次故障、只读检查、一次性命令和普通排障必须使用现有 SSH/MCP 或已有入口；没有持久化变更时，不创建 PR。
+- 只有高影响且可重复的操作，在必须固定参数、备份、回滚和机器可验证证据，并且现有 SSH 或既有入口无法安全承载时，才允许提出专用入口。新增前必须记录替代方案、权限边界、唯一配置来源和退役计划；优先扩展已有入口，不按环境或命令复制网关。
+- SSH/MCP 负责连接和会话；服务器账号、authorized_keys、sudo 白名单和既有入口负责权限与审计。不能把连接工具本身当成权限边界，也不能把网关成功扩大解释为业务验收完成。
 
 诊断前先写明要排除的假设，并按代码/逻辑、制品/构建/打包、部署网关、服务器/环境/资源、外部依赖/网络、业务验收分类。每轮记录“假设—证据—结论—下一步”；同一阶段连续失败两次就暂停相同重试，重新归类和核对环境身份、权限与证据，不用改引号、重复脚本或空提交继续消耗时间。
 
@@ -314,7 +329,10 @@ MYSQL_ONLINE_DATA_DB=OnlineData
 MYSQL_ARCHIVE_DB=OnlineDataArchive
 MYSQL_DAILY_REPORT_DB=daily_report
 ENCRYPTION_KEY=<本机应用密钥>
+TASK_EVENT_ENCRYPTION_KEY=<独立且跨部署稳定的任务事件密钥>
 ```
+
+`TASK_EVENT_ENCRYPTION_KEY` 与 `ENCRYPTION_KEY` 分开生成并保存在本机环境配置中。替换或丢失该密钥会使已写入 Outbox/Kafka 的任务快照无法解密；不得在日志、命令输出或仓库中记录其值。
 
 ## 本地启动
 

@@ -5,10 +5,18 @@
 原模块从已留存的旧运行镜像源码提取；配置、凭据和状态卷未进入 Git。
 
 环境固定为 `development`，运行编号为新的 `dev-*`。Kafka topic 固定为
-`dev.task.events.v1` 和 `dev.task.events.dlq.v1`，MySQL 固定为独立
+`dev.task.read-model.v4` 和 `dev.task.read-model.dlq.v4`，MySQL 固定为独立
 `Dev_EventPipeline`。数据库与 Redis 使用新卷，资源项目为
 `binhu-development-pipeline`，只加入已验证的 Dev eventbus 内部网络。
 该实验不接入生产或 Staging，也不修改平台业务 Backend 的网络。
+
+在线数据汇总事实使用独立 `dev.online-summary.facts.v1` topic 和独立 Schema Registry
+subject，不混入任务事件 schema。现有 `backend-outbox-relay` 只有在显式启用
+`BACKEND_SUMMARY_FACT_RELAY_ENABLED=true` 且提供 `BACKEND_SUMMARY_MYSQL_DATABASE`
+时，才读取同环境 `Dev_*` / `Staging_*` daily_report 库；默认关闭。发布前必须确认
+该库已执行事实 outbox migration，且 `environment_app` 只能访问本环境库。summary
+事实经过同一 Redis Stream 与 bridge 后写入 Kafka delivery ledger；Flink 当前仍未消费
+该 topic，因此这只完成到 Kafka 的传输接入，不代表 Redis 汇总读模型完成。
 
 ## 操作顺序
 
@@ -124,10 +132,10 @@ stdout/stderr 哈希；子进程输出仅保存哈希和字节数。诊断只输
 
 Dev 的 `business-bridge` 服务只在 `development` 项目启用。它加入
 `binhu-development_internal` 和 Dev eventbus 内部网络，读取 Dev Backend 的
-Redis `binhu:events` 元数据流，把 `online.task.*` 事件转换为固定的 Dev Kafka
-合同，再写入独立 `Dev_EventPipeline` 投递台账。事件只包含业务类型、稳定的
-不透明任务标识、revision 和变化类别；姓名、证件号、手机号、地址和正文不会
-跨入 Kafka 或派生库。`BACKEND_REDIS_URL` 必须是 Dev Redis，包含
+Redis `binhu:events` 事件流，把 `online.task.*` 事件转换为固定的 Dev Kafka
+合同，再写入独立 `Dev_EventPipeline` 投递台账。明文合同只包含业务类型、稳定的
+不透明任务标识、revision 和变化类别；任务快照只能以 AES-GCM 密文进入 Kafka，
+Flink、Redis、DLQ 和日志不得解密或输出敏感明文。`BACKEND_REDIS_URL` 必须是 Dev Redis，包含
 `production` 或 `staging` 的目标会在启动时拒绝。
 
 该桥不连接 Production 或 Staging，也不改变 Backend 的业务事务。正常保存先
@@ -139,7 +147,7 @@ revision 栅栏负责重放安全。桥断开时业务保存仍可成功，恢�
 投递台账、Schema Registry 接受合同、Flink 更新派生 revision、Redis/派生库
 读回一致，以及桥/relay 重启后的重复事件不产生第二个业务结果。
 
-Schema Registry 使用固定内部服务与 `dev.task.events.v1-value` subject。
+Schema Registry 使用固定内部服务与 `dev.task.read-model.v4-value` subject。
 已部署的实现为 Apicurio 2.x，兼容 API 固定在
 `http://schema-registry:8080/apis/ccompat/v7`，不能使用 Confluent 默认的 8081。
 长期实例必须使用 KafkaSQL 镜像，日志 topic 为 `dev.registry.storage.v1`，
@@ -230,8 +238,16 @@ application network are outside this operation.
 group，因此每个投影都能看到当前运行编号的完整事件流。提交前会校验 SQL 中的环境、
 运行编号和允许的 sink 集合，运行时则以候选的精确 `job.name` 作为唯一 run 身份；
 Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
-Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时包含两个受控
-sink、job name 和 Kafka 消费组完全匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
+`PipelineJob` 把 `dev_revisions` 和 `dev_task_metadata` 两个 INSERT 分支，以及
+`task-read-model-redis` sink 提交为一个 JobGraph。两个 JDBC 派生分支共用
+`dev_events` / `<run_id>-flink` source；Redis 分支使用独立的
+`dev_task_events_redis` / `<run_id>-flink-redis` source。独立 consumer group 确保
+两条 Kafka source 各自读取完整 topic，不会把分区分摊给不同派生目标。提交前校验
+两个 topic 声明、两个 group、v4 schema、环境和运行编号，运行时则以候选的精确 `job.name`
+作为唯一 run 身份；Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
+Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时包含两个确切
+Kafka source、两个 JDBC sink 和 Redis sink，且两个 Kafka consumer group 都与运行编号匹配时，
+才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
 提交 JAR 的响应如果在 JobGraph 已被接受后发生传输中断，只按精确 run name
 只读重查并复用现有 JobGraph，绝不自动重复提交。
 checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
@@ -251,8 +267,8 @@ Compose 的 `up -d` 返回只表示容器已经启动，不表示 JobManager RES
 Dev apply 在读取首次作业列表前，会对固定的 `flink_rest_transport_failed` 或
 `flink_rest_timeout` 启动错误执行最多 60 秒的有界等待；HTTP 状态、响应格式和身份合同错误立即
 失败，并在私有证据中记录 endpoint、状态码和固定错误码，不记录响应正文。等待成功后仍必须
-完整核验当前 JobGraph 的精确 job name、consumer group、SQL 预先校验的环境/运行编号和两个
-受控 INSERT sink，不能依赖 Flink 1.20 不稳定的 plan description 复原 SQL 过滤条件。
+完整核验当前 JobGraph 的精确 job name、两个 consumer group、SQL 预先校验的环境/运行编号、
+两个确切 source 与三个受控 sink，不能依赖 Flink 1.20 不稳定的 plan description 复原 SQL 过滤条件。
 提交 JobGraph 后的 120 秒运行时收敛窗口同样只容忍这两个固定 REST 传输错误，避免作业初始化
 短暂占用 REST 线程时提前退出；窗口耗尽时保留首个具体的 JobGraph/消费组校验错误，其他 REST
 错误或身份门禁失败仍然停止 apply。

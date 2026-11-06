@@ -1,13 +1,23 @@
 import asyncio
 from pathlib import Path
 import re
+import uuid
 
-from services.domain_events import _safe_audiences, decode_event_row
+import pytest
+
+from services.domain_events import (
+    _safe_audiences, decode_event_row, enqueue_event, task_event_type_for_action,
+)
 from services.redis_relay import classify_redis_error, retry_delay
 
 
 def test_audiences_are_validated_and_sorted():
     assert _safe_audiences(["authenticated", "user:3", "authenticated"]) == ["authenticated", "user:3"]
+
+
+def test_archive_and_delete_keep_distinct_event_semantics():
+    assert task_event_type_for_action("archive") == "online.task.archived"
+    assert task_event_type_for_action("delete") == "online.task.deleted"
 
 
 def test_audiences_reject_newlines_and_unknown_scopes():
@@ -26,6 +36,53 @@ def test_decode_event_row_contains_metadata_only():
     event = decode_event_row(row)
     assert event["event_id"] == "id"
     assert "values" not in event and "身份证号" not in event
+
+
+def test_decode_task_view_state_event_keeps_object_metadata():
+    event_id = str(uuid.uuid4())
+    operation_id = str(uuid.uuid4())
+    row = {
+        "event_id": event_id, "schema_version": 5, "domain": "online",
+        "event_type": "online.task.view_state_changed",
+        "aggregate_type": "task_view_state", "aggregate_id": "t_fullchain:17",
+        "aggregate_revision": 4, "task_id": "t_fullchain:17", "source_id": 17,
+        "operation_id": operation_id,
+        "changed_fields_json": {"domain": "qmf", "task_revision": 9, "removed": False},
+        "payload_envelope_json": {
+            "algorithm": "AES-256-GCM", "key_version": "task-view-state-v1",
+            "nonce": "AAAAAAAAAAAAAAAA", "ciphertext": "AA",
+            "aad": "AA", "ciphertext_sha256": "0" * 64,
+        },
+        "audiences_json": ["authenticated"], "occurred_at": None,
+    }
+
+    decoded = decode_event_row(row)
+
+    assert decoded["view_state"] == {
+        "domain": "qmf", "task_revision": 9, "removed": False,
+    }
+    assert decoded["changed_fields"] == ["task_state"]
+
+
+@pytest.mark.asyncio
+async def test_v6_task_tombstone_keeps_command_identity_without_payload():
+    class Cursor:
+        async def execute(self, query, params):
+            self.params = params
+
+    cur = Cursor()
+    command_id, event_id, operation_id = (str(uuid.uuid4()) for _ in range(3))
+    result = await enqueue_event(
+        cur, domain="online", event_type="online.task.deleted",
+        aggregate_type="online_task", aggregate_id="t_fullchain:3",
+        aggregate_revision=9, audiences=["authenticated"], command_id=command_id,
+        task_id="t_fullchain:3", source_id=3, operation_id=operation_id,
+        changed_fields=["task_state"], event_id=event_id,
+    )
+    assert result == event_id
+    assert cur.params[1] == 6
+    assert cur.params[7] == command_id
+    assert cur.params[12] is None
 
 
 def test_retry_backoff_is_bounded_without_jitter():

@@ -11,6 +11,7 @@ import tempfile
 import zipfile
 
 from .staging_compose import IMAGE_KEYS, project_for
+from .deploy import _pipeline_sources_sha256
 
 
 RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
@@ -97,8 +98,8 @@ def _verify_jar(path: Path) -> None:
         raise ValueError("compiled PipelineJob JAR missing")
     try:
         with zipfile.ZipFile(path) as archive:
-            if "PipelineJob.class" not in archive.namelist():
-                raise ValueError("PipelineJob class missing")
+            if not {"PipelineJob.class", "TaskReadModelRedisSink.class"}.issubset(archive.namelist()):
+                raise ValueError("task read-model job classes missing")
     except zipfile.BadZipFile as exc:
         raise ValueError("compiled PipelineJob JAR invalid") from exc
 
@@ -148,7 +149,7 @@ def build(repository: Path, output: Path, *, run_id: str, commit: str, images: d
             "source_files": hashes,
             "pipeline_job": {
                 "jar_sha256": _sha(jar),
-                "source_sha256": hashes["deploy/environments/event_pipeline/PipelineJob.java"],
+                "source_sha256": _pipeline_sources_sha256(hashes),
             },
             "fictional_only": True, "production_data": False,
             "ready_for_staging": True, "started": False, "acceptance": "pending",
@@ -194,6 +195,8 @@ def verify(bundle: Path) -> dict:
     if manifest.get("dev_acceptance", {}).get("event_pipeline_image_digests") != images:
         raise ValueError("Dev and Staging event-pipeline images differ")
     _verify_source(payload["source.tar.gz"], manifest["source_files"])
+    if manifest["pipeline_job"].get("source_sha256") != _pipeline_sources_sha256(manifest["source_files"]):
+        raise ValueError("Staging task read-model source hash mismatch")
     if hashlib.sha256(payload["pipeline-job.jar"]).hexdigest() != manifest["pipeline_job"]["jar_sha256"]:
         raise ValueError("Staging PipelineJob JAR hash mismatch")
     expected = {name: hashlib.sha256(payload[name]).hexdigest() for name in ("source.tar.gz", "pipeline-job.jar", "manifest.json")}

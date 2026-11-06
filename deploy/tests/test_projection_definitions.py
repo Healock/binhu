@@ -20,7 +20,7 @@ class ProjectionDefinitionTests(unittest.TestCase):
             "REDIS_PASSWORD": "b" * 48,
             "REDIS_HOST": "dev-derived-redis",
             "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
-            "BACKEND_REDIS_URL": "redis://dev-derived-redis:6379",
+            "BACKEND_REDIS_URL": "redis://:" + "c" * 48 + "@redis:6379/0",
         }
         sql = render(environment)
         schema = staging_schema_sql()

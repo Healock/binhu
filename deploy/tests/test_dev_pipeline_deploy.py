@@ -18,6 +18,7 @@ class DevPipelineCandidateTests(unittest.TestCase):
         path = root / "dev-pipeline-job.jar"
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr("PipelineJob.class", b"test-bytecode")
+            archive.writestr("TaskReadModelRedisSink.class", b"test-bytecode")
         return path
 
     def test_build_and_verify_candidate_contains_only_fixed_entries(self):

@@ -919,23 +919,14 @@ class FullchainArchiveAsyncTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raised.exception.code, code)
                 self.assertEqual(conn.events, ["begin", "rollback"])
 
-    async def test_reconcile_scan_only_selects_confirmed_deleted_items_and_never_uses_oauth(self):
-        class ReconcileScanCursor(_Cursor):
-            async def fetchall(self):
-                return []
-
-        cursor = ReconcileScanCursor()
-        conn = _TransactionalConnection(cursor)
+    async def test_retired_external_reconcile_returns_without_database_or_oauth(self):
         pool = MagicMock()
-        pool.acquire = AsyncMock(return_value=conn)
-        with patch("services.fullchain_archive_jobs.db_manager.get_pool", return_value=pool), \
-             patch("services.fullchain_archive_jobs._oauth_client", new=AsyncMock()) as oauth:
+        pool.acquire = AsyncMock()
+        with patch("services.fullchain_archive_jobs.db_manager.get_pool", return_value=pool) as get_pool:
             self.assertEqual(await reconcile_deleted_archive_items(), 0)
-        oauth.assert_not_awaited()
-        pool.release.assert_called_once_with(conn)
-        sql = "\n".join(item[0] for item in cursor.executions)
-        self.assertIn("external_delete_state='deleted'", sql)
-        self.assertIn("status IN ('queued','conflict','error')", sql)
+        get_pool.assert_not_called()
+        pool.acquire.assert_not_awaited()
+        pool.release.assert_not_called()
 
     async def test_recovery_requeues_running_and_confirmed_partial_exports(self):
         class RecoveryCursor(_Cursor):
