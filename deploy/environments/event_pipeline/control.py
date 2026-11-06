@@ -12,6 +12,7 @@ import tempfile
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
 from . import flink_submission
 from .identity import summary_topic_for
+from .services.kafka_envelope import EVENT_TOPIC, DLQ_TOPIC
 
 
 FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
@@ -314,6 +315,24 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     return verified
 
 
+def _ensure_task_topics() -> list[str]:
+    topics = (EVENT_TOPIC, DLQ_TOPIC)
+    for topic in topics:
+        _run_checked([
+            "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
+            "--bootstrap-server", "kafka-1:9092", "--create", "--if-not-exists",
+            "--topic", topic, "--partitions", "3", "--replication-factor", "3",
+            "--config", "min.insync.replicas=2",
+        ])
+    description = _run_checked([
+        "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
+        "--bootstrap-server", "kafka-1:9092", "--describe",
+    ]).stdout
+    if any(topic not in description for topic in topics):
+        raise ValueError("Dev task topic verification failed")
+    return list(topics)
+
+
 def _ensure_summary_topics(environment: str) -> list[str]:
     """Create only the fixed non-Production online-summary topics."""
     topics = (summary_topic_for(environment), summary_topic_for(environment, dead_letter=True))
@@ -378,6 +397,7 @@ def apply():
     topics_path = evidence / "online-summary-topics.json"
     topics_path.write_text(json.dumps({"environment": "development", "topics": summary_topics}, indent=2) + "\n")
     topics_path.chmod(0o600)
+    _ensure_task_topics()
     migration = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
                                 "run", "--rm", "--no-deps", "relay", "python", "-m",
                                 "event_pipeline.delivery_schema_migrate"],

@@ -780,10 +780,12 @@ volumes:
             with patch.object(control, "ROOT", root), patch.object(control, "measure", return_value={}), \
                     patch.object(control.subprocess, "run", side_effect=run), \
                     patch.object(control, "_ensure_summary_topics", return_value=["dev.online-summary.facts.v1"]), \
+                    patch.object(control, "_ensure_task_topics", return_value=["dev.task.read-model.v4", "dev.task.read-model.dlq.v4"]) as ensure_task_topics, \
                     patch.object(control, "_submit_and_verify_flink", side_effect=ValueError("identity mismatch")):
                 with self.assertRaisesRegex(ValueError, "identity mismatch"):
                     control.apply()
             self.assertTrue(any("up" in command for command in calls))
+            ensure_task_topics.assert_called_once_with()
 
     def test_flink_submission_waits_for_rest_before_partitioning_jobs(self):
         run_id = "dev-20260918-dualtrack-monitor35"
@@ -1023,6 +1025,24 @@ volumes:
             topics = _ensure_summary_topics("development")
         self.assertEqual(topics, ["dev.online-summary.facts.v1", "dev.online-summary.facts.dlq.v1"])
         self.assertTrue(all("--replication-factor" in command for command in calls[:2]))
+
+    def test_task_topics_are_created_and_verified_with_fixed_dev_identity(self):
+        from deploy.environments.event_pipeline.control import _ensure_task_topics
+        calls = []
+
+        def run(command):
+            calls.append(command)
+            output = "dev.task.read-model.v4 dev.task.read-model.dlq.v4" if command[-1] == "--describe" else ""
+            return SimpleNamespace(stdout=output)
+
+        with patch("deploy.environments.event_pipeline.control._run_checked", side_effect=run):
+            topics = _ensure_task_topics()
+
+        self.assertEqual(topics, ["dev.task.read-model.v4", "dev.task.read-model.dlq.v4"])
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all("--if-not-exists" in command for command in calls[:2]))
+        self.assertTrue(all(command[command.index("--replication-factor") + 1] == "3" for command in calls[:2]))
+        self.assertTrue(all(command[command.index("--config") + 1] == "min.insync.replicas=2" for command in calls[:2]))
 
     def test_delivery_ledger_event_identity_is_scoped_to_run(self):
         self.assertIn("PRIMARY KEY (run_id, event_id)", kafka_delivery_store.SCHEMA_SQL)
