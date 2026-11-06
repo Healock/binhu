@@ -140,7 +140,7 @@ public final class PipelineJob {
 
     public static void main(String[] args) throws Exception {
         String environment = System.getenv("APP_ENVIRONMENT");
-        if (args.length != 0 || !("development".equals(environment) || "staging".equals(environment))) {
+        if (args.length != 1 || !("development".equals(environment) || "staging".equals(environment))) {
             throw new IllegalArgumentException("Non-Production job identity required");
         }
         String sql = Files.readString(Path.of("/opt/flink/private/pipeline.sql"));
@@ -149,8 +149,8 @@ public final class PipelineJob {
             stream, EnvironmentSettings.inStreamingMode());
         StreamStatementSet statementSet = table.createStatementSet();
         Set<String> sinks = new HashSet<>();
-        String runId = "development".equals(environment)
-            ? System.getenv("DEV_RUN_ID") : System.getenv("STAGING_RUN_ID");
+        // The shared JobManager has no per-run identity in its process environment.
+        String runId = args[0];
         boolean validRunId = runId != null && ("development".equals(environment)
             ? runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
             : runId.matches("STG-[0-9]{8}-[0-9]{2}"));

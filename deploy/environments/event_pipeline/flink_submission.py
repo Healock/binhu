@@ -325,11 +325,13 @@ class FlinkRest:
             raise ValueError("Flink JAR upload was not accepted")
         return filename.rsplit("/", 1)[-1]
 
-    def run_jar(self, jar_id: str) -> str:
+    def run_jar(self, jar_id: str, expected_run_id: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+\.jar", jar_id or ""):
             raise ValueError("invalid Dev Flink JAR id")
+        environment_for_run_id(expected_run_id)
         response = self.request("/jars/" + jar_id + "/run", method="POST",
-                                payload={"parallelism": 1, "entryClass": "PipelineJob"})
+                                payload={"parallelism": 1, "entryClass": "PipelineJob",
+                                         "programArgsList": [expected_run_id]})
         jid = str(response.get("jobid", ""))
         if not re.fullmatch(r"[0-9a-f]{32}", jid):
             raise ValueError("Flink JAR submission returned no job id")
@@ -356,7 +358,7 @@ def submit_jar_or_reconcile(
     """
     submission_error: FlinkRestError | None = None
     try:
-        jid = client.run_jar(jar_id)
+        jid = client.run_jar(jar_id, expected_run_id)
         return {"mode": "submitted", "job_id": jid}
     except FlinkRestError as error:
         if error.code not in REST_TRANSIENT_CODES:
