@@ -15,13 +15,24 @@ class IdentityResourceTests(unittest.TestCase):
                 'NetworkSettings': {'Networks': {self.network: {}}}, 'Mounts': []}
         self.backend = container('backend')
         self.mysql = container('environment-mysql')
+        self.mysql['NetworkSettings']['Networks']['binhu-staging-pipeline-backend'] = {}
         self.mysql['Mounts'] = [{'Destination': '/var/lib/mysql', 'Type': 'volume',
             'Name': self.project + '_mysql', 'Source': '/isolated/staging/mysql'}]
         self.net = {'Containers': {'mysql': {'Name': self.project + '-environment-mysql-1'}}}
+        self.pipeline_net = {
+            'Name': 'binhu-staging-pipeline-backend', 'Driver': 'bridge', 'Internal': True,
+            'Labels': {'binhu.environment': 'staging', 'binhu.role': 'pipeline-backend-access'},
+            'Containers': {
+                'mysql': {'Name': 'binhu-staging-environment-mysql-1'},
+                'redis': {'Name': 'binhu-staging-redis-1'},
+                'bridge': {'Name': 'binhu-staging-event-pipeline-stg-20261029-14-business-bridge-1'},
+                'relay': {'Name': 'binhu-staging-event-pipeline-stg-20261029-14-backend-outbox-relay-1'},
+            },
+        }
         self.all = [self.backend, self.mysql]
 
     def check(self):
-        validate_resources('staging', self.backend, self.mysql, self.net, self.all)
+        validate_resources('staging', self.backend, self.mysql, self.net, self.all, self.pipeline_net)
 
     def test_isolated_resources_accepted(self):
         self.check()
@@ -44,6 +55,16 @@ class IdentityResourceTests(unittest.TestCase):
     def test_foreign_member_rejected(self):
         self.net['Containers']['other'] = {'Name': 'production-backend'}
         with self.assertRaisesRegex(ValueError, 'foreign'):
+            self.check()
+
+    def test_foreign_staging_pipeline_member_rejected(self):
+        self.pipeline_net['Containers']['other'] = {'Name': 'production-backend'}
+        with self.assertRaisesRegex(ValueError, 'foreign staging pipeline'):
+            self.check()
+
+    def test_staging_pipeline_network_identity_rejected(self):
+        self.pipeline_net['Labels']['binhu.environment'] = 'development'
+        with self.assertRaisesRegex(ValueError, 'unexpected staging pipeline'):
             self.check()
 
     def test_wrong_label_rejected(self):

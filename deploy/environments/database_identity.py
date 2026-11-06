@@ -7,9 +7,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 
 ENVIRONMENTS = {'development': 'Dev_', 'staging': 'Staging_'}
+STAGING_PIPELINE_NETWORK = 'binhu-staging-pipeline-backend'
+STAGING_PIPELINE_LABELS = {
+    'binhu.environment': 'staging',
+    'binhu.role': 'pipeline-backend-access',
+}
+STAGING_PIPELINE_SERVICE_RE = re.compile(
+    r'binhu-staging-event-pipeline-stg-[0-9]{8}-[0-9]{2}-'
+    r'(business-bridge|backend-outbox-relay)-1'
+)
 
 
 def command(args, stdin=None):
@@ -19,18 +29,40 @@ def command(args, stdin=None):
     return result.stdout
 
 
-def validate_resources(environment, backend, mysql, network, containers):
+def _validate_staging_pipeline_network(network):
+    if (network.get('Name') != STAGING_PIPELINE_NETWORK
+            or network.get('Driver') != 'bridge'
+            or network.get('Internal') is not True
+            or any((network.get('Labels') or {}).get(key) != value
+                   for key, value in STAGING_PIPELINE_LABELS.items())):
+        raise ValueError('unexpected staging pipeline network')
+    for member in (network.get('Containers') or {}).values():
+        name = member.get('Name', '')
+        if (name not in {'binhu-staging-environment-mysql-1', 'binhu-staging-redis-1'}
+                and not STAGING_PIPELINE_SERVICE_RE.fullmatch(name)):
+            raise ValueError('foreign staging pipeline network member')
+
+
+def validate_resources(environment, backend, mysql, network, containers,
+                       staging_pipeline_network=None):
     if environment not in ENVIRONMENTS:
         raise ValueError('non-production environment required')
     project = 'binhu-' + environment
     network_name = project + '_internal'
+    if environment == 'staging':
+        if staging_pipeline_network is None:
+            raise ValueError('staging pipeline network missing')
+        _validate_staging_pipeline_network(staging_pipeline_network)
     for container, service in ((backend, 'backend'), (mysql, 'environment-mysql')):
         labels = container['Config'].get('Labels') or {}
         if labels.get('com.docker.compose.project') != project or labels.get('com.docker.compose.service') != service:
             raise ValueError('container project identity mismatch')
         if labels.get('binhu.environment') != environment or not container['State']['Running']:
             raise ValueError('container environment identity mismatch')
-        if set(container['NetworkSettings']['Networks']) != {network_name}:
+        expected_networks = {network_name}
+        if environment == 'staging' and service == 'environment-mysql':
+            expected_networks.add(STAGING_PIPELINE_NETWORK)
+        if set(container['NetworkSettings']['Networks']) != expected_networks:
             raise ValueError('unexpected environment network')
         if container['HostConfig'].get('NetworkMode') == 'host' or container['HostConfig'].get('Privileged'):
             raise ValueError('unsafe container mode')
@@ -99,7 +131,12 @@ def run(environment, apply=False):
     backend = by_name[project + '-backend-1']
     mysql = by_name[project + '-environment-mysql-1']
     network = json.loads(command(['docker', 'network', 'inspect', project + '_internal']))[0]
-    validate_resources(environment, backend, mysql, network, containers)
+    pipeline_network = None
+    if environment == 'staging':
+        pipeline_network = json.loads(
+            command(['docker', 'network', 'inspect', STAGING_PIPELINE_NETWORK])
+        )[0]
+    validate_resources(environment, backend, mysql, network, containers, pipeline_network)
     source = INNER.replace('ENVIRONMENT', repr(environment), 1).replace('APPLY', repr(apply), 1)
     output = command(['docker', 'exec', '-i', backend['Id'], 'python', '-'], source)
     report = json.loads(output)
