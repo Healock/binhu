@@ -113,7 +113,7 @@ class QmfStatusScanTests(unittest.IsolatedAsyncioTestCase):
         conn.rollback = AsyncMock()
         with patch("services.qmf_status_scan._pool", return_value=pool), patch(
             "services.qmf_status_scan.reconcile_projection_task_graph", new_callable=AsyncMock
-        ):
+        ), patch("config.settings.TASK_EVENT_ENCRYPTION_KEY", "x" * 32):
             if fail_sql:
                 with self.assertRaisesRegex(RuntimeError, "synthetic_archive_failure"):
                     await archive_due_qmf_tasks()
