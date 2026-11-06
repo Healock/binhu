@@ -4,6 +4,7 @@ import copy
 from decimal import Decimal
 import importlib.util
 import json
+import os
 import unittest
 import tempfile
 from pathlib import Path
@@ -818,6 +819,7 @@ volumes:
         }
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(control, "_validate_flink_sql", return_value=identity), \
+                patch.object(control, "_ensure_flink_task_runtime_compose"), \
                 patch.object(control, "_validate_flink_compose"), \
                 patch.object(control, "_run_checked"), \
                 patch.object(control, "_build_candidate_flink_jar", return_value=candidate), \
@@ -856,6 +858,7 @@ volumes:
         client = Client()
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(control, "_validate_flink_sql", return_value=identity), \
+                patch.object(control, "_ensure_flink_task_runtime_compose"), \
                 patch.object(control, "_validate_flink_compose"), \
                 patch.object(control, "_run_checked"), \
                 patch.object(control, "_build_candidate_flink_jar", return_value=candidate), \
@@ -964,6 +967,74 @@ volumes:
             self.assertTrue(report["requires_update"])
             self.assertTrue(report["taskmanager_memory_update_required"])
             self.assertTrue(report["restart_policy_update_required"])
+
+    def test_flink_compose_measure_allows_only_missing_task_runtime_env_file(self):
+        image = "sha256:" + "a" * 64
+        artifact_root = Path("/srv/binhu-environments/build-dev-pipeline-a9409fce")
+        expected = flink_compose.specification(image, artifact_root)
+        expected["services"]["taskmanager"].pop("env_file")
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "flink-pipeline-compose.json"
+            target.write_text(json.dumps(expected), encoding="utf-8")
+            with patch.object(flink_compose, "TARGET", target), patch.object(flink_compose, "ROOT", target.parent):
+                report = flink_compose.measure(image, artifact_root)
+            self.assertTrue(report["requires_update"])
+            self.assertTrue(report["task_runtime_environment_update_required"])
+
+            expected["services"]["taskmanager"]["env_file"] = ["/tmp/foreign.env"]
+            target.write_text(json.dumps(expected), encoding="utf-8")
+            with patch.object(flink_compose, "TARGET", target), patch.object(flink_compose, "ROOT", target.parent):
+                with self.assertRaisesRegex(ValueError, "env file identity mismatch"):
+                    flink_compose.measure(image, artifact_root)
+
+    def test_flink_compose_apply_records_and_installs_task_runtime_env_file(self):
+        image = "sha256:" + "a" * 64
+        artifact_root = Path("/srv/binhu-environments/build-dev-pipeline-a9409fce")
+        legacy = flink_compose.specification(image, artifact_root)
+        legacy["services"]["taskmanager"].pop("env_file")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "flink-pipeline-compose.json"
+            target.write_text(json.dumps(legacy), encoding="utf-8")
+            evidence_root = root / "evidence"
+            evidence_root.mkdir()
+            with patch.object(flink_compose, "TARGET", target), patch.object(flink_compose, "ROOT", root), \
+                    patch.object(flink_compose, "EVIDENCE_ROOT", evidence_root):
+                report = flink_compose.apply(image, artifact_root, "dev-flink-runtime-" + "a" * 16)
+            installed = json.loads(target.read_text(encoding="utf-8"))
+            self.assertTrue(report["task_runtime_environment_updated"])
+            self.assertEqual(
+                installed["services"]["taskmanager"]["env_file"],
+                ["/srv/binhu-environments/development-pipeline/flink-task.env"],
+            )
+            self.assertTrue((evidence_root / ("dev-flink-runtime-" + "a" * 16)
+                             / "flink-pipeline-compose.before.json").exists())
+
+    def test_dev_flink_task_environment_is_private_and_bound_to_manifest(self):
+        run_id = "dev-20261107-taskreadmodel13"
+        content = "\n".join((
+            "APP_ENVIRONMENT=development",
+            f"DEV_RUN_ID={run_id}",
+            "TASK_EVENT_ENCRYPTION_KEY=" + "k" * 64,
+            "BACKEND_REDIS_URL=redis://:placeholder@environment-redis:6379/0",
+            "",
+        ))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_path = root / "flink-task.env"
+            env_path.write_text(content, encoding="utf-8")
+            env_path.chmod(0o600)
+            manifest = {"run_id": run_id}
+            with patch.object(control, "ROOT", root):
+                control._validate_flink_task_runtime_environment(manifest)
+                with self.assertRaisesRegex(ValueError, "runtime identity mismatch"):
+                    control._validate_flink_task_runtime_environment({"run_id": "dev-other-run"})
+
+            if os.name == "posix":
+                env_path.chmod(0o644)
+                with patch.object(control, "ROOT", root):
+                    with self.assertRaisesRegex(ValueError, "environment is unavailable"):
+                        control._validate_flink_task_runtime_environment(manifest)
 
     def test_flink_compose_measure_rejects_unapproved_runtime_limits(self):
         image = "sha256:" + "a" * 64

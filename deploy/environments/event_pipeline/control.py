@@ -8,9 +8,10 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
-from . import flink_submission
+from . import flink_compose, flink_submission
 from .identity import summary_topic_for
 from .services.kafka_envelope import EVENT_TOPIC, DLQ_TOPIC
 
@@ -45,6 +46,13 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Dev Flink taskmanager pids_limit missing",
         "Dev Flink jobmanager checkpoint volume missing",
         "Dev Flink taskmanager checkpoint volume missing",
+        "Dev Flink task runtime env file missing",
+        "Dev Flink task runtime env file identity mismatch",
+        "Dev Flink task runtime environment is unavailable",
+        "Dev Flink task runtime environment is invalid",
+        "Dev Flink task runtime identity mismatch",
+        "Dev Flink task Backend Redis identity mismatch",
+        "Dev Flink artifact identity mismatch",
         "Dev Flink current run has an incomplete job set",
         "register the fixed Dev schema before starting workers",
         "Dev Schema Registry registration timed out",
@@ -255,6 +263,66 @@ def _validate_flink_compose() -> None:
         if not any(mount.get("target") == "/opt/flink/checkpoints" and mount.get("source") == "flink-checkpoints"
                    for mount in mounts if isinstance(mount, dict)):
             raise ValueError(f"Dev Flink {name} checkpoint volume missing")
+    if services["taskmanager"].get("env_file") != [str(flink_compose.PIPELINE_TASK_ENV)]:
+        raise ValueError("Dev Flink task runtime env file missing")
+
+
+def _flink_artifact_root() -> Path:
+    spec = json.loads(FLINK_COMPOSE.read_text(encoding="utf-8"))
+    mounts = spec["services"]["taskmanager"].get("volumes", [])
+    target = "/opt/flink/usrlib/dev-pipeline-job.jar"
+    sources = [item.get("source", "") for item in mounts
+               if item.get("target") == target and item.get("type") == "bind"]
+    if len(sources) != 1:
+        raise ValueError("Dev Flink artifact identity mismatch")
+    artifact = Path(sources[0])
+    if artifact.name != "dev-pipeline-job.jar":
+        raise ValueError("Dev Flink artifact identity mismatch")
+    return artifact.parent
+
+
+def _validate_flink_task_runtime_environment(manifest: dict) -> None:
+    path = ROOT / "flink-task.env"
+    if (path.is_symlink() or not path.is_file()
+            or (sys.platform != "win32" and path.stat().st_mode & 0o077)):
+        raise ValueError("Dev Flink task runtime environment is unavailable")
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in values:
+            raise ValueError("Dev Flink task runtime environment is invalid")
+        values[key] = value
+    if (values.get("APP_ENVIRONMENT") != "development"
+            or values.get("DEV_RUN_ID") != manifest.get("run_id")
+            or len(values.get("TASK_EVENT_ENCRYPTION_KEY", "").encode("utf-8")) < 32):
+        raise ValueError("Dev Flink task runtime identity mismatch")
+    try:
+        redis = urlsplit(values.get("BACKEND_REDIS_URL", ""))
+        redis_port = redis.port
+    except ValueError:
+        raise ValueError("Dev Flink task Backend Redis identity mismatch") from None
+    if (redis.scheme != "redis" or redis.hostname not in {"redis", "environment-redis"}
+            or redis_port != 6379 or redis.path != "/0" or not redis.password):
+        raise ValueError("Dev Flink task Backend Redis identity mismatch")
+
+
+def _ensure_flink_task_runtime_compose(manifest: dict, evidence: Path) -> dict | None:
+    _validate_flink_task_runtime_environment(manifest)
+    artifact_root = _flink_artifact_root()
+    image = manifest["images"]["flink"]
+    report = flink_compose.measure(image, artifact_root)
+    if not report["requires_update"]:
+        return None
+    evidence_id = "dev-flink-runtime-" + hashlib.sha256(
+        manifest["run_id"].encode("utf-8")
+    ).hexdigest()[:16]
+    updated = flink_compose.apply(image, artifact_root, evidence_id)
+    audit = evidence / "flink-compose-runtime.json"
+    audit.write_text(json.dumps(updated, sort_keys=True) + "\n", encoding="utf-8")
+    audit.chmod(0o600)
+    return updated
 
 
 def _build_candidate_flink_jar(source: Path) -> dict[str, str]:
@@ -280,6 +348,7 @@ def _build_candidate_flink_jar(source: Path) -> dict[str, str]:
 def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     """Submit the current Dev JobGraph and fence its run identity."""
     identity = _validate_flink_sql(manifest)
+    _ensure_flink_task_runtime_compose(manifest, evidence)
     _validate_flink_compose()
     _run_checked(["docker", "compose", "-f", str(FLINK_COMPOSE), "up", "-d", "jobmanager", "taskmanager"], timeout=180)
     source = Path(__file__).with_name("PipelineJob.java")
