@@ -75,6 +75,9 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
         r"CREATE\s+TABLE\s+([A-Za-z0-9_]+)\s*\((.*?)\)\s*WITH\s*\((.*?)\)\s*;",
         sql, flags=re.IGNORECASE | re.DOTALL,
     ):
+        connector = _one(r"'connector'\s*=\s*'([^']+)'", options, "connector").lower()
+        if connector != "kafka":
+            continue
         group = _one(r"properties\.group\.id'\s*=\s*'([^']+)'", options, "consumer group")
         topic = _one(r"'topic'\s*=\s*'([^']+)'", options, "topic")
         if table in kafka_sources:

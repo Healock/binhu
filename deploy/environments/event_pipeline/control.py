@@ -70,6 +70,17 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Flink JAR submission returned no job id",
         "current Dev PipelineJob compilation failed",
         "evidence directory initialization failed",
+        "Flink connector identity is ambiguous",
+        "Flink consumer group identity is ambiguous",
+        "Flink Kafka source identity is duplicated",
+        "Flink topic identity is ambiguous",
+        "Flink SQL is not text",
+        "Flink SQL run_id filter does not match pipeline identity",
+        "Flink SQL environment filter does not match run identity",
+        "Flink Kafka topic does not match environment identity",
+        "Flink SQL task/view-state schema versions are incomplete",
+        "Flink SQL consumer groups do not match manifest",
+        "Flink SQL run_id does not match manifest",
     }
 )
 
@@ -79,6 +90,9 @@ def safe_control_failure_detail(error: Exception) -> str:
     detail = str(error)
     if detail in _SAFE_CONTROL_FAILURES or re.fullmatch(
         r"Flink runtime (?:missing INSERT sink|unexpected sink): [A-Za-z0-9_,.-]+", detail
+    ) or re.fullmatch(
+        r"Flink SQL (?:missing INSERT sink|contains unsupported INSERT sink): [A-Za-z0-9_,.-]+",
+        detail,
     ) or re.fullmatch(r"flink_rest_http_[0-9]{3}", detail):
         return detail
     return type(error).__name__

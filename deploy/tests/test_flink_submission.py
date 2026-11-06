@@ -231,6 +231,18 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "consumer group"):
             flink_submission.validate_sql_identity(sql(group_id="dev-stale-flink"), RUN_ID)
 
+    def test_sql_identity_ignores_non_kafka_tables_when_collecting_source_groups(self):
+        with_jdbc_sink = sql() + """
+CREATE TABLE dev_online_source_projection (
+  run_id STRING, task_id STRING, source_id BIGINT
+) WITH (
+  'connector' = 'jdbc',
+  'url' = 'jdbc:mysql://dev-derived-mysql:3306/Dev_EventPipeline'
+);
+"""
+        identity = flink_submission.validate_sql_identity(with_jdbc_sink, RUN_ID)
+        self.assertEqual(identity["consumer_groups"], [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"])
+
     def test_sql_identity_exposes_all_projection_sinks(self):
         extra = sql() + "INSERT INTO dev_online_source_projection SELECT * FROM dev_events;"
         identity = flink_submission.parse_sql_identity(extra)

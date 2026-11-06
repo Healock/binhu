@@ -179,6 +179,18 @@ class FlinkStateContractTests(unittest.TestCase):
         )
         self.assertEqual(
             control.safe_control_failure_detail(
+                ValueError("Flink consumer group identity is ambiguous")
+            ),
+            "Flink consumer group identity is ambiguous",
+        )
+        self.assertEqual(
+            control.safe_control_failure_detail(
+                ValueError("Flink SQL missing INSERT sink: dev_revisions")
+            ),
+            "Flink SQL missing INSERT sink: dev_revisions",
+        )
+        self.assertEqual(
+            control.safe_control_failure_detail(
                 ValueError("password=super-secret-value")
             ),
             "ValueError",
