@@ -16,12 +16,40 @@ from .services.kafka_delivery_store import SCHEMA_SQL
 from .flink_sql import render
 
 PROJECT = "binhu-development-pipeline"
+# The approved worker image is immutable and can predate this candidate.
+# Bind every module changed by the task/summary transport contract to source
+# hashes instead of accidentally importing an older copy from that image.
+WORKER_CANDIDATE_MODULES = {
+    "runtime.py": "runtime.py",
+    "identity.py": "identity.py",
+    "business_bridge.py": "business_bridge.py",
+    "backend_outbox_relay.py": "services/backend_outbox_relay.py",
+    "kafka_delivery_store.py": "services/kafka_delivery_store.py",
+    "kafka_event_contract.py": "services/kafka_event_contract.py",
+    "kafka_envelope.py": "services/kafka_envelope.py",
+    "kafka_relay.py": "services/kafka_relay.py",
+    "online_summary_contract.py": "services/online_summary_contract.py",
+    "online_summary_event.py": "services/online_summary_event.py",
+    "online_summary_fact_relay.py": "services/online_summary_fact_relay.py",
+}
+COMMON_WORKER_MODULES = frozenset(WORKER_CANDIDATE_MODULES) - {
+    "business_bridge.py", "backend_outbox_relay.py",
+    "online_summary_event.py", "online_summary_fact_relay.py",
+}
+WORKER_SERVICE_MODULES = {
+    name: COMMON_WORKER_MODULES | extra for name, extra in {
+        "relay": set(), "bridge": set(), "python-metadata-worker": set(),
+        "dual-track-monitor": set(), "acceptance-runner": set(),
+        "business-bridge": {"business_bridge.py", "online_summary_event.py"},
+        "backend-outbox-relay": {"backend_outbox_relay.py", "online_summary_fact_relay.py"},
+    }.items()
+}
 PUBLIC_CANDIDATE_FILES = frozenset({
     "init.sql", "redis.conf", "pipeline.sql", "runtime.py",
     "dual_track_monitor.py", "monitor_health.py", "scale_acceptance.py", "kafka_delivery_store.py",
     "kafka_event_contract.py", "kafka_envelope.py", "kafka_relay.py",
     "delivery_schema_migrate.py", "python_metadata_worker.py",
-})
+}) | frozenset(WORKER_CANDIDATE_MODULES)
 ROOT = Path("/srv/binhu-environments/development-pipeline")
 BACKEND_ENV = Path("/srv/binhu-environments/development/backend.env")
 NETWORK = "binhu-development-eventbus_internal"
@@ -190,6 +218,14 @@ def compose(images):
         "command": ["python", "-m", "event_pipeline.scale_acceptance"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
+    for name, filenames in WORKER_SERVICE_MODULES.items():
+        service = services[name]
+        mounts = service.setdefault("volumes", [])
+        for filename in sorted(filenames):
+            module = WORKER_CANDIDATE_MODULES[filename]
+            mount = f"./{filename}:/opt/dev-pipeline/event_pipeline/{module}:ro"
+            if mount not in mounts:
+                mounts.append(mount)
     return {"name": PROJECT, "services": services,
             "networks": {"internal": {"external": True, "name": NETWORK},
                          "backend": {"external": True, "name": BACKEND_NETWORK}},
@@ -434,6 +470,8 @@ CREATE TABLE dev_task_metadata_python_events (
         "delivery_schema_migrate.py": Path(__file__).with_name("delivery_schema_migrate.py").read_text(encoding="utf-8"),
         "python_metadata_worker.py": (services_root / "python_metadata_worker.py").read_text(encoding="utf-8"),
     }
+    for filename, module in WORKER_CANDIDATE_MODULES.items():
+        files[filename] = (Path(__file__).parent / module).read_text(encoding="utf-8")
     for name, content in files.items():
         target = ROOT / name
         # A failed candidate extraction can leave a same-named directory at a

@@ -1696,6 +1696,22 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service["networks"], ["internal"])
         self.assertNotIn("backend", service["networks"])
 
+    def test_task_transport_workers_bind_complete_candidate_contract(self):
+        images = {name: "sha256:" + char * 64 for name, char in
+                  (("mysql", "1"), ("redis", "2"), ("worker", "3"), ("flink", "4"))}
+        services = compose(images)["services"]
+        for name, filenames in event_prepare.WORKER_SERVICE_MODULES.items():
+            service = services[name]
+            for filename in filenames:
+                module = event_prepare.WORKER_CANDIDATE_MODULES[filename]
+                with self.subTest(service=name, module=module):
+                    self.assertIn(
+                        f"./{filename}:/opt/dev-pipeline/event_pipeline/{module}:ro",
+                        service["volumes"],
+                    )
+                    self.assertIn(filename, event_prepare.PUBLIC_CANDIDATE_FILES)
+                    self.assertTrue((Path(event_prepare.__file__).parent / module).is_file())
+
     def test_parallel_relay_workers_share_producer_but_not_delivery_store(self):
         pool, producer = object(), object()
         workers = event_runtime.build_relay_workers(pool, producer, "dev-test-1")

@@ -81,14 +81,18 @@ async def apply() -> dict:
             for parser_type, parser in PARSER_REGISTRY.items():
                 if parser_type == "default":
                     continue
-                await cur.execute(
-                    "SELECT id,physical_row,revision,values_json FROM _online_source_rows "
-                    "WHERE parser_type=%s AND archived_at IS NULL "
-                    "AND source_kind IN (%s,%s,%s) ORDER BY id",
-                    (parser_type, *SOURCE_TYPES),
-                )
+                last_source_id = 0
                 while True:
-                    rows = await cur.fetchmany(BATCH_SIZE)
+                    # Writes below replace the cursor's current result set.
+                    # Materialize one bounded page before reusing the cursor,
+                    # then fetch the next page by source identity.
+                    await cur.execute(
+                        "SELECT id,physical_row,revision,values_json FROM _online_source_rows "
+                        "WHERE parser_type=%s AND archived_at IS NULL "
+                        "AND source_kind IN (%s,%s,%s) AND id>%s ORDER BY id LIMIT %s",
+                        (parser_type, *SOURCE_TYPES, last_source_id, BATCH_SIZE),
+                    )
+                    rows = await cur.fetchall()
                     if not rows:
                         break
                     for row in rows:
@@ -146,6 +150,7 @@ async def apply() -> dict:
                         )
                         emitted += 1
                     await conn.commit()
+                    last_source_id = int(rows[-1]["id"])
     except BaseException:
         await conn.rollback()
         raise

@@ -61,7 +61,6 @@ async def run(command: str, apply: bool = False) -> dict:
             return result
     finally:
         conn.close()
-        await conn.wait_closed()
 
 
 def build_parser() -> argparse.ArgumentParser:
