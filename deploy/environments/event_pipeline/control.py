@@ -46,6 +46,7 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Dev Flink taskmanager checkpoint volume missing",
         "Dev Flink current run has an incomplete job set",
         "register the fixed Dev schema before starting workers",
+        "Dev Schema Registry registration timed out",
         "startup deadline reached; preserve resources and remeasure",
         "startup failed; preserve private diagnostics",
         "Dev delivery index migration failed",
@@ -328,10 +329,19 @@ def apply():
     # which stub measure() with an empty report.
     if report.get("run_id"):
         _prepare_evidence_directory(report["run_id"])
-    schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
-                             "run", "--rm", "--no-deps", "relay", "python", "-m",
-                             "event_pipeline.schema_registry", "apply"],
-                            capture_output=True, text=True, timeout=45)
+    schema_timeout = 90
+    try:
+        schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
+                                 "run", "--rm", "--no-deps", "relay", "python", "-m",
+                                 "event_pipeline.schema_registry", "apply"],
+                                capture_output=True, text=True, timeout=schema_timeout)
+    except subprocess.TimeoutExpired:
+        path = evidence / "schema-registration-timeout.json"
+        path.write_text(json.dumps({"phase": "schema_registration",
+                                    "timed_out": True,
+                                    "timeout_seconds": schema_timeout}) + "\n")
+        path.chmod(0o600)
+        raise ValueError("Dev Schema Registry registration timed out") from None
     path = evidence / "schema-registration.log"
     path.write_text(schema.stdout + "\n" + schema.stderr)
     path.chmod(0o600)
