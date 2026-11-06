@@ -692,10 +692,26 @@ volumes:
                         control.apply()
                 self.assertEqual(command.call_count, 2)
                 self.assertTrue(all(call.args[0][-1] == "apply" for call in command.call_args_list))
+                self.assertTrue(all(call.kwargs["timeout"] == 90 for call in command.call_args_list))
                 self.assertTrue(all("up" not in call.args[0] for call in command.call_args_list))
             evidence = list(Path(tmp).glob("apply-evidence-*"))
             self.assertEqual(len(evidence), 2)
             self.assertTrue(all((entry / "schema-registration.log").exists() for entry in evidence))
+
+    def test_schema_registration_timeout_records_safe_phase_and_prevents_start(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}):
+            with patch.object(control.subprocess, "run", side_effect=control.subprocess.TimeoutExpired(["docker", "compose"], 90)) as command:
+                with self.assertRaisesRegex(ValueError, "Schema Registry registration timed out"):
+                    control.apply()
+                self.assertEqual(command.call_count, 1)
+                self.assertNotIn("up", command.call_args.args[0])
+            evidence = list(Path(tmp).glob("apply-evidence-*"))
+            self.assertEqual(len(evidence), 1)
+            marker = evidence[0] / "schema-registration-timeout.json"
+            self.assertTrue(marker.exists())
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), {
+                "phase": "schema_registration", "timed_out": True, "timeout_seconds": 90,
+            })
 
     def test_evidence_initializer_targets_only_current_run_directory(self):
         command = control.evidence_initializer_command("dev-20260916-dualtrack-monitor18")
