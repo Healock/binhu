@@ -330,9 +330,9 @@ def apply():
         _prepare_evidence_directory(report["run_id"])
     schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
                              "run", "--rm", "--no-deps", "relay", "python", "-m",
-                             "event_pipeline.schema_registry", "verify"],
+                             "event_pipeline.schema_registry", "apply"],
                             capture_output=True, text=True, timeout=45)
-    path = evidence / "schema-check.log"
+    path = evidence / "schema-registration.log"
     path.write_text(schema.stdout + "\n" + schema.stderr)
     path.chmod(0o600)
     if schema.returncode:
