@@ -386,17 +386,26 @@ CREATE TABLE dev_online_source_projection (
     def test_active_jobs_are_partitioned_without_touching_other_dev_jobs(self):
         current = job()
         stale_monitor = job("dev-20260915-dualtrack-monitor")
+        stale_task_run = job("dev-20261107-taskreadmodel14")
+        restarting_task_run = job("dev-20261107-taskreadmodel13", state="RESTARTING")
         other_dev_job = job("dev-20260915-metadata08")
         active, stale = flink_submission.partition_active_jobs(
-            [current, stale_monitor, other_dev_job], RUN_ID
+            [current, stale_monitor, stale_task_run, restarting_task_run, other_dev_job], RUN_ID
         )
         self.assertEqual([item["jid"] for item in active], [current["jid"]])
-        self.assertEqual([item["jid"] for item in stale], [stale_monitor["jid"]])
+        self.assertEqual(
+            [item["jid"] for item in stale],
+            [stale_monitor["jid"], stale_task_run["jid"], restarting_task_run["jid"]],
+        )
 
         finished = job("dev-20260915-dualtrack-monitor")
         finished["state"] = "CANCELED"
         active, stale = flink_submission.partition_active_jobs([finished], RUN_ID)
         self.assertEqual(active, [])
+        self.assertEqual(stale, [])
+
+        finished_task_run = job("dev-20261107-taskreadmodel12", state="FINISHED")
+        _, stale = flink_submission.partition_active_jobs([finished_task_run], RUN_ID)
         self.assertEqual(stale, [])
 
     def test_runtime_requires_one_matching_job_with_both_sinks_and_group(self):
