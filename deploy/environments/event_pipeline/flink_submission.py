@@ -21,6 +21,8 @@ from .projection_definitions import BASE_PROJECTION_NAMES, projection_names
 EXPECTED_SINKS = BASE_PROJECTION_NAMES | frozenset(("task-read-model-redis",))
 EXPECTED_SOURCES = frozenset(("dev_events", "dev_task_events_redis"))
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
+DEV_TASK_READ_MODEL_RUN_RE = re.compile(r"^dev-[0-9]{8}-taskreadmodel[0-9]{2}$")
+DEV_STALE_JOB_STATES = frozenset({"RUNNING", "RESTARTING"})
 REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
 # Flink may accept the JAR before the JobGraph has finished planning and
 # reached RUNNING.  A reset connection is therefore reconciled for the full
@@ -210,7 +212,7 @@ def validate_job_graph(
 
 
 def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return current jobs and only stale jobs in the dual-track family.
+    """Return current jobs and only stale jobs in known Dev/Staging pipeline families.
 
     Metadata jobs and unrelated Dev jobs are intentionally left out of the
     stale list.  Callers may cancel only the returned stale entries.
@@ -222,10 +224,11 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
         name = str(item.get("name", ""))
         if name == expected_run_id:
             current.append(item)
-        elif item.get("state") == "RUNNING" and (
-            (environment == "development" and DUAL_TRACK_PREFIX_RE.search(name))
-            or (environment == "staging" and STAGING_RUN_RE.search(name))
+        elif environment == "development" and item.get("state") in DEV_STALE_JOB_STATES and (
+            DUAL_TRACK_PREFIX_RE.search(name) or DEV_TASK_READ_MODEL_RUN_RE.fullmatch(name)
         ):
+            stale.append(item)
+        elif environment == "staging" and item.get("state") == "RUNNING" and STAGING_RUN_RE.search(name):
             stale.append(item)
     return current, stale
 
