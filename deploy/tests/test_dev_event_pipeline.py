@@ -968,11 +968,13 @@ volumes:
             self.assertTrue(report["taskmanager_memory_update_required"])
             self.assertTrue(report["restart_policy_update_required"])
 
-    def test_flink_compose_measure_allows_only_missing_task_runtime_env_file(self):
+    def test_flink_compose_measure_allows_only_missing_task_runtime_wiring(self):
         image = "sha256:" + "a" * 64
         artifact_root = Path("/srv/binhu-environments/build-dev-pipeline-a9409fce")
         expected = flink_compose.specification(image, artifact_root)
         expected["services"]["taskmanager"].pop("env_file")
+        expected["networks"].pop("backend")
+        expected["services"]["taskmanager"]["networks"].pop("backend")
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "flink-pipeline-compose.json"
             target.write_text(json.dumps(expected), encoding="utf-8")
@@ -980,8 +982,26 @@ volumes:
                 report = flink_compose.measure(image, artifact_root)
             self.assertTrue(report["requires_update"])
             self.assertTrue(report["task_runtime_environment_update_required"])
+            self.assertTrue(report["task_backend_network_update_required"])
+
+            expected["networks"]["backend"] = {"name": "other_backend", "external": True}
+            target.write_text(json.dumps(expected), encoding="utf-8")
+            with patch.object(flink_compose, "TARGET", target), patch.object(flink_compose, "ROOT", target.parent):
+                with self.assertRaisesRegex(ValueError, "Backend network identity mismatch"):
+                    flink_compose.measure(image, artifact_root)
+
+            expected = flink_compose.specification(image, artifact_root)
+            expected["services"]["taskmanager"].pop("env_file")
+            expected["networks"].pop("backend")
+            expected["services"]["taskmanager"]["networks"].pop("backend")
 
             expected["services"]["taskmanager"]["env_file"] = ["/tmp/foreign.env"]
+            target.write_text(json.dumps(expected), encoding="utf-8")
+            with patch.object(flink_compose, "TARGET", target), patch.object(flink_compose, "ROOT", target.parent):
+                with self.assertRaisesRegex(ValueError, "env file identity mismatch"):
+                    flink_compose.measure(image, artifact_root)
+
+            expected["services"]["taskmanager"]["env_file"] = None
             target.write_text(json.dumps(expected), encoding="utf-8")
             with patch.object(flink_compose, "TARGET", target), patch.object(flink_compose, "ROOT", target.parent):
                 with self.assertRaisesRegex(ValueError, "env file identity mismatch"):
@@ -1007,6 +1027,11 @@ volumes:
                 installed["services"]["taskmanager"]["env_file"],
                 ["/srv/binhu-environments/development-pipeline/flink-task.env"],
             )
+            self.assertEqual(
+                installed["networks"]["backend"],
+                {"name": "binhu-development_internal", "external": True},
+            )
+            self.assertIsNone(installed["services"]["taskmanager"]["networks"]["backend"])
             self.assertTrue((evidence_root / ("dev-flink-runtime-" + "a" * 16)
                              / "flink-pipeline-compose.before.json").exists())
 

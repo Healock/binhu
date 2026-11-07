@@ -48,6 +48,8 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Dev Flink taskmanager checkpoint volume missing",
         "Dev Flink task runtime env file missing",
         "Dev Flink task runtime env file identity mismatch",
+        "Dev Flink Backend network identity mismatch",
+        "Dev Flink Backend network attachment mismatch",
         "Dev Flink task runtime environment is unavailable",
         "Dev Flink task runtime environment is invalid",
         "Dev Flink task runtime identity mismatch",

@@ -191,12 +191,24 @@ def _without_approved_runtime_limits(spec: dict) -> dict:
 
 def _normalize_legacy_task_runtime_env(spec: dict) -> dict:
     value = copy.deepcopy(spec)
+    networks = value.get("networks", {})
+    backend_network = {"name": BACKEND_NETWORK, "external": True}
+    if "backend" not in networks:
+        networks["backend"] = backend_network
+    elif networks["backend"] != backend_network:
+        raise ValueError("Dev Flink Backend network identity mismatch")
+
     taskmanager = value["services"]["taskmanager"]
-    configured = taskmanager.get("env_file")
-    if configured is None:
+    if "env_file" not in taskmanager:
         taskmanager["env_file"] = [str(PIPELINE_TASK_ENV)]
-    elif configured != [str(PIPELINE_TASK_ENV)]:
+    elif taskmanager["env_file"] != [str(PIPELINE_TASK_ENV)]:
         raise ValueError("Dev Flink task runtime env file identity mismatch")
+
+    taskmanager_networks = taskmanager.get("networks", {})
+    if "backend" not in taskmanager_networks:
+        taskmanager_networks["backend"] = None
+    elif taskmanager_networks["backend"] is not None:
+        raise ValueError("Dev Flink Backend network attachment mismatch")
     return value
 
 
@@ -224,6 +236,11 @@ def measure(image: str, artifact_root: Path) -> dict:
     task_runtime_environment_update_required = (
         current["services"]["taskmanager"].get("env_file") != [str(PIPELINE_TASK_ENV)]
     )
+    task_backend_network_update_required = (
+        current.get("networks", {}).get("backend") != {"name": BACKEND_NETWORK, "external": True}
+        or "backend" not in current["services"]["taskmanager"].get("networks", {})
+        or current["services"]["taskmanager"]["networks"].get("backend") is not None
+    )
     return {
         "environment": "development",
         "project": PROJECT,
@@ -233,6 +250,7 @@ def measure(image: str, artifact_root: Path) -> dict:
         "taskmanager_memory_update_required": taskmanager_memory_update_required,
         "restart_policy_update_required": restart_policy_update_required,
         "task_runtime_environment_update_required": task_runtime_environment_update_required,
+        "task_backend_network_update_required": task_backend_network_update_required,
         "requires_update": (
             any(value != "development" for value in labels.values())
             or any(
@@ -242,6 +260,7 @@ def measure(image: str, artifact_root: Path) -> dict:
             or taskmanager_memory_update_required
             or restart_policy_update_required
             or task_runtime_environment_update_required
+            or task_backend_network_update_required
         ),
         "other_changes": False,
         "pids_limit": {
@@ -285,6 +304,7 @@ def apply(image: str, artifact_root: Path, evidence_id: str) -> dict:
         "taskmanager_memory_updated": before["taskmanager_memory_update_required"],
         "restart_policy_updated": before["restart_policy_update_required"],
         "task_runtime_environment_updated": before["task_runtime_environment_update_required"],
+        "task_backend_network_updated": before["task_backend_network_update_required"],
         "verified": not after["requires_update"],
     }
     target = evidence / "result.json"
