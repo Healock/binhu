@@ -14,19 +14,21 @@ from typing import Any
 
 try:
     from .identity import validate_identity
+    from .domain_pipeline import TASK_READ_MODEL, ONLINE_SUMMARY_FACTS
 except ImportError:  # Installed beside the fixed Staging gateway.
     from identity import validate_identity
+    from domain_pipeline import TASK_READ_MODEL, ONLINE_SUMMARY_FACTS
 
 
 IMAGE_KEYS = frozenset({"kafka", "schema_registry", "mysql", "redis", "worker", "flink"})
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 BROKERS = ("staging-kafka-1", "staging-kafka-2", "staging-kafka-3")
-EVENT_TOPIC = "staging.task.read-model.v4"
-DLQ_TOPIC = "staging.task.read-model.dlq.v4"
-LEGACY_EVENT_TOPIC = "staging.task.events.v1"
-LEGACY_DLQ_TOPIC = "staging.task.events.dlq.v1"
-SUMMARY_EVENT_TOPIC = "staging.online-summary.facts.v1"
-SUMMARY_DLQ_TOPIC = "staging.online-summary.facts.dlq.v1"
+EVENT_TOPIC = TASK_READ_MODEL.topic("staging", "events")
+DLQ_TOPIC = TASK_READ_MODEL.topic("staging", "dlq")
+LEGACY_EVENT_TOPIC = TASK_READ_MODEL.topic("staging", "legacy_events")
+LEGACY_DLQ_TOPIC = TASK_READ_MODEL.topic("staging", "legacy_dlq")
+SUMMARY_EVENT_TOPIC = ONLINE_SUMMARY_FACTS.topic("staging", "events")
+SUMMARY_DLQ_TOPIC = ONLINE_SUMMARY_FACTS.topic("staging", "dlq")
 REGISTRY_TOPIC = "staging.registry.storage.v1"
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 LOGGING = {"driver": "json-file", "options": {"max-size": "5m", "max-file": "2"}}

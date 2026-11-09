@@ -353,6 +353,7 @@
     ├── [待盘点] 未由主 lifespan 启动的 worker/scheduler 入口：确认调用方、部署状态和是否为死代码
     ├── [目标] 可靠任务执行底座：持久任务记录、唯一 task/run ID、租约/心跳、幂等、有限重试、DLQ/人工恢复、可观测状态
     ├── [目标] 业务派生事件底座：权威事务 + Outbox → relay → Kafka → Flink → Redis；与长作业命令执行器区分
+    ├── [源码已实现/环境待验] 业务派生编排器：静态 domain registry 统一 topic/schema、Flink source/group/sink、Redis 身份和就绪合同；指令核查完整注册，在线汇总事实只注册到现有 Kafka 阶段（deploy/environments/event_pipeline/domain_pipeline.py）
     ├── [待做] 全量读写表、连接池消耗、触发频率、并发度、超时和业务所有者清单；确认服务器真实运行实例
     ├── [待做] 所有属于同一替换域的旧链路完成实现后，在 Development/Staging 整批对账、同批切换；切换后按证据修补
     └── [待做] 保留整批回滚材料与旧路径稳定期；证明新旧切换可恢复后再统一删除旧启动点、派生写入和无用队列

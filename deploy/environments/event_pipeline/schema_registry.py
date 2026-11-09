@@ -10,6 +10,7 @@ from .services.kafka_event_contract import (
     V4_EVENT_FIELDS, V5_REQUIRED_FIELDS, V6_REQUIRED_FIELDS,
     EVENT_TYPES, CHANGED_FIELDS, SOURCE_TABLE_NAMES,
 )
+from .domain_pipeline import DOMAIN_PIPELINES, domain_spec
 from .identity import topic_for, summary_topic_for
 
 # The deployed registry is Apicurio 2.x. Its Confluent-compatible API is
@@ -18,12 +19,14 @@ BASE = "http://schema-registry:8080/apis/ccompat/v7"
 SUBJECT = "dev.task.read-model.v4-value"
 
 
-def subject_for(environment: str) -> str:
-    return topic_for(environment) + "-value"
+def subject_for(environment: str, domain_id: str = "instruction_audit") -> str:
+    spec = domain_spec(domain_id)
+    topic = spec.topic(environment, "events")
+    return topic + "-value"
 
 
 def summary_subject_for(environment: str) -> str:
-    return summary_topic_for(environment) + "-value"
+    return subject_for(environment, "online_summary_facts")
 
 
 def schema(environment: str = "development"):
@@ -166,18 +169,30 @@ def _verify_subject(environment: str, subject: str, expected: dict):
 
 def verify(environment: str | None = None):
     environment = environment or os.environ.get("APP_ENVIRONMENT", "development")
-    task = _verify_subject(environment, subject_for(environment), schema(environment))
-    summary = _verify_subject(environment, summary_subject_for(environment), summary_schema(environment))
-    return {**task, "environment": environment, "verified": True,
-            "subjects": {"task": task, "online_summary": summary}}
+    contracts = {
+        "instruction_audit": schema(environment),
+        "online_summary_facts": summary_schema(environment),
+    }
+    subjects = {
+        spec.schema_result_key: _verify_subject(
+            environment, subject_for(environment, spec.domain_id), contracts[spec.domain_id],
+        )
+        for spec in DOMAIN_PIPELINES if spec.domain_id in contracts
+    }
+    return {"environment": environment, "verified": True, "subjects": subjects}
 
 
 def apply(environment: str | None = None):
     environment = environment or os.environ.get("APP_ENVIRONMENT", "development")
-    for subject, contract in (
-        (subject_for(environment), schema(environment)),
-        (summary_subject_for(environment), summary_schema(environment)),
-    ):
+    contracts = {
+        "instruction_audit": schema(environment),
+        "online_summary_facts": summary_schema(environment),
+    }
+    for spec in DOMAIN_PIPELINES:
+        if spec.domain_id not in contracts:
+            continue
+        subject = subject_for(environment, spec.domain_id)
+        contract = contracts[spec.domain_id]
         request(f"/config/{subject}", "PUT", {"compatibility": "FULL_TRANSITIVE"}, subject=subject)
         request(f"/subjects/{subject}/versions", "POST",
                 {"schemaType": "JSON", "schema": json.dumps(contract)}, subject=subject)

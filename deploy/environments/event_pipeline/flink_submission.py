@@ -14,12 +14,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id, topic_for
+from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id
+from .domain_pipeline import DomainPipelineOrchestrator
 from .projection_definitions import BASE_PROJECTION_NAMES, projection_names
 
 
-EXPECTED_SINKS = BASE_PROJECTION_NAMES | frozenset(("task-read-model-redis",))
-EXPECTED_SOURCES = frozenset(("dev_events", "dev_task_events_redis"))
+_DEFAULT_PLAN = DomainPipelineOrchestrator("development", "dev-contract").plan()
+EXPECTED_SINKS = BASE_PROJECTION_NAMES | frozenset(_DEFAULT_PLAN.flink_sinks)
+EXPECTED_SOURCES = frozenset(_DEFAULT_PLAN.flink_sources)
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
 DEV_TASK_READ_MODEL_RUN_RE = re.compile(r"^dev-[0-9]{8}-taskreadmodel[0-9]{2}$")
 DEV_STALE_JOB_STATES = frozenset({"RUNNING", "RESTARTING"})
@@ -95,15 +97,15 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
     environment = environment_for_run_id(run_id)
     if environments != {environment}:
         raise ValueError("Flink SQL environment filter does not match run identity")
-    if any(item["topic"] != topic_for(environment) for item in kafka_sources.values()):
+    plan = DomainPipelineOrchestrator(environment, run_id).plan()
+    expected_topics = {item["topic"] for item in plan.flink_sources.values()}
+    if {item["topic"] for item in kafka_sources.values()} != expected_topics:
         raise ValueError("Flink Kafka topic does not match environment identity")
-    if schema_versions != {"4", "6"}:
+    if schema_versions != {str(version) for version in plan.flink_schema_versions}:
         raise ValueError("Flink SQL projection schema versions are incomplete")
     expected_sources = {
-        "dev_events": {"consumer_group": f"{run_id}-flink", "topic": topic_for(environment)},
-        "dev_task_events_redis": {
-            "consumer_group": f"{run_id}-flink-redis", "topic": topic_for(environment),
-        },
+        name: {"consumer_group": value["consumer_group"], "topic": value["topic"]}
+        for name, value in plan.flink_sources.items()
     }
     if kafka_sources != expected_sources:
         raise ValueError("Flink SQL consumer groups do not match manifest")
@@ -117,7 +119,7 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
     if not sinks <= allowed:
         unknown = ",".join(sorted(sinks - allowed))
         raise ValueError(f"Flink SQL contains unsupported INSERT sink: {unknown}")
-    sinks = sinks | frozenset(("task-read-model-redis",))
+    sinks = sinks | frozenset(plan.flink_sinks)
     return {"run_id": run_id,
             "consumer_groups": sorted(item["consumer_group"] for item in kafka_sources.values()),
             "topics": sorted({item["topic"] for item in kafka_sources.values()}),
@@ -145,13 +147,12 @@ def parse_runtime_identity(runtime: str) -> str:
 
 
 def validate_sql_identity(sql: str, expected_run_id: str) -> dict[str, str]:
-    environment_for_run_id(expected_run_id)
+    environment = environment_for_run_id(expected_run_id)
     identity = parse_sql_identity(sql)
     if identity["run_id"] != expected_run_id:
         raise ValueError("Flink SQL run_id does not match manifest")
-    if set(identity["consumer_groups"]) != {
-        f"{expected_run_id}-flink", f"{expected_run_id}-flink-redis",
-    }:
+    plan = DomainPipelineOrchestrator(environment, expected_run_id).plan()
+    if set(identity["consumer_groups"]) != set(plan.consumer_groups):
         raise ValueError("Flink SQL consumer groups do not match manifest")
     return identity
 
@@ -194,11 +195,16 @@ def validate_job_graph(
     # SQL identity fence and Kafka group check cover that case.  If a plan does
     # expose a topic marker, it must still be the fixed environment topic.
     topic_markers = set(re.findall(r"(?:topic|topics)\s*[=:]\s*['\"]?([A-Za-z0-9._-]+)", text, flags=re.IGNORECASE))
-    if topic_markers and topic_markers != {topic_for(environment)}:
+    plan = DomainPipelineOrchestrator(environment, expected_run_id).plan()
+    expected_topics = {item["topic"] for item in plan.flink_sources.values()}
+    if topic_markers and topic_markers != expected_topics:
         raise FlinkRuntimeValidationError("Flink JobGraph topic does not match environment identity", "job_topic")
     required = frozenset(expected_sinks or EXPECTED_SINKS)
     sources = _named_operators(descriptions, "Source")
-    if len(sources) != len(EXPECTED_SOURCES) or set(sources) != EXPECTED_SOURCES:
+    expected_sources = set(DomainPipelineOrchestrator(
+        environment, expected_run_id,
+    ).plan().flink_sources)
+    if len(sources) != len(expected_sources) or set(sources) != expected_sources:
         raise FlinkRuntimeValidationError("Flink runtime Kafka sources do not match", "job_source")
     sinks = set(_named_operators(descriptions, "Sink"))
     if sinks - required:
@@ -248,7 +254,8 @@ def validate_runtime(
     if not required <= sinks:
         missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
-    expected_groups = {f"{expected_run_id}-flink", f"{expected_run_id}-flink-redis"}
+    plan = DomainPipelineOrchestrator(environment_for_run_id(expected_run_id), expected_run_id).plan()
+    expected_groups = set(plan.consumer_groups)
     if set(consumer_groups) != expected_groups:
         raise FlinkRuntimeValidationError("Flink consumer group does not match current run", "consumer_group")
     return {"run_id": expected_run_id, "job_count": len(jobs),
