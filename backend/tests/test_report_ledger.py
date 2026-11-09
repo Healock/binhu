@@ -81,6 +81,10 @@ class DailyTaskLedgerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         insert_sql = " ".join(cursor.execute.await_args_list[2].args[0].split())
+        self.assertEqual(
+            [call.args[0].split()[0:2] for call in cursor.execute.await_args_list[:2]],
+            [["DELETE", "FROM"], ["DELETE", "FROM"]],
+        )
         self.assertIn(
             "SUM(task_state='completed') / "
             "(SUM(task_state='completed') + SUM(unable_to_verify))",

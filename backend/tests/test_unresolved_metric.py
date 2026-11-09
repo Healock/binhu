@@ -18,6 +18,9 @@ def make_database(*, fetchall=None, fetchone=None):
 
     connection = MagicMock()
     connection.cursor.return_value = cursor_context
+    connection.begin = AsyncMock()
+    connection.commit = AsyncMock()
+    connection.rollback = AsyncMock()
 
     pool = MagicMock()
     pool.acquire = AsyncMock(return_value=connection)
@@ -154,6 +157,9 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(result["implemented"])
+        pool.acquire.return_value.begin.assert_awaited_once()
+        pool.acquire.return_value.commit.assert_awaited_once()
+        pool.acquire.return_value.rollback.assert_not_awaited()
         insert_sql = next(
             call.args[0]
             for call in cursor.execute.await_args_list
@@ -178,6 +184,42 @@ class UnresolvedMetricTests(unittest.IsolatedAsyncioTestCase):
             "已完成 / (已完成 + 无法见底数)",
             normalized,
         )
+
+    async def test_daily_summary_rolls_back_when_rebuild_fails(self):
+        report_date = "2026-07-27"
+        community_table = f"{report_date}_daily_fullChain_community"
+        snapshot_table = f"{report_date}_snapshot_fullChain"
+        pool, cursor = make_database(
+            fetchall=[(community_table,), (snapshot_table,)],
+        )
+        cursor.fetchall = AsyncMock(return_value=[
+            (community_table,),
+            (snapshot_table,),
+        ])
+
+        with patch.object(
+            report_summary.db_manager,
+            "get_pool",
+            return_value=pool,
+        ), patch.object(
+            report_summary,
+            "table_exists",
+            new=AsyncMock(return_value=True),
+        ), patch.object(
+            report_summary,
+            "get_community_alias_lookup",
+            new=AsyncMock(side_effect=RuntimeError("synthetic rebuild failure")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic rebuild failure"):
+                await report_summary.build_summary(
+                    report_date,
+                    summary_types=["全链条"],
+                )
+
+        connection = pool.acquire.return_value
+        connection.begin.assert_awaited_once()
+        connection.commit.assert_not_awaited()
+        connection.rollback.assert_awaited_once()
 
     async def test_range_summary_preserves_completed_denominator_rate(self):
         pool, cursor = make_database(fetchall=[])

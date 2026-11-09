@@ -378,7 +378,7 @@ async def rebuild_community_report_table(
     community_table: str,
 ) -> None:
     """只按已登记且有社区部门的组长、组员重建社区表。"""
-    await cur.execute(f"TRUNCATE TABLE {community_table}")
+    await cur.execute(f"DELETE FROM {community_table}")
     await cur.execute(
         f"""
         INSERT INTO {community_table}
@@ -429,7 +429,7 @@ async def rebuild_community_report_from_ledger(
     parser_type: str,
 ) -> None:
     """从任务流水重建社区表，并应用固定人员资格口径。"""
-    await cur.execute(f"TRUNCATE TABLE {community_table}")
+    await cur.execute(f"DELETE FROM {community_table}")
     await cur.execute(
         f"""
         INSERT INTO {community_table}
