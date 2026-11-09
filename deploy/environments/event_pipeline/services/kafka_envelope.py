@@ -6,7 +6,8 @@ from .kafka_event_contract import (
 from .online_summary_contract import (
     SUMMARY_EVENT_TYPES, validate_summary_fact, OnlineSummaryContractError,
 )
-from ..identity import topic_for
+from ..identity import summary_topic_for as registered_summary_topic_for
+from ..domain_pipeline import domain_for_event
 
 EVENT_TOPIC = "dev.task.read-model.v4"
 DLQ_TOPIC = "dev.task.read-model.dlq.v4"
@@ -17,14 +18,7 @@ LEGACY_DLQ_TOPIC = "dev.task.events.dlq.v1"
 
 
 def summary_topic_for(environment: str, *, dead_letter: bool = False) -> str:
-    if environment == "development":
-        prefix = "dev"
-    elif environment == "staging":
-        prefix = "staging"
-    else:
-        raise ValueError("non-Production pipeline topic required")
-    suffix = ".dlq" if dead_letter else ""
-    return f"{prefix}.online-summary.facts{suffix}.v1"
+    return registered_summary_topic_for(environment, dead_letter=dead_letter)
 
 
 def delivery_topic(
@@ -40,9 +34,11 @@ def delivery_topic(
     if event_type in SUMMARY_EVENT_TYPES:
         if schema_version != 1:
             raise OnlineSummaryContractError("unsupported online summary schema")
-        return summary_topic_for(environment, dead_letter=channel == "dlq")
+        domain = domain_for_event(event_type)
+        return domain.topic(environment, "dlq" if channel == "dlq" else "events")
     if event_type not in EVENT_TYPES:
         raise EventContractError("unsupported Dev delivery route")
+    domain = domain_for_event(event_type)
     if schema_version == 1:
         if environment != "development":
             raise EventContractError("legacy v1 topic is Development-only")
@@ -53,8 +49,7 @@ def delivery_topic(
         return V3_EVENT_TOPIC if channel == "events" else V3_DLQ_TOPIC
     if schema_version not in {4, 5, 6}:
         raise EventContractError("unsupported Dev delivery schema")
-    base = topic_for(environment)
-    return base if channel == "events" else base.replace(".v4", ".dlq.v4")
+    return domain.topic(environment, "events" if channel == "events" else "dlq")
 
 
 def validate_event(event):

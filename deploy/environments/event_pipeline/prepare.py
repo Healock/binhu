@@ -22,6 +22,8 @@ PROJECT = "binhu-development-pipeline"
 WORKER_CANDIDATE_MODULES = {
     "runtime.py": "runtime.py",
     "identity.py": "identity.py",
+    "domain_pipeline.py": "domain_pipeline.py",
+    "schema_registry.py": "schema_registry.py",
     "business_bridge.py": "business_bridge.py",
     "backend_outbox_relay.py": "services/backend_outbox_relay.py",
     "kafka_delivery_store.py": "services/kafka_delivery_store.py",

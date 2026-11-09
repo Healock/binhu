@@ -1,5 +1,6 @@
 """Render the single Kafka source / multi-sink Flink projection job."""
 from .projection_definitions import flink_sql as projection_flink_sql
+from .domain_pipeline import DomainPipelineOrchestrator
 from .runtime import configuration
 
 
@@ -7,6 +8,11 @@ def render(environ):
     config = configuration(environ)
     run = config["RUN_ID"]
     environment = config["APP_ENVIRONMENT"]
+    pipeline = DomainPipelineOrchestrator(environment, run).plan()
+    source_groups = {
+        name: source["consumer_group"]
+        for name, source in pipeline.flink_sources.items()
+    }
     checkpoint_scope = "dev" if environment == "development" else "staging"
     password = config["MYSQL_PASSWORD"]
     return f"""SET 'execution.checkpointing.interval' = '10 s';
@@ -26,7 +32,7 @@ CREATE TABLE dev_events (
 ) WITH (
  'connector' = 'kafka', 'topic' = '{config["TOPIC"]}',
  'properties.bootstrap.servers' = '{config["KAFKA_BOOTSTRAP_SERVERS"]}',
- 'properties.group.id' = '{run}-flink', 'scan.startup.mode' = 'earliest-offset',
+ 'properties.group.id' = '{source_groups["dev_events"]}', 'scan.startup.mode' = 'earliest-offset',
  'format' = 'json', 'json.fail-on-missing-field' = 'false',
  'json.ignore-parse-errors' = 'false'
 );
@@ -40,7 +46,7 @@ CREATE TABLE dev_task_events_redis (
 ) WITH (
  'connector' = 'kafka', 'topic' = '{config["TOPIC"]}',
  'properties.bootstrap.servers' = '{config["KAFKA_BOOTSTRAP_SERVERS"]}',
- 'properties.group.id' = '{run}-flink-redis', 'scan.startup.mode' = 'earliest-offset',
+ 'properties.group.id' = '{source_groups["dev_task_events_redis"]}', 'scan.startup.mode' = 'earliest-offset',
  'format' = 'json', 'json.fail-on-missing-field' = 'false',
  'json.ignore-parse-errors' = 'false'
 );

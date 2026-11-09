@@ -18,6 +18,18 @@ subject，不混入任务事件 schema。现有 `backend-outbox-relay` 只有在
 事实经过同一 Redis Stream 与 bridge 后写入 Kafka delivery ledger；Flink 当前仍未消费
 该 topic，因此这只完成到 Kafka 的传输接入，不代表 Redis 汇总读模型完成。
 
+## 业务派生编排
+
+`domain_pipeline.py` 是 Development/Staging 业务派生链路的静态注册表和运行计划入口。
+它集中声明 domain ID、事件类型、topic/schema、Flink source/group/sink、Redis 身份、
+实际阶段及就绪检查；Dev/Staging topic 创建、Schema Registry subject、Flink SQL/JobGraph
+身份校验和事件路由从同一注册表解析。业务 reducer、任务权限与 Redis key/index 仍归各业务模块。
+
+当前 `instruction_audit` 注册了完整的 Outbox → relay → Kafka → Flink → Redis → API 链路；
+`online_summary_facts` 只注册已实现的 Outbox → relay → Redis Stream → Kafka 阶段，不声明
+Flink source 或 Redis 读模型。新增业务先补注册合同，再由共享控制路径校验环境身份、topic、
+consumer group 与 sink；未登记、身份冲突或合同不完整时必须拒绝运行。
+
 ## 操作顺序
 
 ### 受控退役旧 Staging 运行

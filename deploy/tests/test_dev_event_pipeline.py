@@ -780,13 +780,15 @@ volumes:
 
             with patch.object(control, "ROOT", root), patch.object(control, "measure", return_value={}), \
                     patch.object(control.subprocess, "run", side_effect=run), \
-                    patch.object(control, "_ensure_summary_topics", return_value=["dev.online-summary.facts.v1"]), \
-                    patch.object(control, "_ensure_task_topics", return_value=["dev.task.read-model.v4", "dev.task.read-model.dlq.v4"]) as ensure_task_topics, \
+                    patch.object(control, "_ensure_registered_topics", return_value={
+                        "online_summary_facts": ["dev.online-summary.facts.v1", "dev.online-summary.facts.dlq.v1"],
+                        "instruction_audit": ["dev.task.read-model.v4", "dev.task.read-model.dlq.v4"],
+                    }) as ensure_registered_topics, \
                     patch.object(control, "_submit_and_verify_flink", side_effect=ValueError("identity mismatch")):
                 with self.assertRaisesRegex(ValueError, "identity mismatch"):
                     control.apply()
             self.assertTrue(any("up" in command for command in calls))
-            ensure_task_topics.assert_called_once_with()
+            ensure_registered_topics.assert_called_once_with("development", "dev-20260915-gate")
 
     def test_flink_submission_waits_for_rest_before_partitioning_jobs(self):
         run_id = "dev-20260918-dualtrack-monitor35"

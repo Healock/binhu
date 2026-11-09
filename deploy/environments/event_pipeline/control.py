@@ -12,10 +12,8 @@ from urllib.parse import urlsplit
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
 from . import flink_compose, flink_submission
-from .identity import summary_topic_for
-from .services.kafka_envelope import EVENT_TOPIC, DLQ_TOPIC
-
-
+from .domain_pipeline import DOMAIN_PIPELINES, DomainPipelineOrchestrator, domain_spec
+from .identity import environment_for_run_id
 FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
 FLINK_JOBMANAGER = "binhu-development-flink-jobmanager-1"
 KAFKA_CONTAINER = "binhu-development-eventbus-kafka-1-1"
@@ -198,11 +196,20 @@ def _run_checked(command: list[str], *, timeout: int = 120) -> subprocess.Comple
 
 def _consumer_groups(expected_groups: list[str]) -> list[str]:
     expected = set(expected_groups)
-    run_id = expected_groups[0].removesuffix("-flink") if expected_groups else ""
-    canonical = {f"{run_id}-flink", f"{run_id}-flink-redis"}
-    if expected != canonical:
+    run_ids = {
+        group[:-len(source.group_suffix)]
+        for spec in DOMAIN_PIPELINES for source in spec.flink_sources
+        for group in expected_groups if group.endswith(source.group_suffix)
+    }
+    run_id = next(iter(run_ids)) if len(run_ids) == 1 else ""
+    environment = environment_for_run_id(run_id) if run_id else ""
+    plan = DomainPipelineOrchestrator(environment, run_id).plan() if run_id else None
+    if plan is None or expected != set(plan.consumer_groups):
         raise ValueError("Dev Flink consumer groups do not match current run")
-    topic = flink_submission.topic_for("development")
+    topics_by_group = {
+        source["consumer_group"]: source["topic"]
+        for source in plan.flink_sources.values()
+    }
     for expected_group in sorted(expected):
         result = _run_checked([
             "docker", "exec", KAFKA_CONTAINER,
@@ -215,7 +222,7 @@ def _consumer_groups(expected_groups: list[str]) -> list[str]:
             for line in result.stdout.splitlines()
             if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected_group
         }
-        if assignments and assignments != {topic}:
+        if assignments and assignments != {topics_by_group[expected_group]}:
             raise ValueError("Dev Flink consumer group has no task topic assignment")
     return sorted(expected)
 
@@ -386,8 +393,7 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     return verified
 
 
-def _ensure_task_topics() -> list[str]:
-    topics = (EVENT_TOPIC, DLQ_TOPIC)
+def _ensure_domain_topics(topics: tuple[str, ...], error_code: str) -> list[str]:
     for topic in topics:
         _run_checked([
             "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
@@ -400,27 +406,33 @@ def _ensure_task_topics() -> list[str]:
         "--bootstrap-server", "kafka-1:9092", "--describe",
     ]).stdout
     if any(topic not in description for topic in topics):
-        raise ValueError("Dev task topic verification failed")
+        raise ValueError(error_code)
     return list(topics)
+
+
+def _ensure_task_topics() -> list[str]:
+    spec = domain_spec("instruction_audit")
+    topics = tuple(spec.topic("development", role) for role in ("events", "dlq"))
+    return _ensure_domain_topics(topics, "Dev task topic verification failed")
 
 
 def _ensure_summary_topics(environment: str) -> list[str]:
     """Create only the fixed non-Production online-summary topics."""
-    topics = (summary_topic_for(environment), summary_topic_for(environment, dead_letter=True))
-    for topic in topics:
-        _run_checked([
-            "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
-            "--bootstrap-server", "kafka-1:9092", "--create", "--if-not-exists",
-            "--topic", topic, "--partitions", "3", "--replication-factor", "3",
-            "--config", "min.insync.replicas=2",
-        ])
-    description = _run_checked([
-        "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
-        "--bootstrap-server", "kafka-1:9092", "--describe",
-    ]).stdout
-    if any(topic not in description for topic in topics):
-        raise ValueError("Dev online-summary topic verification failed")
-    return list(topics)
+    spec = domain_spec("online_summary_facts")
+    topics = tuple(spec.topic(environment, role) for role in ("events", "dlq"))
+    return _ensure_domain_topics(topics, "Dev online-summary topic verification failed")
+
+
+def _ensure_registered_topics(environment: str, run_id: str) -> dict[str, list[str]]:
+    plan = DomainPipelineOrchestrator(environment, run_id).plan()
+    _ensure_domain_topics(plan.kafka_topics, "Dev registered topic verification failed")
+    return {
+        spec.domain_id: [
+            topic.name(environment)
+            for topic in spec.topics if topic.provisioned(environment)
+        ]
+        for spec in DOMAIN_PIPELINES
+    }
 
 
 def apply():
@@ -464,11 +476,12 @@ def apply():
     path.chmod(0o600)
     if result.returncode:
         raise ValueError("startup failed; preserve private diagnostics")
-    summary_topics = _ensure_summary_topics("development")
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    registered_topics = _ensure_registered_topics("development", manifest["run_id"])
+    summary_topics = registered_topics.get("online_summary_facts", [])
     topics_path = evidence / "online-summary-topics.json"
     topics_path.write_text(json.dumps({"environment": "development", "topics": summary_topics}, indent=2) + "\n")
     topics_path.chmod(0o600)
-    _ensure_task_topics()
     migration = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
                                 "run", "--rm", "--no-deps", "relay", "python", "-m",
                                 "event_pipeline.delivery_schema_migrate"],
@@ -478,7 +491,6 @@ def apply():
     migration_path.chmod(0o600)
     if migration.returncode:
         raise ValueError("Dev delivery index migration failed")
-    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     flink = _submit_and_verify_flink(manifest, evidence)
     return {**report, "startup_requested": True, "flink": flink, "acceptance": "pending"}
 

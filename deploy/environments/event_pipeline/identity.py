@@ -3,19 +3,19 @@ from __future__ import annotations
 
 import re
 
+from .domain_pipeline import (
+    TASK_READ_MODEL,
+    ONLINE_SUMMARY_FACTS,
+    validate_run_identity,
+)
+
 
 DEV_RUN_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 STAGING_RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
 
 
 def validate_identity(environment: object, run_id: object) -> tuple[str, str]:
-    env = str(environment or "")
-    run = str(run_id or "")
-    if env == "development" and DEV_RUN_RE.fullmatch(run):
-        return env, run
-    if env == "staging" and STAGING_RUN_RE.fullmatch(run):
-        return env, run
-    raise ValueError("non-Production pipeline identity required")
+    return validate_run_identity(environment, run_id)
 
 
 def environment_for_run_id(run_id: object) -> str:
@@ -28,21 +28,11 @@ def environment_for_run_id(run_id: object) -> str:
 
 
 def topic_for(environment: str) -> str:
-    if environment == "development":
-        return "dev.task.read-model.v4"
-    if environment == "staging":
-        return "staging.task.read-model.v4"
-    raise ValueError("non-Production pipeline topic required")
+    return TASK_READ_MODEL.topic(environment, "events")
 
 
 def summary_topic_for(environment: str, *, dead_letter: bool = False) -> str:
-    if environment == "development":
-        prefix = "dev"
-    elif environment == "staging":
-        prefix = "staging"
-    else:
-        raise ValueError("non-Production pipeline topic required")
-    return f"{prefix}.online-summary.facts{'.dlq' if dead_letter else ''}.v1"
+    return ONLINE_SUMMARY_FACTS.topic(environment, "dlq" if dead_letter else "events")
 
 
 def source_name(environment: str, engine: str) -> str:

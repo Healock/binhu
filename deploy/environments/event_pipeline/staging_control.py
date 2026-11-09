@@ -19,17 +19,22 @@ import time
 from typing import Any
 
 from . import flink_submission
+from .domain_pipeline import DOMAIN_PIPELINES, DomainPipelineOrchestrator
+from .identity import environment_for_run_id
 from .staging_compose import (
-    BACKEND_NETWORK, BROKERS, DLQ_TOPIC, EVENT_TOPIC, LEGACY_DLQ_TOPIC, LEGACY_EVENT_TOPIC,
-    REGISTRY_TOPIC, SUMMARY_DLQ_TOPIC, SUMMARY_EVENT_TOPIC, compose, model_sha256,
+    BACKEND_NETWORK, BROKERS, REGISTRY_TOPIC, compose, model_sha256,
     network_for, project_for,
 )
 from .staging_prepare import BASE, root_for, snapshot_database
 from .staging_metrics_probe import sample as metrics_sample
 
 
-TOPICS = (EVENT_TOPIC, DLQ_TOPIC, LEGACY_EVENT_TOPIC, LEGACY_DLQ_TOPIC,
-          SUMMARY_EVENT_TOPIC, SUMMARY_DLQ_TOPIC, REGISTRY_TOPIC)
+TOPICS = tuple(sorted({
+    topic.name("staging")
+    for spec in DOMAIN_PIPELINES
+    for topic in spec.topics
+    if topic.provisioned("staging")
+} | {REGISTRY_TOPIC}))
 FORBIDDEN_TOKENS = ("production", "shadow", "development", "dev_")
 SAFE_FAILURE_CODES = frozenset({
     "staging_apply_failed", "staging_architecture_switch_failed",
@@ -467,10 +472,21 @@ def _prepare_checkpoint_volume(root: Path, project: str, run_id: str) -> dict[st
 
 
 def _consumer_groups(project: str, expected_groups: list[str]) -> list[str]:
-    run_id = expected_groups[0].removesuffix("-flink") if expected_groups else ""
+    run_ids = {
+        group[:-len(source.group_suffix)]
+        for spec in DOMAIN_PIPELINES for source in spec.flink_sources
+        for group in expected_groups if group.endswith(source.group_suffix)
+    }
+    run_id = next(iter(run_ids)) if len(run_ids) == 1 else ""
+    environment = environment_for_run_id(run_id) if run_id else ""
+    plan = DomainPipelineOrchestrator(environment, run_id).plan() if run_id else None
     expected_set = set(expected_groups)
-    if expected_set != {f"{run_id}-flink", f"{run_id}-flink-redis"}:
+    if plan is None or expected_set != set(plan.consumer_groups):
         raise ValueError("Staging Flink consumer groups do not match current run")
+    topics_by_group = {
+        source["consumer_group"]: source["topic"]
+        for source in plan.flink_sources.values()
+    }
     broker = _container(project, BROKERS[0])
     for expected in sorted(expected_set):
         try:
@@ -486,7 +502,7 @@ def _consumer_groups(project: str, expected_groups: list[str]) -> list[str]:
             parts[1] for line in output.splitlines()
             if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected
         ]
-        if assignments and set(assignments) != {EVENT_TOPIC}:
+        if assignments and set(assignments) != {topics_by_group[expected]}:
             raise ValueError("Staging Flink group has no Staging topic assignment")
     return sorted(expected_set)
 
