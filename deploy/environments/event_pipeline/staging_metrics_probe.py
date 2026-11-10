@@ -2,18 +2,43 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
 import subprocess
 import time
 from typing import Any
+import urllib.error
+import urllib.request
 
-from .staging_compose import BROKERS, EVENT_TOPIC
+from .staging_compose import (
+    BROKERS, EVENT_TOPIC, compose, model_sha256,
+    validate_pipeline_containers, validate_runtime_compose,
+)
 from .staging_prepare import root_for
 
 
 DERIVED_DATABASE = "Staging_EventPipeline"
+PRODUCTION_CONTAINER_NAMES = ("binhu-backend", "binhu-mysql", "binhu-ops-agent")
+PRODUCTION_BOOTSTRAP_URL = "http://127.0.0.1:37125/api/app/bootstrap"
+PRODUCTION_HEALTH_URL = "http://127.0.0.1:37125/api/health"
+PRODUCTION_ERROR_RE = re.compile(r"\b(?:ERROR|CRITICAL|FATAL|Traceback)\b", re.IGNORECASE)
+PRODUCTION_LOG_LINE_LIMIT = 5000
+PRODUCTION_LOG_BYTE_LIMIT = 8 * 1024 * 1024
+PRODUCTION_MODE_RUNNING = "running"
+PRODUCTION_MODE_PAUSED = "production_paused"
+PRODUCTION_PAUSE_RUN_RE = re.compile(r"^PROD-PAUSE-[0-9]{8}-[0-9]{2}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PRODUCTION_PAUSE_EVIDENCE_ROOT = Path("/srv/binhu-release-evidence-maintenance")
+PRODUCTION_PAUSE_BACKUP_ROOT = Path("/root/binhu/deploy-backups/automated")
+PRODUCTION_PAUSE_DATABASES = (
+    "DispatchData", "OnlineData", "OnlineDataArchive", "PlatformData",
+    "RegistryData", "VisitData", "WorkflowData", "daily_report",
+)
+PIPELINE_STATE = Path("/var/lib/binhu-staging-event-pipeline")
+STAGING_APPLICATION_ROOT = Path("/srv/binhu-environments/staging")
+PIPELINE_IMAGE_KEYS = {"kafka", "schema_registry", "mysql", "redis", "worker", "flink"}
 
 
 def _run(command: list[str], *, timeout: int = 30, input_text: str | None = None) -> str:
@@ -227,40 +252,337 @@ def _containers(project: str) -> dict[str, Any]:
     }
 
 
-def sample(run_id: str) -> dict[str, Any]:
-    if not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", run_id):
-        raise RuntimeError("Staging metrics run id invalid")
-    root = root_for(run_id)
-    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("environment") != "staging" or manifest.get("run_id") != run_id:
-        raise RuntimeError("Staging metrics identity mismatch")
-    project = str(manifest["project"])
+def _validate_load_candidate(candidate_run_id: str) -> tuple[dict[str, Any], str]:
+    if not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", candidate_run_id):
+        raise RuntimeError("Staging metrics candidate identity invalid")
+    root = root_for(candidate_run_id)
+    runtime_manifest_path = root / "manifest.json"
+    candidate_root = PIPELINE_STATE / "candidates" / candidate_run_id
+    candidate_manifest_path = candidate_root / "manifest.json"
+    current_path = PIPELINE_STATE / "current.json"
+    if (root.is_symlink() or not root.is_dir() or runtime_manifest_path.is_symlink()
+            or not runtime_manifest_path.is_file() or candidate_root.is_symlink()
+            or not candidate_root.is_dir() or candidate_manifest_path.is_symlink()
+            or not candidate_manifest_path.is_file() or current_path.is_symlink() or not current_path.is_file()):
+        raise RuntimeError("Staging metrics applied candidate missing")
+    manifest = json.loads(candidate_manifest_path.read_text(encoding="utf-8"))
+    runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    project = "binhu-staging-event-pipeline-" + candidate_run_id.lower()
+    images = manifest.get("images")
+    hashes = runtime_manifest.get("hashes")
+    if not isinstance(hashes, dict) or "compose.json" not in hashes:
+        raise RuntimeError("Staging metrics runtime file hashes missing")
+    for relative_name, expected_hash in hashes.items():
+        relative = Path(str(relative_name))
+        path = root / relative
+        if (relative.is_absolute() or ".." in relative.parts or path.is_symlink()
+                or not path.is_file() or root.resolve() not in path.resolve().parents
+                or not SHA256_RE.fullmatch(str(expected_hash or ""))
+                or _sha256_file(path) != expected_hash):
+            raise RuntimeError("Staging metrics runtime file hash mismatch")
+    try:
+        validate_runtime_compose(root, runtime_manifest, images, candidate_run_id)
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise RuntimeError("Staging metrics Compose identity mismatch")
+    if (manifest.get("environment") != "staging" or manifest.get("run_id") != candidate_run_id
+            or manifest.get("project") != project or manifest.get("ready_for_staging") is not True
+            or manifest.get("fictional_only") is not True or manifest.get("production_data") is not False
+            or manifest.get("started") is not True or manifest.get("acceptance") not in {"pending", "accepted"}
+            or current.get("environment") != "staging" or current.get("run_id") != candidate_run_id
+            or current.get("project") != project or current.get("started") is not True
+            or current.get("acceptance") not in {"pending", "accepted"}
+            or current.get("candidate_image_digest") != manifest.get("candidate_image_digest")
+            or current.get("images") != images or current.get("event_pipeline_image_digests") != images
+            or runtime_manifest.get("environment") != "staging"
+            or runtime_manifest.get("run_id") != candidate_run_id
+            or runtime_manifest.get("project") != project or runtime_manifest.get("images") != images
+            or runtime_manifest.get("started") is not True
+            or runtime_manifest.get("acceptance") not in {"pending", "accepted"}
+            or not isinstance(images, dict) or set(images) != PIPELINE_IMAGE_KEYS
+            or manifest.get("event_pipeline_image_digests") != images
+            or manifest.get("dev_acceptance", {}).get("event_pipeline_image_digests") != images
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("candidate_image_digest") or ""))
+            or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", str(value or "")) for value in images.values())):
+        raise RuntimeError("Staging metrics applied candidate identity mismatch")
+
+    application_path = STAGING_APPLICATION_ROOT / "manifest.json"
+    if application_path.is_symlink() or not application_path.is_file():
+        raise RuntimeError("Staging application manifest missing")
+    application = json.loads(application_path.read_text(encoding="utf-8"))
+    if (application.get("environment") != "staging" or application.get("project") != "binhu-staging"
+            or application.get("images", {}).get("backend") != manifest.get("candidate_image_digest")
+            or application.get("event_pipeline_image_digests") != images):
+        raise RuntimeError("Staging application candidate identity mismatch")
+
+    backend_ids = _run([
+        "docker", "ps", "-q", "--filter", "name=^/binhu-staging-backend-1$",
+    ]).split()
+    if len(backend_ids) != 1:
+        raise RuntimeError("Staging backend container identity missing")
+    backend = json.loads(_run(["docker", "inspect", *backend_ids]))[0]
+    labels = backend.get("Config", {}).get("Labels", {}) or {}
+    if (labels.get("binhu.environment") != "staging"
+            or labels.get("com.docker.compose.project") != "binhu-staging"
+            or labels.get("com.docker.compose.service") != "backend"
+            or backend.get("Image") != manifest.get("candidate_image_digest")):
+        raise RuntimeError("Staging backend container identity mismatch")
+
+    ids = _run([
+        "docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}",
+    ]).split()
+    if not ids:
+        raise RuntimeError("Staging pipeline containers missing")
+    containers = json.loads(_run(["docker", "inspect", *ids]))
+    try:
+        validate_pipeline_containers(containers, images, candidate_run_id)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    return manifest, project
+
+
+def _production_http(url: str) -> tuple[int, dict[str, Any] | None]:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            status = int(response.status)
+            if url == PRODUCTION_BOOTSTRAP_URL and status == 200:
+                payload = json.loads(response.read(64 * 1024))
+                return status, payload if isinstance(payload, dict) else None
+            return status, None
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return 0, None
+
+
+def _production_log_error_count(name: str, since_unix: int) -> int:
+    command = ["docker", "logs", "--since", str(since_unix), "--tail",
+               str(PRODUCTION_LOG_LINE_LIMIT + 1), name]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if process.stdout is None:
+        raise RuntimeError("production_log_monitor_unavailable")
+    output = process.stdout.read(PRODUCTION_LOG_BYTE_LIMIT + 1)
+    if len(output) > PRODUCTION_LOG_BYTE_LIMIT:
+        process.kill()
+        process.wait(timeout=3)
+        raise RuntimeError("production_log_sample_limit_exceeded")
+    try:
+        return_code = process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+        raise RuntimeError("production_log_monitor_timeout") from None
+    if return_code:
+        raise RuntimeError("production_log_monitor_unavailable")
+    lines = output.decode("utf-8", "replace").splitlines()
+    if len(lines) > PRODUCTION_LOG_LINE_LIMIT:
+        raise RuntimeError("production_log_sample_limit_exceeded")
+    return sum(1 for line in lines if PRODUCTION_ERROR_RE.search(line))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_pause_evidence(pause_run_id: str) -> dict[str, Any]:
+    """Validate the fixed, aggregate-only Production pause contract."""
+    if not isinstance(pause_run_id, str) or not PRODUCTION_PAUSE_RUN_RE.fullmatch(pause_run_id):
+        raise RuntimeError("production_pause_run_id_invalid")
+    evidence_path = PRODUCTION_PAUSE_EVIDENCE_ROOT / "pause-production" / pause_run_id / "pause.json"
+    backup_dir = PRODUCTION_PAUSE_BACKUP_ROOT / f"maintenance-pause-production-{pause_run_id}"
+    manifest_path = backup_dir / "backup-manifest.json"
+    for path in (evidence_path, manifest_path):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+            raise RuntimeError("production_pause_evidence_missing")
+    try:
+        pause = json.loads(evidence_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("production_pause_evidence_invalid") from error
+    if (not isinstance(pause, dict) or pause.get("schema") != 1
+            or pause.get("operation") != "pause-production"
+            or pause.get("run_id") != pause_run_id
+            or pause.get("accepted") is not True
+            or pause.get("protected_container_states_unchanged") is not True
+            or sorted(pause.get("stopped_services") or []) != ["backend", "mysql"]):
+        raise RuntimeError("production_pause_evidence_invalid")
+    expected_scope = list(PRODUCTION_PAUSE_DATABASES)
+    if (not isinstance(manifest, dict) or manifest.get("schema") != 1
+            or manifest.get("operation") != "pause-production"
+            or manifest.get("run_id") != pause_run_id
+            or manifest.get("database_scope") != expected_scope):
+        raise RuntimeError("production_pause_backup_scope_mismatch")
+    entries = manifest.get("databases")
+    if (not isinstance(entries, list) or len(entries) != len(expected_scope)
+            or {item.get("database") for item in entries if isinstance(item, dict)}
+            != set(expected_scope)):
+        raise RuntimeError("production_pause_backup_scope_mismatch")
+    for item in entries:
+        if not isinstance(item, dict):
+            raise RuntimeError("production_pause_backup_manifest_invalid")
+        database = item.get("database")
+        backup_path = backup_dir / f"{database}.sql.gz"
+        try:
+            valid = (
+                backup_path.is_file() and not backup_path.is_symlink()
+                and item.get("filename") == backup_path.name
+                and SHA256_RE.fullmatch(str(item.get("sha256") or "")) is not None
+                and int(item.get("size_bytes") or -1) == backup_path.stat().st_size
+                and _sha256_file(backup_path) == item["sha256"]
+            )
+        except (OSError, TypeError, ValueError, KeyError):
+            valid = False
+        if not valid:
+            raise RuntimeError("production_pause_backup_manifest_invalid")
+    manifest_sha256 = _sha256_file(manifest_path)
+    if pause.get("backup_manifest_sha256") != manifest_sha256:
+        raise RuntimeError("production_pause_evidence_mismatch")
+    return {
+        "pause_run_id": pause_run_id,
+        "pause_evidence_valid": True,
+        "pause_evidence_sha256": _sha256_file(evidence_path),
+        "backup_manifest_sha256": manifest_sha256,
+        "backup_database_count": len(expected_scope),
+        "backup_database_scope": expected_scope,
+    }
+
+
+def _production_sample(since_unix: int, production_mode: str = PRODUCTION_MODE_RUNNING,
+                       pause_run_id: str | None = None) -> dict[str, Any]:
+    """Return fixed aggregate-only Production health and container evidence."""
+    try:
+        if production_mode not in {PRODUCTION_MODE_RUNNING, PRODUCTION_MODE_PAUSED}:
+            raise RuntimeError("production_monitor_mode_invalid")
+        if (not isinstance(since_unix, int) or since_unix <= 0
+                or since_unix > int(time.time()) or since_unix < int(time.time()) - 3600):
+            raise RuntimeError("production_monitor_start_time_invalid")
+        inspected = json.loads(_run(["docker", "inspect", *PRODUCTION_CONTAINER_NAMES]))
+        if len(inspected) != len(PRODUCTION_CONTAINER_NAMES):
+            raise RuntimeError("production_container_set_incomplete")
+        states: dict[str, dict[str, Any]] = {}
+        for name, item in zip(PRODUCTION_CONTAINER_NAMES, inspected, strict=True):
+            if item.get("Name", "").lstrip("/") != name:
+                raise RuntimeError("production_container_identity_mismatch")
+            state = item.get("State") or {}
+            health = state.get("Health") or {}
+            states[name] = {
+                "running": bool(state.get("Running")),
+                "restarting": bool(state.get("Restarting")),
+                "oom_killed": bool(state.get("OOMKilled")),
+                "health": str(health.get("Status") or ""),
+                "restart_count": int(item.get("RestartCount") or 0),
+            }
+            if name == "binhu-backend":
+                environment = {
+                    value.partition("=")[2]
+                    for value in (item.get("Config", {}).get("Env") or [])
+                    if value.startswith("APP_ENVIRONMENT=")
+                }
+                if environment != {"production"}:
+                    raise RuntimeError("production_backend_identity_mismatch")
+
+        pause = {}
+        if production_mode == PRODUCTION_MODE_PAUSED:
+            if not isinstance(pause_run_id, str):
+                raise RuntimeError("production_pause_run_id_invalid")
+            pause = _read_pause_evidence(pause_run_id)
+            bootstrap_status, health_status, bootstrap_environment = 0, 0, "production"
+            if (not states["binhu-ops-agent"]["running"]
+                    or states["binhu-backend"]["running"]
+                    or states["binhu-mysql"]["running"]):
+                raise RuntimeError("production_paused_state_changed")
+        else:
+            if pause_run_id is not None:
+                raise RuntimeError("production_pause_run_id_unexpected")
+            bootstrap_status, bootstrap = _production_http(PRODUCTION_BOOTSTRAP_URL)
+            health_status, _ = _production_http(PRODUCTION_HEALTH_URL)
+            bootstrap_environment = str((bootstrap or {}).get("environment") or "")
+            if bootstrap_status != 200 or bootstrap_environment != "production":
+                raise RuntimeError("production_bootstrap_identity_mismatch")
+        error_count = 0
+        for name in PRODUCTION_CONTAINER_NAMES:
+            error_count += _production_log_error_count(name, since_unix)
+        return {
+            "environment": "production",
+            "bootstrap_environment": bootstrap_environment,
+            "bootstrap_status": bootstrap_status,
+            "health_status": health_status,
+            "health": 200 <= health_status < 300,
+            "production_mode": production_mode,
+            "containers": states,
+            "error_count": error_count,
+            "monitor_error": None,
+            **pause,
+        }
+    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+        code = str(error) if str(error).startswith("production_") else "production_monitor_failed"
+        return {
+            "environment": "production", "bootstrap_environment": "",
+            "bootstrap_status": 0, "health_status": 0, "health": False,
+            "production_mode": production_mode,
+            "pause_run_id": pause_run_id if production_mode == PRODUCTION_MODE_PAUSED else None,
+            "containers": {}, "error_count": None, "monitor_error": code,
+        }
+
+
+def _staging_service_states() -> dict[str, Any]:
+    names = ("binhu-staging-backend-1", "binhu-staging-environment-mysql-1")
+    inspected = json.loads(_run(["docker", "inspect", *names]))
+    if len(inspected) != len(names):
+        raise RuntimeError("Staging application service set incomplete")
+    result: dict[str, Any] = {}
+    for name, item in zip(names, inspected, strict=True):
+        if item.get("Name", "").lstrip("/") != name:
+            raise RuntimeError("Staging application service identity mismatch")
+        state = item.get("State") or {}
+        result[name] = {
+            "running": bool(state.get("Running")),
+            "restarting": bool(state.get("Restarting")),
+            "oom_killed": bool(state.get("OOMKilled")),
+            "restart_count": int(item.get("RestartCount") or 0),
+        }
+    return result
+
+
+def sample(candidate_run_id: str, load_run_id: str, production_since_unix: int,
+           production_mode: str = PRODUCTION_MODE_RUNNING,
+           production_pause_run_id: str | None = None) -> dict[str, Any]:
+    if (not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", candidate_run_id)
+            or not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", load_run_id)
+            or candidate_run_id == load_run_id):
+        raise RuntimeError("Staging metrics run identity invalid")
+    manifest, project = _validate_load_candidate(candidate_run_id)
     app_mysql = "binhu-staging-environment-mysql-1"
-    backend = "binhu-staging-environment-mysql-1"
     backend_env = Path("/srv/binhu-environments/staging/backend.env")
     if backend_env.is_symlink() or not backend_env.is_file():
         raise RuntimeError("Staging backend environment missing")
     derived_mysql = _container(project, "staging-derived-mysql")
     pipeline_redis = _container(project, "staging-derived-redis")
-    stat = Path(root).stat()
+    stat = Path(root_for(candidate_run_id)).stat()
     disk = Path(root).anchor or "/"
     usage = __import__("shutil").disk_usage(disk)
+    meminfo = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     return {
         "sampled_at_unix": int(time.time()),
-        "run_id": run_id,
+        "run_id": load_run_id,
+        "candidate_run_id": candidate_run_id,
         "environment": "staging",
         "production_data": False,
         "mysql": _mysql_status(app_mysql),
-        "backend_pool": _backend_pool("binhu-staging-backend-1", run_id),
+        "backend_pool": _backend_pool("binhu-staging-backend-1", load_run_id),
         "redis": _redis(pipeline_redis),
-        "kafka": _kafka(project, run_id),
-        "flink": _flink(project, run_id),
-        "derived_queue": _queue(derived_mysql, run_id, DERIVED_DATABASE),
+        "kafka": _kafka(project, load_run_id),
+        "flink": _flink(project, load_run_id),
+        "derived_queue": _queue(derived_mysql, load_run_id, DERIVED_DATABASE),
         "containers": _containers(project),
+        "staging_services": _staging_service_states(),
+        "host": {"memory_available_bytes": int(meminfo["MemAvailable"].split()[0]) * 1024},
         "disk": {"used": usage.used, "total": usage.total},
-        # Production is deliberately absent: the isolated Staging gateway may
-        # not inspect Production. A separately authorized read-only observer
-        # must merge the Production sample before final verification.
-        "production": None,
+        "production": _production_sample(
+            production_since_unix, production_mode, production_pause_run_id,
+        ),
         "root_inode": int(stat.st_ino),
     }

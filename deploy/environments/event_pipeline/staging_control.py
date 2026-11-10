@@ -19,18 +19,72 @@ import time
 from typing import Any
 
 from . import flink_submission
+from .domain_pipeline import DOMAIN_PIPELINES, DomainPipelineOrchestrator
+from .identity import environment_for_run_id
 from .staging_compose import (
-    BACKEND_NETWORK, BROKERS, DLQ_TOPIC, EVENT_TOPIC, REGISTRY_TOPIC, compose, model_sha256,
+    BACKEND_NETWORK, BROKERS, REGISTRY_TOPIC, compose, model_sha256,
     network_for, project_for,
 )
 from .staging_prepare import BASE, root_for, snapshot_database
 from .staging_metrics_probe import sample as metrics_sample
 
 
-TOPICS = (EVENT_TOPIC, DLQ_TOPIC, REGISTRY_TOPIC)
+TOPICS = tuple(sorted({
+    topic.name("staging")
+    for spec in DOMAIN_PIPELINES
+    for topic in spec.topics
+    if topic.provisioned("staging")
+} | {REGISTRY_TOPIC}))
 FORBIDDEN_TOKENS = ("production", "shadow", "development", "dev_")
+SAFE_FAILURE_CODES = frozenset({
+    "staging_apply_failed", "staging_architecture_switch_failed",
+    "staging_checkpoint_volume_identity_mismatch", "staging_checkpoint_volume_path_mismatch",
+    "staging_consumer_group_not_created", "staging_container_conflict",
+    "staging_container_runtime_failed", "staging_device_driver_missing",
+    "staging_docker_daemon_error", "staging_docker_invalid_argument",
+    "staging_docker_permission_denied", "staging_docker_unavailable",
+    "staging_event_pipeline_command_failed", "staging_image_missing",
+    "staging_insufficient_disk", "staging_kafka_probe_timeout",
+    "staging_kafka_quorum_timeout", "staging_network_address_pool_exhausted",
+    "staging_network_attachment_failed", "staging_network_conflict",
+    "staging_network_firewall_failed", "staging_network_missing",
+    "staging_port_conflict", "staging_resource_exhausted",
+    "staging_resource_limit_unsupported", "staging_service_health_timeout",
+    "staging_service_missing", "staging_snapshot_id", "staging_volume_conflict",
+    "staging_volume_mount_failed",
+})
+SAFE_EXCEPTION_TYPES = frozenset({
+    "ValueError", "RuntimeError", "FileNotFoundError", "PermissionError",
+    "TimeoutExpired", "CalledProcessError", "OSError", "KeyError", "TypeError",
+})
 KAFKA_QUORUM_TIMEOUT_SECONDS = 180
 DERIVED_MYSQL_HEALTH_TIMEOUT_SECONDS = 240
+
+
+def _failure_diagnostic(action: str, error: Exception) -> dict[str, str]:
+    error_type = type(error).__name__
+    if isinstance(error, subprocess.TimeoutExpired):
+        error_type = "TimeoutExpired"
+    if error_type not in SAFE_EXCEPTION_TYPES:
+        error_type = "InternalError"
+    code = str(error) if isinstance(error, ValueError) else ""
+    if code not in SAFE_FAILURE_CODES:
+        if isinstance(error, PermissionError):
+            code = "staging_permission_denied"
+        elif isinstance(error, FileNotFoundError):
+            code = "staging_required_file_missing"
+        elif isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+            code = "staging_operation_timeout"
+        elif isinstance(error, OSError):
+            code = "staging_operating_system_error"
+        elif isinstance(error, ValueError):
+            code = "staging_measure_contract_rejected" if action == "measure" else "staging_runtime_contract_rejected"
+        else:
+            code = "staging_internal_error"
+    return {
+        "environment": "staging", "run_id": "", "status": "failed",
+        "phase": action, "error_type": error_type, "error_code": code,
+    }
 
 
 def _run(command: list[str], *, timeout: int = 120, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -151,6 +205,24 @@ def _validate_no_cross_environment(spec: dict) -> None:
             raise ValueError("Staging runtime references a forbidden environment")
 
 
+def _staging_backend_connector(name: str, labels: dict[str, Any]) -> bool:
+    match = re.fullmatch(
+        r"binhu-staging-event-pipeline-stg-(\d{8}-\d{2})-"
+        r"(business-bridge|backend-outbox-relay)-1",
+        name,
+    )
+    if match is None:
+        return False
+    run_id = "STG-" + match.group(1)
+    service = match.group(2)
+    return (
+        labels.get("binhu.environment") == "staging"
+        and labels.get("binhu.run_id") == run_id
+        and labels.get("com.docker.compose.project") == project_for(run_id)
+        and labels.get("com.docker.compose.service") == service
+    )
+
+
 def _backend_network(run_id: str) -> dict:
     network = _docker_json(["docker", "network", "inspect", BACKEND_NETWORK])[0]
     labels = network.get("Labels", {}) or {}
@@ -161,8 +233,11 @@ def _backend_network(run_id: str) -> dict:
         raise ValueError("isolated Staging Backend network required")
     names = {str(item.get("Name", "")) for item in (network.get("Containers") or {}).values()}
     required = {"binhu-staging-environment-mysql-1", "binhu-staging-redis-1"}
-    allowed = required | {f"{project_for(run_id)}-{service}-1"
-                          for service in ("business-bridge", "backend-outbox-relay")}
+    connector_name = re.compile(
+        r"binhu-staging-event-pipeline-stg-[0-9]{8}-[0-9]{2}-"
+        r"(?:business-bridge|backend-outbox-relay)-1"
+    )
+    allowed = required | {name for name in names if connector_name.fullmatch(name)}
     if not required <= names or not names <= allowed:
         raise ValueError("foreign or missing member on Staging Backend network")
     for item in _docker_json(["docker", "inspect", *sorted(names)]):
@@ -171,10 +246,12 @@ def _backend_network(run_id: str) -> dict:
         if (container_labels.get("binhu.environment") != "staging"
                 or item.get("State", {}).get("Status") != "running"):
             raise ValueError("foreign member on Staging Backend network")
-        if name not in required and (container_labels.get("binhu.run_id") != run_id
-                or container_labels.get("com.docker.compose.project") != project_for(run_id)):
-            raise ValueError("foreign member on Staging Backend network")
-        if name in required and container_labels.get("com.docker.compose.project") != "binhu-staging":
+        if name in required:
+            service = "environment-mysql" if name.endswith("environment-mysql-1") else "redis"
+            if (container_labels.get("com.docker.compose.project") != "binhu-staging"
+                    or container_labels.get("com.docker.compose.service") != service):
+                raise ValueError("foreign member on Staging Backend network")
+        elif not _staging_backend_connector(name, container_labels):
             raise ValueError("foreign member on Staging Backend network")
     return network
 
@@ -394,33 +471,40 @@ def _prepare_checkpoint_volume(root: Path, project: str, run_id: str) -> dict[st
             "path_identity_verified": True}
 
 
-def _consumer_group(project: str, expected: str) -> list[str]:
+def _consumer_groups(project: str, expected_groups: list[str]) -> list[str]:
+    run_ids = {
+        group[:-len(source.group_suffix)]
+        for spec in DOMAIN_PIPELINES for source in spec.flink_sources
+        for group in expected_groups if group.endswith(source.group_suffix)
+    }
+    run_id = next(iter(run_ids)) if len(run_ids) == 1 else ""
+    environment = environment_for_run_id(run_id) if run_id else ""
+    plan = DomainPipelineOrchestrator(environment, run_id).plan() if run_id else None
+    expected_set = set(expected_groups)
+    if plan is None or expected_set != set(plan.consumer_groups):
+        raise ValueError("Staging Flink consumer groups do not match current run")
+    topics_by_group = {
+        source["consumer_group"]: source["topic"]
+        for source in plan.flink_sources.values()
+    }
     broker = _container(project, BROKERS[0])
-    try:
-        output = _run([
-            "docker", "exec", broker, "/opt/kafka/bin/kafka-consumer-groups.sh",
-            "--bootstrap-server", f"{BROKERS[0]}:9092", "--describe", "--group", expected,
-        ]).stdout
-    except ValueError as error:
-        # A clean Staging cluster has no consumer group until the first event
-        # is published.  Basic apply validates the running JobGraph first;
-        # event delivery/acceptance will require the assignment later.
-        if str(error) == "staging_consumer_group_not_created":
-            return [expected]
-        raise
-    # Flink can have a RUNNING source job before Kafka creates a group
-    # assignment. Kafka may return an empty report or headers/status text in
-    # that state; defer assignment validation until the first event is
-    # delivered. Only rows whose first column is this group are assignments.
-    assignments = [
-        parts[1] for line in output.splitlines()
-        if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected
-    ]
-    if not assignments:
-        return [expected]
-    if set(assignments) != {EVENT_TOPIC}:
-        raise ValueError("Staging Flink group has no Staging topic assignment")
-    return [expected]
+    for expected in sorted(expected_set):
+        try:
+            output = _run([
+                "docker", "exec", broker, "/opt/kafka/bin/kafka-consumer-groups.sh",
+                "--bootstrap-server", f"{BROKERS[0]}:9092", "--describe", "--group", expected,
+            ]).stdout
+        except ValueError as error:
+            if str(error) == "staging_consumer_group_not_created":
+                continue
+            raise
+        assignments = [
+            parts[1] for line in output.splitlines()
+            if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected
+        ]
+        if assignments and set(assignments) != {topics_by_group[expected]}:
+            raise ValueError("Staging Flink group has no Staging topic assignment")
+    return sorted(expected_set)
 
 
 def _write_flink_failure(evidence: Path, run_id: str, phase: str, error: Exception) -> None:
@@ -476,8 +560,8 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
             raise
     try:
         verified = flink_submission.wait_for_runtime(
-            client, run_id, lambda: _consumer_group(project, identity["consumer_group"]), timeout=180,
-            expected_sinks=identity["sinks"],
+            client, run_id, lambda: _consumer_groups(project, identity["consumer_groups"]), timeout=180,
+            expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
         )
     except ValueError as error:
         _write_flink_failure(evidence, run_id, "runtime_validation", error)
@@ -682,7 +766,8 @@ def switch(run_id: str) -> dict[str, Any]:
             raise ValueError("Staging Flink metadata job is not uniquely running")
         phase = "flink_runtime"
         flink_submission.wait_for_runtime(
-            client, run_id, lambda: _consumer_group(project, f"{run_id}-flink"), timeout=60,
+            client, run_id,
+            lambda: _consumer_groups(project, identity["consumer_groups"]), timeout=60,
             expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
         )
         phase = "python_worker_stop"
@@ -744,13 +829,40 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("measure", "apply", "switch", "sample", "rollback"))
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--production-since", type=int)
+    parser.add_argument("--load-run-id")
+    parser.add_argument("--production-mode", choices=("running", "production_paused"),
+                        default="running")
+    parser.add_argument("--production-pause-run-id")
     args = parser.parse_args()
     try:
-        action = {"measure": measure, "apply": apply, "switch": switch,
-                  "sample": metrics_sample, "rollback": rollback}[args.action]
-        print(json.dumps(action(args.run_id), sort_keys=True))
-    except Exception:
-        raise SystemExit("Staging event-pipeline control refused; inspect private evidence") from None
+        if args.action == "sample":
+            if args.production_since is None:
+                raise ValueError("Production monitor start time required")
+            if args.load_run_id is None:
+                raise ValueError("Load evidence run id required")
+            if args.production_mode == "production_paused":
+                if args.production_pause_run_id is None:
+                    raise ValueError("Production pause run id required")
+            elif args.production_pause_run_id is not None:
+                raise ValueError("Production pause run id is only valid for sample")
+            result = metrics_sample(
+                args.run_id, args.load_run_id, args.production_since, args.production_mode,
+                args.production_pause_run_id,
+            )
+        else:
+            if (args.production_since is not None or args.production_pause_run_id is not None
+                    or args.load_run_id is not None):
+                raise ValueError("Production monitor start time is only valid for sample")
+            action = {"measure": measure, "apply": apply, "switch": switch,
+                      "rollback": rollback}[args.action]
+            result = action(args.run_id)
+        print(json.dumps(result, sort_keys=True))
+    except Exception as error:
+        diagnostic = _failure_diagnostic(args.action, error)
+        diagnostic["run_id"] = args.run_id
+        print(json.dumps(diagnostic, sort_keys=True))
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

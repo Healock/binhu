@@ -5,12 +5,42 @@
 原模块从已留存的旧运行镜像源码提取；配置、凭据和状态卷未进入 Git。
 
 环境固定为 `development`，运行编号为新的 `dev-*`。Kafka topic 固定为
-`dev.task.events.v1` 和 `dev.task.events.dlq.v1`，MySQL 固定为独立
+`dev.task.read-model.v4` 和 `dev.task.read-model.dlq.v4`，MySQL 固定为独立
 `Dev_EventPipeline`。数据库与 Redis 使用新卷，资源项目为
 `binhu-development-pipeline`，只加入已验证的 Dev eventbus 内部网络。
 该实验不接入生产或 Staging，也不修改平台业务 Backend 的网络。
 
+在线数据汇总事实使用独立 `dev.online-summary.facts.v1` topic 和独立 Schema Registry
+subject，不混入任务事件 schema。现有 `backend-outbox-relay` 只有在显式启用
+`BACKEND_SUMMARY_FACT_RELAY_ENABLED=true` 且提供 `BACKEND_SUMMARY_MYSQL_DATABASE`
+时，才读取同环境 `Dev_*` / `Staging_*` daily_report 库；默认关闭。发布前必须确认
+该库已执行事实 outbox migration，且 `environment_app` 只能访问本环境库。summary
+事实经过同一 Redis Stream 与 bridge 后写入 Kafka delivery ledger；Flink 当前仍未消费
+该 topic，因此这只完成到 Kafka 的传输接入，不代表 Redis 汇总读模型完成。
+
+## 业务派生编排
+
+`domain_pipeline.py` 是 Development/Staging 业务派生链路的静态注册表和运行计划入口。
+它集中声明 domain ID、事件类型、topic/schema、Flink source/group/sink、Redis 身份、
+实际阶段及就绪检查；Dev/Staging topic 创建、Schema Registry subject、Flink SQL/JobGraph
+身份校验和事件路由从同一注册表解析。业务 reducer、任务权限与 Redis key/index 仍归各业务模块。
+
+当前 `instruction_audit` 注册了完整的 Outbox → relay → Kafka → Flink → Redis → API 链路；
+`online_summary_facts` 只注册已实现的 Outbox → relay → Redis Stream → Kafka 阶段，不声明
+Flink source 或 Redis 读模型。新增业务先补注册合同，再由共享控制路径校验环境身份、topic、
+consumer group 与 sink；未登记、身份冲突或合同不完整时必须拒绝运行。
+
 ## 操作顺序
+
+### 受控退役旧 Staging 运行
+
+项目管理人批准的旧运行只能通过固定网关执行 `retire STG-20261007-03`。
+该入口在执行前核对当前运行、Compose 项目、Staging/Production 核心容器、共享
+backend 网络、替代运行的 `business-bridge` 与 `backend-outbox-relay`，以及旧
+Flink 作业身份。通过后只对旧运行执行 `docker compose down --remove-orphans`，
+不带 `-v`，不删除卷、checkpoint、共享网络或历史证据。退役前后状态和 SHA-256
+写入 root-only 证据目录；如果旧运行有活动 Flink 作业，证据会明确记录事件投影在
+新运行恢复 apply 前暂停。Production 和 Staging 应用核心容器必须保持不变。
 
 ### GitHub Actions 隔离环境
 
@@ -20,6 +50,20 @@ GitHub `development` Environment。
 Dev 主机、部署密钥和已知主机指纹只能从该环境读取；生产发布工作流的
 `production` Environment 与密钥不会被这些工作流引用。若 `development`
 Environment 未配置完整，工作流必须在连接服务器前失败。
+
+### Staging 失败证据只读诊断
+
+`Install Staging event-pipeline gateway` 的 `diagnose-measure` action 仅接受固定运行号
+`STG-20261028-01`。它先使用 Staging 专用受限 SSH key 调用固定 `status` 命令验证认证和
+Staging 身份，再读取该运行已有的 `measure-<hash>.json` 失败证据；不会重跑 `measure`、
+读取 stdout/stderr 正文或修改候选。输出限于错误类型/错误码、子进程退出码、输出长度与哈希、
+证据文件名和 SHA-256。命令不接受任意路径、环境或 shell 参数，也不提供其他运行号的读取能力。
+
+`diagnose-prepare` 同样使用受限 Staging deploy key 和固定 `status` 身份检查，只允许读取
+`STG-20261028-02` 的 prepare 失败元数据。prepare 的网关级失败记录固定错误类别、阶段、退出码及
+stdout/stderr 哈希；子进程输出仅保存哈希和字节数。诊断只输出候选路径类型（missing/directory/file/other）、
+失败数量及白名单字段，
+不读取或回显原始 stdout/stderr、异常正文、配置、凭据或任意路径，也不会重跑 prepare。
 
 0. 从已经合并到 `main` 的提交触发 `Prepare Dev event pipeline` 工作流，传入新的
    `dev-YYYYMMDD-...` 运行编号和四个不可变镜像摘要。工作流只生成并上传候选包，
@@ -56,8 +100,13 @@ Environment 未配置完整，工作流必须在连接服务器前失败。
 5. JobManager 与 TaskManager 使用 Dev 自己的 checkpoint 卷和内部网络。
    两个服务还必须由 `event_pipeline.flink_compose` 生成，并显式携带
    `binhu.environment=development` 标签；只设置容器环境变量不能代替 Docker
-   资源身份标签。修补既有 Compose 时，工具只允许增加这两个标签，发现其他
-   配置差异立即拒绝。
+   资源身份标签。TaskManager 必须通过 `env_file` 加载当前候选生成的
+   `flink-task.env`，其中包含当前 run ID、任务载荷加密密钥和 Backend Redis 地址。
+   Dev `apply` 会在启动 TaskManager 前核验环境身份、密钥长度、Redis 主机与文件权限，
+   并通过受控 Compose 更新写入固定 `env_file` 路径；更新前配置保存在私有证据目录。
+   缺少该配置时只接受这项已知旧状态，其他 Compose 差异仍然拒绝。
+   Compose 更新后必须重新创建 TaskManager，运行期身份校验失败时不得把 JobGraph
+   标记为运行成功。
    提交前执行 `python -m event_pipeline.checkpoint measure`，如新卷根目录属主
    不匹配，再 `apply`；工具核对全部运行/停止容器的卷引用，只调整卷根目录，
    不递归改写旧检查点。新 Docker 卷默认属于 root，不能假定 Flink 用户可写。
@@ -100,10 +149,10 @@ Environment 未配置完整，工作流必须在连接服务器前失败。
 
 Dev 的 `business-bridge` 服务只在 `development` 项目启用。它加入
 `binhu-development_internal` 和 Dev eventbus 内部网络，读取 Dev Backend 的
-Redis `binhu:events` 元数据流，把 `online.task.*` 事件转换为固定的 Dev Kafka
-合同，再写入独立 `Dev_EventPipeline` 投递台账。事件只包含业务类型、稳定的
-不透明任务标识、revision 和变化类别；姓名、证件号、手机号、地址和正文不会
-跨入 Kafka 或派生库。`BACKEND_REDIS_URL` 必须是 Dev Redis，包含
+Redis `binhu:events` 事件流，把 `online.task.*` 事件转换为固定的 Dev Kafka
+合同，再写入独立 `Dev_EventPipeline` 投递台账。明文合同只包含业务类型、稳定的
+不透明任务标识、revision 和变化类别；任务快照只能以 AES-GCM 密文进入 Kafka，
+Flink、Redis、DLQ 和日志不得解密或输出敏感明文。`BACKEND_REDIS_URL` 必须是 Dev Redis，包含
 `production` 或 `staging` 的目标会在启动时拒绝。
 
 该桥不连接 Production 或 Staging，也不改变 Backend 的业务事务。正常保存先
@@ -115,7 +164,7 @@ revision 栅栏负责重放安全。桥断开时业务保存仍可成功，恢�
 投递台账、Schema Registry 接受合同、Flink 更新派生 revision、Redis/派生库
 读回一致，以及桥/relay 重启后的重复事件不产生第二个业务结果。
 
-Schema Registry 使用固定内部服务与 `dev.task.events.v1-value` subject。
+Schema Registry 使用固定内部服务与 `dev.task.read-model.v4-value` subject。
 已部署的实现为 Apicurio 2.x，兼容 API 固定在
 `http://schema-registry:8080/apis/ccompat/v7`，不能使用 Confluent 默认的 8081。
 长期实例必须使用 KafkaSQL 镜像，日志 topic 为 `dev.registry.storage.v1`，
@@ -206,8 +255,16 @@ application network are outside this operation.
 group，因此每个投影都能看到当前运行编号的完整事件流。提交前会校验 SQL 中的环境、
 运行编号和允许的 sink 集合，运行时则以候选的精确 `job.name` 作为唯一 run 身份；
 Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
-Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时包含两个受控
-sink、job name 和 Kafka 消费组完全匹配时才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
+`PipelineJob` 把 `dev_revisions` 和 `dev_task_metadata` 两个 INSERT 分支，以及
+`task-read-model-redis` sink 提交为一个 JobGraph。两个 JDBC 派生分支共用
+`dev_events` / `<run_id>-flink` source；Redis 分支使用独立的
+`dev_task_events_redis` / `<run_id>-flink-redis` source。独立 consumer group 确保
+两条 Kafka source 各自读取完整 topic，不会把分区分摊给不同派生目标。提交前校验
+两个 topic 声明、两个 group、v4 schema、环境和运行编号，运行时则以候选的精确 `job.name`
+作为唯一 run 身份；Flink 1.20 的 operator `description` 不被当作 SQL 过滤条件的来源。
+Dev apply 只有在 Flink REST 确认恰好一个 RUNNING JobGraph、该图同时包含两个确切
+Kafka source、两个 JDBC sink 和 Redis sink，且两个 Kafka consumer group 都与运行编号匹配时，
+才返回 `acceptance=pending`。旧双轨 JobGraph 只在保存安全摘要后停止；
 提交 JAR 的响应如果在 JobGraph 已被接受后发生传输中断，只按精确 run name
 只读重查并复用现有 JobGraph，绝不自动重复提交。
 checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
@@ -227,8 +284,8 @@ Compose 的 `up -d` 返回只表示容器已经启动，不表示 JobManager RES
 Dev apply 在读取首次作业列表前，会对固定的 `flink_rest_transport_failed` 或
 `flink_rest_timeout` 启动错误执行最多 60 秒的有界等待；HTTP 状态、响应格式和身份合同错误立即
 失败，并在私有证据中记录 endpoint、状态码和固定错误码，不记录响应正文。等待成功后仍必须
-完整核验当前 JobGraph 的精确 job name、consumer group、SQL 预先校验的环境/运行编号和两个
-受控 INSERT sink，不能依赖 Flink 1.20 不稳定的 plan description 复原 SQL 过滤条件。
+完整核验当前 JobGraph 的精确 job name、两个 consumer group、SQL 预先校验的环境/运行编号、
+两个确切 source 与三个受控 sink，不能依赖 Flink 1.20 不稳定的 plan description 复原 SQL 过滤条件。
 提交 JobGraph 后的 120 秒运行时收敛窗口同样只容忍这两个固定 REST 传输错误，避免作业初始化
 短暂占用 REST 线程时提前退出；窗口耗尽时保留首个具体的 JobGraph/消费组校验错误，其他 REST
 错误或身份门禁失败仍然停止 apply。

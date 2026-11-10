@@ -16,6 +16,7 @@ from typing import Any
 
 import psutil
 import pymysql
+from staging.production_guard import production_stop_reason
 
 
 GIB = 1024 ** 3
@@ -301,19 +302,13 @@ def monitor_process(process: subprocess.Popen, config: MonitorConfig) -> dict[st
             stop_reason = "host_available_memory_below_4gib"
         elif swap.used - baseline_swap > 256 * MIB:
             stop_reason = "host_swap_growth_above_256mib"
-        elif health_failures >= 2:
-            stop_reason = "production_health_failed_twice"
-        elif any("error" in state for state in production_states.values()):
-            stop_reason = "production_container_inspection_failed"
-        elif any(
-            state.get("oom_killed")
-            or state.get("restarting")
-            or not state.get("running", False)
-            or state.get("health") == "unhealthy"
-            or int(state.get("restart_count") or 0) > baseline_restarts.get(name, 0)
-            for name, state in production_states.items()
-        ):
-            stop_reason = "production_container_unhealthy_or_restarted"
+        elif production_states and (reason := production_stop_reason(
+            health_failures=health_failures,
+            states=production_states,
+            baseline_restarts=baseline_restarts,
+            new_error_count=None,
+        )):
+            stop_reason = reason
         elif database.get("error"):
             stop_reason = "shadow_database_monitor_failed"
         elif int(database.get("connections", -1)) > 120:

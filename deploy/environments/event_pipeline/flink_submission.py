@@ -14,15 +14,24 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
-from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id, topic_for
+from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id
+from .domain_pipeline import DomainPipelineOrchestrator
 from .projection_definitions import BASE_PROJECTION_NAMES, projection_names
 
 
-# Kept as a compatibility alias for callers that only need the mandatory base
-# projection.  A rendered pipeline may expose additional metadata sinks.
-EXPECTED_SINKS = BASE_PROJECTION_NAMES
+_DEFAULT_PLAN = DomainPipelineOrchestrator("development", "dev-contract").plan()
+EXPECTED_SINKS = BASE_PROJECTION_NAMES | frozenset(_DEFAULT_PLAN.flink_sinks)
+EXPECTED_SOURCES = frozenset(_DEFAULT_PLAN.flink_sources)
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
+DEV_TASK_READ_MODEL_RUN_RE = re.compile(r"^dev-[0-9]{8}-taskreadmodel[0-9]{2}$")
+DEV_STALE_JOB_STATES = frozenset({"RUNNING", "RESTARTING"})
 REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
+# Flink may accept the JAR before the JobGraph has finished planning and
+# reached RUNNING.  A reset connection is therefore reconciled for the full
+# startup window, rather than being reported as a failed submission after the
+# shorter HTTP request timeout.  This covers the observed Flink 1.20 staging
+# startup path while still leaving a finite bound for an actually lost job.
+SUBMISSION_RECONCILIATION_TIMEOUT = 120.0
 
 
 class FlinkRestError(ValueError):
@@ -65,17 +74,41 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
     if not isinstance(sql, str):
         raise ValueError("Flink SQL is not text")
     run_id = _one(r"pipeline\.name'\s*=\s*'([^']+)'", sql, "run_id")
-    group = _one(r"properties\.group\.id'\s*=\s*'([^']+)'", sql, "consumer group")
-    topic = _one(r"'topic'\s*=\s*'([^']+)'", sql, "topic")
+    kafka_sources = {}
+    for table, _columns, options in re.findall(
+        r"CREATE\s+TABLE\s+([A-Za-z0-9_]+)\s*\((.*?)\)\s*WITH\s*\((.*?)\)\s*;",
+        sql, flags=re.IGNORECASE | re.DOTALL,
+    ):
+        connector = _one(r"'connector'\s*=\s*'([^']+)'", options, "connector").lower()
+        if connector != "kafka":
+            continue
+        group = _one(r"properties\.group\.id'\s*=\s*'([^']+)'", options, "consumer group")
+        topic = _one(r"'topic'\s*=\s*'([^']+)'", options, "topic")
+        if table in kafka_sources:
+            raise ValueError("Flink Kafka source identity is duplicated")
+        kafka_sources[table] = {"consumer_group": group, "topic": topic}
     filtered_runs = set(re.findall(r"run_id\s*=\s*'([^']+)'", sql, flags=re.IGNORECASE))
     environments = set(re.findall(r"environment\s*=\s*'([^']+)'", sql, flags=re.IGNORECASE))
+    schema_versions = set(re.findall(r"schema_version\s*=\s*([0-9]+)", sql, flags=re.IGNORECASE))
+    for match in re.findall(r"schema_version\s+IN\s*\(([^)]+)\)", sql, flags=re.IGNORECASE):
+        schema_versions.update(re.findall(r"[0-9]+", match))
     if filtered_runs != {run_id}:
         raise ValueError("Flink SQL run_id filter does not match pipeline identity")
     environment = environment_for_run_id(run_id)
     if environments != {environment}:
         raise ValueError("Flink SQL environment filter does not match run identity")
-    if topic != topic_for(environment):
+    plan = DomainPipelineOrchestrator(environment, run_id).plan()
+    expected_topics = {item["topic"] for item in plan.flink_sources.values()}
+    if {item["topic"] for item in kafka_sources.values()} != expected_topics:
         raise ValueError("Flink Kafka topic does not match environment identity")
+    if schema_versions != {str(version) for version in plan.flink_schema_versions}:
+        raise ValueError("Flink SQL projection schema versions are incomplete")
+    expected_sources = {
+        name: {"consumer_group": value["consumer_group"], "topic": value["topic"]}
+        for name, value in plan.flink_sources.items()
+    }
+    if kafka_sources != expected_sources:
+        raise ValueError("Flink SQL consumer groups do not match manifest")
     sinks = frozenset(re.findall(
         r"INSERT\s+INTO\s+(dev_[A-Za-z0-9_]+)\b", sql, flags=re.IGNORECASE,
     ))
@@ -86,8 +119,11 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
     if not sinks <= allowed:
         unknown = ",".join(sorted(sinks - allowed))
         raise ValueError(f"Flink SQL contains unsupported INSERT sink: {unknown}")
-    return {"run_id": run_id, "consumer_group": group, "topic": topic,
-            "environment": environment, "sinks": sorted(sinks)}
+    sinks = sinks | frozenset(plan.flink_sinks)
+    return {"run_id": run_id,
+            "consumer_groups": sorted(item["consumer_group"] for item in kafka_sources.values()),
+            "topics": sorted({item["topic"] for item in kafka_sources.values()}),
+            "sources": kafka_sources, "environment": environment, "sinks": sorted(sinks)}
 
 
 def parse_runtime_identity(runtime: str) -> str:
@@ -111,18 +147,34 @@ def parse_runtime_identity(runtime: str) -> str:
 
 
 def validate_sql_identity(sql: str, expected_run_id: str) -> dict[str, str]:
-    environment_for_run_id(expected_run_id)
+    environment = environment_for_run_id(expected_run_id)
     identity = parse_sql_identity(sql)
     if identity["run_id"] != expected_run_id:
         raise ValueError("Flink SQL run_id does not match manifest")
-    if identity["consumer_group"] != f"{expected_run_id}-flink":
-        raise ValueError("Flink SQL consumer group does not match manifest")
+    plan = DomainPipelineOrchestrator(environment, expected_run_id).plan()
+    if set(identity["consumer_groups"]) != set(plan.consumer_groups):
+        raise ValueError("Flink SQL consumer groups do not match manifest")
     return identity
 
 
-def _job_text(job: dict[str, Any]) -> str:
+def _job_descriptions(job: dict[str, Any]) -> list[str]:
     plan = job.get("plan") or {}
-    return "\n".join(str(node.get("description", "")) for node in plan.get("nodes", []))
+    nodes = plan.get("nodes", [])
+    if not isinstance(nodes, list):
+        return []
+    return [str(node.get("description", "")) for node in nodes if isinstance(node, dict)]
+
+
+def _named_operators(descriptions: list[str], kind: str) -> list[str]:
+    return [
+        match.group(1)
+        for description in descriptions
+        for match in re.finditer(
+            rf"(?:^|\s){kind}:\s*([A-Za-z0-9_.-]+)(?=$|[\s\[(:])",
+            description,
+            flags=re.IGNORECASE,
+        )
+    ]
 
 
 def validate_job_graph(
@@ -137,15 +189,27 @@ def validate_job_graph(
     # name is the stable run identity; SQL identity is checked before submit.
     if str(job.get("name", "")) != expected_run_id:
         raise FlinkRuntimeValidationError("Flink JobGraph run_id does not match", "job_name")
-    text = _job_text(job)
+    descriptions = _job_descriptions(job)
+    text = "\n".join(descriptions)
     # Table plans in Flink 1.20 do not always include connector options.  The
     # SQL identity fence and Kafka group check cover that case.  If a plan does
     # expose a topic marker, it must still be the fixed environment topic.
     topic_markers = set(re.findall(r"(?:topic|topics)\s*[=:]\s*['\"]?([A-Za-z0-9._-]+)", text, flags=re.IGNORECASE))
-    if topic_markers and topic_markers != {topic_for(environment)}:
+    plan = DomainPipelineOrchestrator(environment, expected_run_id).plan()
+    expected_topics = {item["topic"] for item in plan.flink_sources.values()}
+    if topic_markers and topic_markers != expected_topics:
         raise FlinkRuntimeValidationError("Flink JobGraph topic does not match environment identity", "job_topic")
     required = frozenset(expected_sinks or EXPECTED_SINKS)
-    sinks = {sink for sink in projection_names() if sink in text}
+    sources = _named_operators(descriptions, "Source")
+    expected_sources = set(DomainPipelineOrchestrator(
+        environment, expected_run_id,
+    ).plan().flink_sources)
+    if len(sources) != len(expected_sources) or set(sources) != expected_sources:
+        raise FlinkRuntimeValidationError("Flink runtime Kafka sources do not match", "job_source")
+    sinks = set(_named_operators(descriptions, "Sink"))
+    if sinks - required:
+        unexpected = ",".join(sorted(sinks - required))
+        raise FlinkRuntimeValidationError(f"Flink runtime unexpected sink: {unexpected}", "job_sinks")
     if not required <= sinks:
         missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
@@ -154,7 +218,7 @@ def validate_job_graph(
 
 
 def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return current jobs and only stale jobs in the dual-track family.
+    """Return current jobs and only stale jobs in known Dev/Staging pipeline families.
 
     Metadata jobs and unrelated Dev jobs are intentionally left out of the
     stale list.  Callers may cancel only the returned stale entries.
@@ -166,10 +230,11 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
         name = str(item.get("name", ""))
         if name == expected_run_id:
             current.append(item)
-        elif item.get("state") == "RUNNING" and (
-            (environment == "development" and DUAL_TRACK_PREFIX_RE.search(name))
-            or (environment == "staging" and STAGING_RUN_RE.search(name))
+        elif environment == "development" and item.get("state") in DEV_STALE_JOB_STATES and (
+            DUAL_TRACK_PREFIX_RE.search(name) or DEV_TASK_READ_MODEL_RUN_RE.fullmatch(name)
         ):
+            stale.append(item)
+        elif environment == "staging" and item.get("state") == "RUNNING" and STAGING_RUN_RE.search(name):
             stale.append(item)
     return current, stale
 
@@ -183,14 +248,18 @@ def validate_runtime(
     required = frozenset(expected_sinks or EXPECTED_SINKS)
     job_reports = [validate_job_graph(item, expected_run_id, required) for item in jobs]
     sinks = {sink for report in job_reports for sink in report["sinks"]}
+    if sinks - required:
+        unexpected = ",".join(sorted(sinks - required))
+        raise FlinkRuntimeValidationError(f"Flink runtime unexpected sink: {unexpected}", "job_sinks")
     if not required <= sinks:
         missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
-    expected_group = f"{expected_run_id}-flink"
-    if set(consumer_groups) != {expected_group}:
+    plan = DomainPipelineOrchestrator(environment_for_run_id(expected_run_id), expected_run_id).plan()
+    expected_groups = set(plan.consumer_groups)
+    if set(consumer_groups) != expected_groups:
         raise FlinkRuntimeValidationError("Flink consumer group does not match current run", "consumer_group")
     return {"run_id": expected_run_id, "job_count": len(jobs),
-            "consumer_group": expected_group,
+            "consumer_groups": sorted(expected_groups),
             "job_ids": sorted(str(item.get("jid")) for item in jobs),
             "sinks": sorted(sinks)}
 
@@ -266,11 +335,13 @@ class FlinkRest:
             raise ValueError("Flink JAR upload was not accepted")
         return filename.rsplit("/", 1)[-1]
 
-    def run_jar(self, jar_id: str) -> str:
+    def run_jar(self, jar_id: str, expected_run_id: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+\.jar", jar_id or ""):
             raise ValueError("invalid Dev Flink JAR id")
+        environment_for_run_id(expected_run_id)
         response = self.request("/jars/" + jar_id + "/run", method="POST",
-                                payload={"parallelism": 1, "entryClass": "PipelineJob"})
+                                payload={"parallelism": 1, "entryClass": "PipelineJob",
+                                         "programArgsList": [expected_run_id]})
         jid = str(response.get("jobid", ""))
         if not re.fullmatch(r"[0-9a-f]{32}", jid):
             raise ValueError("Flink JAR submission returned no job id")
@@ -286,7 +357,8 @@ class FlinkRest:
 
 
 def submit_jar_or_reconcile(
-    client: FlinkRest, jar_id: str, expected_run_id: str, *, timeout: float = 30.0,
+    client: FlinkRest, jar_id: str, expected_run_id: str, *,
+    timeout: float = SUBMISSION_RECONCILIATION_TIMEOUT,
 ) -> dict[str, Any]:
     """Submit once and reconcile an uncertain REST response without resubmitting.
 
@@ -296,7 +368,7 @@ def submit_jar_or_reconcile(
     """
     submission_error: FlinkRestError | None = None
     try:
-        jid = client.run_jar(jar_id)
+        jid = client.run_jar(jar_id, expected_run_id)
         return {"mode": "submitted", "job_id": jid}
     except FlinkRestError as error:
         if error.code not in REST_TRANSIENT_CODES:

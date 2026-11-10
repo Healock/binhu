@@ -2,7 +2,7 @@ import os
 import asyncio
 import inspect
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -125,20 +125,35 @@ class LocalSourceHelpersTest(unittest.TestCase):
             "下发时间": "2026-08-29",
         })
         cursor = Cursor()
+        async def execute_command(cur, *, spec, authorize, mutate):
+            locked_source = {
+                "parser_type": spec.parser_type,
+                "physical_row": 12,
+                "revision": 1,
+                "values": values,
+            }
+            authorization = await authorize(cur, locked_source)
+            self.assertEqual(authorization.policy_key, "system_task_workflow")
+            return await mutate(cur, locked_source)
+
         with patch.object(settings, "LOCAL_DATA_SOURCE_ENABLED", True):
-            asyncio.run(apply_local_system_changes(
-                cursor,
-                source={
-                    "id": 9,
-                    "row_key": parser.make_row_key(values),
-                    "revision": 1,
-                    "physical_row": 12,
-                    "values": values,
-                    "spreadsheet": {"parser_type": "全链条"},
-                },
-                changes={"核查人": "测试网格员"},
-                rebuild=False,
-            ))
+            with patch(
+                "services.task_commands.TaskCommandService.execute",
+                new=AsyncMock(side_effect=execute_command),
+            ):
+                asyncio.run(apply_local_system_changes(
+                    cursor,
+                    source={
+                        "id": 9,
+                        "row_key": parser.make_row_key(values),
+                        "revision": 1,
+                        "physical_row": 12,
+                        "values": values,
+                        "spreadsheet": {"parser_type": "全链条"},
+                    },
+                    changes={"核查人": "测试网格员"},
+                    rebuild=False,
+                ))
 
         supersede = [
             call for call in cursor.calls

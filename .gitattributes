@@ -12,6 +12,7 @@ deploy/binhu-nginx-profile text eol=lf
 deploy/binhu-deploy text eol=lf
 deploy/binhu-deploy-gateway text eol=lf
 deploy/binhu-maintenance text eol=lf
+deploy/binhu-production-service-control text eol=lf
 desktop/server/binhu-obtain-ip-certificate text eol=lf
 desktop/server/binhu-renew-ip-certificate text eol=lf
 desktop/server/binhu-record-ip-certificate-failure text eol=lf

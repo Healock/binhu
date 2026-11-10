@@ -104,6 +104,7 @@ install -d -o root -g root -m 0700 /var/lib/binhu-staging-application/candidates
 
 cat > /etc/sudoers.d/binhu-staging-application <<'EOF'
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway status
+binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway identity
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway prepare *
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway measure *
 binhu-staging-app-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-application-gateway reconcile *

@@ -1,5 +1,6 @@
 """Render the single Kafka source / multi-sink Flink projection job."""
 from .projection_definitions import flink_sql as projection_flink_sql
+from .domain_pipeline import DomainPipelineOrchestrator
 from .runtime import configuration
 
 
@@ -7,6 +8,11 @@ def render(environ):
     config = configuration(environ)
     run = config["RUN_ID"]
     environment = config["APP_ENVIRONMENT"]
+    pipeline = DomainPipelineOrchestrator(environment, run).plan()
+    source_groups = {
+        name: source["consumer_group"]
+        for name, source in pipeline.flink_sources.items()
+    }
     checkpoint_scope = "dev" if environment == "development" else "staging"
     password = config["MYSQL_PASSWORD"]
     return f"""SET 'execution.checkpointing.interval' = '10 s';
@@ -17,14 +23,31 @@ SET 'state.savepoints.dir' = 'file:///opt/flink/checkpoints/{checkpoint_scope}-s
 SET 'parallelism.default' = '1';
 SET 'pipeline.name' = '{run}';
 CREATE TABLE dev_events (
- schema_version INT, event_id STRING, event_type STRING, task_id STRING,
- source_id BIGINT, revision BIGINT, operation_id STRING,
- changed_fields ARRAY<STRING>, `timestamp` STRING, environment STRING, run_id STRING
+ schema_version INT, event_id STRING, command_id STRING, event_type STRING,
+ task_id STRING, source_id BIGINT, revision BIGINT, operation_id STRING,
+ changed_fields ARRAY<STRING>, `timestamp` STRING, environment STRING, run_id STRING,
+ encrypted_payload ROW<algorithm STRING,key_version STRING,nonce STRING,
+                      ciphertext STRING,aad STRING,ciphertext_sha256 STRING>,
+ view_domain STRING, task_revision BIGINT, row_group_token STRING
 ) WITH (
  'connector' = 'kafka', 'topic' = '{config["TOPIC"]}',
  'properties.bootstrap.servers' = '{config["KAFKA_BOOTSTRAP_SERVERS"]}',
- 'properties.group.id' = '{run}-flink', 'scan.startup.mode' = 'earliest-offset',
- 'format' = 'json', 'json.fail-on-missing-field' = 'true',
+ 'properties.group.id' = '{source_groups["dev_events"]}', 'scan.startup.mode' = 'earliest-offset',
+ 'format' = 'json', 'json.fail-on-missing-field' = 'false',
+ 'json.ignore-parse-errors' = 'false'
+);
+CREATE TABLE dev_task_events_redis (
+ schema_version INT, event_id STRING, command_id STRING, event_type STRING,
+ task_id STRING, source_id BIGINT, revision BIGINT, operation_id STRING,
+ changed_fields ARRAY<STRING>, `timestamp` STRING, environment STRING, run_id STRING,
+ encrypted_payload ROW<algorithm STRING,key_version STRING,nonce STRING,
+                      ciphertext STRING,aad STRING,ciphertext_sha256 STRING>,
+ view_domain STRING, task_revision BIGINT, row_group_token STRING
+) WITH (
+ 'connector' = 'kafka', 'topic' = '{config["TOPIC"]}',
+ 'properties.bootstrap.servers' = '{config["KAFKA_BOOTSTRAP_SERVERS"]}',
+ 'properties.group.id' = '{source_groups["dev_task_events_redis"]}', 'scan.startup.mode' = 'earliest-offset',
+ 'format' = 'json', 'json.fail-on-missing-field' = 'false',
  'json.ignore-parse-errors' = 'false'
 );
 CREATE TABLE dev_revisions (
@@ -41,7 +64,7 @@ INSERT INTO dev_revisions
 SELECT run_id, task_id, source_id, MAX(revision)
 FROM dev_events
 WHERE environment = '{environment}' AND run_id = '{run}'
- AND schema_version = 1 AND source_id > 0 AND revision >= 0
+ AND schema_version IN (4, 6) AND source_id > 0 AND revision >= 1
 GROUP BY run_id, task_id, source_id;
 CREATE TABLE dev_task_metadata (
  run_id VARCHAR(80), task_id VARCHAR(96), source_id BIGINT, revision BIGINT,
@@ -58,14 +81,20 @@ CREATE TABLE dev_task_metadata (
  'sink.buffer-flush.max-rows' = '100', 'sink.max-retries' = '3'
 );
 CREATE VIEW dev_unique_events AS
-SELECT schema_version, event_id, event_type, task_id, source_id, revision,
+-- Keep array payloads out of grouped projections. Flink does not support
+-- MAX_BY for ARRAY<STRING>. Aggregate only the scalar field count.
+SELECT schema_version, event_id, command_id, event_type, task_id, source_id, revision,
        operation_id, MAX(CARDINALITY(changed_fields)) AS changed_field_count,
-       `timestamp`, environment, run_id,
-       MAX_BY(changed_fields, revision) AS changed_fields
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'address') THEN 1 ELSE 0 END) AS address_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'community') THEN 1 ELSE 0 END) AS community_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'inspector') THEN 1 ELSE 0 END) AS inspector_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'task_graph') THEN 1 ELSE 0 END) AS task_graph_changed,
+       MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'person_tags') THEN 1 ELSE 0 END) AS person_tags_changed,
+       `timestamp`, environment, run_id
 FROM dev_events
 WHERE environment = '{environment}' AND run_id = '{run}'
-  AND schema_version = 1 AND source_id > 0 AND revision >= 0
-GROUP BY schema_version, event_id, event_type, task_id, source_id, revision,
+  AND schema_version IN (4, 6) AND source_id > 0 AND revision >= 1
+GROUP BY schema_version, event_id, command_id, event_type, task_id, source_id, revision,
          operation_id, `timestamp`, environment, run_id;
 INSERT INTO dev_task_metadata
 SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),

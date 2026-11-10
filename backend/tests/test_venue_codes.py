@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from openpyxl import load_workbook
 import pytest
 from fastapi import HTTPException
 from openpyxl import load_workbook

@@ -9,10 +9,11 @@
 1. [开发规则](../AGENTS.md)：告诉你哪些事情必须做，哪些事情不能做。
 2. [高效开发与验证流程](development-workflow.md)：告诉你怎么避免重复检查和低效上线。
 3. [开发与运维手册](operations.md)：告诉你怎么开发、怎么换电脑、怎么部署。
-4. [架构说明](architecture.md)：告诉你系统和数据库是怎么工作的。
-5. [风险清单](known-risks.md)：告诉你目前还有哪些问题没有解决。
-6. [未来计划](future-plans.md)：记录已经确定方向、但还没有开始实施的功能。
-7. [全民防模型三 API 封闭测试设计](全民防模型三API封闭测试设计.md)：记录 APK/API 核验结论、仅限账号、单条测试边界和后续开发检查清单。
+4. [平台架构树](platform-architecture-tree.md)：按业务域查看全平台功能、设计、数据域和重构状态。
+5. [架构说明](architecture.md)：解释系统行为、业务规则和数据库结构。
+6. [风险清单](known-risks.md)：记录目前尚未解决的问题。
+7. [未来计划](future-plans.md)：记录已经确定方向、但尚未完成的长期项目。
+8. [全民防模型三 API 封闭测试设计](全民防模型三API封闭测试设计.md)：记录 APK/API 核验结论、仅限账号、单条测试边界和后续开发检查清单。
 
 如果你只是想在家里和单位之间继续开发，重点看第三份文档的“两台电脑开发流程”。
 
@@ -31,6 +32,7 @@
 - 规则写进 `AGENTS.md`。
 - 开发和验证的固定流程写进 `development-workflow.md`。
 - 系统结构写进 `architecture.md`。
+- 全平台功能、设计归属和重构状态维护在 [平台架构树](platform-architecture-tree.md)。
 - 开发、部署、备份步骤写进 `operations.md`。
 - 没解决的问题写进 `known-risks.md`。
 - 过时但需要保留的内容移到 [历史计划归档](archive/plans/README.md)。

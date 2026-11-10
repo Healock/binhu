@@ -293,6 +293,7 @@ class ReportMemberCompletionTests(unittest.IsolatedAsyncioTestCase):
             "寄递业",
         )
 
+        self.assertTrue(cursor.execute.await_args_list[0].args[0].startswith("DELETE FROM"))
         ledger_call = cursor.execute.await_args_list[-2]
         sql, params = ledger_call.args
         normalized = " ".join(sql.split())

@@ -17,6 +17,108 @@ ENVIRONMENTS = ROOT / 'deploy/environments'
 
 
 class StagingApplicationGatewayTests(unittest.TestCase):
+    def test_identity_returns_only_live_identity_and_exact_acceptance_matches(self):
+        image_id = 'sha256:' + 'b' * 64
+        identity = {'artifact_id': 'a' * 64, 'image_id': image_id,
+                    'commit': 'c' * 40, 'version': '0.32.0'}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging_root = root / 'environment'
+            staging_root.mkdir(mode=0o700)
+            (staging_root / 'manifest.json').write_text(json.dumps({
+                'environment': 'staging', 'project': 'binhu-staging',
+                'artifact_id': identity['artifact_id'], 'commit': identity['commit'],
+                'version': identity['version'], 'images': {'backend': image_id},
+                'backend_env': 'must not escape',
+            }))
+            evidence = root / 'evidence'
+            evidence.mkdir(mode=0o700)
+            dev_run = 'dev-update-' + 'd' * 16
+            dev_dir = evidence / dev_run
+            dev_dir.mkdir(mode=0o700)
+            (dev_dir / 'result.json').write_text(json.dumps({
+                **identity, 'run_id': dev_run, 'environment': 'development',
+                'accepted': True, 'health': True, 'secret': 'must not escape',
+            }))
+            wrong_dev_run = 'dev-update-' + 'e' * 16
+            wrong_dev_dir = evidence / wrong_dev_run
+            wrong_dev_dir.mkdir(mode=0o700)
+            (wrong_dev_dir / 'result.json').write_text(json.dumps({
+                **identity, 'run_id': wrong_dev_run, 'environment': 'development',
+                'accepted': True, 'health': True, 'image_id': 'sha256:' + 'f' * 64,
+            }))
+            candidates = root / 'candidates'
+            candidates.mkdir(mode=0o700)
+            staging_run = 'staging-app-' + '1' * 16
+            stage_dir = candidates / staging_run
+            stage_dir.mkdir(mode=0o700)
+            (stage_dir / 'promotion.json').write_text(json.dumps({
+                **identity, 'run_id': staging_run, 'environment': 'staging',
+                'state': 'accepted', 'dev_acceptance_run_id': dev_run,
+            }))
+            (stage_dir / 'accept.json').write_text(json.dumps({
+                **identity, 'run_id': staging_run, 'environment': 'staging',
+                'accepted': True, 'production_modified': False,
+                'dev_acceptance_run_id': dev_run,
+            }))
+            unlinked_run = 'staging-app-' + '2' * 16
+            unlinked_dir = candidates / unlinked_run
+            unlinked_dir.mkdir(mode=0o700)
+            (unlinked_dir / 'promotion.json').write_text(json.dumps({
+                **identity, 'run_id': unlinked_run, 'environment': 'staging',
+                'state': 'accepted', 'dev_acceptance_run_id': 'dev-update-' + 'f' * 16,
+            }))
+            (unlinked_dir / 'accept.json').write_text(json.dumps({
+                **identity, 'run_id': unlinked_run, 'environment': 'staging',
+                'accepted': True, 'production_modified': False,
+                'dev_acceptance_run_id': 'dev-update-' + 'f' * 16,
+            }))
+            with patch.object(application, 'root_for', return_value=staging_root), \
+                    patch.object(application, 'EVIDENCE_ROOT', evidence), \
+                    patch.object(application, 'BASE', root), \
+                    patch.object(application, '_audit', side_effect=AssertionError('identity must not audit')):
+                result = application.identity()
+        self.assertEqual(result, {
+            'gateway': 'staging-application', 'environment': 'staging',
+            'project': 'binhu-staging', 'backend_digest': image_id,
+            'artifact_id': identity['artifact_id'], 'commit': identity['commit'],
+            'version': identity['version'],
+            'matching_dev_acceptances': [{'run_id': dev_run}],
+            'matching_staging_acceptances': [{
+                'run_id': staging_run, 'dev_acceptance_run_id': dev_run,
+            }],
+        })
+        serialized = json.dumps(result)
+        self.assertNotIn('must not escape', serialized)
+        self.assertNotIn(str(root), serialized)
+
+    def test_identity_rejects_invalid_staging_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / 'environment'
+            environment.mkdir(mode=0o700)
+            (environment / 'manifest.json').write_text(json.dumps({
+                'environment': 'production', 'project': 'binhu-production',
+                'artifact_id': 'a' * 64, 'commit': 'b' * 40, 'version': '0.32.0',
+                'images': {'backend': 'sha256:' + 'c' * 64},
+            }))
+            with patch.object(application, 'root_for', return_value=environment), \
+                    self.assertRaisesRegex(ValueError, 'manifest fields invalid'):
+                application.identity()
+
+    def test_identity_command_is_fixed_and_skips_lock_and_audit(self):
+        payload = {'environment': 'staging', 'backend_digest': 'sha256:' + 'a' * 64}
+        output = io.StringIO()
+        with patch.object(application.os, 'geteuid', return_value=0, create=True), \
+                patch.object(application.os, 'name', 'posix'), \
+                patch.object(application.os, 'umask'), \
+                patch.object(application.sys, 'argv', ['gateway', 'identity']), \
+                patch.object(application.sys, 'stdout', output), \
+                patch.object(application, 'identity', return_value=payload), \
+                patch.object(application, '_safe_root', side_effect=AssertionError('identity must not create roots')), \
+                patch.object(application, '_audit', side_effect=AssertionError('identity must not audit')):
+            application.main()
+        self.assertEqual(json.loads(output.getvalue()), payload)
+
     def test_reconcile_retry_allocates_new_evidence_without_overwriting(self):
         run_id = 'staging-app-' + 'a' * 16
         with tempfile.TemporaryDirectory() as directory:
@@ -83,12 +185,13 @@ class StagingApplicationGatewayTests(unittest.TestCase):
     def test_wrapper_and_sudo_contract_have_no_environment_selector(self):
         wrapper = (ENVIRONMENTS / 'binhu-staging-application-gateway').read_text(encoding='utf-8')
         installer = (ENVIRONMENTS / 'install-staging-promotion-gateways.sh').read_text(encoding='utf-8')
-        for action in ('prepare)', 'measure|reconcile|apply)', 'accept)'):
+        for action in ('identity)', 'prepare)', 'measure|reconcile|apply)', 'accept)'):
             self.assertIn(action, wrapper)
         self.assertNotIn('--environment', wrapper)
         self.assertNotIn('production-deploy', installer)
         self.assertIn('binhu-staging-app-deploy', installer)
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway apply *', installer)
+        self.assertIn('/usr/local/libexec/binhu-staging-application-gateway identity\n', installer)
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway migrate *', installer)
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway reconcile *', installer)
         self.assertIn('staging_gateway_authorization_boundary_installed', installer)

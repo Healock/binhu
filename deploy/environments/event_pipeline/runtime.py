@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
 from .services.kafka_delivery_store import MySQLDeliveryStore
@@ -66,17 +67,23 @@ def configuration(environ=None):
         if not re.fullmatch(r"[0-9a-f]{48}", env.get(key, "")):
             raise ValueError("independent runtime credential required")
     backend_url = env.get("BACKEND_REDIS_URL", "")
-    forbidden = {"production", "shadow", "development", "staging"} - {environment}
-    if any(value in backend_url.lower() for value in forbidden):
-        raise ValueError("external environment Redis is forbidden")
+    parsed_backend_redis = urlsplit(backend_url)
+    if (parsed_backend_redis.scheme != "redis"
+            or parsed_backend_redis.hostname not in {"redis", "environment-redis"}
+            or parsed_backend_redis.port != 6379 or parsed_backend_redis.path != "/0"
+            or not parsed_backend_redis.password or parsed_backend_redis.query
+            or parsed_backend_redis.fragment):
+        raise ValueError("fixed isolated Backend Redis target required")
     return {**targets, "APP_ENVIRONMENT": environment, "RUN_ID": run_id,
             "DEV_RUN_ID": run_id if environment == "development" else "",
             "STAGING_RUN_ID": run_id if environment == "staging" else "",
             "TOPIC": topic_for(environment),
             "MYSQL_PASSWORD": env["MYSQL_PASSWORD"], "REDIS_PASSWORD": env["REDIS_PASSWORD"],
+            "TASK_EVENT_ENCRYPTION_KEY": env.get("TASK_EVENT_ENCRYPTION_KEY", ""),
             "BACKEND_REDIS_URL": backend_url,
             "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),
-            "BACKEND_REDIS_START_ID": env.get("BACKEND_REDIS_START_ID", "$")}
+            "BACKEND_REDIS_START_ID": env.get("BACKEND_REDIS_START_ID", "$"),
+            "EVENT_TRANSPORT_CLEANUP_ENABLED": env.get("EVENT_TRANSPORT_CLEANUP_ENABLED", "false").lower() == "true"}
 
 
 def database_init_command(mode):
@@ -127,9 +134,9 @@ def database_pool_size(mode):
     return DEV_RELAY_DB_CONNECTIONS if mode == "relay" else 2
 
 
-def build_relay_workers(pool, producer, run_id):
+def build_relay_workers(pool, producer, run_id, cleanup_enabled=False):
     return [
-        KafkaRelay(MySQLDeliveryStore(pool, run_id=run_id), producer)
+        KafkaRelay(MySQLDeliveryStore(pool, run_id=run_id, cleanup_enabled=cleanup_enabled), producer)
         for _ in range(DEV_RELAY_CONCURRENCY)
     ]
 
@@ -151,11 +158,26 @@ async def relay_step(worker, worker_slot, published):
 async def relay_worker(worker, worker_slot, stop_event):
     # The monitor image may provide an older delivery-store module; keep this
     # relay-only exception out of runtime module import so monitor can start.
-    from .services.kafka_delivery_store import LockContentionExhausted
+    from .services.kafka_delivery_store import LockContentionExhausted, TRANSPORT_CLEANUP_INTERVAL_SECONDS
 
     published = 0
+    last_cleanup = 0.0
     while not stop_event.is_set():
         try:
+            if (worker_slot == 1 and worker.store.cleanup_enabled
+                    and asyncio.get_running_loop().time() - last_cleanup >= TRANSPORT_CLEANUP_INTERVAL_SECONDS):
+                last_cleanup = asyncio.get_running_loop().time()
+                try:
+                    deleted = await worker.store.cleanup_published()
+                    if deleted:
+                        print(json.dumps({"component": "event-pipeline-relay",
+                                          "state": "transport_retention_cleanup",
+                                          "deleted": deleted}), flush=True)
+                except Exception:
+                    print(json.dumps({"component": "event-pipeline-relay",
+                                      "state": "transport_retention_cleanup",
+                                      "result": "failed",
+                                      "reason_code": "cleanup_query_failed"}), flush=True)
             published, delay = await relay_step(worker, worker_slot, published)
         except LockContentionExhausted as error:
             print(json.dumps({
@@ -202,7 +224,10 @@ async def relay(config, pool):
     )
     try:
         await asyncio.wait_for(producer.start(), 30)
-        workers = build_relay_workers(pool, producer, run_id)
+        workers = build_relay_workers(
+            pool, producer, run_id,
+            cleanup_enabled=config.get("EVENT_TRANSPORT_CLEANUP_ENABLED", False),
+        )
         await run_relay_workers(workers)
     finally:
         await asyncio.wait_for(producer.stop(), 30)
@@ -282,14 +307,24 @@ def backend_relay_configuration(environ=None):
     user = env.get("BACKEND_MYSQL_USER", "")
     password = env.get("BACKEND_MYSQL_PASSWORD", "")
     redis_url = env.get("BACKEND_REDIS_URL", "")
+    backend_redis = urlsplit(redis_url)
     prefix = "Dev_" if environment == "development" else "Staging_"
     if host != "environment-mysql" or not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9_]+", database):
         raise ValueError("isolated non-Production Backend database required")
     if user != "environment_app" or not password or len(password) < 32:
         raise ValueError("independent Backend credential required")
-    forbidden = {"production", "shadow", "development", "staging"} - {environment}
-    if not redis_url or any(value in redis_url.lower() for value in forbidden):
-        raise ValueError("isolated non-Production Backend Redis required")
+    if (backend_redis.scheme != "redis"
+            or backend_redis.hostname not in {"redis", "environment-redis"}
+            or backend_redis.port != 6379 or backend_redis.path != "/0"
+            or not backend_redis.password or backend_redis.query or backend_redis.fragment):
+        raise ValueError("fixed isolated Backend Redis target required")
+    summary_relay_enabled = env.get("BACKEND_SUMMARY_FACT_RELAY_ENABLED", "false").lower() == "true"
+    summary_database = env.get("BACKEND_SUMMARY_MYSQL_DATABASE", "")
+    if summary_relay_enabled and (
+        not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9_]+", summary_database)
+        or summary_database == database
+    ):
+        raise ValueError("isolated non-Production summary database required")
     return {
         "APP_ENVIRONMENT": environment, "RUN_ID": run_id,
         "DEV_RUN_ID": run_id if environment == "development" else "",
@@ -298,6 +333,9 @@ def backend_relay_configuration(environ=None):
         "BACKEND_MYSQL_USER": user, "BACKEND_MYSQL_PASSWORD": password,
         "BACKEND_REDIS_URL": redis_url,
         "BACKEND_REDIS_STREAM_KEY": env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events"),
+        "BACKEND_SUMMARY_MYSQL_DATABASE": summary_database,
+        "BACKEND_SUMMARY_FACT_RELAY_ENABLED": summary_relay_enabled,
+        "EVENT_TRANSPORT_CLEANUP_ENABLED": env.get("EVENT_TRANSPORT_CLEANUP_ENABLED", "false").lower() == "true",
     }
 
 
@@ -313,18 +351,59 @@ async def backend_outbox_relay(config):
         connect_timeout=5, autocommit=True, charset="utf8mb4",
         init_command="SET time_zone='+00:00'",
     )
+    summary_pool = None
+    summary_worker = None
+    if config["BACKEND_SUMMARY_FACT_RELAY_ENABLED"]:
+        prefix = "Dev_" if config["APP_ENVIRONMENT"] == "development" else "Staging_"
+        summary_database = config["BACKEND_SUMMARY_MYSQL_DATABASE"]
+        if not re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9_]+", summary_database):
+            pool.close()
+            await pool.wait_closed()
+            raise ValueError("isolated non-Production summary database required")
+        summary_pool = await aiomysql.create_pool(
+            host=config["BACKEND_MYSQL_HOST"], port=3306,
+            user=config["BACKEND_MYSQL_USER"], password=config["BACKEND_MYSQL_PASSWORD"],
+            db=summary_database, minsize=1, maxsize=2,
+            connect_timeout=5, autocommit=True, charset="utf8mb4",
+            init_command="SET time_zone='+00:00'",
+        )
+        from .services.online_summary_fact_relay import OnlineSummaryFactRelay
+        summary_worker = OnlineSummaryFactRelay(
+            summary_pool, None, stream=config["BACKEND_REDIS_STREAM_KEY"],
+            environment=config["APP_ENVIRONMENT"], run_id=config["RUN_ID"],
+        )
     client = Redis.from_url(config["BACKEND_REDIS_URL"], decode_responses=True,
                             socket_timeout=10, socket_connect_timeout=5)
     try:
         await client.ping()
         worker = BackendOutboxRelay(pool, client, config)
+        if summary_worker is not None:
+            summary_worker.redis = client
+        summary_retry_after = 0.0
         while True:
             state = await worker.run_once()
+            if summary_worker is not None and asyncio.get_running_loop().time() >= summary_retry_after:
+                try:
+                    summary_state = await summary_worker.run_once()
+                    if summary_state != "idle":
+                        print(json.dumps({
+                            "component": config["APP_ENVIRONMENT"] + "-online-summary-fact-relay",
+                            "state": summary_state,
+                        }), flush=True)
+                except Exception:
+                    print(json.dumps({
+                        "component": config["APP_ENVIRONMENT"] + "-online-summary-fact-relay",
+                        "state": "retry", "reason_code": "summary_relay_dependency_failed",
+                    }), flush=True)
+                    summary_retry_after = asyncio.get_running_loop().time() + 5
             if state != "idle":
                 print(json.dumps({"component": config["APP_ENVIRONMENT"] + "-backend-outbox-relay", "state": state}), flush=True)
             await asyncio.sleep(.5 if state == "idle" else .01)
     finally:
         await client.aclose()
+        if summary_pool is not None:
+            summary_pool.close()
+            await summary_pool.wait_closed()
         pool.close()
         await pool.wait_closed()
 

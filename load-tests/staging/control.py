@@ -14,10 +14,10 @@ import re
 
 try:
     from .acceptance import assemble_report
-    from .guard import require_staging_context
+    from .guard import require_staging_context, require_staging_evidence_context
 except ImportError:  # direct invocation by the fixed gateway
     from acceptance import assemble_report
-    from guard import require_staging_context
+    from guard import require_staging_context, require_staging_evidence_context
 
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -36,9 +36,10 @@ def _digest(value: object, label: str) -> str:
     return result
 
 
-def load_manifest(path: str, run_id: str) -> dict:
+def load_manifest(path: str, run_id: str, candidate_run_id: str | None = None) -> dict:
     manifest = json.loads(Path(path).read_text(encoding="utf-8"))
-    if manifest.get("run_id") != run_id:
+    expected_run_id = candidate_run_id or run_id
+    if manifest.get("run_id") != expected_run_id:
         raise RuntimeError("manifest 运行编号不一致")
     if manifest.get("environment") != "staging":
         raise RuntimeError("manifest 环境必须为 staging")
@@ -75,20 +76,31 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=ACTIONS)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--candidate-run-id")
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--load-report")
     parser.add_argument("--resource-samples")
     parser.add_argument("--rollback-report")
     parser.add_argument("--manual-report")
     args = parser.parse_args()
-    context = require_staging_context(args.run_id)
-    manifest = load_manifest(args.manifest, context.run_id)
+    context = (require_staging_evidence_context(args.run_id) if args.action == "verify"
+               else require_staging_context(args.run_id))
+    candidate_run_id = args.candidate_run_id or context.run_id
+    if args.action == "verify":
+        if (not re.fullmatch(r"STG-[0-9]{8}-[0-9]{2}", candidate_run_id)
+                or candidate_run_id == context.run_id):
+            raise RuntimeError("verify candidate/load run identities must be distinct Staging run ids")
+    elif args.candidate_run_id and candidate_run_id != context.run_id:
+        raise RuntimeError("candidate run id is only valid for verify")
+    manifest = load_manifest(args.manifest, context.run_id, candidate_run_id)
     # Do not execute remote commands here. The fixed Staging gateway consumes
     # this bounded contract in the approved environment.
     result = {
         "acceptance": "contract_validated",
         "action": args.action,
         "run_id": context.run_id,
+        "load_run_id": context.run_id,
+        "candidate_run_id": candidate_run_id,
         "project": context.project,
         "candidate_image_digest": manifest["candidate_image_digest"],
         "commit": manifest["commit"],
@@ -105,6 +117,7 @@ def main() -> int:
             raise RuntimeError("verify 必须提供请求、资源、回滚和页面验收证据")
         result["report"] = assemble_report(
             run_id=context.run_id,
+            candidate_run_id=candidate_run_id,
             load_report_path=args.load_report,
             resource_samples_path=args.resource_samples,
             rollback_report_path=args.rollback_report,

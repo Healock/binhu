@@ -1,4 +1,5 @@
 import json
+import hashlib
 import importlib.util
 import re
 import tempfile
@@ -7,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 import zipfile
 import subprocess
+from contextlib import redirect_stdout
+from io import StringIO
 
 from deploy.environments.event_pipeline import (
     staging_backend_network, staging_compose, staging_control, staging_deploy,
@@ -33,6 +36,171 @@ def images():
 
 
 class StagingGatewayDiagnosticTests(unittest.TestCase):
+    def test_prepare_failure_reader_emits_only_fixed_fields_without_writing(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-02"
+            evidence.mkdir(parents=True)
+            source = evidence / "prepare-gateway-0123456789abcdef.json"
+            source.write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261028-02",
+                "phase": "prepare", "status": "failed", "failure_stage": "gateway",
+                "error_type": "SystemExit", "error_code": "staging_candidate_bundle_hash_mismatch",
+                "exit_code": 1, "stdout_sha256": "a" * 64, "stderr_sha256": "b" * 64,
+                "stdout_bytes": 27, "stderr_bytes": 41,
+                "stdout": "secret stdout", "stderr": "password=hidden", "path": "/private/path",
+            }), encoding="utf-8")
+            original = source.read_bytes()
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", state / "candidates"),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_prepare_failure("STG-20261028-02")
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "failed")
+            self.assertFalse(result["candidate_present"])
+            self.assertEqual(result["candidate_entry"], "missing")
+            record = result["failures"][0]
+            self.assertEqual(record["failure_stage"], "gateway")
+            self.assertEqual(record["exit_code"], 1)
+            self.assertEqual(record["evidence_sha256"], hashlib.sha256(original).hexdigest())
+            for private in ("secret stdout", "password=hidden", "/private/path"):
+                self.assertNotIn(private, output.getvalue())
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_prepare_failure_reader_reports_missing_evidence_and_rejects_other_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", state / "candidates"),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_prepare_failure("STG-20261028-02")
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "evidence_missing")
+            self.assertEqual(result["failure_count"], 0)
+            self.assertEqual(result["candidate_entry"], "missing")
+
+        with redirect_stdout(StringIO()), self.assertRaises(SystemExit) as raised:
+            staging_gateway.diagnose_prepare_failure(RUN_ID)
+        self.assertIn("prepare diagnostic target is not approved", str(raised.exception))
+
+    def test_prepare_failure_reader_accepts_existing_child_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-02"
+            evidence.mkdir(parents=True)
+            source = evidence / "prepare-0123456789abcdef.json"
+            source.write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261028-02",
+                "phase": "prepare", "status": "failed", "error_type": "ValueError",
+                "error_code": "staging_candidate_identity_mismatch",
+                "child_return_code": 23, "stdout_sha256": "c" * 64,
+                "stderr_sha256": "d" * 64, "stdout_bytes": 10, "stderr_bytes": 20,
+                "stderr": "private response must not escape",
+            }), encoding="utf-8")
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", state / "candidates"),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_prepare_failure("STG-20261028-02")
+            result = json.loads(output.getvalue())
+            record = result["failures"][0]
+            self.assertEqual(record["failure_stage"], "child")
+            self.assertEqual(record["exit_code"], 23)
+            self.assertEqual(record["stderr_sha256"], "d" * 64)
+            self.assertNotIn("private response", output.getvalue())
+
+    def test_prepare_gateway_rejection_writes_only_fixed_failure_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            candidates = state / "candidates"
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "read_bundle", side_effect=SystemExit(
+                    "Staging event-pipeline gateway refused: candidate bundle hash mismatch"
+                )),
+                self.assertRaises(SystemExit),
+            ):
+                staging_gateway.prepare(
+                    "STG-20261028-02", "a" * 40, "32", "b" * 64,
+                )
+            self.assertFalse((candidates / "STG-20261028-02").exists())
+            failure = next((state / "evidence" / "STG-20261028-02").glob("prepare-gateway-*.json"))
+            payload = json.loads(failure.read_text(encoding="utf-8"))
+            self.assertEqual(payload["failure_stage"], "gateway")
+            self.assertEqual(payload["error_code"], "staging_candidate_bundle_hash_mismatch")
+            self.assertEqual(payload["exit_code"], 1)
+            self.assertEqual(payload["stdout_bytes"], 0)
+            self.assertEqual(payload["stderr_bytes"], 0)
+
+    def test_measure_failure_reader_emits_only_fixed_fields_without_writing(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-01"
+            evidence.mkdir(parents=True)
+            source = evidence / "measure-0123456789abcdef.json"
+            source.write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261028-01",
+                "phase": "measure", "status": "failed", "error_type": "ValueError",
+                "error_code": "staging_insufficient_memory",
+                "diagnostic_code": "staging_insufficient_memory",
+                "child_return_code": 1, "stdout_sha256": "a" * 64,
+                "stderr_sha256": "b" * 64, "stdout_bytes": 23, "stderr_bytes": 41,
+                "stdout": "secret output", "stderr": "SELECT sensitive_value",
+                "password": "must-not-leak", "path": "/private/server/path",
+            }), encoding="utf-8")
+            original = source.read_bytes()
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                redirect_stdout(output),
+            ):
+                staging_gateway.diagnose_measure_failure("STG-20261028-01")
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "failed")
+            record = result["failures"][0]
+            self.assertEqual(record["error_code"], "staging_insufficient_memory")
+            self.assertEqual(record["child_return_code"], 1)
+            self.assertEqual(record["evidence_sha256"], hashlib.sha256(original).hexdigest())
+            for private in ("secret output", "sensitive_value", "must-not-leak", "/private/"):
+                self.assertNotIn(private, output.getvalue())
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_measure_failure_reader_rejects_unapproved_run_id(self):
+        output = StringIO()
+        with (
+            redirect_stdout(output), self.assertRaises(SystemExit) as raised,
+        ):
+            staging_gateway.diagnose_measure_failure(RUN_ID)
+        self.assertIn("measure diagnostic target is not approved", str(raised.exception))
+        self.assertEqual(output.getvalue(), "")
+
+    def test_measure_failure_reader_rejects_mismatched_evidence_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261028-01"
+            evidence.mkdir(parents=True)
+            (evidence / "measure-0123456789abcdef.json").write_text(json.dumps({
+                "environment": "production", "run_id": "STG-20261028-01",
+                "phase": "measure", "status": "failed", "error_type": "ValueError",
+                "error_code": "staging_measure_failed",
+            }), encoding="utf-8")
+            with patch.object(staging_gateway, "STATE", state):
+                with self.assertRaisesRegex(SystemExit, "measure failure evidence identity is invalid"):
+                    staging_gateway.diagnose_measure_failure("STG-20261028-01")
+
     def test_child_payload_accepts_prefixed_json_without_forwarding_text(self):
         payloads = staging_gateway._child_payloads(
             'warning {"environment":"staging","run_id":"STG-20260920-01",'
@@ -56,6 +224,120 @@ class StagingGatewayDiagnosticTests(unittest.TestCase):
             self.assertNotIn("sensitive", text)
             self.assertIn("stdout_sha256", text)
             self.assertIn("stderr_sha256", text)
+
+    def test_measure_child_failure_records_safe_code_and_return_code_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            safe_child = json.dumps({
+                "environment": "staging", "run_id": RUN_ID, "status": "failed",
+                "phase": "measure", "error_type": "ValueError",
+                "error_code": "staging_measure_contract_rejected",
+            })
+            error = subprocess.CalledProcessError(
+                1, ["python", "-m", "event_pipeline.staging_control"],
+                output=safe_child, stderr="SELECT sensitive_value; secret=hidden",
+            )
+            output = StringIO()
+            with patch.object(staging_gateway, "STATE", state), \
+                    patch.object(staging_gateway, "environment", return_value={}), \
+                    patch.object(staging_gateway.subprocess, "run", side_effect=error), \
+                    redirect_stdout(output), self.assertRaises(subprocess.CalledProcessError):
+                staging_gateway.run_module(RUN_ID, "measure")
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["phase"], "measure")
+            self.assertEqual(payload["error_code"], "staging_measure_contract_rejected")
+            self.assertEqual(payload["child_return_code"], 1)
+            evidence = next((state / "evidence" / RUN_ID).glob("*.json"))
+            recorded = json.loads(evidence.read_text(encoding="utf-8"))
+            text = evidence.read_text(encoding="utf-8")
+            self.assertEqual(recorded["child_return_code"], 1)
+            self.assertEqual(recorded["diagnostic_code"], "staging_measure_contract_rejected")
+            self.assertNotIn("SELECT", text)
+            self.assertNotIn("sensitive_value", text)
+            self.assertNotIn("hidden", text)
+
+    def test_module_and_path_failures_are_classified_without_raw_output(self):
+        cases = (
+            ("ModuleNotFoundError: No module named '/private/module'", "staging_module_import_failed"),
+            ("FileNotFoundError: /private/path/with-sensitive-name", "staging_required_file_missing"),
+        )
+        for stderr, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                with tempfile.TemporaryDirectory() as directory:
+                    error = subprocess.CalledProcessError(1, ["python"], stderr=stderr)
+                    output = StringIO()
+                    with patch.object(staging_gateway, "STATE", Path(directory)), \
+                            patch.object(staging_gateway, "environment", return_value={}), \
+                            patch.object(staging_gateway.subprocess, "run", side_effect=error), \
+                            redirect_stdout(output), self.assertRaises(subprocess.CalledProcessError):
+                        staging_gateway.run_module(RUN_ID, "measure")
+                    diagnostic = json.loads(output.getvalue())
+                    self.assertEqual(diagnostic["error_code"], expected_code)
+                    self.assertEqual(diagnostic["phase"], "measure")
+                    evidence = next((Path(directory) / "evidence" / RUN_ID).glob("*.json"))
+                    text = evidence.read_text(encoding="utf-8")
+                    self.assertNotIn("/private/", text)
+
+    def test_measure_failure_emits_fixed_sanitized_child_diagnostic(self):
+        output = StringIO()
+        with patch("sys.argv", ["staging_control", "measure", "--run-id", RUN_ID]), \
+                patch.object(staging_control, "measure", side_effect=ValueError("raw SQL and secret")), \
+                redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            staging_control.main()
+        self.assertEqual(raised.exception.code, 1)
+        diagnostic = json.loads(output.getvalue())
+        self.assertEqual(diagnostic, {
+            "environment": "staging", "run_id": RUN_ID, "status": "failed",
+            "phase": "measure", "error_type": "ValueError",
+            "error_code": "staging_measure_contract_rejected",
+        })
+        self.assertNotIn("raw SQL", output.getvalue())
+
+    def test_child_launch_path_failure_is_recorded_without_path_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = StringIO()
+            with patch.object(staging_gateway, "STATE", Path(directory)), \
+                    patch.object(staging_gateway, "environment", return_value={}), \
+                    patch.object(staging_gateway.subprocess, "run",
+                                 side_effect=FileNotFoundError("/private/python-with-secret")), \
+                    redirect_stdout(output), self.assertRaises(FileNotFoundError):
+                staging_gateway.run_module(RUN_ID, "measure")
+            diagnostic = json.loads(output.getvalue())
+            self.assertEqual(diagnostic["error_type"], "FileNotFoundError")
+            self.assertEqual(diagnostic["error_code"], "staging_child_launch_failed")
+            evidence = next((Path(directory) / "evidence" / RUN_ID).glob("*.json"))
+            self.assertNotIn("/private/", evidence.read_text(encoding="utf-8"))
+
+    def test_failed_retirement_accepts_terminal_flink_jobs_as_safe_summaries(self):
+        payload = {
+            "jobs": [
+                {"jid": "canceled-jid", "name": "SELECT sensitive-looking text", "state": "CANCELED"},
+                {"jid": "finished-jid", "name": "another terminal job", "state": "FINISHED"},
+                {"jid": "target-jid", "name": "STG-20261027-04", "state": "FAILED"},
+            ]
+        }
+        completed = subprocess.CompletedProcess(
+            ["docker", "exec"], 0, json.dumps(payload), ""
+        )
+        with patch.object(staging_gateway.subprocess, "run", return_value=completed):
+            jobs = staging_gateway._retirement_jobs("jobmanager", "STG-20261027-04")
+        self.assertEqual(
+            jobs,
+            [
+                {"jid": "canceled-jid", "name": "terminal-job", "state": "CANCELED"},
+                {"jid": "finished-jid", "name": "terminal-job", "state": "FINISHED"},
+                {"jid": "target-jid", "name": "STG-20261027-04", "state": "FAILED"},
+            ],
+        )
+
+    def test_failed_retirement_rejects_running_foreign_flink_job(self):
+        payload = {"jobs": [{"jid": "foreign-jid", "name": "foreign-run", "state": "RUNNING"}]}
+        completed = subprocess.CompletedProcess(
+            ["docker", "exec"], 0, json.dumps(payload), ""
+        )
+        with patch.object(staging_gateway.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(ValueError, "staging_retirement_foreign_flink_job"):
+                staging_gateway._retirement_jobs("jobmanager", "STG-20261027-04")
 
     def test_stream_clients_can_be_loaded_as_locust_top_level_module(self):
         staging_dir = Path(__file__).parents[2] / "load-tests" / "staging"
@@ -277,27 +559,29 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
                     timeout=240,
                 )
 
-    def test_missing_consumer_group_is_allowed_before_first_event(self):
+    def test_missing_consumer_groups_are_allowed_before_first_event(self):
+        expected = ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"]
         with patch.object(staging_control, "_run", side_effect=ValueError("staging_consumer_group_not_created")):
             self.assertEqual(
-                staging_control._consumer_group(
+                staging_control._consumer_groups(
                     "binhu-staging-event-pipeline-stg-20260920-01",
-                    "STG-20260920-01-flink",
+                    expected,
                 ),
-                ["STG-20260920-01-flink"],
+                expected,
             )
 
-    def test_empty_consumer_group_report_is_allowed_before_first_event(self):
+    def test_empty_consumer_group_reports_are_allowed_before_first_event(self):
+        expected = ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"]
         with patch.object(
                 staging_control, "_run",
                 return_value=subprocess.CompletedProcess([], 0, "", ""),
         ):
             self.assertEqual(
-                staging_control._consumer_group(
+                staging_control._consumer_groups(
                     "binhu-staging-event-pipeline-stg-20260920-01",
-                    "STG-20260920-01-flink",
+                    expected,
                 ),
-                ["STG-20260920-01-flink"],
+                expected,
             )
 
     def test_consumer_group_headers_without_assignment_are_allowed(self):
@@ -310,11 +594,11 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess([], 0, output, ""),
         ):
             self.assertEqual(
-                staging_control._consumer_group(
+                staging_control._consumer_groups(
                     "binhu-staging-event-pipeline-stg-20260920-01",
-                    "STG-20260920-01-flink",
+                    ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"],
                 ),
-                ["STG-20260920-01-flink"],
+                ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"],
             )
 
     def test_consumer_group_report_for_other_topic_is_rejected(self):
@@ -324,9 +608,9 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
                     [], 0, "GROUP TOPIC\nSTG-20260920-01-flink other.topic 0", "",
                 ),
         ), self.assertRaisesRegex(ValueError, "no Staging topic assignment"):
-            staging_control._consumer_group(
+            staging_control._consumer_groups(
                 "binhu-staging-event-pipeline-stg-20260920-01",
-                "STG-20260920-01-flink",
+                ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"],
             )
 
     def test_checkpoint_volume_identity_is_required_before_owner_change(self):
@@ -353,8 +637,10 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
         spec = staging_compose.compose(images(), RUN_ID)
         self.assertEqual(spec["services"]["backend-outbox-relay"]["networks"], ["backend"])
         self.assertEqual(set(spec["services"]["business-bridge"]["networks"]), {"internal", "backend"})
+        self.assertEqual(spec["services"]["taskmanager"]["networks"], ["internal", "backend"])
+        self.assertEqual(spec["services"]["taskmanager"]["env_file"], ["flink-task.env"])
         for name, service in spec["services"].items():
-            if name not in {"backend-outbox-relay", "business-bridge"}:
+            if name not in {"backend-outbox-relay", "business-bridge", "taskmanager"}:
                 self.assertNotIn("backend", service.get("networks", []), name)
 
     def test_flink_uses_independent_checkpoint_volume_and_fixed_limits(self):
@@ -409,14 +695,20 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
                     RUN_ID, images(), source=source, pipeline_jar=jar,
                     snapshot_id="staging-" + "d" * 16,
                     environ=env, verify_images=False,
+                    task_event_key="fixture-task-event-key-not-for-runtime",
                 )
                 root = base / RUN_ID
                 self.assertEqual(manifest["project"], staging_compose.project_for(RUN_ID))
                 self.assertEqual(json.loads((root / "compose.json").read_text()), staging_compose.compose(images(), RUN_ID))
                 self.assertIn(f"STAGING_RUN_ID={RUN_ID}", (root / "runtime.env").read_text())
+                self.assertIn("TASK_EVENT_ENCRYPTION_KEY=fixture-task-event-key-not-for-runtime", (root / "runtime.env").read_text())
+                flink_env = (root / "flink-task.env").read_text()
+                self.assertIn(f"STAGING_RUN_ID={RUN_ID}", flink_env)
+                self.assertIn("BACKEND_REDIS_URL=redis://:fixture@environment-redis:6379/0", flink_env)
+                self.assertNotIn("MYSQL_PASSWORD=", flink_env)
                 self.assertIn("APP_ENVIRONMENT=staging", (root / "backend-relay.env").read_text())
                 self.assertIn("environment = 'staging'", (root / "pipeline.sql").read_text())
-                self.assertIn("staging.task.events.v1", (root / "pipeline.sql").read_text())
+                self.assertIn("staging.task.read-model.v4", (root / "pipeline.sql").read_text())
                 self.assertIn(
                     "BACKEND_MYSQL_DATABASE=Staging_s" + "d" * 16 + "_OnlineData",
                     (root / "backend-relay.env").read_text(),
@@ -465,16 +757,64 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
                     snapshot_id,
                 )
 
-    def test_metrics_probe_is_aggregate_fixed_and_excludes_production(self):
+    def test_metrics_probe_exposes_fixed_aggregate_production_monitor(self):
         source = Path(staging_metrics_probe.__file__).read_text(encoding="utf-8")
         for metric in (
             "Innodb_deadlocks", "Innodb_row_lock_current_waits", "keyspace_hits",
             "checkpoint_completed", "_kafka_event_delivery", "restart_count",
-            "pool_count", "/api/admin/ops/performance",
+            "pool_count", "/api/admin/ops/performance", "production_since_unix",
+            "production_bootstrap_identity_mismatch", "production_log_sample_limit_exceeded",
         ):
             self.assertIn(metric, source)
-        self.assertIn('"production": None', source)
-        self.assertNotIn("binhu-mysql", source)
+        self.assertEqual(staging_metrics_probe.PRODUCTION_CONTAINER_NAMES,
+                         ("binhu-backend", "binhu-mysql", "binhu-ops-agent"))
+        self.assertEqual(staging_metrics_probe.PRODUCTION_BOOTSTRAP_URL,
+                         "http://127.0.0.1:37125/api/app/bootstrap")
+        self.assertEqual(staging_metrics_probe.PRODUCTION_HEALTH_URL,
+                         "http://127.0.0.1:37125/api/health")
+        production_source = source[source.index("def _production_sample"):source.index("def _staging_service_states")]
+        self.assertNotIn("print(", production_source)
+
+    def test_metrics_probe_validates_authorized_pause_evidence_and_eight_database_hashes(self):
+        import hashlib
+
+        pause_id = "PROD-PAUSE-20261029-04"
+        databases = list(staging_metrics_probe.PRODUCTION_PAUSE_DATABASES)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "evidence" / "pause-production" / pause_id
+            backup = root / "backup" / f"maintenance-pause-production-{pause_id}"
+            evidence.mkdir(parents=True)
+            backup.mkdir(parents=True)
+            entries = []
+            for database in databases:
+                path = backup / f"{database}.sql.gz"
+                path.write_bytes((database + " synthetic backup").encode())
+                entries.append({
+                    "database": database, "filename": path.name,
+                    "size_bytes": path.stat().st_size,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                })
+            manifest = {
+                "schema": 1, "operation": "pause-production", "run_id": pause_id,
+                "database_scope": databases, "databases": entries,
+            }
+            manifest_path = backup / "backup-manifest.json"
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+            manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            pause_path = evidence / "pause.json"
+            pause_path.write_text(json.dumps({
+                "schema": 1, "operation": "pause-production", "run_id": pause_id,
+                "accepted": True, "stopped_services": ["backend", "mysql"],
+                "protected_container_states_unchanged": True,
+                "backup_manifest_sha256": manifest_sha,
+            }), encoding="utf-8")
+            with patch.object(staging_metrics_probe, "PRODUCTION_PAUSE_EVIDENCE_ROOT", root / "evidence"), \
+                 patch.object(staging_metrics_probe, "PRODUCTION_PAUSE_BACKUP_ROOT", root / "backup"):
+                result = staging_metrics_probe._read_pause_evidence(pause_id)
+            self.assertTrue(result["pause_evidence_valid"])
+            self.assertEqual(result["backup_database_count"], 8)
+            self.assertEqual(result["backup_manifest_sha256"], manifest_sha)
 
     def test_backend_pool_probe_passes_private_password_only_over_stdin(self):
         payload = {"pool_count": 8, "usage_ratio": .5, "used": 20, "max_size": 40}
@@ -593,12 +933,14 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             source.mkdir(parents=True)
             load.mkdir(parents=True)
             (source / "PipelineJob.java").write_text("public final class PipelineJob {}\n", encoding="utf-8")
+            (source / "TaskReadModelRedisSink.java").write_text("public final class TaskReadModelRedisSink {}\n", encoding="utf-8")
             (source / "runtime.py").write_text("VALUE = 1\n", encoding="utf-8")
             (load / "locustfile.py").write_text("# synthetic\n", encoding="utf-8")
             (repository / "load-tests" / "requirements.txt").write_text("locust==2.42.6\n", encoding="utf-8")
             jar = Path(directory) / "pipeline-job.jar"
             with zipfile.ZipFile(jar, "w") as archive:
                 archive.writestr("PipelineJob.class", b"synthetic")
+                archive.writestr("TaskReadModelRedisSink.class", b"synthetic")
             bundle = Path(directory) / "candidate.tar.gz"
             result = staging_deploy.build(
                 repository, bundle, run_id=RUN_ID, commit="a" * 40, images=images(),
@@ -623,12 +965,29 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         wrapper = (root / "binhu-staging-event-pipeline-gateway").read_text(encoding="utf-8")
         installer = (root / "install-staging-gateway.sh").read_text(encoding="utf-8")
         gateway = (root / "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
         self.assertIn("binhu-staging-deploy", installer)
+        self.assertIn("staging_compose.py /usr/local/libexec/staging_compose.py", installer)
+        self.assertIn("domain_pipeline.py /usr/local/libexec/domain_pipeline.py", installer)
+        self.assertIn("identity.py /usr/local/libexec/identity.py", installer)
+        self.assertIn("deploy/environments/event_pipeline/staging_compose.py", workflow)
+        self.assertIn("deploy/environments/event_pipeline/domain_pipeline.py", workflow)
+        self.assertIn("deploy/environments/event_pipeline/identity.py", workflow)
         self.assertIn("^STG-[0-9]{8}-[0-9]{2}$", wrapper)
-        self.assertIn('in {"measure", "apply", "switch", "sample", "rollback"}', gateway)
+        self.assertIn('sys.argv[1] == "sample"', gateway)
+        self.assertIn('sys.argv[1] in {"measure", "apply", "switch", "rollback"}', gateway)
         self.assertIn('sys.argv[1] == "run"', gateway)
         self.assertIn('sys.argv[1] == "verify"', gateway)
-        self.assertIn("measure|apply|switch|run|sample|rollback", wrapper)
+        self.assertIn('sys.argv[1] == "diagnose-measure"', gateway)
+        self.assertIn('sys.argv[1] == "diagnose-prepare"', gateway)
+        self.assertIn("measure|apply|switch|rollback", wrapper)
+        self.assertIn("run)", wrapper)
+        self.assertIn("diagnose-measure)", wrapper)
+        self.assertIn("diagnose-prepare)", wrapper)
+        self.assertIn("diagnose-measure STG-20261028-01", installer)
+        self.assertIn("diagnose-prepare STG-20261028-02", installer)
+        self.assertIn("sample)", wrapper)
         self.assertNotIn("down -v", gateway)
         self.assertNotIn("binhu-dev-deploy", installer)
         self.assertNotIn("binhu-production", wrapper + gateway + installer)
@@ -637,10 +996,11 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         self.assertIn('"error_code"', diagnostic)
         self.assertNotIn("backend.env", diagnostic)
         control = (root / "staging_control.py").read_text(encoding="utf-8")
+        self.assertIn('"--production-since"', control)
         self.assertIn('"phase": phase', control)
         self.assertIn('"error_type": type(error).__name__', control)
         self.assertIn('"error_code": error_code', control)
-        self.assertIn('payload.get("status") == "failed"', gateway)
+        self.assertIn('item.get("status") == "failed"', gateway)
         self.assertIn('staging_container_conflict', control)
         self.assertIn('staging_image_missing', control)
         self.assertIn('staging_network_attachment_failed', control)
@@ -699,6 +1059,32 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
         ):
             self.assertIn(marker, workflow)
         self.assertNotIn('cat "$archive" | ssh', workflow)
+
+    def test_measure_diagnostic_action_checks_restricted_key_and_fixed_run(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
+        self.assertIn("diagnose-measure", workflow)
+        self.assertIn("BINHU_STAGING_EVENT_PIPELINE_SSH_KEY", workflow)
+        self.assertIn('"${ssh_cmd[@]}" status', workflow)
+        self.assertIn('"diagnose-measure $RUN_ID"', workflow)
+        self.assertIn("RUN_ID\" == 'STG-20261028-01'", workflow)
+        self.assertIn("staging_pipeline_ssh_authentication=passed", workflow)
+
+    def test_prepare_diagnostic_action_checks_restricted_key_and_fixed_run(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
+        self.assertIn("diagnose-prepare", workflow)
+        self.assertIn("BINHU_STAGING_EVENT_PIPELINE_SSH_KEY", workflow)
+        self.assertIn('"${ssh_cmd[@]}" status', workflow)
+        self.assertIn('"diagnose-prepare $RUN_ID"', workflow)
+        self.assertIn('RUN_ID" == \'STG-20261028-02\'', workflow)
+        self.assertIn("failure_count", workflow)
+
+    def test_staging_deploy_workflow_returns_success_after_non_apply_actions(self):
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
+                    "deploy-staging-event-pipeline.yml").read_text(encoding="utf-8")
+        self.assertIn('if [[ "$ACTION" == apply ]]; then', workflow)
+        self.assertNotIn('[[ "$ACTION" == apply ]] && "${ssh_cmd[@]}"', workflow)
 
     def test_schema_registry_preload_classifies_fixed_docker_errors(self):
         self.assertEqual(
@@ -763,6 +1149,96 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "foreign_member"):
                 staging_backend_network.validate_network(valid)
 
+    def test_staging_measure_accepts_valid_connectors_from_an_older_run(self):
+        names = (
+            "binhu-staging-environment-mysql-1",
+            "binhu-staging-redis-1",
+            "binhu-staging-event-pipeline-stg-20261007-03-business-bridge-1",
+            "binhu-staging-event-pipeline-stg-20261007-03-backend-outbox-relay-1",
+        )
+        network = {
+            "Name": staging_compose.BACKEND_NETWORK,
+            "Driver": "bridge",
+            "Internal": True,
+            "Labels": {"binhu.environment": "staging", "binhu.role": "pipeline-backend-access"},
+            "Containers": {str(index): {"Name": name} for index, name in enumerate(names)},
+        }
+        labels = {
+            name: {
+                "binhu.environment": "staging",
+                "binhu.run_id": "STG-20261007-03",
+                "com.docker.compose.project": "binhu-staging-event-pipeline-stg-20261007-03",
+                "com.docker.compose.service": "environment-mysql" if name.endswith("environment-mysql-1")
+                else "redis" if name.endswith("redis-1")
+                else "business-bridge" if name.endswith("business-bridge-1")
+                else "backend-outbox-relay",
+            }
+            for name in names
+        }
+        labels[names[0]]["com.docker.compose.project"] = "binhu-staging"
+        labels[names[1]]["com.docker.compose.project"] = "binhu-staging"
+        inspected = [
+            {"Name": "/" + name, "State": {"Status": "running"}, "Config": {"Labels": labels[name]}}
+            for name in names
+        ]
+
+        def docker_json(command):
+            return [network] if command[1] == "network" else inspected
+
+        with patch.object(staging_control, "_docker_json", side_effect=docker_json):
+            result = staging_control._backend_network("STG-20261027-02")
+        self.assertEqual(result, network)
+
+    def test_staging_measure_rejects_mislabeled_old_connectors(self):
+        names = (
+            "binhu-staging-environment-mysql-1",
+            "binhu-staging-redis-1",
+            "binhu-staging-event-pipeline-stg-20261007-03-business-bridge-1",
+        )
+        network = {
+            "Name": staging_compose.BACKEND_NETWORK,
+            "Driver": "bridge",
+            "Internal": True,
+            "Labels": {"binhu.environment": "staging", "binhu.role": "pipeline-backend-access"},
+            "Containers": {str(index): {"Name": name} for index, name in enumerate(names)},
+        }
+        inspected = []
+        for name in names:
+            service = ("environment-mysql" if name.endswith("environment-mysql-1") else
+                       "redis" if name.endswith("redis-1") else "business-bridge")
+            project = "binhu-staging" if service in {"environment-mysql", "redis"} else \
+                "binhu-staging-event-pipeline-stg-20261007-03"
+            labels = {
+                "binhu.environment": "staging",
+                "binhu.run_id": "STG-20261007-03",
+                "com.docker.compose.project": project,
+                "com.docker.compose.service": service,
+            }
+            inspected.append({"Name": "/" + name, "State": {"Status": "running"},
+                              "Config": {"Labels": labels}})
+        inspected[-1]["Config"]["Labels"]["com.docker.compose.project"] = "binhu-staging-event-pipeline-stg-20261027-02"
+
+        def docker_json(command):
+            return [network] if command[1] == "network" else inspected
+
+        with patch.object(staging_control, "_docker_json", side_effect=docker_json):
+            with self.assertRaisesRegex(ValueError, "foreign member"):
+                staging_control._backend_network("STG-20261027-02")
+
+    def test_staging_connector_identity_requires_all_fixed_labels(self):
+        name = "binhu-staging-event-pipeline-stg-20261007-03-business-bridge-1"
+        labels = {
+            "binhu.environment": "staging",
+            "binhu.run_id": "STG-20261007-03",
+            "com.docker.compose.project": "binhu-staging-event-pipeline-stg-20261007-03",
+            "com.docker.compose.service": "business-bridge",
+        }
+        self.assertTrue(staging_control._staging_backend_connector(name, labels))
+        for key in labels:
+            with self.subTest(label=key):
+                mismatched = {**labels, key: "production"}
+                self.assertFalse(staging_control._staging_backend_connector(name, mismatched))
+
     def test_staging_gateway_rejects_reseeding_before_starting_seed_container(self):
         gateway = (
             Path(__file__).parents[1]
@@ -774,16 +1250,395 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             seed.index('"docker", "run"'),
         )
 
-    def test_realistic_load_workflow_runs_75_users_and_keeps_production_outside_gateway(self):
+    def test_staging_gateway_load_candidate_is_dynamic_but_bound_to_applied_manifest(self):
+        run_id = "STG-20261029-02"
+        project = staging_compose.project_for(run_id)
+        candidate = {
+            "environment": "staging", "run_id": run_id, "project": project,
+            "ready_for_staging": True, "fictional_only": True, "production_data": False,
+            "started": True, "acceptance": "pending",
+            "candidate_image_digest": "sha256:" + "a" * 64,
+            "images": images(), "event_pipeline_image_digests": images(),
+            "dev_acceptance": {"event_pipeline_image_digests": images()},
+        }
+        current = json.loads(json.dumps(candidate))
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            candidates = state / "candidates"
+            root = candidates / run_id
+            root.mkdir(parents=True)
+            (root / "manifest.json").write_text(json.dumps(candidate), encoding="utf-8")
+            compose_payload = staging_compose.compose(candidate["images"], run_id)
+            compose_bytes = json.dumps(compose_payload, sort_keys=True).encode()
+            runtime_root = state / "runtime" / run_id
+            runtime_root.mkdir(parents=True)
+            (runtime_root / "compose.json").write_bytes(compose_bytes)
+            runtime_manifest = {
+                "environment": "staging", "run_id": run_id, "project": project,
+                "images": candidate["images"], "started": True, "acceptance": "pending",
+                "hashes": {"compose.json": hashlib.sha256(compose_bytes).hexdigest()},
+                "compose_model_sha256": staging_compose.model_sha256(candidate["images"], run_id),
+            }
+            (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+            current = json.loads(json.dumps(candidate))
+            (state / "current.json").write_text(json.dumps(current), encoding="utf-8")
+            with (patch.object(staging_gateway, "STATE", state),
+                  patch.object(staging_gateway, "CANDIDATES", candidates),
+                  patch.object(staging_gateway, "PIPELINE_RUNTIME_ROOT", state / "runtime")):
+                self.assertEqual(staging_gateway._load_pipeline_candidate(run_id), candidate)
+                altered_compose = json.loads(compose_bytes)
+                altered_compose["services"]["schema-registry"]["mem_limit"] = "1g"
+                altered_bytes = json.dumps(altered_compose, sort_keys=True).encode()
+                (runtime_root / "compose.json").write_bytes(altered_bytes)
+                runtime_manifest["hashes"]["compose.json"] = hashlib.sha256(altered_bytes).hexdigest()
+                (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+                with self.assertRaisesRegex(SystemExit, "controlled model"):
+                    staging_gateway._load_pipeline_candidate(run_id)
+                (runtime_root / "compose.json").write_bytes(compose_bytes)
+                runtime_manifest["hashes"]["compose.json"] = hashlib.sha256(compose_bytes).hexdigest()
+                runtime_manifest["compose_model_sha256"] = "b" * 64
+                (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+                with self.assertRaisesRegex(SystemExit, "controlled model"):
+                    staging_gateway._load_pipeline_candidate(run_id)
+                runtime_manifest["compose_model_sha256"] = staging_compose.model_sha256(candidate["images"], run_id)
+                (runtime_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+                current["run_id"] = "STG-20261029-03"
+                (state / "current.json").write_text(json.dumps(current), encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    staging_gateway._load_pipeline_candidate(run_id)
+
+    def test_staging_gateway_seed_uses_candidate_identity_and_requires_all_1440_rows(self):
+        candidate_id = "STG-20261029-02"
+        load_id = "STG-20261029-10"
+        digest = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            candidates = state / "candidates"
+            source = candidates / candidate_id / "source" / "load-tests" / "staging"
+            source.mkdir(parents=True)
+            (source / "seed.py").write_text("# fixture", encoding="utf-8")
+            env_root = Path(directory) / "staging"
+            env_root.mkdir()
+            payload = {
+                "environment": "staging", "run_id": load_id, "load_run_id": load_id,
+                "candidate_run_id": candidate_id, "fictional_only": True,
+                "production_data": False,
+                "accounts": [{"username": f"u{i}"} for i in range(75)],
+                "tasks": [{"row_key": f"key-{i}", "source_id": i + 1} for i in range(1440)],
+                "seed": {"phase": "seed", "status": "passed", "task_count": 1440,
+                         "expectation_count": 1440, "conflict_count": 0,
+                         "platform_side_effects": {"platform_transaction_commits": 1}},
+            }
+            completed = subprocess.CompletedProcess(
+                args=["docker"], returncode=0,
+                stdout=json.dumps(payload) + "\n", stderr="",
+            )
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "environment", return_value={"STAGING_LOAD_TEST_PASSWORD": "p" * 20}),
+                patch.object(staging_gateway, "_staging_backend", return_value=(digest, env_root)),
+                patch.object(staging_gateway.subprocess, "run", return_value=completed) as run,
+                redirect_stdout(output),
+            ):
+                staging_gateway.seed(candidate_id, load_id)
+                self.assertEqual(run.call_count, 1)
+                command = run.call_args.args[0]
+                self.assertIn(f"{source}:/staging-load:ro", command)
+                self.assertIn("--candidate-run-id", command)
+                self.assertEqual(command[command.index("--candidate-run-id") + 1], candidate_id)
+                record = json.loads((state / "evidence" / load_id / "seed.json").read_text(encoding="utf-8"))
+                self.assertEqual(record["status"], "passed")
+                self.assertEqual(record["task_count"], 1440)
+            with patch.object(staging_gateway, "_staging_backend") as backend:
+                with self.assertRaises(SystemExit):
+                    staging_gateway.seed(candidate_id, candidate_id)
+                backend.assert_not_called()
+
+    def test_failed_staging_seed_records_platform_side_effects_without_reusing_run(self):
+        candidate_id = "STG-20261029-02"
+        load_id = "STG-20261029-11"
+        digest = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            candidates = state / "candidates"
+            source = candidates / candidate_id / "source" / "load-tests" / "staging"
+            source.mkdir(parents=True)
+            (source / "seed.py").write_text("# fixture", encoding="utf-8")
+            env_root = Path(directory) / "staging"
+            env_root.mkdir()
+            failure = {
+                "phase": "seed", "status": "failed", "candidate_run_id": candidate_id,
+                "load_run_id": load_id, "error_type": "ValueError",
+                "committed_task_count": 0, "committed_expectation_count": 0,
+                "online_data_status": "not_started", "projection_status": "not_started",
+                "projection_statuses": {}, "conflict_detected": True,
+                "error_code": "local_business_key_conflict",
+                "conflict_count": None, "conflict_count_unknown": True,
+                "platform_side_effects": {
+                    "platform_transaction_commits": 1, "community_upsert_attempts": 12,
+                    "department_upsert_attempts": 12, "grid_member_upsert_attempts": 75,
+                    "user_upsert_attempts": 75,
+                },
+            }
+            completed = subprocess.CompletedProcess(
+                args=["docker"], returncode=1,
+                stdout=json.dumps(failure) + "\n", stderr="controlled seed failure",
+            )
+            output = StringIO()
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "environment", return_value={"STAGING_LOAD_TEST_PASSWORD": "p" * 20}),
+                patch.object(staging_gateway, "_staging_backend", return_value=(digest, env_root)),
+                patch.object(staging_gateway.subprocess, "run", return_value=completed) as run,
+                redirect_stdout(output),
+            ):
+                with self.assertRaises(SystemExit):
+                    staging_gateway.seed(candidate_id, load_id)
+            command = run.call_args.args[0]
+            self.assertIn("--rm", command)
+            record = json.loads((state / "evidence" / load_id / "seed.json").read_text(encoding="utf-8"))
+            self.assertEqual(record["candidate_run_id"], candidate_id)
+            self.assertEqual(record["load_run_id"], load_id)
+            self.assertEqual(record["committed_task_count"], 0)
+            self.assertEqual(record["committed_expectation_count"], 0)
+            self.assertIsNone(record["conflict_count"])
+            self.assertTrue(record["conflict_count_unknown"])
+            self.assertTrue(record["conflict_detected"])
+            self.assertEqual(record["error_code"], "local_business_key_conflict")
+            self.assertEqual(record["platform_side_effects"]["user_upsert_attempts"], 75)
+            self.assertFalse((state / "evidence" / load_id / "runtime-index.json").exists())
+            with self.assertRaises(SystemExit):
+                staging_gateway.seed(candidate_id, load_id)
+
+            unknown_load_id = "STG-20261029-12"
+            with (
+                patch.object(staging_gateway, "STATE", state),
+                patch.object(staging_gateway, "CANDIDATES", candidates),
+                patch.object(staging_gateway, "environment", return_value={"STAGING_LOAD_TEST_PASSWORD": "p" * 20}),
+                patch.object(staging_gateway, "_staging_backend", return_value=(digest, env_root)),
+                patch.object(staging_gateway.subprocess, "run",
+                             side_effect=subprocess.TimeoutExpired(["docker", "run"], 900)),
+                redirect_stdout(StringIO()),
+            ):
+                with self.assertRaises(SystemExit):
+                    staging_gateway.seed(candidate_id, unknown_load_id)
+            unknown = json.loads((state / "evidence" / unknown_load_id / "seed.json").read_text(encoding="utf-8"))
+            self.assertEqual(unknown["error_code"], "staging_seed_runtime_unknown")
+            self.assertIsNone(unknown["committed_task_count"])
+            self.assertEqual(unknown["projection_status"], "unknown")
+            self.assertEqual(unknown["platform_side_effects"], {"status": "unknown"})
+
+    def test_metrics_probe_accepts_any_matching_applied_candidate_and_checks_live_digests(self):
+        candidate_id = "STG-20261029-02"
+        project = staging_compose.project_for(candidate_id)
+        candidate_images = images()
+        candidate = {
+            "environment": "staging", "run_id": candidate_id, "project": project,
+            "ready_for_staging": True, "fictional_only": True, "production_data": False,
+            "started": True, "acceptance": "pending",
+            "candidate_image_digest": "sha256:" + "a" * 64,
+            "images": candidate_images,
+            "event_pipeline_image_digests": candidate_images,
+            "dev_acceptance": {"event_pipeline_image_digests": candidate_images},
+        }
+        compose_payload = staging_compose.compose(candidate_images, candidate_id)
+        compose_bytes = json.dumps(compose_payload, sort_keys=True).encode()
+        current = json.loads(json.dumps(candidate))
+        labels = {
+            "binhu.environment": "staging",
+            "com.docker.compose.project": "binhu-staging",
+            "com.docker.compose.service": "backend",
+        }
+        backend = {"Image": candidate["candidate_image_digest"], "Config": {"Labels": labels}}
+        service_models = staging_compose.compose(candidate_images, candidate_id)["services"]
+        pipeline = [{
+            "Image": service_model["image"],
+            "State": {"Status": "running", "Running": True},
+            "Config": {"Labels": {
+                "binhu.environment": "staging", "binhu.run_id": candidate_id,
+                "com.docker.compose.project": project,
+                "com.docker.compose.service": service,
+                "binhu.production_data": "false",
+            }},
+        } for service, service_model in service_models.items()]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate_root = root / "candidate"
+            candidate_root.mkdir()
+            (candidate_root / "compose.json").write_bytes(compose_bytes)
+            state = root / "pipeline-state"
+            state.mkdir()
+            candidate_directory = state / "candidates" / candidate_id
+            candidate_directory.mkdir(parents=True)
+            (candidate_directory / "manifest.json").write_text(json.dumps(candidate), encoding="utf-8")
+            runtime_manifest = {
+                "environment": "staging", "run_id": candidate_id, "project": project,
+                "images": candidate_images, "started": True, "acceptance": "pending",
+                "hashes": {"compose.json": hashlib.sha256(compose_bytes).hexdigest()},
+                "compose_model_sha256": staging_compose.model_sha256(candidate_images, candidate_id),
+            }
+            (candidate_root / "manifest.json").write_text(json.dumps(runtime_manifest), encoding="utf-8")
+            (state / "current.json").write_text(json.dumps(current), encoding="utf-8")
+            app_root = root / "staging-app"
+            app_root.mkdir()
+            (app_root / "manifest.json").write_text(json.dumps({
+                "environment": "staging", "project": "binhu-staging",
+                "images": {"backend": candidate["candidate_image_digest"]},
+                "event_pipeline_image_digests": candidate_images,
+            }), encoding="utf-8")
+
+            def run(command, **_kwargs):
+                if command[:3] == ["docker", "ps", "-q"]:
+                    return "backend-id\n"
+                if command[:3] == ["docker", "ps", "-aq"]:
+                    return "pipeline-" + "\npipeline-".join(str(i) for i in range(6)) + "\n"
+                if command[:2] == ["docker", "inspect"] and command[2] == "backend-id":
+                    return json.dumps([backend])
+                if command[:2] == ["docker", "inspect"]:
+                    return json.dumps(pipeline)
+                raise AssertionError(command)
+
+            with (
+                patch.object(staging_metrics_probe, "root_for", return_value=candidate_root),
+                patch.object(staging_metrics_probe, "PIPELINE_STATE", state),
+                patch.object(staging_metrics_probe, "STAGING_APPLICATION_ROOT", app_root),
+                patch.object(staging_metrics_probe, "_run", side_effect=run),
+            ):
+                actual, actual_project = staging_metrics_probe._validate_load_candidate(candidate_id)
+                self.assertEqual(actual["run_id"], candidate_id)
+                self.assertEqual(actual_project, project)
+                pipeline[0]["State"]["Running"] = False
+                with self.assertRaisesRegex(RuntimeError, "container identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                pipeline[0]["State"]["Running"] = True
+                missing = pipeline.pop()
+                with self.assertRaisesRegex(RuntimeError, "service set incomplete"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                pipeline.append(missing)
+                with self.assertRaisesRegex(RuntimeError, "run identity invalid"):
+                    staging_metrics_probe.sample(candidate_id, candidate_id, 1790000000)
+
+                app_manifest_path = app_root / "manifest.json"
+                app_manifest = json.loads(app_manifest_path.read_text(encoding="utf-8"))
+                app_manifest["images"]["backend"] = "sha256:" + "f" * 64
+                app_manifest_path.write_text(json.dumps(app_manifest), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "application candidate identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                app_manifest["images"]["backend"] = candidate["candidate_image_digest"]
+                app_manifest_path.write_text(json.dumps(app_manifest), encoding="utf-8")
+
+                backend["Config"]["Labels"]["com.docker.compose.project"] = "binhu-production"
+                with self.assertRaisesRegex(RuntimeError, "backend container identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+                backend["Config"]["Labels"]["com.docker.compose.project"] = "binhu-staging"
+
+                pipeline[0]["Image"] = "sha256:" + "f" * 64
+                with self.assertRaisesRegex(RuntimeError, "pipeline container identity mismatch"):
+                    staging_metrics_probe._validate_load_candidate(candidate_id)
+
+    def test_retirement_is_fixed_to_authorized_run_and_preserves_volumes(self):
+        gateway = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "binhu-staging-event-pipeline-gateway.py"
+        ).read_text(encoding="utf-8")
+        wrapper = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "binhu-staging-event-pipeline-gateway"
+        ).read_text(encoding="utf-8")
+        install = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "install-staging-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('RETIRE_TARGETS = frozenset({"STG-20261027-07", "STG-20261028-03"})', gateway)
+        self.assertNotIn('RETIRE_TARGET = "STG-20261007-03"', gateway)
+        self.assertIn('RETIRE_SUCCESSOR = "STG-20261027-02"', gateway)
+        self.assertIn('FAILED_RETIRE_TARGETS = frozenset({"STG-20261027-04", "STG-20261027-05"})', gateway)
+        self.assertIn('def retire_failed(run_id: str)', gateway)
+        self.assertIn('"down", "--remove-orphans"', gateway)
+        self.assertNotIn('"down", "-v"', gateway)
+        self.assertIn("measure|apply|switch|rollback|retire|retire-failed", wrapper)
+        self.assertIn("run)", wrapper)
+        self.assertIn("retire STG-20261027-07", install)
+        self.assertIn("retire STG-20261028-03", install)
+        self.assertNotIn("retire STG-20261007-03", install)
+        self.assertIn("retire-failed STG-20261027-04", install)
+
+    def test_retirement_allowlist_rejects_other_valid_run_ids(self):
+        for run_id in ("STG-20261007-03", "STG-20261029-02"):
+            with self.subTest(run_id=run_id), self.assertRaises(SystemExit):
+                staging_gateway.retire(run_id)
+
+    def test_retirement_sudoers_has_no_wildcard(self):
+        install = (
+            Path(__file__).parents[1] / "environments" / "event_pipeline" /
+            "install-staging-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertNotRegex(install, r"retire \*")
+
+    def test_retirement_rejects_foreign_run_without_docker_access(self):
+        with self.assertRaises(SystemExit):
+            staging_gateway.retire("STG-20261027-02")
+
+    def test_failed_retirement_rejects_foreign_run_without_docker_access(self):
+        with self.assertRaises(SystemExit):
+            staging_gateway.retire_failed("STG-20261027-02")
+
+    def test_failed_retirement_requires_matching_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            evidence = state / "evidence" / "STG-20261027-05" / "apply-run"
+            evidence.mkdir(parents=True)
+            (evidence / "failure.json").write_text(json.dumps({
+                "environment": "staging", "run_id": "STG-20261027-05",
+                "acceptance": "failed", "error_code": "flink_rest_http_400",
+            }), encoding="utf-8")
+            with patch.object(staging_gateway, "STATE", state):
+                result = staging_gateway._failed_retirement_evidence("STG-20261027-05")
+            self.assertEqual(result[0]["path"], "apply-run/failure.json")
+            self.assertRegex(result[0]["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_failed_retirement_rejects_missing_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            (state / "evidence" / "STG-20261027-05").mkdir(parents=True)
+            with patch.object(staging_gateway, "STATE", state):
+                with self.assertRaisesRegex(ValueError, "staging_retirement_failure_evidence_missing"):
+                    staging_gateway._failed_retirement_evidence("STG-20261027-05")
+
+    def test_realistic_load_workflow_runs_fixed_profiles_and_keeps_production_outside_gateway(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /
                     "run-staging-realistic-load.yml").read_text(encoding="utf-8")
         for marker in (
-            '"run $RUN_ID"', '"sample $RUN_ID"', "--users 75", "--run-time 30m",
+            '"run $CANDIDATE_RUN_ID $RUN_ID"', 'sample $CANDIDATE_RUN_ID $RUN_ID $monitor_start_epoch$sample_suffix',
+            "options: [low20, full75]", '--users "$users"', '--spawn-rate "$spawn_rate"',
+            '--run-time "${duration_seconds}s"',
             "/staging/api/query/", "staging-samples.jsonl", "derived_queue",
+            "waive_4gib_memory_gate", "default: false", "staging.load_monitor observe",
+            "production_stop_thresholds", "health_failures",
+            "production_mode", "production_pause_run_id",
+            "PROD-PAUSE-[0-9]{8}-[0-9]{2}",
         ):
             self.assertIn(marker, workflow)
+        profile = (Path(__file__).parents[2] / "load-tests" / "staging" / "profile.py").read_text(encoding="utf-8")
+        self.assertIn('"low20": LoadProfile(', profile)
+        self.assertIn("name=\"low20\", users=20, spawn_rate=2, duration_seconds=600", profile)
         self.assertNotIn("BINHU_DEPLOY_SSH_KEY", workflow)
         self.assertNotIn("binhu-deploy@", workflow)
+
+    def test_realistic_load_wrapper_requires_the_authorized_pause_run(self):
+        wrapper = (Path(__file__).parents[1] / "environments" / "event_pipeline" /
+                   "binhu-staging-event-pipeline-gateway").read_text(encoding="utf-8")
+        gateway = (Path(__file__).parents[1] / "environments" / "event_pipeline" /
+                   "binhu-staging-event-pipeline-gateway.py").read_text(encoding="utf-8")
+        self.assertIn('"${#parts[@]}" -eq 4 || "${#parts[@]}" -eq 6', wrapper)
+        self.assertIn('"${parts[1]}" =~ ^STG-[0-9]{8}-[0-9]{2}$', wrapper)
+        self.assertNotIn('"${parts[1]}" == STG-20261029-02', wrapper)
+        self.assertIn('"${parts[4]}" == production_paused', wrapper)
+        self.assertIn('"${parts[5]}" =~ ^PROD-PAUSE-[0-9]{8}-[0-9]{2}$', wrapper)
+        self.assertIn('re.fullmatch(r"PROD-PAUSE-[0-9]{8}-[0-9]{2}", sys.argv[6])', gateway)
 
     def test_rollback_workflow_uses_only_fixed_staging_command(self):
         workflow = (Path(__file__).parents[2] / ".github" / "workflows" /

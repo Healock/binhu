@@ -3,6 +3,9 @@ set -euo pipefail
 command_line="${SSH_ORIGINAL_COMMAND:-}"
 read -r -a parts <<< "$command_line"
 case "${parts[0]:-}" in
+  identity)
+    [[ ${#parts[@]} -eq 1 ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway identity ;;
   status)
     [[ ${#parts[@]} -eq 1 ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway status ;;

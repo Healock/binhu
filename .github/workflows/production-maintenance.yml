@@ -13,14 +13,20 @@ on:
           - photo-sheet-retirement
           - registry-property-identity
           - venue-photo-recovery
+          - pause-production
+          - resume-production
       phase:
         description: Maintenance phase
         required: true
         type: choice
-        options: [measure, backup, apply, verify, rollback]
+        options: [measure, backup, apply, verify, rollback, execute]
       run_id:
         description: Immutable evidence run id
         required: true
+        type: string
+      pause_run_id:
+        description: Successful pause run id (resume-production only)
+        required: false
         type: string
       expected_count:
         description: Count confirmed by the measurement phase (apply only)
@@ -49,6 +55,8 @@ on:
           - confirm-registry-property-identity
           - confirm-registry-property-identity-rollback
           - confirm-venue-photo-recovery
+          - confirm-pause-production
+          - confirm-resume-production
         default: none
 
 permissions:
@@ -61,7 +69,7 @@ concurrency:
 jobs:
   maintenance:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.operation == 'pause-production' && 150 || 30 }}
     environment: production
     steps:
       - name: Prepare restricted SSH identity
@@ -82,6 +90,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           PHASE: ${{ inputs.phase }}
           RUN_ID: ${{ inputs.run_id }}
+          PAUSE_RUN_ID: ${{ inputs.pause_run_id }}
           EXPECTED_COUNT: ${{ inputs.expected_count }}
           OLD_PROPERTY_ID: ${{ inputs.old_property_id }}
           CANONICAL_PROPERTY_ID: ${{ inputs.canonical_property_id }}
@@ -90,10 +99,27 @@ jobs:
           INITIATED_BY: ${{ github.actor }}
         run: |
           set -Eeuo pipefail
-          [[ "$OPERATION" =~ ^(internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery)$ ]]
-          [[ "$PHASE" =~ ^(measure|backup|apply|verify|rollback)$ ]]
+          [[ "$OPERATION" =~ ^(internal-department-retirement|photo-sheet-retirement|registry-property-identity|venue-photo-recovery|pause-production|resume-production)$ ]]
+          [[ "$PHASE" =~ ^(measure|backup|apply|verify|rollback|execute)$ ]]
           [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]]
-          if [[ "$OPERATION" == registry-property-identity ]]; then
+          if [[ "$OPERATION" == pause-production || "$OPERATION" == resume-production ]]; then
+            [[ "$PHASE" == execute ]]
+            [[ -z "$EXPECTED_COUNT" && -z "$OLD_PROPERTY_ID" && -z "$CANONICAL_PROPERTY_ID" && -z "$MEASUREMENT_HASH" ]]
+            if [[ "$OPERATION" == pause-production ]]; then
+              [[ "$CONFIRMATION" == confirm-pause-production ]]
+              [[ -z "$PAUSE_RUN_ID" ]]
+            else
+              [[ "$CONFIRMATION" == confirm-resume-production ]]
+              [[ "$PAUSE_RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$ ]]
+              [[ "$PAUSE_RUN_ID" != "$RUN_ID" ]]
+            fi
+          else
+            [[ "$PHASE" =~ ^(measure|backup|apply|verify|rollback)$ ]]
+            [[ -z "$PAUSE_RUN_ID" ]]
+          fi
+          if [[ "$OPERATION" == pause-production || "$OPERATION" == resume-production ]]; then
+            :
+          elif [[ "$OPERATION" == registry-property-identity ]]; then
             [[ -z "$EXPECTED_COUNT" ]]
             [[ "$INITIATED_BY" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,99}$ ]]
             valid_property_id() {
@@ -153,6 +179,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           PHASE: ${{ inputs.phase }}
           RUN_ID: ${{ inputs.run_id }}
+          PAUSE_RUN_ID: ${{ inputs.pause_run_id }}
           EXPECTED_COUNT: ${{ inputs.expected_count }}
           OLD_PROPERTY_ID: ${{ inputs.old_property_id }}
           CANONICAL_PROPERTY_ID: ${{ inputs.canonical_property_id }}
@@ -162,7 +189,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           command=(production-maintenance "$OPERATION" "$PHASE" "$RUN_ID")
-          if [[ "$OPERATION" == registry-property-identity ]]; then
+          if [[ "$OPERATION" == pause-production || "$OPERATION" == resume-production ]]; then
+            if [[ "$OPERATION" == resume-production ]]; then
+              command+=("$PAUSE_RUN_ID")
+            fi
+            command+=("$CONFIRMATION")
+          elif [[ "$OPERATION" == registry-property-identity ]]; then
             case "$PHASE" in
               measure|verify) command+=("$OLD_PROPERTY_ID" "$CANONICAL_PROPERTY_ID" "$INITIATED_BY") ;;
               backup) command+=("$INITIATED_BY") ;;

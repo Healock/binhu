@@ -1,8 +1,25 @@
 # 开发与运维手册
 
+## 指令核查读模型迁移与验证准备
+
+Dev/Staging 的指令核查验收须使用同一候选源码与加密事件合同。启动新 Backend 前先备份目标环境数据库，依次执行 `migrations.task_command_read_model` 和 `migrations.task_view_state_revisions` 的 `measure → migrate --apply → verify`；启用在线汇总时还须执行 `migrations.online_summary_fact_outbox`。这些命令不能用启动建表代替。Dev 只使用可追踪、可清理的合成数据；通过后才推进 Staging，不修改 Production。
+
+Staging 固定迁移入口必须绑定已完成 Staging `measure` 且仍与 Dev 验收身份一致的候选 artifact。它在 Staging 内部网络用该候选的不可变 Backend 镜像运行上述两个固定迁移模块；数据库连接身份取自已校验的 Staging 配置。`apply` 前会重测并比较摘要，再备份八库。不得用当前运行中的旧 Backend 调 `init_db()` 代替候选迁移；迁移完成并 `verify` 后，再用新的 Staging run ID 执行应用 `prepare → measure → apply → accept`。
+
+`migrations.task_read_model_backfill` 按来源 ID 每页最多 250 条读取，再写命令与 Outbox；不能在同一游标执行写入后继续读取旧结果集。回填仅发出加密事件，不直接填充 Redis；`task_read_model_activation measure` 用于对账，`verify` 会修改 Redis readiness 标记，应按写操作执行。
+
+Dev 沿用固定 worker 镜像时，运行时 dispatcher、业务桥、Outbox relay、事件合同和汇总合同必须由候选只读挂载并纳入 manifest 哈希。只替换 Flink JAR 或看到容器启动不代表新业务链路生效。实际验收须绑定合成任务的 command/event ID、Kafka offset、Flink checkpoint、Redis revision 和 API 读回结果，并覆盖删除、重复、乱序、故障 503 与恢复对账。
+
 ## 诊断、变更与证据边界
 
 需要确认生产服务器当前状态时，先复用已登记的持久 SSH stdio MCP，并限定为一次有开始和结束边界的只读检查。只读取必要的版本、容器/进程状态、有限时间窗口日志、网络/磁盘/内存指标、部署台账和公开清单；输出必须脱敏。MCP 不能执行写文件、重启、清理、迁移、配置修改或外部平台操作，也不能替代发布网关。
+
+### 连接和网关最小化
+
+- 日常服务器访问、只读诊断和普通运维优先复用已登记的 SSH/MCP 连接。固定目标、账号、密钥和 known_hosts 是连接配置问题，不能通过临时切换 Remote SSH、裸 SSH、Workflow 或新增网关来回避。
+- 默认不新增运维网关、Workflow 或连接相关 PR。单次故障、只读检查、一次性命令和普通排障必须使用现有 SSH/MCP 或已有入口；没有持久化变更时，不创建 PR。
+- 只有高影响且可重复的操作，在必须固定参数、备份、回滚和机器可验证证据，并且现有 SSH 或既有入口无法安全承载时，才允许提出专用入口。新增前必须记录替代方案、权限边界、唯一配置来源和退役计划；优先扩展已有入口，不按环境或命令复制网关。
+- SSH/MCP 负责连接和会话；服务器账号、authorized_keys、sudo 白名单和既有入口负责权限与审计。不能把连接工具本身当成权限边界，也不能把网关成功扩大解释为业务验收完成。
 
 诊断前先写明要排除的假设，并按代码/逻辑、制品/构建/打包、部署网关、服务器/环境/资源、外部依赖/网络、业务验收分类。每轮记录“假设—证据—结论—下一步”；同一阶段连续失败两次就暂停相同重试，重新归类和核对环境身份、权限与证据，不用改引号、重复脚本或空提交继续消耗时间。
 
@@ -314,7 +331,10 @@ MYSQL_ONLINE_DATA_DB=OnlineData
 MYSQL_ARCHIVE_DB=OnlineDataArchive
 MYSQL_DAILY_REPORT_DB=daily_report
 ENCRYPTION_KEY=<本机应用密钥>
+TASK_EVENT_ENCRYPTION_KEY=<独立且跨部署稳定的任务事件密钥>
 ```
+
+`TASK_EVENT_ENCRYPTION_KEY` 与 `ENCRYPTION_KEY` 分开生成并保存在本机环境配置中。替换或丢失该密钥会使已写入 Outbox/Kafka 的任务快照无法解密；不得在日志、命令输出或仓库中记录其值。
 
 ## 本地启动
 
@@ -1735,16 +1755,22 @@ python -m migrations.photo_sheet_retirement verify
 
 ## Production 固定维护入口
 
-部门归位、照片退役和单组房屋户号归并都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或手工拼接命令。三项操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
+部门归位、照片退役、单组房屋户号归并，以及资源维护时短暂停启 Production Backend/MySQL，都通过 GitHub `Production maintenance` 工作流进入生产，不能直接 SSH、执行临时 SQL 或手工拼接命令。各操作共用固定入口，但证据目录、数据库范围和确认口令彼此隔离：
 
 ```text
 production-maintenance <operation> <phase> <run-id>
 production-maintenance <operation> apply <run-id> <expected-count> <confirmation>
 production-maintenance registry-property-identity apply <run-id> <old-id> <canonical-id> <measurement-hash> confirm-registry-property-identity
 production-maintenance registry-property-identity rollback <run-id> <old-id> <canonical-id> <latest-verify-hash> confirm-registry-property-identity-rollback
+production-maintenance pause-production execute <run-id> confirm-pause-production
+production-maintenance resume-production execute <resume-run-id> <pause-run-id> confirm-resume-production
 ```
 
-允许的 `operation` 为 `internal-department-retirement`、`photo-sheet-retirement`、`registry-property-identity`。常规阶段为 `measure`、`backup`、`apply`、`verify`；`rollback` 只允许房屋身份归并使用。执行 `apply` 前必须有同一运行编号的测量和备份，脚本重新核对固定证据、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。房屋归并只接受一个旧房屋 ID、一个现行房屋 ID 和一个测量摘要，不接受候选列表、表名、SQL 或任意脚本路径。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
+允许的 `operation` 还包括 `venue-photo-recovery`、`pause-production` 和 `resume-production`。常规阶段为 `measure`、`backup`、`apply`、`verify`；`rollback` 只允许房屋身份归并使用，服务控制只接受 `execute`。执行已有数据维护操作的 `apply` 前必须有同一运行编号的测量和备份，脚本重新核对固定证据、备份清单和确认口令。部门归位使用 `confirm-remove-internal`，照片退役使用 `confirm-empty-photo-tables`。房屋归并只接受一个旧房屋 ID、一个现行房屋 ID 和一个测量摘要，不接受候选列表、表名、SQL 或任意脚本路径。运行证据保存于服务器 root-only 目录 `/srv/binhu-release-evidence-maintenance/<operation>/<run-id>/`，备份保存于 `deploy-backups/automated/maintenance-<operation>-<run-id>/`。
+
+Production 服务控制只允许操作固定 Compose 项目中的 `backend` 和 `mysql` 服务（容器名为 `binhu-backend`、`binhu-mysql`）。`pause-production` 会先确认两个服务正常，并检查 Production 的 bootstrap 与 health 接口，然后立即生成并校验八库 gzip 备份及 SHA-256：`OnlineData`、`OnlineDataArchive`、`daily_report`、`PlatformData`、`VisitData`、`DispatchData`、`RegistryData`、`WorkflowData`。暂停时备份清单不得超过 30 分钟。备份通过后按 Backend 在先、MySQL 在后的顺序停止服务。Redis、ops-agent、FRP/SSH、Staging、Dev、网络、卷和 checkpoint 数据不在操作目标内；脚本对比操作前后的容器 ID 与状态，任何非目标容器变化都会记为失败。
+
+`resume-production` 使用新的恢复运行编号，并通过 `pause_run_id` 精确引用暂停成功记录及其备份哈希。它先启动 MySQL 并等待健康检查通过，再启动 Backend，随后检查 `/api/health`、`/api/app/bootstrap` 返回的 Production 身份和只读 `/api/query/types` 路由。恢复失败后可用新的恢复运行编号重试；同一暂停记录仍保持不变。响应正文与凭据不会写入证据。暂停期间 Production 会中断，因此只应在批准的维护窗口执行。失败证据不可覆盖；新一轮暂停必须使用新运行编号。暂停备份作为恢复材料保留，不会自动回写数据。
 
 该入口由服务器 root 安装，不随普通应用发布自动覆盖。网关/维护脚本 PR 合并并通过 CI 后，首次 Production promotion 前由部署负责人执行 `deploy/install-server-deployer.sh`；先保存现有 `/usr/local/bin/binhu-deploy-gateway`、`/usr/local/sbin/binhu-deploy`、`/usr/local/lib/binhu-deploy` 和 `/etc/sudoers.d/binhu-deploy` 的 root-only 备份，再检查安装文件 SHA-256、运行 `visudo -cf`，并用 `status` 和拒绝性命令验证入口边界。安装会部署 Staging promotion 校验器和受限 sudoers 命令；未完成这一步时，新 Production workflow 应失败关闭。迁移完成后不卸载入口，保留供幂等 `verify` 和后续受控维护使用。
 

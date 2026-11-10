@@ -49,6 +49,55 @@ class EnvironmentUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'environment_image_reference_invalid'):
             image_digest_reference('binhu-backend:latest')
 
+    def test_startup_diagnostic_keeps_only_redacted_failure_facts(self):
+        container_id = 'a' * 64
+        outputs = [
+            SimpleNamespace(returncode=0, stdout=container_id + '\n', stderr=''),
+            SimpleNamespace(returncode=0, stdout=json.dumps([{
+                'Config': {'Labels': {
+                    'com.docker.compose.project': 'binhu-staging',
+                    'binhu.environment': 'staging'}},
+                'State': {'Status': 'restarting', 'ExitCode': 3, 'OOMKilled': False},
+                'RestartCount': 6,
+            }]), stderr=''),
+            SimpleNamespace(returncode=0, stdout=(
+                'Application startup failed. Exiting.\n'
+                'Traceback (most recent call last):\n'
+                'pymysql.err.OperationalError: (1045, \"Access denied for secret-user\")\n'
+            ), stderr='private-password-value'),
+        ]
+        with patch.object(update.subprocess, 'run', side_effect=outputs) as run:
+            report = update.startup_failure_diagnostic('staging', Path('/staging'))
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(report['container_status'], 'restarting')
+        self.assertEqual(report['restart_count'], 6)
+        self.assertEqual(report['exit_code'], 3)
+        self.assertFalse(report['oom_killed'])
+        self.assertEqual(report['startup_failed_markers'], 1)
+        self.assertEqual(report['traceback_markers'], 1)
+        self.assertEqual(report['exception_types'], ['OperationalError'])
+        self.assertEqual(report['mysql_error_codes'], ['1045'])
+        self.assertNotIn('Access denied', json.dumps(report))
+        self.assertNotIn('secret-user', json.dumps(report))
+        self.assertNotIn('private-password-value', json.dumps(report))
+
+    def test_startup_diagnostic_rejects_container_from_wrong_environment(self):
+        container_id = 'b' * 64
+        outputs = [
+            SimpleNamespace(returncode=0, stdout=container_id, stderr=''),
+            SimpleNamespace(returncode=0, stdout=json.dumps([{
+                'Config': {'Labels': {
+                    'com.docker.compose.project': 'binhu-production',
+                    'binhu.environment': 'production'}},
+                'State': {}, 'RestartCount': 0,
+            }]), stderr=''),
+        ]
+        with patch.object(update.subprocess, 'run', side_effect=outputs) as run:
+            report = update.startup_failure_diagnostic('staging', Path('/staging'))
+        self.assertEqual(run.call_count, 2)
+        self.assertFalse(report['container_found'])
+        self.assertFalse(report['logs_read'])
+
     def test_canonical_database_manifest_maps_legacy_runtime_keys(self):
         values = {f'MYSQL_{key}_DB': 'Staging_' + domain
                   for key, domain in zip(update.KEYS, update.DOMAINS)}
@@ -187,6 +236,10 @@ class EnvironmentUpdateTests(unittest.TestCase):
                     stack.enter_context(patch.object(update, 'command', side_effect=command))
                     backup = stack.enter_context(patch.object(update, 'backup_databases',
                         side_effect=RuntimeError('backup failed') if failure == 'backup' else None))
+                    startup_diagnostic = stack.enter_context(patch.object(
+                        update, 'startup_failure_diagnostic',
+                        return_value={'schema': 1, 'container_found': True,
+                                      'exception_types': ['OperationalError']}))
                     stack.enter_context(patch.object(update, 'health',
                         side_effect=ValueError('unhealthy') if failure == 'health' else None,
                         return_value={'health': True}))
@@ -213,6 +266,14 @@ class EnvironmentUpdateTests(unittest.TestCase):
                         })
                         self.assertIsInstance(failure_report['started_at'], int)
                         self.assertEqual(failure_report['rollback'], failure_report['rollback_status'])
+                        if failure == 'health':
+                            self.assertEqual(json.loads(
+                                (evidence / 'startup-diagnostic.json').read_text()), {
+                                'schema': 1, 'container_found': True,
+                                'exception_types': ['OperationalError']})
+                            startup_diagnostic.assert_called_once_with(environment, target)
+                        else:
+                            startup_diagnostic.assert_not_called()
                     backup.assert_called_once()
                 updates = [arguments for arguments in calls if 'up' in arguments]
                 self.assertEqual(len(updates), {'none': 1, 'backup': 0, 'health': 2}[failure])

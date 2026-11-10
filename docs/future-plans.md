@@ -12,7 +12,7 @@
 | Dev Kafka、Flink 与 Redis 架构升级 | Dev 元数据链路已合入主线，开发验收中；未切换生产 | [Dev Kafka、Flink 与 Redis 架构升级](future-plans/dev-kafka-flink-redis-runtime.md) |
 | Kafka/Flink/Redis 直接切换合同 | 任务元数据域的受控状态合同已在 PR 中实现；Flink 读取适配器、Staging 复测和 Production 发布仍待完成 | [直接切换合同](plans/architecture-direct-cutover.md) |
 | Dev Python/Flink 双轨比对 | Dev 三档规模验收有记录；恢复门禁未通过，Staging 未验证 | [Dev Python/Flink 双轨比对](future-plans/dev-dual-track-comparison.md) |
-| 腾讯表时代数据模型退场 | 长期迁移规划，实施前重新盘点 | [腾讯表时代数据模型退场](future-plans/legacy-task-model-retirement.md) |
+| 腾讯表时代数据模型退场 | 统一任务与来源记录设计提案中；未实施 | [腾讯表时代数据模型退场](future-plans/legacy-task-model-retirement.md) |
 | 生产接口拥堵诊断与抗压治理 | 排查记录已归档，整改另行推进 | [生产接口拥堵治理](future-plans/production-congestion-observability.md) |
 | 外部出勤和请假系统对接 | 已确定方向，未开始 | [外部出勤和请假系统](future-plans/external-attendance-leave.md) |
 | 流口标签与确认地址工作台 | PR/验收台账独立维护 | [流口标签与确认地址工作台](future-plans/flow-address-confirmation.md) |

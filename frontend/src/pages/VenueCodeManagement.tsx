@@ -313,7 +313,7 @@ export default function VenueCodeManagement() {
                 <Select mode="multiple" allowClear maxTagCount="responsive" placeholder="全部场所" options={venues.filter(item => item.status !== 'deleted').map(item => ({ label: item.name, value: item.id }))} />
               </Form.Item>
               <Form.Item name="keyword" label="关键词">
-                <Input allowClear placeholder="姓名、身份证号、手机号、地址" />
+                <Input allowClear placeholder="姓名、身份证号、手机号或地址" />
               </Form.Item>
               <Form.Item name="range" label="登记时间">
                 <DatePicker.RangePicker showTime className="venue-visit-range" />

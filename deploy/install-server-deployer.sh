@@ -29,7 +29,8 @@ done
   && -f "$script_dir/binhu-maintenance" \
   && -f "$script_dir/environments/production_promotion.py" \
   && -f "$script_dir/environments/artifact.py" \
-  && -f "$script_dir/environments/image.py" ]] || {
+  && -f "$script_dir/environments/image.py" \
+  && -f "$script_dir/binhu-production-service-control" ]] || {
   echo "Run the installer from a complete deploy script directory." >&2
   exit 1
 }
@@ -62,6 +63,9 @@ install -o root -g root -m 0644 "$script_dir/environments/__init__.py" /usr/loca
 install -o root -g root -m 0644 "$script_dir/environments/production_promotion.py" \
   "$script_dir/environments/artifact.py" "$script_dir/environments/image.py" \
   /usr/local/lib/binhu-deploy/deploy/environments/
+install -d -o root -g root -m 0755 /usr/local/libexec
+install -o root -g root -m 0755 "$script_dir/binhu-production-service-control" \
+  /usr/local/libexec/binhu-production-service-control
 install -d -o root -g root -m 0750 "$state_dir" "$state_dir/incoming" \
   "$state_dir/work" "$state_dir/releases" "$state_dir/history"
 install -d -o "$deploy_user" -g "$deploy_user" -m 0700 "$deploy_home/.ssh"
@@ -94,6 +98,7 @@ chmod 0440 /etc/sudoers.d/binhu-deploy
 visudo -cf /etc/sudoers.d/binhu-deploy >/dev/null
 
 restorecon -Rv "$deploy_home/.ssh" /usr/local/sbin/binhu-deploy \
-  /usr/local/sbin/binhu-maintenance /usr/local/bin/binhu-deploy-gateway 2>/dev/null || true
+  /usr/local/sbin/binhu-maintenance /usr/local/libexec/binhu-production-service-control \
+  /usr/local/bin/binhu-deploy-gateway 2>/dev/null || true
 
 echo "Binhu deployment gateway installed for ${deploy_user}."

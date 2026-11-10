@@ -58,6 +58,8 @@ All three workflows require the fixed `BINHU_STAGING_HOST` and
 The application account accepts only:
 
 ```text
+identity
+status
 prepare <staging-app-run-id> <40-hex-main-commit> <version> <artifact-id> <dev-update-run-id>
 measure <run-id> <artifact-id>
 apply <run-id> <artifact-id>
@@ -71,6 +73,11 @@ Docker build. It also verifies that image's labels and full `/app` file hashes.
 `measure`, `apply` and `accept` each require the successful Dev update record and
 the live Dev manifest to continue containing those exact IDs before Staging can
 advance.
+`identity` is a no-argument, read-only diagnostic. It returns only the live
+Staging backend digest, artifact ID, commit, version, project identity, and IDs
+of Dev/Staging acceptance records matching that complete immutable identity.
+It does not expose file paths, configuration contents, credentials, or other
+acceptance records, and does not write environment or audit state.
 Every step records commit, version, artifact ID, image ID, time and safe outcome.
 
 The data account accepts only `status`, `measure`, the fixed

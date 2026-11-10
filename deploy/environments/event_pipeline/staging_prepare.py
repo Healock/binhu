@@ -26,6 +26,7 @@ from .staging_compose import IMAGE_KEYS, compose, model_sha256, project_for
 
 
 BASE = Path("/srv/binhu-environments/staging-event-pipeline")
+BACKEND_ENV = Path("/srv/binhu-environments/staging/backend.env")
 SECRET_RE = re.compile(r"^[0-9a-f]{48}$")
 PUBLIC_FILES = frozenset({"compose.json", "init.sql", "redis.conf", "pipeline.sql", "pipeline-job.jar"})
 
@@ -138,7 +139,7 @@ CREATE TABLE dev_task_metadata_python_events (
 
 
 def runtime_environment(run_id: str, *, mysql_password: str, redis_password: str,
-                        backend_redis_url: str) -> dict[str, str]:
+                        backend_redis_url: str, task_event_key: str = "") -> dict[str, str]:
     env = {
         "APP_ENVIRONMENT": "staging", "PIPELINE_RUN_ID": run_id, "STAGING_RUN_ID": run_id,
         "MYSQL_HOST": "staging-derived-mysql", "MYSQL_DATABASE": "Staging_EventPipeline",
@@ -146,6 +147,7 @@ def runtime_environment(run_id: str, *, mysql_password: str, redis_password: str
         "REDIS_HOST": "staging-derived-redis", "REDIS_PASSWORD": redis_password,
         "KAFKA_BOOTSTRAP_SERVERS": "staging-kafka-1:9092,staging-kafka-2:9092,staging-kafka-3:9092",
         "BACKEND_REDIS_URL": backend_redis_url, "BACKEND_REDIS_STREAM_KEY": "binhu:events",
+        "TASK_EVENT_ENCRYPTION_KEY": task_event_key,
         "BACKEND_REDIS_START_ID": "$",
     }
     configuration(env)
@@ -161,13 +163,16 @@ def snapshot_database(snapshot_id: str, domain: str) -> str:
 
 
 def backend_environment(run_id: str, *, password: str, redis_url: str,
-                        snapshot_id: str) -> dict[str, str]:
+                        snapshot_id: str, summary_database: str = "",
+                        summary_relay_enabled: bool = False) -> dict[str, str]:
     env = {
         "APP_ENVIRONMENT": "staging", "PIPELINE_RUN_ID": run_id, "STAGING_RUN_ID": run_id,
         "BACKEND_MYSQL_HOST": "environment-mysql",
         "BACKEND_MYSQL_DATABASE": snapshot_database(snapshot_id, "OnlineData"),
         "BACKEND_MYSQL_USER": "environment_app", "BACKEND_MYSQL_PASSWORD": password,
         "BACKEND_REDIS_URL": redis_url, "BACKEND_REDIS_STREAM_KEY": "binhu:events",
+        "BACKEND_SUMMARY_MYSQL_DATABASE": summary_database,
+        "BACKEND_SUMMARY_FACT_RELAY_ENABLED": str(summary_relay_enabled).lower(),
     }
     backend_relay_configuration(env)
     return env
@@ -177,6 +182,22 @@ def _env_text(values: dict[str, str]) -> str:
     if any("\n" in value or "\r" in value for value in values.values()):
         raise ValueError("Staging credential contains a line break")
     return "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
+
+
+def _load_task_event_key(path: Path = BACKEND_ENV) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Staging Backend environment missing")
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = value
+    secret = values.get("TASK_EVENT_ENCRYPTION_KEY", "")
+    if len(secret.encode("utf-8")) < 32:
+        raise ValueError("Staging task event key unavailable")
+    return secret
 
 
 def _copy_code(source: Path, destination: Path) -> None:
@@ -213,7 +234,8 @@ def _hashes(root: Path, names: Iterable[str]) -> dict[str, str]:
 
 def prepare(run_id: str, images: dict[str, str], *, source: Path, pipeline_jar: Path,
             snapshot_id: str,
-            environ: dict[str, str] | None = None, verify_images: bool = True) -> dict:
+            environ: dict[str, str] | None = None, verify_images: bool = True,
+            task_event_key: str | None = None) -> dict:
     values = os.environ if environ is None else environ
     spec = compose(images, run_id)
     root = root_for(run_id)
@@ -237,14 +259,21 @@ def prepare(run_id: str, images: dict[str, str], *, source: Path, pipeline_jar: 
     redis_password = values.get("STAGING_PIPELINE_REDIS_PASSWORD", "")
     backend_password = values.get("STAGING_BACKEND_MYSQL_PASSWORD", "")
     backend_redis_url = values.get("STAGING_BACKEND_REDIS_URL", "")
+    summary_database = values.get("STAGING_ONLINE_SUMMARY_DATABASE", "")
+    summary_relay_enabled = values.get("STAGING_ONLINE_SUMMARY_FACT_RELAY_ENABLED", "false").lower() == "true"
+    if summary_relay_enabled and not summary_database:
+        raise ValueError("Staging summary database identity must be supplied out of band")
     if not all(SECRET_RE.fullmatch(item or "") for item in (mysql_password, mysql_root_password, redis_password)):
         raise ValueError("independent Staging pipeline credentials required")
     runtime_env = runtime_environment(run_id, mysql_password=mysql_password,
                                       redis_password=redis_password,
-                                      backend_redis_url=backend_redis_url)
+                                      backend_redis_url=backend_redis_url,
+                                      task_event_key=(task_event_key if task_event_key is not None
+                                                      else _load_task_event_key()))
     backend_env = backend_environment(
         run_id, password=backend_password, redis_url=backend_redis_url,
-        snapshot_id=snapshot_id,
+        snapshot_id=snapshot_id, summary_database=summary_database,
+        summary_relay_enabled=summary_relay_enabled,
     )
 
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -255,6 +284,11 @@ def prepare(run_id: str, images: dict[str, str], *, source: Path, pipeline_jar: 
             "init.sql": init_sql(run_id),
             "runtime.env": _env_text(runtime_env),
             "backend-relay.env": _env_text(backend_env),
+            "flink-task.env": _env_text({
+                "APP_ENVIRONMENT": "staging", "STAGING_RUN_ID": run_id,
+                "TASK_EVENT_ENCRYPTION_KEY": runtime_env["TASK_EVENT_ENCRYPTION_KEY"],
+                "BACKEND_REDIS_URL": backend_redis_url,
+            }),
             "mysql.env": _env_text({
                 "MYSQL_ROOT_PASSWORD": mysql_root_password,
                 "MYSQL_DATABASE": "Staging_EventPipeline", "MYSQL_USER": "staging_pipeline",

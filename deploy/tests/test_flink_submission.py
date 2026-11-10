@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
-from deploy.environments.event_pipeline import flink_submission
+from deploy.environments.event_pipeline import flink_sql, flink_submission
 
 
 RUN_ID = "dev-20260915-dualtrack-monitor08"
@@ -15,25 +16,32 @@ def sql(run_id: str = RUN_ID, group_id: str | None = None) -> str:
 SET 'pipeline.name' = '{run_id}';
 CREATE TABLE dev_events (event_id STRING, task_id STRING, source_id BIGINT,
   revision BIGINT, environment STRING, run_id STRING) WITH (
-  'connector' = 'kafka', 'topic' = 'dev.task.events.v1',
+  'connector' = 'kafka', 'topic' = 'dev.task.read-model.v4',
   'properties.group.id' = '{group_id}');
+CREATE TABLE dev_task_events_redis (event_id STRING, task_id STRING, source_id BIGINT,
+  revision BIGINT, environment STRING, run_id STRING) WITH (
+  'connector' = 'kafka', 'topic' = 'dev.task.read-model.v4',
+  'properties.group.id' = '{run_id}-flink-redis');
 INSERT INTO dev_revisions
 SELECT run_id, task_id, source_id, MAX(revision)
 FROM dev_events
 WHERE environment = 'development' AND run_id = '{run_id}'
+ AND (schema_version = 4 OR schema_version = 6)
 GROUP BY run_id, task_id, source_id;
 INSERT INTO dev_task_metadata
 SELECT run_id, task_id, source_id, MAX(revision)
 FROM dev_events
 WHERE environment = 'development' AND run_id = '{run_id}'
+ AND (schema_version = 4 OR schema_version = 6)
 GROUP BY run_id, task_id, source_id;
 """
 
 
 def job(name: str = RUN_ID, state: str = "RUNNING", sinks: tuple[str, ...] =
-        ("dev_revisions", "dev_task_metadata")) -> dict:
+        ("dev_revisions", "dev_task_metadata", "task-read-model-redis")) -> dict:
     descriptions = [
         "Source: dev_events[1] -> (Calc[2], Calc[7])",
+        "Source: dev_task_events_redis[1] -> Calc[11]",
     ]
     descriptions.extend(f"Sink: {sink}" for sink in sinks)
     return {
@@ -74,6 +82,17 @@ class FlinkSubmissionContractTests(unittest.TestCase):
                 flink_submission.wait_for_rest(InvalidClient(), timeout=5)
         sleep.assert_not_called()
 
+    def test_job_attaches_redis_sink_to_the_submitted_stream_graph(self):
+        source = open("deploy/environments/event_pipeline/PipelineJob.java", encoding="utf-8").read()
+        self.assertIn("args.length != 1", source)
+        self.assertIn("String runId = args[0];", source)
+        self.assertIn("StreamTableEnvironment.create", source)
+        self.assertIn("statementSet.attachAsDataStream()", source)
+        self.assertIn("stream.execute(runId)", source)
+        self.assertIn("FROM dev_task_events_redis", source)
+        self.assertIn("(schema_version=4 OR schema_version=5 OR schema_version=6)", source)
+        self.assertIn('runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}")', source)
+
     def test_rest_readiness_has_a_fixed_timeout(self):
         class Client:
             def overview(self):
@@ -104,7 +123,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             report = flink_submission.wait_for_runtime(
                 client,
                 RUN_ID,
-                lambda: [f"{RUN_ID}-flink"],
+                lambda: [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"],
                 timeout=5,
             )
         self.assertEqual(report["run_id"], RUN_ID)
@@ -128,13 +147,32 @@ class FlinkSubmissionContractTests(unittest.TestCase):
             client.upload_jar("/tmp/other.jar")
         self.assertIn("path=@/tmp/dev-pipeline-job.jar", calls[0])
 
+    def test_run_jar_passes_the_validated_run_id_as_a_program_argument(self):
+        class Result:
+            returncode = 0
+            stdout = '{"jobid":"' + "a" * 32 + '"}\n__BINHU_HTTP_STATUS__:200'
+
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            return Result()
+
+        client = flink_submission.FlinkRest("dev-jobmanager", runner=runner)
+        self.assertEqual(client.run_jar("dev-pipeline-job.jar", RUN_ID), "a" * 32)
+        payload_index = calls[0].index("--data-binary") + 1
+        payload = json.loads(calls[0][payload_index])
+        self.assertEqual(payload["programArgsList"], [RUN_ID])
+        with self.assertRaisesRegex(ValueError, "pipeline run ID"):
+            client.run_jar("dev-pipeline-job.jar", "invalid")
+
     def test_uncertain_submission_reconciles_running_job_without_resubmit(self):
         class Client:
             def __init__(self):
                 self.run_calls = 0
                 self.overview_calls = 0
 
-            def run_jar(self, _jar_id):
+            def run_jar(self, _jar_id, _run_id):
                 self.run_calls += 1
                 raise flink_submission.FlinkRestError(
                     "flink_rest_transport_failed", "/jars/job.jar/run",
@@ -154,7 +192,7 @@ class FlinkSubmissionContractTests(unittest.TestCase):
 
     def test_uncertain_submission_preserves_transport_error_when_no_job_appears(self):
         class Client:
-            def run_jar(self, _jar_id):
+            def run_jar(self, _jar_id, _run_id):
                 raise flink_submission.FlinkRestError(
                     "flink_rest_timeout", "/jars/job.jar/run",
                 )
@@ -166,6 +204,30 @@ class FlinkSubmissionContractTests(unittest.TestCase):
                 patch.object(flink_submission.time, "sleep"):
             with self.assertRaisesRegex(flink_submission.FlinkRestError, "flink_rest_timeout"):
                 flink_submission.submit_jar_or_reconcile(Client(), "job.jar", RUN_ID, timeout=5)
+
+    def test_uncertain_submission_allows_slow_jobgraph_startup(self):
+        class Client:
+            def __init__(self):
+                self.run_calls = 0
+                self.overview_calls = 0
+
+            def run_jar(self, _jar_id, _run_id):
+                self.run_calls += 1
+                raise flink_submission.FlinkRestError(
+                    "flink_rest_transport_failed", "/jars/job.jar/run",
+                )
+
+            def overview(self):
+                self.overview_calls += 1
+                return [job()] if self.overview_calls >= 40 else []
+
+        client = Client()
+        with patch.object(flink_submission.time, "monotonic", side_effect=iter(range(200))), \
+                patch.object(flink_submission.time, "sleep"):
+            result = flink_submission.submit_jar_or_reconcile(client, "job.jar", RUN_ID)
+        self.assertEqual(result, {"mode": "reconciled", "job_id": job()["jid"]})
+        self.assertEqual(client.run_calls, 1)
+        self.assertEqual(client.overview_calls, 40)
 
     def test_runtime_identity_is_parsed_as_exact_key_values(self):
         self.assertEqual(
@@ -186,11 +248,42 @@ class FlinkSubmissionContractTests(unittest.TestCase):
     def test_sql_identity_must_match_manifest_run_id_and_group(self):
         identity = flink_submission.parse_sql_identity(sql())
         self.assertEqual(identity["run_id"], RUN_ID)
-        self.assertEqual(identity["consumer_group"], f"{RUN_ID}-flink")
+        self.assertEqual(identity["consumer_groups"], [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"])
         with self.assertRaisesRegex(ValueError, "run_id"):
             flink_submission.validate_sql_identity(sql("dev-stale"), RUN_ID)
         with self.assertRaisesRegex(ValueError, "consumer group"):
             flink_submission.validate_sql_identity(sql(group_id="dev-stale-flink"), RUN_ID)
+
+    def test_rendered_sql_matches_projection_schema_contract(self):
+        rendered = flink_sql.render({
+            "APP_ENVIRONMENT": "development",
+            "DEV_RUN_ID": RUN_ID,
+            "MYSQL_PASSWORD": "a" * 48,
+            "REDIS_PASSWORD": "b" * 48,
+            "MYSQL_HOST": "dev-derived-mysql",
+            "MYSQL_DATABASE": "Dev_EventPipeline",
+            "MYSQL_USER": "dev_pipeline",
+            "REDIS_HOST": "dev-derived-redis",
+            "KAFKA_BOOTSTRAP_SERVERS": "kafka-1:9092,kafka-2:9092,kafka-3:9092",
+            "BACKEND_REDIS_URL": "redis://:test-password@redis:6379/0",
+        })
+        identity = flink_submission.validate_sql_identity(rendered, RUN_ID)
+        self.assertEqual(identity["run_id"], RUN_ID)
+        self.assertEqual(identity["consumer_groups"], [
+            f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis",
+        ])
+
+    def test_sql_identity_ignores_non_kafka_tables_when_collecting_source_groups(self):
+        with_jdbc_sink = sql() + """
+CREATE TABLE dev_online_source_projection (
+  run_id STRING, task_id STRING, source_id BIGINT
+) WITH (
+  'connector' = 'jdbc',
+  'url' = 'jdbc:mysql://dev-derived-mysql:3306/Dev_EventPipeline'
+);
+"""
+        identity = flink_submission.validate_sql_identity(with_jdbc_sink, RUN_ID)
+        self.assertEqual(identity["consumer_groups"], [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"])
 
     def test_sql_identity_exposes_all_projection_sinks(self):
         extra = sql() + "INSERT INTO dev_online_source_projection SELECT * FROM dev_events;"
@@ -199,12 +292,23 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         self.assertIn("dev_revisions", identity["sinks"])
 
     def test_runtime_can_require_an_additional_projection_sink(self):
-        extra = job(sinks=("dev_revisions", "dev_task_metadata", "dev_online_source_projection"))
+        extra = job(sinks=("dev_revisions", "dev_task_metadata", "dev_online_source_projection",
+                           "task-read-model-redis"))
         report = flink_submission.validate_runtime(
-            [extra], [f"{RUN_ID}-flink"], RUN_ID,
-            expected_sinks=("dev_revisions", "dev_task_metadata", "dev_online_source_projection"),
+            [extra], [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"], RUN_ID,
+            expected_sinks=("dev_revisions", "dev_task_metadata", "dev_online_source_projection",
+                            "task-read-model-redis"),
         )
         self.assertIn("dev_online_source_projection", report["sinks"])
+
+    def test_sql_identity_rejects_missing_or_duplicate_redis_group(self):
+        missing = sql().replace(f"'properties.group.id' = '{RUN_ID}-flink-redis');", "'properties.group.id' = '{RUN_ID}-flink');")
+        with self.assertRaisesRegex(ValueError, "consumer groups"):
+            flink_submission.validate_sql_identity(missing, RUN_ID)
+
+    def test_sql_identity_requires_v4_filter(self):
+        with self.assertRaisesRegex(ValueError, "schema version"):
+            flink_submission.validate_sql_identity(sql().replace("schema_version = 4", "schema_version = 3"), RUN_ID)
 
     def test_job_graph_rejects_old_run_id_or_non_running_job(self):
         flink_submission.validate_job_graph(job(), RUN_ID)
@@ -215,8 +319,28 @@ class FlinkSubmissionContractTests(unittest.TestCase):
 
     def test_job_graph_accepts_real_flink_1_20_operator_descriptions(self):
         self.assertEqual(flink_submission.validate_job_graph(job(), RUN_ID)["sinks"], [
-            "dev_revisions", "dev_task_metadata",
+            "dev_revisions", "dev_task_metadata", "task-read-model-redis",
         ])
+
+    def test_job_graph_requires_exact_named_source_and_sinks(self):
+        with self.assertRaisesRegex(ValueError, "sources do not match"):
+            flink_submission.validate_job_graph(
+                {**job(), "plan": {"nodes": [
+                    {"description": "Sink: dev_revisions"},
+                    {"description": "Sink: dev_task_metadata"},
+                    {"description": "Sink: task-read-model-redis"},
+                ]}}, RUN_ID,
+            )
+        with self.assertRaisesRegex(ValueError, "unexpected sink"):
+            flink_submission.validate_job_graph(
+                {**job(), "plan": {"nodes": [
+                    {"description": "Source: dev_events[1] -> Calc"},
+                    {"description": "Source: dev_task_events_redis[1] -> Calc"},
+                    {"description": "Sink: dev_revisions_extra"},
+                    {"description": "Sink: dev_task_metadata"},
+                    {"description": "Sink: task-read-model-redis"},
+                ]}}, RUN_ID,
+            )
 
     def test_job_graph_uses_exact_job_name_for_run_identity(self):
         with self.assertRaisesRegex(ValueError, "run_id"):
@@ -255,19 +379,24 @@ class FlinkSubmissionContractTests(unittest.TestCase):
                     Client(), RUN_ID, lambda: [f"{RUN_ID}-flink"], timeout=1,
                 )
 
-    def test_job_graph_requires_both_insert_sinks(self):
+    def test_job_graph_requires_both_insert_sinks_and_redis_task_sink(self):
         with self.assertRaisesRegex(ValueError, "missing INSERT sink"):
             flink_submission.validate_job_graph(job(sinks=()), RUN_ID)
 
     def test_active_jobs_are_partitioned_without_touching_other_dev_jobs(self):
         current = job()
         stale_monitor = job("dev-20260915-dualtrack-monitor")
+        stale_task_run = job("dev-20261107-taskreadmodel14")
+        restarting_task_run = job("dev-20261107-taskreadmodel13", state="RESTARTING")
         other_dev_job = job("dev-20260915-metadata08")
         active, stale = flink_submission.partition_active_jobs(
-            [current, stale_monitor, other_dev_job], RUN_ID
+            [current, stale_monitor, stale_task_run, restarting_task_run, other_dev_job], RUN_ID
         )
         self.assertEqual([item["jid"] for item in active], [current["jid"]])
-        self.assertEqual([item["jid"] for item in stale], [stale_monitor["jid"]])
+        self.assertEqual(
+            [item["jid"] for item in stale],
+            [stale_monitor["jid"], stale_task_run["jid"], restarting_task_run["jid"]],
+        )
 
         finished = job("dev-20260915-dualtrack-monitor")
         finished["state"] = "CANCELED"
@@ -275,21 +404,26 @@ class FlinkSubmissionContractTests(unittest.TestCase):
         self.assertEqual(active, [])
         self.assertEqual(stale, [])
 
+        finished_task_run = job("dev-20261107-taskreadmodel12", state="FINISHED")
+        _, stale = flink_submission.partition_active_jobs([finished_task_run], RUN_ID)
+        self.assertEqual(stale, [])
+
     def test_runtime_requires_one_matching_job_with_both_sinks_and_group(self):
         report = flink_submission.validate_runtime(
             [job(RUN_ID)],
-            [f"{RUN_ID}-flink"], RUN_ID
+            [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"], RUN_ID
         )
         self.assertEqual(report["job_count"], 1)
+        self.assertEqual(report["consumer_groups"], [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"])
         with self.assertRaisesRegex(ValueError, "exactly one"):
-            flink_submission.validate_runtime([job(), job("second")], [f"{RUN_ID}-flink"], RUN_ID)
+            flink_submission.validate_runtime([job(), job("second")], [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"], RUN_ID)
         with self.assertRaisesRegex(ValueError, "consumer group"):
             flink_submission.validate_runtime(
-                [job(RUN_ID)], ["dev-stale-flink"], RUN_ID
+                [job(RUN_ID)], ["dev-stale-flink", "dev-stale-flink-redis"], RUN_ID
             )
         with self.assertRaisesRegex(ValueError, "missing INSERT sink"):
             flink_submission.validate_runtime(
-                [job(RUN_ID, sinks=("dev_revisions",))], [f"{RUN_ID}-flink"], RUN_ID
+                [job(RUN_ID, sinks=("dev_revisions",))], [f"{RUN_ID}-flink", f"{RUN_ID}-flink-redis"], RUN_ID
             )
 
     def test_stale_job_clear_waits_before_new_submission(self):

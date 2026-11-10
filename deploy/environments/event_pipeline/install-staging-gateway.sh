@@ -10,6 +10,9 @@ command -v useradd >/dev/null && command -v visudo >/dev/null && command -v open
 
 wrapper=/usr/local/bin/binhu-staging-event-pipeline-gateway
 install -o root -g root -m 0755 binhu-staging-event-pipeline-gateway.py /usr/local/libexec/binhu-staging-event-pipeline-gateway.py
+install -o root -g root -m 0644 staging_compose.py /usr/local/libexec/staging_compose.py
+install -o root -g root -m 0644 domain_pipeline.py /usr/local/libexec/domain_pipeline.py
+install -o root -g root -m 0644 identity.py /usr/local/libexec/identity.py
 install -o root -g root -m 0755 staging_backend_network.py /usr/local/libexec/binhu-staging-backend-network.py
 install -o root -g root -m 0755 staging_measure_diagnostic.py /usr/local/libexec/binhu-staging-measure-diagnostic.py
 install -o root -g root -m 0755 staging_apply_runtime_diagnostic.py /usr/local/libexec/binhu-staging-apply-runtime-diagnostic.py
@@ -30,12 +33,17 @@ chown binhu-staging-deploy:binhu-staging-deploy /home/binhu-staging-deploy/.ssh/
 chmod 0600 /home/binhu-staging-deploy/.ssh/authorized_keys
 cat > /etc/sudoers.d/binhu-staging-event-pipeline <<'EOF'
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py status
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py diagnose-measure STG-20261028-01
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py diagnose-prepare STG-20261028-02
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py prepare *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py measure *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py apply *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py run *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py sample *
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py rollback *
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py retire STG-20261027-07
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py retire STG-20261028-03
+binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py retire-failed STG-20261027-04
 binhu-staging-deploy ALL=(root) NOPASSWD: /usr/local/libexec/binhu-staging-event-pipeline-gateway.py verify *
 EOF
 chmod 0440 /etc/sudoers.d/binhu-staging-event-pipeline

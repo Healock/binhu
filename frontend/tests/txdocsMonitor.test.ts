@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const apiSource = readFileSync(new URL('../src/api/client.ts', import.meta.url), 'utf8')
 const pageSource = readFileSync(new URL('../src/pages/TxDocsMonitorSettings.tsx', import.meta.url), 'utf8')
+const dashboardSource = readFileSync(new URL('../src/pages/Dashboard.tsx', import.meta.url), 'utf8')
 
 test('腾讯只读连接凭据使用独立保存接口', () => {
   assert.match(apiSource, /put\('\/stats\/txdocs-monitor\/config\/credentials', payload\)/)
@@ -34,4 +35,13 @@ test('外部监控配置允许疑似未注销模型三', () => {
 
 test('外部监控配置允许疑似漏登记', () => {
   assert.match(pageSource, /疑似漏登记/)
+})
+
+test('在线汇总显示已留存的每日外部社区快照并提示读取缺口', () => {
+  assert.match(apiSource, /daily_read_coverage\?: TxDocsDailyReadCoverage\[\]/)
+  assert.match(apiSource, /daily_snapshots_by_community\?: TxDocsDailyCommunitySnapshot\[\]/)
+  assert.match(dashboardSource, /每日外部快照（按社区）/)
+  assert.match(dashboardSource, /历史读取不完整/)
+  assert.match(dashboardSource, /当前快照行数/)
+  assert.doesNotMatch(dashboardSource, /区间最高观察数|分社区最高快照/)
 })

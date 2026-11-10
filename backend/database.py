@@ -43,7 +43,7 @@ from services.qmf_community import seed_default_qmf_community_codes
 from services.administrative_areas import ensure_administrative_area_schema
 from services.parsers import TABLE_NAMES
 from services.local_source import ensure_local_source_schema, run_local_source_migration
-from services.domain_events import ensure_outbox_schema
+from services.domain_events import verify_outbox_schema
 from services.diagnostics import ensure_diagnostic_schema
 from services.help_docs import ensure_help_docs_schema
 from services.address_match_feedback import ensure_address_match_feedback_schema
@@ -2972,7 +2972,7 @@ class DatabaseManager:
                 await ensure_administrative_area_schema(cur)
                 await ensure_help_docs_schema(cur)
                 await ensure_bootstrap_admin(cur)
-                await ensure_outbox_schema(cur)
+                await verify_outbox_schema(cur, require_task_commands=True)
                 from services.assignment_projection_backfill import (
                     ensure_assignment_projection_backfill_schema,
                 )
@@ -3067,7 +3067,7 @@ class DatabaseManager:
         if "platform" in cls._pools:
             async with cls._pools["platform"].acquire() as conn:
                 async with conn.cursor() as cur:
-                    await ensure_outbox_schema(cur)
+                    await verify_outbox_schema(cur)
                     await ensure_diagnostic_schema(cur)
         if "workflow" in cls._pools:
             async with cls._pools["workflow"].acquire() as conn:

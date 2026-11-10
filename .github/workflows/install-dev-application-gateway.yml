@@ -45,6 +45,8 @@ jobs:
           install -d -m 700 "$package/deploy"
           cp deploy/__init__.py "$package/deploy/__init__.py"
           cp -a deploy/environments "$package/deploy/environments"
+          # Repository files may use CRLF; Unix shebangs and Python source on the target must use LF.
+          find "$package/deploy" -type f -exec sed -i 's/\r$//' {} +
           printf '%s\n' "$PUBLIC_KEY" > "$package/dev-app-deploy.pub"
           printf '%s\n' "$GITHUB_SHA" > "$package/dev-app-control-commit"
           tar -C "$package" -czf "$RUNNER_TEMP/dev-app-gateway.tar.gz" deploy dev-app-deploy.pub dev-app-control-commit

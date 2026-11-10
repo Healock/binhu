@@ -29,12 +29,12 @@ PROJECTIONS: tuple[ProjectionDefinition, ...] = (
          "watch_snapshot_revision BIGINT", "last_event_type VARCHAR(40)"),
         ("run_id", "task_id", "source_id"),
         """SELECT run_id, task_id, source_id, MAX(revision), COUNT(DISTINCT event_id),
- MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'address') THEN revision ELSE 0 END),
- MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'community') THEN revision ELSE 0 END),
- MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'inspector') THEN revision ELSE 0 END),
- MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'task_graph') THEN revision ELSE 0 END),
- MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'person_tags') THEN revision ELSE 0 END),
- MAX_BY(event_type, revision)
+ MAX(CASE WHEN address_changed = 1 THEN revision ELSE 0 END),
+ MAX(CASE WHEN community_changed = 1 THEN revision ELSE 0 END),
+ MAX(CASE WHEN inspector_changed = 1 THEN revision ELSE 0 END),
+ MAX(CASE WHEN task_graph_changed = 1 THEN revision ELSE 0 END),
+ MAX(CASE WHEN person_tags_changed = 1 THEN revision ELSE 0 END),
+ (ARRAY_AGG(event_type ORDER BY revision DESC, event_id DESC))[1]
 FROM dev_unique_events
 GROUP BY run_id, task_id, source_id""",
     ),
@@ -91,9 +91,9 @@ GROUP BY run_id, CAST(SUBSTRING(`timestamp`, 1, 10) AS DATE)""",
          "registry_revision BIGINT", "household_revision BIGINT", "tag_revision BIGINT"),
         ("run_id", "task_id", "source_id"),
         """SELECT run_id, task_id, source_id, MAX(revision),
- MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'community') THEN revision ELSE 0 END),
+ MAX(CASE WHEN community_changed = 1 THEN revision ELSE 0 END),
  MAX(CASE WHEN event_type IN ('task.created','task.deleted') THEN revision ELSE 0 END),
- MAX(CASE WHEN ARRAY_CONTAINS(changed_fields, 'person_tags') THEN revision ELSE 0 END)
+ MAX(CASE WHEN person_tags_changed = 1 THEN revision ELSE 0 END)
 FROM dev_unique_events
 GROUP BY run_id, task_id, source_id""",
     ),
@@ -104,7 +104,7 @@ GROUP BY run_id, task_id, source_id""",
         ("run_id",),
         """SELECT run_id,
  SUM(CASE WHEN event_type IN ('task.created','task.saved') THEN 1 ELSE 0 END),
- SUM(CASE WHEN ARRAY_CONTAINS(changed_fields, 'community') OR event_type='task.assigned' THEN 1 ELSE 0 END),
+ SUM(CASE WHEN community_changed = 1 OR event_type='task.assigned' THEN 1 ELSE 0 END),
  MAX(revision)
 FROM dev_unique_events
 GROUP BY run_id""",
@@ -115,7 +115,7 @@ GROUP BY run_id""",
          "assignment_events BIGINT", "latest_revision BIGINT"),
         ("run_id",),
         """SELECT run_id,
- SUM(CASE WHEN ARRAY_CONTAINS(changed_fields, 'inspector') THEN 1 ELSE 0 END),
+ SUM(CASE WHEN inspector_changed = 1 THEN 1 ELSE 0 END),
  SUM(CASE WHEN event_type='task.reviewed' THEN 1 ELSE 0 END),
  SUM(CASE WHEN event_type='task.assigned' THEN 1 ELSE 0 END), MAX(revision)
 FROM dev_unique_events

@@ -9,16 +9,26 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
-from .identity import validate_identity
+try:
+    from .identity import validate_identity
+    from .domain_pipeline import TASK_READ_MODEL, ONLINE_SUMMARY_FACTS
+except ImportError:  # Installed beside the fixed Staging gateway.
+    from identity import validate_identity
+    from domain_pipeline import TASK_READ_MODEL, ONLINE_SUMMARY_FACTS
 
 
 IMAGE_KEYS = frozenset({"kafka", "schema_registry", "mysql", "redis", "worker", "flink"})
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 BROKERS = ("staging-kafka-1", "staging-kafka-2", "staging-kafka-3")
-EVENT_TOPIC = "staging.task.events.v1"
-DLQ_TOPIC = "staging.task.events.dlq.v1"
+EVENT_TOPIC = TASK_READ_MODEL.topic("staging", "events")
+DLQ_TOPIC = TASK_READ_MODEL.topic("staging", "dlq")
+LEGACY_EVENT_TOPIC = TASK_READ_MODEL.topic("staging", "legacy_events")
+LEGACY_DLQ_TOPIC = TASK_READ_MODEL.topic("staging", "legacy_dlq")
+SUMMARY_EVENT_TOPIC = ONLINE_SUMMARY_FACTS.topic("staging", "events")
+SUMMARY_DLQ_TOPIC = ONLINE_SUMMARY_FACTS.topic("staging", "dlq")
 REGISTRY_TOPIC = "staging.registry.storage.v1"
 BACKEND_NETWORK = "binhu-staging-pipeline-backend"
 LOGGING = {"driver": "json-file", "options": {"max-size": "5m", "max-file": "2"}}
@@ -97,7 +107,7 @@ def _broker_environment(index: int, run_id: str) -> dict[str, str]:
         "KAFKA_NUM_PARTITIONS": "3",
         "KAFKA_AUTO_CREATE_TOPICS_ENABLE": "false",
         "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS": "0",
-        "KAFKA_LOG_RETENTION_HOURS": "24",
+        "KAFKA_LOG_RETENTION_HOURS": "168",
     }
 
 
@@ -267,6 +277,8 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
     services["taskmanager"] = {
         **flink_common, "command": ["taskmanager"], "mem_limit": "2048m",
         "memswap_limit": "2304m", "cpus": 1.5,
+        "networks": ["internal", "backend"],
+        "env_file": ["flink-task.env"],
         "depends_on": {"jobmanager": {"condition": "service_started"}},
     }
 
@@ -303,7 +315,45 @@ def model_sha256(images: dict[str, str], run_id: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def validate_runtime_compose(root: Path, runtime_manifest: dict[str, Any],
+                             images: dict[str, str], run_id: str) -> dict[str, Any]:
+    expected = compose(images, run_id)
+    compose_path = root / "compose.json"
+    if (compose_path.is_symlink() or not compose_path.is_file()
+            or json.loads(compose_path.read_text(encoding="utf-8")) != expected
+            or runtime_manifest.get("compose_model_sha256") != model_sha256(images, run_id)):
+        raise ValueError("Staging Compose differs from controlled model")
+    return expected
+
+
+def validate_pipeline_containers(containers: list[dict[str, Any]], images: dict[str, str],
+                                 run_id: str) -> None:
+    expected = compose(images, run_id)["services"]
+    project = project_for(run_id)
+    if len(containers) != len(expected):
+        raise ValueError("Staging pipeline service set incomplete")
+    observed: set[str] = set()
+    for item in containers:
+        labels = (item.get("Config") or {}).get("Labels") or {}
+        service = labels.get("com.docker.compose.service")
+        state = item.get("State") or {}
+        if (service not in expected or service in observed
+                or labels.get("binhu.environment") != "staging"
+                or labels.get("binhu.run_id") != run_id
+                or labels.get("binhu.production_data") != "false"
+                or labels.get("com.docker.compose.project") != project
+                or state.get("Status") != "running" or state.get("Running") is not True
+                or str(item.get("Image") or "") != expected[service].get("image")):
+            raise ValueError("Staging pipeline container identity mismatch")
+        observed.add(service)
+    if observed != set(expected):
+        raise ValueError("Staging pipeline service set incomplete")
+
+
 __all__ = [
     "BACKEND_NETWORK", "BROKERS", "DLQ_TOPIC", "EVENT_TOPIC", "IMAGE_KEYS",
     "REGISTRY_TOPIC", "cluster_id_for", "compose", "model_sha256", "network_for", "project_for",
+    "validate_pipeline_containers", "validate_runtime_compose",
+    "SUMMARY_DLQ_TOPIC", "SUMMARY_EVENT_TOPIC", "cluster_id_for",
+    "compose", "model_sha256", "network_for", "project_for",
 ]
