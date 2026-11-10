@@ -4,6 +4,8 @@
 
 Dev/Staging 的指令核查验收须使用同一候选源码与加密事件合同。启动新 Backend 前先备份目标环境数据库，依次执行 `migrations.task_command_read_model` 和 `migrations.task_view_state_revisions` 的 `measure → migrate --apply → verify`；启用在线汇总时还须执行 `migrations.online_summary_fact_outbox`。这些命令不能用启动建表代替。Dev 只使用可追踪、可清理的合成数据；通过后才推进 Staging，不修改 Production。
 
+Staging 固定迁移入口必须绑定已完成 Staging `measure` 且仍与 Dev 验收身份一致的候选 artifact。它在 Staging 内部网络用该候选的不可变 Backend 镜像运行上述两个固定迁移模块；数据库连接身份取自已校验的 Staging 配置。`apply` 前会重测并比较摘要，再备份八库。不得用当前运行中的旧 Backend 调 `init_db()` 代替候选迁移；迁移完成并 `verify` 后，再用新的 Staging run ID 执行应用 `prepare → measure → apply → accept`。
+
 `migrations.task_read_model_backfill` 按来源 ID 每页最多 250 条读取，再写命令与 Outbox；不能在同一游标执行写入后继续读取旧结果集。回填仅发出加密事件，不直接填充 Redis；`task_read_model_activation measure` 用于对账，`verify` 会修改 Redis readiness 标记，应按写操作执行。
 
 Dev 沿用固定 worker 镜像时，运行时 dispatcher、业务桥、Outbox relay、事件合同和汇总合同必须由候选只读挂载并纳入 manifest 哈希。只替换 Flink JAR 或看到容器启动不代表新业务链路生效。实际验收须绑定合成任务的 command/event ID、Kafka offset、Flink checkpoint、Redis revision 和 API 读回结果，并覆盖删除、重复、乱序、故障 503 与恢复对账。
