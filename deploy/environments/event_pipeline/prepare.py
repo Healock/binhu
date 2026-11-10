@@ -11,18 +11,49 @@ import shutil
 import subprocess
 import sys
 
-from .runtime import configuration
+from .runtime import backend_relay_configuration, configuration
 from .services.kafka_delivery_store import SCHEMA_SQL
 from .flink_sql import render
 
 PROJECT = "binhu-development-pipeline"
+# The approved worker image is immutable and can predate this candidate.
+# Bind every module changed by the task/summary transport contract to source
+# hashes instead of accidentally importing an older copy from that image.
+WORKER_CANDIDATE_MODULES = {
+    "runtime.py": "runtime.py",
+    "identity.py": "identity.py",
+    "domain_pipeline.py": "domain_pipeline.py",
+    "schema_registry.py": "schema_registry.py",
+    "business_bridge.py": "business_bridge.py",
+    "backend_outbox_relay.py": "services/backend_outbox_relay.py",
+    "kafka_delivery_store.py": "services/kafka_delivery_store.py",
+    "kafka_event_contract.py": "services/kafka_event_contract.py",
+    "kafka_envelope.py": "services/kafka_envelope.py",
+    "kafka_relay.py": "services/kafka_relay.py",
+    "online_summary_contract.py": "services/online_summary_contract.py",
+    "online_summary_event.py": "services/online_summary_event.py",
+    "online_summary_fact_relay.py": "services/online_summary_fact_relay.py",
+}
+COMMON_WORKER_MODULES = frozenset(WORKER_CANDIDATE_MODULES) - {
+    "business_bridge.py", "backend_outbox_relay.py",
+    "online_summary_event.py", "online_summary_fact_relay.py",
+}
+WORKER_SERVICE_MODULES = {
+    name: COMMON_WORKER_MODULES | extra for name, extra in {
+        "relay": set(), "bridge": set(), "python-metadata-worker": set(),
+        "dual-track-monitor": set(), "acceptance-runner": set(),
+        "business-bridge": {"business_bridge.py", "online_summary_event.py"},
+        "backend-outbox-relay": {"backend_outbox_relay.py", "online_summary_fact_relay.py"},
+    }.items()
+}
 PUBLIC_CANDIDATE_FILES = frozenset({
     "init.sql", "redis.conf", "pipeline.sql", "runtime.py",
     "dual_track_monitor.py", "monitor_health.py", "scale_acceptance.py", "kafka_delivery_store.py",
     "kafka_event_contract.py", "kafka_envelope.py", "kafka_relay.py",
     "delivery_schema_migrate.py", "python_metadata_worker.py",
-})
+}) | frozenset(WORKER_CANDIDATE_MODULES)
 ROOT = Path("/srv/binhu-environments/development-pipeline")
+BACKEND_ENV = Path("/srv/binhu-environments/development/backend.env")
 NETWORK = "binhu-development-eventbus_internal"
 BACKEND_NETWORK = "binhu-development_internal"
 SECRET_RE = re.compile(r"[0-9a-f]{48}\Z")
@@ -189,6 +220,14 @@ def compose(images):
         "command": ["python", "-m", "event_pipeline.scale_acceptance"],
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
+    for name, filenames in WORKER_SERVICE_MODULES.items():
+        service = services[name]
+        mounts = service.setdefault("volumes", [])
+        for filename in sorted(filenames):
+            module = WORKER_CANDIDATE_MODULES[filename]
+            mount = f"./{filename}:/opt/dev-pipeline/event_pipeline/{module}:ro"
+            if mount not in mounts:
+                mounts.append(mount)
     return {"name": PROJECT, "services": services,
             "networks": {"internal": {"external": True, "name": NETWORK},
                          "backend": {"external": True, "name": BACKEND_NETWORK}},
@@ -265,6 +304,14 @@ def _load_credentials() -> tuple[str, str, str]:
     return db_password, redis_password, root_password
 
 
+def _load_task_event_key() -> str:
+    values = _read_env_file(BACKEND_ENV)
+    key = values.get("TASK_EVENT_ENCRYPTION_KEY", "")
+    if len(key.encode("utf-8")) < 32:
+        raise ValueError("Development task event key is unavailable")
+    return key
+
+
 def preflight():
     if ROOT.is_symlink() or ROOT.parent.is_symlink() or ROOT.resolve() != ROOT:
         raise ValueError("new absolute Dev output required")
@@ -304,7 +351,7 @@ def preflight():
             raise ValueError("insufficient disk reserve")
 
 
-def prepare(run_id, images):
+def prepare(run_id, images, *, task_event_key: str | None = None):
     spec = compose(images)
     preflight()
     db_password, redis_password, root_password = _load_credentials()
@@ -316,8 +363,14 @@ def prepare(run_id, images):
            "BACKEND_REDIS_URL": os.environ.get("DEV_BACKEND_REDIS_URL", ""),
            "BACKEND_REDIS_STREAM_KEY": "binhu:events",
            "BACKEND_REDIS_START_ID": "$"}
+    event_key = task_event_key if task_event_key is not None else _load_task_event_key()
+    if len(event_key.encode("utf-8")) < 32:
+        raise ValueError("Development task event key is unavailable")
+    env["TASK_EVENT_ENCRYPTION_KEY"] = event_key
     backend_password = os.environ.get("DEV_BACKEND_MYSQL_PASSWORD", "")
     backend_redis_url = os.environ.get("DEV_BACKEND_REDIS_URL", "")
+    summary_relay_enabled = os.environ.get("DEV_ONLINE_SUMMARY_FACT_RELAY_ENABLED", "false").lower() == "true"
+    summary_database = os.environ.get("DEV_ONLINE_SUMMARY_DATABASE", "")
     # Updates to an already trusted Dev project reuse only that project's
     # private relay credentials. First-time creation still requires the
     # gateway's out-of-band configuration.
@@ -331,8 +384,20 @@ def prepare(run_id, images):
         if previous.get("APP_ENVIRONMENT") == "development" and previous.get("BACKEND_MYSQL_HOST") == "environment-mysql" and previous.get("BACKEND_MYSQL_DATABASE") == "Dev_OnlineData":
             backend_password = backend_password or previous.get("BACKEND_MYSQL_PASSWORD", "")
             backend_redis_url = backend_redis_url or previous.get("BACKEND_REDIS_URL", "")
+    env["BACKEND_REDIS_URL"] = backend_redis_url
     if not backend_password or not backend_redis_url:
         raise ValueError("Dev Backend relay credentials must be supplied out of band")
+    if summary_relay_enabled and not summary_database:
+        raise ValueError("Dev summary database identity must be supplied out of band")
+    relay_env = {
+        "APP_ENVIRONMENT": "development", "DEV_RUN_ID": run_id,
+        "BACKEND_MYSQL_HOST": "environment-mysql", "BACKEND_MYSQL_DATABASE": "Dev_OnlineData",
+        "BACKEND_MYSQL_USER": "environment_app", "BACKEND_MYSQL_PASSWORD": backend_password,
+        "BACKEND_REDIS_URL": backend_redis_url, "BACKEND_REDIS_STREAM_KEY": "binhu:events",
+        "BACKEND_SUMMARY_FACT_RELAY_ENABLED": str(summary_relay_enabled).lower(),
+        "BACKEND_SUMMARY_MYSQL_DATABASE": summary_database,
+    }
+    backend_relay_configuration(relay_env)
     configuration(env)
     for image in images.values():
         if checked(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip() != image:
@@ -382,11 +447,11 @@ CREATE TABLE dev_task_metadata_python_events (
     files = {
         "compose.json": json.dumps(spec, indent=2), "init.sql": sql,
         "runtime.env": "\n".join(f"{k}={v}" for k, v in env.items()) + "\n",
-        "backend-relay.env": "\n".join([
+        "backend-relay.env": "\n".join(f"{key}={value}" for key, value in relay_env.items()) + "\n",
+        "flink-task.env": "\n".join([
             "APP_ENVIRONMENT=development", f"DEV_RUN_ID={run_id}",
-            "BACKEND_MYSQL_HOST=environment-mysql", "BACKEND_MYSQL_DATABASE=Dev_OnlineData",
-            "BACKEND_MYSQL_USER=environment_app", f"BACKEND_MYSQL_PASSWORD={backend_password}",
-            f"BACKEND_REDIS_URL={backend_redis_url}", "BACKEND_REDIS_STREAM_KEY=binhu:events",
+            f"TASK_EVENT_ENCRYPTION_KEY={event_key}",
+            f"BACKEND_REDIS_URL={backend_redis_url}",
         ]) + "\n",
         "mysql.env": f"MYSQL_ROOT_PASSWORD={root_password}\nMYSQL_DATABASE=Dev_EventPipeline\nMYSQL_USER=dev_pipeline\nMYSQL_PASSWORD={db_password}\n",
         "redis.conf": redis_configuration(redis_password),
@@ -408,6 +473,8 @@ CREATE TABLE dev_task_metadata_python_events (
         "delivery_schema_migrate.py": Path(__file__).with_name("delivery_schema_migrate.py").read_text(encoding="utf-8"),
         "python_metadata_worker.py": (services_root / "python_metadata_worker.py").read_text(encoding="utf-8"),
     }
+    for filename, module in WORKER_CANDIDATE_MODULES.items():
+        files[filename] = (Path(__file__).parent / module).read_text(encoding="utf-8")
     for name, content in files.items():
         target = ROOT / name
         # A failed candidate extraction can leave a same-named directory at a

@@ -16,8 +16,10 @@ ROOT = Path("/srv/binhu-environments/development-eventbus")
 TARGET = ROOT / "flink-pipeline-compose.json"
 EVIDENCE_ROOT = Path("/srv/deploy-backups/environment-triad")
 NETWORK = "binhu-development-eventbus_internal"
+BACKEND_NETWORK = "binhu-development_internal"
 CHECKPOINT_VOLUME = "binhu-development_flink-checkpoints"
 PIPELINE_SQL = PurePosixPath("/srv/binhu-environments/development-pipeline/pipeline.sql")
+PIPELINE_TASK_ENV = PurePosixPath("/srv/binhu-environments/development-pipeline/flink-task.env")
 ARTIFACT_NAMES = (
     "flink-sql-connector-kafka-3.3.0-1.20.jar",
     "flink-connector-jdbc-3.3.0-1.20.jar",
@@ -118,6 +120,7 @@ def specification(image: str, artifact_root: Path) -> dict:
         "name": PROJECT,
         "networks": {
             "internal": {"name": NETWORK, "ipam": {}, "external": True},
+            "backend": {"name": BACKEND_NETWORK, "external": True},
         },
         "services": {
             "jobmanager": {
@@ -133,6 +136,8 @@ def specification(image: str, artifact_root: Path) -> dict:
                 **common,
                 "mem_limit": APPROVED_TASKMANAGER_MEM_LIMIT,
                 "command": ["taskmanager"],
+                "env_file": [str(PIPELINE_TASK_ENV)],
+                "networks": {"internal": None, "backend": None},
                 "environment": {
                     "JOB_MANAGER_RPC_ADDRESS": "jobmanager",
                     "TASK_MANAGER_NUMBER_OF_TASK_SLOTS": "3",
@@ -184,12 +189,36 @@ def _without_approved_runtime_limits(spec: dict) -> dict:
     return value
 
 
+def _normalize_legacy_task_runtime_env(spec: dict) -> dict:
+    value = copy.deepcopy(spec)
+    networks = value.get("networks", {})
+    backend_network = {"name": BACKEND_NETWORK, "external": True}
+    if "backend" not in networks:
+        networks["backend"] = backend_network
+    elif networks["backend"] != backend_network:
+        raise ValueError("Dev Flink Backend network identity mismatch")
+
+    taskmanager = value["services"]["taskmanager"]
+    if "env_file" not in taskmanager:
+        taskmanager["env_file"] = [str(PIPELINE_TASK_ENV)]
+    elif taskmanager["env_file"] != [str(PIPELINE_TASK_ENV)]:
+        raise ValueError("Dev Flink task runtime env file identity mismatch")
+
+    taskmanager_networks = taskmanager.get("networks", {})
+    if "backend" not in taskmanager_networks:
+        taskmanager_networks["backend"] = None
+    elif taskmanager_networks["backend"] is not None:
+        raise ValueError("Dev Flink Backend network attachment mismatch")
+    return value
+
+
 def measure(image: str, artifact_root: Path) -> dict:
     if TARGET.is_symlink() or TARGET.parent != ROOT or not TARGET.is_file():
         raise ValueError("fixed Dev Flink Compose file required")
     current = json.loads(TARGET.read_text(encoding="utf-8"))
     expected = specification(image, artifact_root)
-    if _without_approved_runtime_limits(_without_environment_labels(current)) != _without_approved_runtime_limits(_without_environment_labels(expected)):
+    normalized_current = _normalize_legacy_task_runtime_env(current)
+    if _without_approved_runtime_limits(_without_environment_labels(normalized_current)) != _without_approved_runtime_limits(_without_environment_labels(expected)):
         raise ValueError("Dev Flink Compose differs beyond the approved runtime migration")
     labels = {
         service: current["services"][service].get("labels", {}).get("binhu.environment")
@@ -204,6 +233,14 @@ def measure(image: str, artifact_root: Path) -> dict:
         current["services"][service].get("restart") != APPROVED_RESTART_POLICY
         for service in ("jobmanager", "taskmanager")
     )
+    task_runtime_environment_update_required = (
+        current["services"]["taskmanager"].get("env_file") != [str(PIPELINE_TASK_ENV)]
+    )
+    task_backend_network_update_required = (
+        current.get("networks", {}).get("backend") != {"name": BACKEND_NETWORK, "external": True}
+        or "backend" not in current["services"]["taskmanager"].get("networks", {})
+        or current["services"]["taskmanager"]["networks"].get("backend") is not None
+    )
     return {
         "environment": "development",
         "project": PROJECT,
@@ -212,6 +249,8 @@ def measure(image: str, artifact_root: Path) -> dict:
         "labels_update_required": any(value != "development" for value in labels.values()),
         "taskmanager_memory_update_required": taskmanager_memory_update_required,
         "restart_policy_update_required": restart_policy_update_required,
+        "task_runtime_environment_update_required": task_runtime_environment_update_required,
+        "task_backend_network_update_required": task_backend_network_update_required,
         "requires_update": (
             any(value != "development" for value in labels.values())
             or any(
@@ -220,6 +259,8 @@ def measure(image: str, artifact_root: Path) -> dict:
             )
             or taskmanager_memory_update_required
             or restart_policy_update_required
+            or task_runtime_environment_update_required
+            or task_backend_network_update_required
         ),
         "other_changes": False,
         "pids_limit": {
@@ -262,6 +303,8 @@ def apply(image: str, artifact_root: Path, evidence_id: str) -> dict:
         "pids_limit_updated": before["pids_limit"] != {"jobmanager": APPROVED_PIDS_LIMIT, "taskmanager": APPROVED_PIDS_LIMIT},
         "taskmanager_memory_updated": before["taskmanager_memory_update_required"],
         "restart_policy_updated": before["restart_policy_update_required"],
+        "task_runtime_environment_updated": before["task_runtime_environment_update_required"],
+        "task_backend_network_updated": before["task_backend_network_update_required"],
         "verified": not after["requires_update"],
     }
     target = evidence / "result.json"

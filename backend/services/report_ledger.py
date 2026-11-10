@@ -411,8 +411,8 @@ async def aggregate_ledger_into_reports(
     community_table: str,
 ) -> dict:
     """把逐任务流水聚合到现有公开日报表。"""
-    await cur.execute(f"TRUNCATE TABLE {inspector_table}")
-    await cur.execute(f"TRUNCATE TABLE {community_table}")
+    await cur.execute(f"DELETE FROM {inspector_table}")
+    await cur.execute(f"DELETE FROM {community_table}")
     await cur.execute(
         f"""
         INSERT INTO {inspector_table} (

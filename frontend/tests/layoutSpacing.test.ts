@@ -133,7 +133,7 @@ test('详情抽屉和高密度工作台不使用容易贴边的 space-y 分隔',
   assert.match(styles, /@media \(max-width: 767px\)[\s\S]*?\.registry-detail,[\s\S]*?\.operations-center-layout\s*\{[^}]*gap:\s*12px/s)
 })
 
-test('移动端卡片列表使用父级 gap，避免卡片或表格贴在一起', () => {
+test('移动端卡片列表仅保留实际使用的页面并使用父级 gap', () => {
   const sources = [
     readFileSync(new URL('../src/pages/Dashboard.tsx', import.meta.url), 'utf8'),
     readFileSync(new URL('../src/pages/DataQuery.tsx', import.meta.url), 'utf8'),
@@ -144,7 +144,7 @@ test('移动端卡片列表使用父级 gap，避免卡片或表格贴在一起'
 
   assert.match(sources[0], /dashboard-mobile-detail-list/)
   assert.match(sources[0], /dashboard-mobile-report-list/)
-  assert.match(sources[1], /data-query-mobile-list/)
+  assert.doesNotMatch(sources[1], /data-query-mobile-list/)
   assert.match(sources[2], /work-log-drafts__mobile-list/)
   assert.match(sources[3], /mobile-report-table__layout/)
   assert.match(styles, /\.dashboard-mobile-detail-list,[\s\S]*?\.mobile-report-table__layout\s*\{[^}]*display:\s*grid;[^}]*gap:\s*12px/s)

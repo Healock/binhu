@@ -32,6 +32,8 @@ MANIFEST = "manifest.json"
 CHECKSUMS = "SHA256SUMS"
 PIPELINE_JAR = "pipeline-job.jar"
 PIPELINE_SOURCE = "deploy/environments/event_pipeline/PipelineJob.java"
+PIPELINE_SINK_SOURCE = "deploy/environments/event_pipeline/TaskReadModelRedisSink.java"
+PIPELINE_SOURCES = (PIPELINE_SOURCE, PIPELINE_SINK_SOURCE)
 ALLOWED_TOP_LEVEL = {SOURCE_ARCHIVE, PIPELINE_JAR, MANIFEST, CHECKSUMS}
 FORBIDDEN_TEXT = re.compile(
     r"(?i)(password|secret|token|cookie|authorization|bearer|private_key|mysql_pwd)"
@@ -62,6 +64,11 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _pipeline_sources_sha256(source_hashes: dict[str, str]) -> str:
+    values = [(name, source_hashes[name]) for name in PIPELINE_SOURCES]
+    return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
 
 
 def _source_files(repository: Path) -> list[Path]:
@@ -147,8 +154,8 @@ def _verify_pipeline_jar(path: Path) -> None:
     try:
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
-            if "PipelineJob.class" not in names or any(".." in Path(name).parts for name in names):
-                raise ValueError("compiled Dev PipelineJob class missing")
+            if not {"PipelineJob.class", "TaskReadModelRedisSink.class"}.issubset(names) or any(".." in Path(name).parts for name in names):
+                raise ValueError("compiled Dev task read-model job classes missing")
     except zipfile.BadZipFile as exc:
         raise ValueError("compiled Dev PipelineJob JAR invalid") from exc
 
@@ -190,7 +197,7 @@ def build(repository: Path, output: Path, *, commit: str, run_id: str, pipeline_
             "pipeline_job": {
                 "file": PIPELINE_JAR,
                 "jar_sha256": _sha256(jar_path),
-                "source_sha256": source_hashes[PIPELINE_SOURCE],
+                "source_sha256": _pipeline_sources_sha256(source_hashes),
             },
             "ready_for_dev_pipeline": True,
             "started": False,
@@ -249,8 +256,8 @@ def verify(bundle: Path) -> dict:
     pipeline_job = manifest.get("pipeline_job")
     if not isinstance(pipeline_job, dict) or pipeline_job.get("file") != PIPELINE_JAR:
         raise ValueError("candidate PipelineJob identity missing")
-    if pipeline_job.get("source_sha256") != source_hashes.get(PIPELINE_SOURCE):
-        raise ValueError("candidate PipelineJob source hash mismatch")
+    if pipeline_job.get("source_sha256") != _pipeline_sources_sha256(source_hashes):
+        raise ValueError("candidate task read-model source hash mismatch")
     if pipeline_job.get("jar_sha256") != hashlib.sha256(payload[PIPELINE_JAR]).hexdigest():
         raise ValueError("candidate PipelineJob JAR hash mismatch")
     _verify_pipeline_jar_bytes(payload[PIPELINE_JAR])

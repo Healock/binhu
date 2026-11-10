@@ -8,11 +8,12 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
-from . import flink_submission
-
-
+from . import flink_compose, flink_submission
+from .domain_pipeline import DOMAIN_PIPELINES, DomainPipelineOrchestrator, domain_spec
+from .identity import environment_for_run_id
 FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
 FLINK_JOBMANAGER = "binhu-development-flink-jobmanager-1"
 KAFKA_CONTAINER = "binhu-development-eventbus-kafka-1-1"
@@ -43,8 +44,18 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Dev Flink taskmanager pids_limit missing",
         "Dev Flink jobmanager checkpoint volume missing",
         "Dev Flink taskmanager checkpoint volume missing",
+        "Dev Flink task runtime env file missing",
+        "Dev Flink task runtime env file identity mismatch",
+        "Dev Flink Backend network identity mismatch",
+        "Dev Flink Backend network attachment mismatch",
+        "Dev Flink task runtime environment is unavailable",
+        "Dev Flink task runtime environment is invalid",
+        "Dev Flink task runtime identity mismatch",
+        "Dev Flink task Backend Redis identity mismatch",
+        "Dev Flink artifact identity mismatch",
         "Dev Flink current run has an incomplete job set",
         "register the fixed Dev schema before starting workers",
+        "Dev Schema Registry registration timed out",
         "startup deadline reached; preserve resources and remeasure",
         "startup failed; preserve private diagnostics",
         "Dev delivery index migration failed",
@@ -68,6 +79,17 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Flink JAR submission returned no job id",
         "current Dev PipelineJob compilation failed",
         "evidence directory initialization failed",
+        "Flink connector identity is ambiguous",
+        "Flink consumer group identity is ambiguous",
+        "Flink Kafka source identity is duplicated",
+        "Flink topic identity is ambiguous",
+        "Flink SQL is not text",
+        "Flink SQL run_id filter does not match pipeline identity",
+        "Flink SQL environment filter does not match run identity",
+        "Flink Kafka topic does not match environment identity",
+        "Flink SQL task/view-state schema versions are incomplete",
+        "Flink SQL consumer groups do not match manifest",
+        "Flink SQL run_id does not match manifest",
     }
 )
 
@@ -76,7 +98,10 @@ def safe_control_failure_detail(error: Exception) -> str:
     """Return only a fixed, non-sensitive Dev control gate reason."""
     detail = str(error)
     if detail in _SAFE_CONTROL_FAILURES or re.fullmatch(
-        r"Flink runtime missing INSERT sink: dev_[A-Za-z0-9_]+(?:,dev_[A-Za-z0-9_]+)*", detail
+        r"Flink runtime (?:missing INSERT sink|unexpected sink): [A-Za-z0-9_,.-]+", detail
+    ) or re.fullmatch(
+        r"Flink SQL (?:missing INSERT sink|contains unsupported INSERT sink): [A-Za-z0-9_,.-]+",
+        detail,
     ) or re.fullmatch(r"flink_rest_http_[0-9]{3}", detail):
         return detail
     return type(error).__name__
@@ -88,6 +113,8 @@ def expected_networks(service):
         return {NETWORK, "binhu-development_internal"}
     if service == "backend-outbox-relay":
         return {"binhu-development_internal"}
+    if service == "taskmanager":
+        return {NETWORK, "binhu-development_internal"}
     return {NETWORK}
 
 
@@ -167,16 +194,37 @@ def _run_checked(command: list[str], *, timeout: int = 120) -> subprocess.Comple
     return result
 
 
-def _consumer_groups(expected_group: str) -> list[str]:
-    result = _run_checked([
-        "docker", "exec", KAFKA_CONTAINER,
-        "/opt/kafka/bin/kafka-consumer-groups.sh",
-        "--bootstrap-server", "kafka-1:9092",
-        "--describe", "--group", expected_group,
-    ])
-    if "dev.task.events.v1" not in result.stdout:
-        raise ValueError("Dev Flink consumer group has no task topic assignment")
-    return [expected_group]
+def _consumer_groups(expected_groups: list[str]) -> list[str]:
+    expected = set(expected_groups)
+    run_ids = {
+        group[:-len(source.group_suffix)]
+        for spec in DOMAIN_PIPELINES for source in spec.flink_sources
+        for group in expected_groups if group.endswith(source.group_suffix)
+    }
+    run_id = next(iter(run_ids)) if len(run_ids) == 1 else ""
+    environment = environment_for_run_id(run_id) if run_id else ""
+    plan = DomainPipelineOrchestrator(environment, run_id).plan() if run_id else None
+    if plan is None or expected != set(plan.consumer_groups):
+        raise ValueError("Dev Flink consumer groups do not match current run")
+    topics_by_group = {
+        source["consumer_group"]: source["topic"]
+        for source in plan.flink_sources.values()
+    }
+    for expected_group in sorted(expected):
+        result = _run_checked([
+            "docker", "exec", KAFKA_CONTAINER,
+            "/opt/kafka/bin/kafka-consumer-groups.sh",
+            "--bootstrap-server", "kafka-1:9092",
+            "--describe", "--group", expected_group,
+        ])
+        assignments = {
+            parts[1]
+            for line in result.stdout.splitlines()
+            if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected_group
+        }
+        if assignments and assignments != {topics_by_group[expected_group]}:
+            raise ValueError("Dev Flink consumer group has no task topic assignment")
+    return sorted(expected)
 
 
 def _validate_flink_sql(manifest: dict) -> dict:
@@ -224,6 +272,66 @@ def _validate_flink_compose() -> None:
         if not any(mount.get("target") == "/opt/flink/checkpoints" and mount.get("source") == "flink-checkpoints"
                    for mount in mounts if isinstance(mount, dict)):
             raise ValueError(f"Dev Flink {name} checkpoint volume missing")
+    if services["taskmanager"].get("env_file") != [str(flink_compose.PIPELINE_TASK_ENV)]:
+        raise ValueError("Dev Flink task runtime env file missing")
+
+
+def _flink_artifact_root() -> Path:
+    spec = json.loads(FLINK_COMPOSE.read_text(encoding="utf-8"))
+    mounts = spec["services"]["taskmanager"].get("volumes", [])
+    target = "/opt/flink/usrlib/dev-pipeline-job.jar"
+    sources = [item.get("source", "") for item in mounts
+               if item.get("target") == target and item.get("type") == "bind"]
+    if len(sources) != 1:
+        raise ValueError("Dev Flink artifact identity mismatch")
+    artifact = Path(sources[0])
+    if artifact.name != "dev-pipeline-job.jar":
+        raise ValueError("Dev Flink artifact identity mismatch")
+    return artifact.parent
+
+
+def _validate_flink_task_runtime_environment(manifest: dict) -> None:
+    path = ROOT / "flink-task.env"
+    if (path.is_symlink() or not path.is_file()
+            or (sys.platform != "win32" and path.stat().st_mode & 0o077)):
+        raise ValueError("Dev Flink task runtime environment is unavailable")
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in values:
+            raise ValueError("Dev Flink task runtime environment is invalid")
+        values[key] = value
+    if (values.get("APP_ENVIRONMENT") != "development"
+            or values.get("DEV_RUN_ID") != manifest.get("run_id")
+            or len(values.get("TASK_EVENT_ENCRYPTION_KEY", "").encode("utf-8")) < 32):
+        raise ValueError("Dev Flink task runtime identity mismatch")
+    try:
+        redis = urlsplit(values.get("BACKEND_REDIS_URL", ""))
+        redis_port = redis.port
+    except ValueError:
+        raise ValueError("Dev Flink task Backend Redis identity mismatch") from None
+    if (redis.scheme != "redis" or redis.hostname not in {"redis", "environment-redis"}
+            or redis_port != 6379 or redis.path != "/0" or not redis.password):
+        raise ValueError("Dev Flink task Backend Redis identity mismatch")
+
+
+def _ensure_flink_task_runtime_compose(manifest: dict, evidence: Path) -> dict | None:
+    _validate_flink_task_runtime_environment(manifest)
+    artifact_root = _flink_artifact_root()
+    image = manifest["images"]["flink"]
+    report = flink_compose.measure(image, artifact_root)
+    if not report["requires_update"]:
+        return None
+    evidence_id = "dev-flink-runtime-" + hashlib.sha256(
+        manifest["run_id"].encode("utf-8")
+    ).hexdigest()[:16]
+    updated = flink_compose.apply(image, artifact_root, evidence_id)
+    audit = evidence / "flink-compose-runtime.json"
+    audit.write_text(json.dumps(updated, sort_keys=True) + "\n", encoding="utf-8")
+    audit.chmod(0o600)
+    return updated
 
 
 def _build_candidate_flink_jar(source: Path) -> dict[str, str]:
@@ -249,6 +357,7 @@ def _build_candidate_flink_jar(source: Path) -> dict[str, str]:
 def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     """Submit the current Dev JobGraph and fence its run identity."""
     identity = _validate_flink_sql(manifest)
+    _ensure_flink_task_runtime_compose(manifest, evidence)
     _validate_flink_compose()
     _run_checked(["docker", "compose", "-f", str(FLINK_COMPOSE), "up", "-d", "jobmanager", "taskmanager"], timeout=180)
     source = Path(__file__).with_name("PipelineJob.java")
@@ -272,9 +381,9 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
         raise ValueError("Dev Flink current run has an incomplete job set")
     if len(current) == 0:
         jar_id = client.upload_jar(candidate_jar["container_path"])
-        client.run_jar(jar_id)
+        client.run_jar(jar_id, manifest["run_id"])
     verified = flink_submission.wait_for_runtime(
-        client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_group"]),
+        client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_groups"]),
         expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
     )
     runtime_path = evidence / "flink-runtime.json"
@@ -282,6 +391,48 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
                                         "candidate_jar": candidate_jar}, indent=2) + "\n", encoding="utf-8")
     runtime_path.chmod(0o600)
     return verified
+
+
+def _ensure_domain_topics(topics: tuple[str, ...], error_code: str) -> list[str]:
+    for topic in topics:
+        _run_checked([
+            "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
+            "--bootstrap-server", "kafka-1:9092", "--create", "--if-not-exists",
+            "--topic", topic, "--partitions", "3", "--replication-factor", "3",
+            "--config", "min.insync.replicas=2",
+        ])
+    description = _run_checked([
+        "docker", "exec", KAFKA_CONTAINER, "/opt/kafka/bin/kafka-topics.sh",
+        "--bootstrap-server", "kafka-1:9092", "--describe",
+    ]).stdout
+    if any(topic not in description for topic in topics):
+        raise ValueError(error_code)
+    return list(topics)
+
+
+def _ensure_task_topics() -> list[str]:
+    spec = domain_spec("instruction_audit")
+    topics = tuple(spec.topic("development", role) for role in ("events", "dlq"))
+    return _ensure_domain_topics(topics, "Dev task topic verification failed")
+
+
+def _ensure_summary_topics(environment: str) -> list[str]:
+    """Create only the fixed non-Production online-summary topics."""
+    spec = domain_spec("online_summary_facts")
+    topics = tuple(spec.topic(environment, role) for role in ("events", "dlq"))
+    return _ensure_domain_topics(topics, "Dev online-summary topic verification failed")
+
+
+def _ensure_registered_topics(environment: str, run_id: str) -> dict[str, list[str]]:
+    plan = DomainPipelineOrchestrator(environment, run_id).plan()
+    _ensure_domain_topics(plan.kafka_topics, "Dev registered topic verification failed")
+    return {
+        spec.domain_id: [
+            topic.name(environment)
+            for topic in spec.topics if topic.provisioned(environment)
+        ]
+        for spec in DOMAIN_PIPELINES
+    }
 
 
 def apply():
@@ -294,11 +445,20 @@ def apply():
     # which stub measure() with an empty report.
     if report.get("run_id"):
         _prepare_evidence_directory(report["run_id"])
-    schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
-                             "run", "--rm", "--no-deps", "relay", "python", "-m",
-                             "event_pipeline.schema_registry", "verify"],
-                            capture_output=True, text=True, timeout=45)
-    path = evidence / "schema-check.log"
+    schema_timeout = 90
+    try:
+        schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
+                                 "run", "--rm", "--no-deps", "relay", "python", "-m",
+                                 "event_pipeline.schema_registry", "apply"],
+                                capture_output=True, text=True, timeout=schema_timeout)
+    except subprocess.TimeoutExpired:
+        path = evidence / "schema-registration-timeout.json"
+        path.write_text(json.dumps({"phase": "schema_registration",
+                                    "timed_out": True,
+                                    "timeout_seconds": schema_timeout}) + "\n")
+        path.chmod(0o600)
+        raise ValueError("Dev Schema Registry registration timed out") from None
+    path = evidence / "schema-registration.log"
     path.write_text(schema.stdout + "\n" + schema.stderr)
     path.chmod(0o600)
     if schema.returncode:
@@ -316,6 +476,12 @@ def apply():
     path.chmod(0o600)
     if result.returncode:
         raise ValueError("startup failed; preserve private diagnostics")
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    registered_topics = _ensure_registered_topics("development", manifest["run_id"])
+    summary_topics = registered_topics.get("online_summary_facts", [])
+    topics_path = evidence / "online-summary-topics.json"
+    topics_path.write_text(json.dumps({"environment": "development", "topics": summary_topics}, indent=2) + "\n")
+    topics_path.chmod(0o600)
     migration = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
                                 "run", "--rm", "--no-deps", "relay", "python", "-m",
                                 "event_pipeline.delivery_schema_migrate"],
@@ -325,7 +491,6 @@ def apply():
     migration_path.chmod(0o600)
     if migration.returncode:
         raise ValueError("Dev delivery index migration failed")
-    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     flink = _submit_and_verify_flink(manifest, evidence)
     return {**report, "startup_requested": True, "flink": flink, "acceptance": "pending"}
 

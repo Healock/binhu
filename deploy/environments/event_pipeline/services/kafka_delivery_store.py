@@ -23,6 +23,9 @@ LOCK_TRANSACTION_MAX_ATTEMPTS = 4
 LOCK_RETRY_BASE_SECONDS = 0.05
 LOCK_RETRY_MAX_SECONDS = 0.8
 _RETRYABLE_MYSQL_ERRORS = {1205, 1213}
+TRANSPORT_RETENTION_DAYS = 30
+TRANSPORT_CLEANUP_BATCH_SIZE = 200
+TRANSPORT_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 
 
 class LockContentionExhausted(RuntimeError):
@@ -56,7 +59,7 @@ def _mysql_error_code(exc: BaseException) -> int | None:
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS _kafka_event_delivery (
- event_id CHAR(36) PRIMARY KEY,
+ event_id CHAR(36) NOT NULL,
  run_id VARCHAR(80) NOT NULL,
  event_json JSON NOT NULL,
  payload_sha256 CHAR(64) NOT NULL,
@@ -69,9 +72,11 @@ CREATE TABLE IF NOT EXISTS _kafka_event_delivery (
  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
  published_at DATETIME(6) NULL,
  last_error_code VARCHAR(48) NOT NULL DEFAULT '',
+ PRIMARY KEY (run_id, event_id),
  INDEX pending_delivery (run_id, status, available_at, created_at, event_id),
  INDEX expired_delivery (run_id, status, locked_until, created_at, event_id),
- INDEX claim_pending (run_id, status, created_at, event_id, available_at)
+ INDEX claim_pending (run_id, status, created_at, event_id, available_at),
+ INDEX published_retention (run_id, status, published_at, event_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin
 """
 
@@ -95,15 +100,15 @@ async def enqueue_delivery(cur, event: dict, *, run_id: str) -> None:
         (normalized["event_id"], run_id, payload.decode("utf-8"), digest),
     )
     await cur.execute(
-        "SELECT run_id,payload_sha256 FROM _kafka_event_delivery WHERE event_id=%s",
-        (normalized["event_id"],),
+        "SELECT run_id,payload_sha256 FROM _kafka_event_delivery WHERE run_id=%s AND event_id=%s",
+        (run_id, normalized["event_id"]),
     )
     if await cur.fetchone() != (run_id, digest):
         raise ValueError("Kafka event id conflicts with existing metadata")
 
 
 class MySQLDeliveryStore:
-    def __init__(self, pool, *, run_id: str):
+    def __init__(self, pool, *, run_id: str, cleanup_enabled: bool = False):
         try:
             environment = environment_for_run_id(run_id)
         except ValueError:
@@ -111,6 +116,8 @@ class MySQLDeliveryStore:
         if environment not in {"development", "staging"}:
             raise ValueError("Kafka delivery requires a non-Production run")
         self.pool, self.run_id = pool, run_id
+        self.environment = environment
+        self.cleanup_enabled = bool(cleanup_enabled)
 
     @asynccontextmanager
     async def _connection(self):
@@ -188,6 +195,7 @@ class MySQLDeliveryStore:
                             raise ValueError("stored metadata identity mismatch")
                         if hashlib.sha256(payload).hexdigest() != digest:
                             raise ValueError("stored metadata hash mismatch")
+                        event = validate_event(event)
                         key = event_partition_key(event)
                     except (ValueError, TypeError, KeyError):
                         await cur.execute(
@@ -218,7 +226,9 @@ class MySQLDeliveryStore:
                          event_id, self.run_id),
                     )
             return Delivery(event_id, payload, key, token, count + 1, channel,
-                            event_type=event["event_type"])
+                            event_type=event["event_type"],
+                            schema_version=event.get("schema_version", event.get("contract_version", 1)),
+                            environment=self.environment)
 
         return await self._run_transaction("claim", transaction)
 
@@ -245,3 +255,22 @@ class MySQLDeliveryStore:
             return owned
 
         return await self._run_transaction("finish", transaction)
+
+    async def cleanup_published(self) -> int:
+        """Delete a bounded batch of old successful transport rows only."""
+        if not self.cleanup_enabled:
+            return 0
+
+        async def transaction(conn):
+            run_prefix = "dev-%" if self.environment == "development" else "STG-%"
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """DELETE FROM _kafka_event_delivery
+                       WHERE run_id LIKE %s AND status='published'
+                         AND published_at < DATE_SUB(UTC_TIMESTAMP(6), INTERVAL %s DAY)
+                       ORDER BY published_at,event_id LIMIT %s""",
+                    (run_prefix, TRANSPORT_RETENTION_DAYS, TRANSPORT_CLEANUP_BATCH_SIZE),
+                )
+                return int(cur.rowcount or 0)
+
+        return await self._run_transaction("retention_cleanup", transaction)

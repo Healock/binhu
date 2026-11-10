@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -304,6 +304,93 @@ def canonical_monitor_community(
     to the existing one.
     """
     return canonical_community(value, alias_lookup)
+
+
+def build_daily_read_coverage(
+    read_rows: Iterable[tuple],
+    start_date: str,
+    end_date: str,
+    expected_targets: int,
+) -> list[dict[str, Any]]:
+    """Return every day in range, including days with no monitor run."""
+    by_date = {}
+    for observed_date, successes, failures, successful_targets in read_rows:
+        observed_text = (
+            observed_date.isoformat()
+            if hasattr(observed_date, "isoformat")
+            else str(observed_date)[:10]
+        )
+        by_date[observed_text] = {
+            "observed_at": observed_text,
+            "successful_reads": int(successes or 0),
+            "failed_reads": int(failures or 0),
+            "successful_targets": int(successful_targets or 0),
+            "expected_targets": expected_targets,
+        }
+    current_day = date.fromisoformat(start_date)
+    last_day = date.fromisoformat(end_date)
+    coverage = []
+    while current_day <= last_day:
+        observed_text = current_day.isoformat()
+        coverage.append(
+            by_date.get(
+                observed_text,
+                {
+                    "observed_at": observed_text,
+                    "successful_reads": 0,
+                    "failed_reads": 0,
+                    "successful_targets": 0,
+                    "expected_targets": expected_targets,
+                },
+            )
+        )
+        current_day += timedelta(days=1)
+    return coverage
+
+
+def canonicalize_daily_snapshot_rows(
+    snapshot_rows: Iterable[tuple],
+    alias_lookup: dict[str, str],
+    communities: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Normalize retained daily snapshots and apply the visible community scope."""
+    visible = (
+        None
+        if communities is None
+        else {
+            canonical_monitor_community(name, alias_lookup)
+            for name in communities
+        }
+    )
+    snapshots: dict[tuple[str, int, str, str], dict[str, Any]] = {}
+    for observed_at, target_id, parser_type, community, count in snapshot_rows:
+        name = canonical_monitor_community(community, alias_lookup)
+        if visible is not None and name not in visible:
+            continue
+        observed_date = (
+            observed_at.isoformat()
+            if hasattr(observed_at, "isoformat")
+            else str(observed_at)[:10]
+        )
+        key = (observed_date, int(target_id), str(parser_type), name)
+        item = snapshots.setdefault(
+            key,
+            {
+                "observed_at": observed_date,
+                "target_id": key[1],
+                "parser_type": key[2],
+                "community": key[3],
+                "count": 0,
+            },
+        )
+        item["count"] += int(count or 0)
+    return sorted(
+        snapshots.values(),
+        key=lambda item: (
+            item["observed_at"], item["parser_type"], item["community"],
+            item["target_id"],
+        ),
+    )
 
 
 def build_monitor_business_buckets(
@@ -1618,8 +1705,12 @@ async def run_txdocs_statistics_monitor() -> None:
         )
 
 
-async def _configured_monitor_source_ids(*, enabled_only: bool = True) -> list[int]:
-    """Return configured target IDs; legacy allowlists are migration-only."""
+async def _configured_monitor_source_ids(
+    parser_types: list[str] | None = None,
+    *,
+    enabled_only: bool = True,
+) -> list[int]:
+    """Return configured target IDs in the requested enabled/type scope."""
     from database import db_manager
 
     pool = db_manager.get_pool("online_data")
@@ -1627,9 +1718,20 @@ async def _configured_monitor_source_ids(*, enabled_only: bool = True) -> list[i
     try:
         async with conn.cursor() as cur:
             query = "SELECT id FROM _txdocs_monitor_target"
+            clauses: list[str] = []
+            params: tuple[Any, ...] = ()
             if enabled_only:
-                query += " WHERE enabled=1"
-            await cur.execute(query + " ORDER BY id")
+                clauses.append("enabled=1")
+            if parser_types:
+                clauses.append("parser_type IN (" + ",".join(
+                    ["%s"] * len(parser_types)
+                ) + ")")
+                params = tuple(parser_types)
+            await cur.execute(
+                query + (" WHERE " + " AND ".join(clauses) if clauses else "") +
+                " ORDER BY id",
+                params,
+            )
             ids = [int(row[0]) for row in await cur.fetchall()]
     except Exception:
         ids = []
@@ -1953,8 +2055,11 @@ async def get_txdocs_statistics_overview(
         "changed_rows": 0,
         "removed_rows": 0,
         "successful_reads": 0,
+        "failed_reads_in_range": 0,
         "failed_sources": 0,
         "last_success_at": None,
+        "daily_read_coverage": [],
+        "daily_snapshots_by_community": [],
         "is_stale": False,
         "message": "腾讯表只读监控未启用",
     }
@@ -1976,7 +2081,7 @@ async def get_txdocs_statistics_overview(
         return {**base, "status": "unavailable", "message": "当前业务类型没有外部监控数据"}
 
     type_marks = ", ".join(["%s"] * len(valid_types))
-    source_ids = await _configured_monitor_source_ids()
+    source_ids = await _configured_monitor_source_ids(valid_types)
     community_clause = ""
     community_params: list[str] = []
     if communities is not None:
@@ -2028,16 +2133,20 @@ async def get_txdocs_statistics_overview(
             aggregate = await cur.fetchone() or (0, 0, 0)
             await cur.execute(
                 f"""
-                SELECT COUNT(*)
+                SELECT COALESCE(SUM(status='success'),0),
+                       COALESCE(SUM(status='failed'),0)
                 FROM _txdocs_monitor_runs
-                WHERE status='success'
-                  AND observed_date BETWEEN %s AND %s
+                WHERE observed_date BETWEEN %s AND %s
                   AND parser_type IN ({type_marks})
                   AND spreadsheet_id IN ({source_marks})
                 """,
                 (start_date, end_date, *valid_types, *source_ids),
             )
-            successful_reads = int((await cur.fetchone() or [0])[0] or 0)
+            range_run_counts = await cur.fetchone() or (0, 0)
+            successful_reads = int(range_run_counts[0] or 0)
+            failed_reads_in_range = int(
+                range_run_counts[1] if len(range_run_counts) > 1 else 0
+            )
             await cur.execute(
                 f"""
                 SELECT MAX(finished_at), COUNT(*)
@@ -2065,6 +2174,87 @@ async def get_txdocs_statistics_overview(
                 (*valid_types, *source_ids),
             )
             failed_sources = int((await cur.fetchone() or [0])[0] or 0)
+            daily_read_coverage = []
+            daily_snapshots = []
+            await cur.execute(
+                f"""
+                SELECT observed_date,
+                       SUM(status='success'), SUM(status='failed'),
+                       COUNT(DISTINCT CASE WHEN status='success'
+                                           THEN spreadsheet_id END)
+                FROM _txdocs_monitor_runs
+                WHERE observed_date BETWEEN %s AND %s
+                  AND parser_type IN ({type_marks})
+                  AND spreadsheet_id IN ({source_marks})
+                GROUP BY observed_date ORDER BY observed_date
+                """,
+                (start_date, end_date, *valid_types, *source_ids),
+            )
+            daily_read_coverage = build_daily_read_coverage(
+                await cur.fetchall(), start_date, end_date, len(source_ids),
+            )
+            try:
+                alias_lookup = await get_community_alias_lookup(cur)
+            except Exception:
+                alias_lookup = {}
+            try:
+                alias_branches = []
+                alias_params: list[str] = []
+                for alias, formal in alias_lookup.items():
+                    if alias != formal:
+                        alias_branches.append("WHEN bucket.community=%s THEN %s")
+                        alias_params.extend((alias, formal))
+                community_expression = "CASE "
+                if alias_branches:
+                    community_expression += " ".join(alias_branches) + " "
+                community_expression += (
+                    "ELSE COALESCE(NULLIF(TRIM(bucket.community),''),'未分配社区') END"
+                )
+                await cur.execute(
+                    f"""
+                    WITH ranked_runs AS (
+                        SELECT id, spreadsheet_id, parser_type, observed_date,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY spreadsheet_id, parser_type, observed_date
+                                   ORDER BY finished_at DESC, id DESC
+                               ) AS snapshot_rank
+                        FROM _txdocs_monitor_runs
+                        WHERE status='success'
+                          AND observed_date BETWEEN %s AND %s
+                          AND parser_type IN ({type_marks})
+                          AND spreadsheet_id IN ({source_marks})
+                    ), labeled_buckets AS (
+                        SELECT run.observed_date, run.spreadsheet_id,
+                               run.parser_type,
+                               {community_expression} AS community,
+                               bucket.row_count
+                        FROM ranked_runs run
+                        JOIN _txdocs_monitor_run_buckets bucket
+                          ON bucket.run_id=run.id
+                        WHERE run.snapshot_rank=1
+                    ), snapshot_community AS (
+                        SELECT observed_date, spreadsheet_id, parser_type,
+                               community, SUM(row_count) AS row_count
+                        FROM labeled_buckets
+                        GROUP BY observed_date, spreadsheet_id,
+                                 parser_type, community
+                    )
+                    SELECT observed_date, spreadsheet_id, parser_type,
+                           community, row_count
+                    FROM snapshot_community
+                    ORDER BY observed_date, parser_type, community, spreadsheet_id
+                    """,
+                    (
+                        start_date, end_date, *valid_types, *source_ids,
+                        *alias_params,
+                    ),
+                )
+                daily_snapshots = canonicalize_daily_snapshot_rows(
+                    await cur.fetchall(), alias_lookup, communities,
+                )
+            except Exception:
+                # Keep current monitor status available if historical buckets are absent.
+                daily_snapshots = []
     finally:
         pool.release(conn)
 
@@ -2093,7 +2283,10 @@ async def get_txdocs_statistics_overview(
         "changed_rows": int(aggregate[1] or 0),
         "removed_rows": int(aggregate[2] or 0),
         "successful_reads": successful_reads,
+        "failed_reads_in_range": failed_reads_in_range,
         "failed_sources": failed_sources,
+        "daily_read_coverage": daily_read_coverage,
+        "daily_snapshots_by_community": daily_snapshots,
         "last_success_at": last_success.isoformat() + "Z",
         "is_stale": is_stale,
         "message": message,

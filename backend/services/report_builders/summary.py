@@ -137,6 +137,7 @@ async def build_summary(
     t_summary = f"`{summary_table}`"
     pool = db_manager.get_pool("daily_report")
     conn = await pool.acquire()
+    transaction_started = False
     try:
         async with conn.cursor() as cur:
             # 未指定时读取配置；手动串联生成时沿用开始时读取的同一份配置。
@@ -171,7 +172,9 @@ async def build_summary(
                     f"CREATE TABLE {t_summary} ({SUMMARY_COLS}) "
                     f"ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
                 )
-            await cur.execute(f"TRUNCATE TABLE {t_summary}")
+            await conn.begin()
+            transaction_started = True
+            await cur.execute(f"DELETE FROM {t_summary}")
 
             union_parts = []
             for suffix in existing_tables:
@@ -248,7 +251,14 @@ async def build_summary(
             await cur.execute(f"SELECT COUNT(*) FROM {t_summary}")
             count = (await cur.fetchone())[0]
 
+            await conn.commit()
+            transaction_started = False
+
         return {"date": date_str, "type": "总汇总表", "rows": count, "implemented": True}
+    except BaseException:
+        if transaction_started:
+            await conn.rollback()
+        raise
     finally:
         pool.release(conn)
 

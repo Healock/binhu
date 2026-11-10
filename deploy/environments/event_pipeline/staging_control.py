@@ -19,15 +19,22 @@ import time
 from typing import Any
 
 from . import flink_submission
+from .domain_pipeline import DOMAIN_PIPELINES, DomainPipelineOrchestrator
+from .identity import environment_for_run_id
 from .staging_compose import (
-    BACKEND_NETWORK, BROKERS, DLQ_TOPIC, EVENT_TOPIC, REGISTRY_TOPIC, compose, model_sha256,
+    BACKEND_NETWORK, BROKERS, REGISTRY_TOPIC, compose, model_sha256,
     network_for, project_for,
 )
 from .staging_prepare import BASE, root_for, snapshot_database
 from .staging_metrics_probe import sample as metrics_sample
 
 
-TOPICS = (EVENT_TOPIC, DLQ_TOPIC, REGISTRY_TOPIC)
+TOPICS = tuple(sorted({
+    topic.name("staging")
+    for spec in DOMAIN_PIPELINES
+    for topic in spec.topics
+    if topic.provisioned("staging")
+} | {REGISTRY_TOPIC}))
 FORBIDDEN_TOKENS = ("production", "shadow", "development", "dev_")
 SAFE_FAILURE_CODES = frozenset({
     "staging_apply_failed", "staging_architecture_switch_failed",
@@ -226,7 +233,12 @@ def _backend_network(run_id: str) -> dict:
         raise ValueError("isolated Staging Backend network required")
     names = {str(item.get("Name", "")) for item in (network.get("Containers") or {}).values()}
     required = {"binhu-staging-environment-mysql-1", "binhu-staging-redis-1"}
-    if not required <= names:
+    connector_name = re.compile(
+        r"binhu-staging-event-pipeline-stg-[0-9]{8}-[0-9]{2}-"
+        r"(?:business-bridge|backend-outbox-relay)-1"
+    )
+    allowed = required | {name for name in names if connector_name.fullmatch(name)}
+    if not required <= names or not names <= allowed:
         raise ValueError("foreign or missing member on Staging Backend network")
     for item in _docker_json(["docker", "inspect", *sorted(names)]):
         container_labels = item.get("Config", {}).get("Labels", {}) or {}
@@ -459,33 +471,40 @@ def _prepare_checkpoint_volume(root: Path, project: str, run_id: str) -> dict[st
             "path_identity_verified": True}
 
 
-def _consumer_group(project: str, expected: str) -> list[str]:
+def _consumer_groups(project: str, expected_groups: list[str]) -> list[str]:
+    run_ids = {
+        group[:-len(source.group_suffix)]
+        for spec in DOMAIN_PIPELINES for source in spec.flink_sources
+        for group in expected_groups if group.endswith(source.group_suffix)
+    }
+    run_id = next(iter(run_ids)) if len(run_ids) == 1 else ""
+    environment = environment_for_run_id(run_id) if run_id else ""
+    plan = DomainPipelineOrchestrator(environment, run_id).plan() if run_id else None
+    expected_set = set(expected_groups)
+    if plan is None or expected_set != set(plan.consumer_groups):
+        raise ValueError("Staging Flink consumer groups do not match current run")
+    topics_by_group = {
+        source["consumer_group"]: source["topic"]
+        for source in plan.flink_sources.values()
+    }
     broker = _container(project, BROKERS[0])
-    try:
-        output = _run([
-            "docker", "exec", broker, "/opt/kafka/bin/kafka-consumer-groups.sh",
-            "--bootstrap-server", f"{BROKERS[0]}:9092", "--describe", "--group", expected,
-        ]).stdout
-    except ValueError as error:
-        # A clean Staging cluster has no consumer group until the first event
-        # is published.  Basic apply validates the running JobGraph first;
-        # event delivery/acceptance will require the assignment later.
-        if str(error) == "staging_consumer_group_not_created":
-            return [expected]
-        raise
-    # Flink can have a RUNNING source job before Kafka creates a group
-    # assignment. Kafka may return an empty report or headers/status text in
-    # that state; defer assignment validation until the first event is
-    # delivered. Only rows whose first column is this group are assignments.
-    assignments = [
-        parts[1] for line in output.splitlines()
-        if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected
-    ]
-    if not assignments:
-        return [expected]
-    if set(assignments) != {EVENT_TOPIC}:
-        raise ValueError("Staging Flink group has no Staging topic assignment")
-    return [expected]
+    for expected in sorted(expected_set):
+        try:
+            output = _run([
+                "docker", "exec", broker, "/opt/kafka/bin/kafka-consumer-groups.sh",
+                "--bootstrap-server", f"{BROKERS[0]}:9092", "--describe", "--group", expected,
+            ]).stdout
+        except ValueError as error:
+            if str(error) == "staging_consumer_group_not_created":
+                continue
+            raise
+        assignments = [
+            parts[1] for line in output.splitlines()
+            if (parts := line.split()) and len(parts) >= 2 and parts[0] == expected
+        ]
+        if assignments and set(assignments) != {topics_by_group[expected]}:
+            raise ValueError("Staging Flink group has no Staging topic assignment")
+    return sorted(expected_set)
 
 
 def _write_flink_failure(evidence: Path, run_id: str, phase: str, error: Exception) -> None:
@@ -541,8 +560,8 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
             raise
     try:
         verified = flink_submission.wait_for_runtime(
-            client, run_id, lambda: _consumer_group(project, identity["consumer_group"]), timeout=180,
-            expected_sinks=identity["sinks"],
+            client, run_id, lambda: _consumer_groups(project, identity["consumer_groups"]), timeout=180,
+            expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
         )
     except ValueError as error:
         _write_flink_failure(evidence, run_id, "runtime_validation", error)
@@ -747,7 +766,8 @@ def switch(run_id: str) -> dict[str, Any]:
             raise ValueError("Staging Flink metadata job is not uniquely running")
         phase = "flink_runtime"
         flink_submission.wait_for_runtime(
-            client, run_id, lambda: _consumer_group(project, f"{run_id}-flink"), timeout=60,
+            client, run_id,
+            lambda: _consumer_groups(project, identity["consumer_groups"]), timeout=60,
             expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),
         )
         phase = "python_worker_stop"

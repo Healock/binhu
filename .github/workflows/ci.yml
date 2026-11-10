@@ -130,6 +130,12 @@ jobs:
           name: binhu-hotfix-candidate-${{ github.sha }}
           path: hotfix-candidate
           retention-days: 30
+      - name: Set up Python for deployment tests
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - name: Install deployment test dependencies
+        run: python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
       - name: Validate Docker Compose configuration
@@ -138,6 +144,7 @@ jobs:
           BINHU_MYSQL_PASSWORD: compose-validation
           BINHU_REDIS_PASSWORD: compose-validation
           BINHU_ENCRYPTION_KEY: compose-validation
+          BINHU_TASK_EVENT_ENCRYPTION_KEY: compose-validation
           BINHU_OPS_AGENT_TOKEN: compose-validation
         run: docker compose config --quiet
       - name: Run release notes tests

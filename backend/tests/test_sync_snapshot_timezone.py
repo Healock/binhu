@@ -223,6 +223,9 @@ class SyncSnapshotTimezoneTests(unittest.IsolatedAsyncioTestCase):
         cursor_context.__aexit__ = AsyncMock(return_value=None)
         connection = MagicMock()
         connection.cursor.return_value = cursor_context
+        connection.begin = AsyncMock()
+        connection.commit = AsyncMock()
+        connection.rollback = AsyncMock()
         builder = MagicMock()
         builder.table_suffix = "fullChain"
         builder.build = AsyncMock()
@@ -247,6 +250,44 @@ class SyncSnapshotTimezoneTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("DROP TABLE" in sql for sql in executed_sql))
         self.assertEqual(result, "2026-07-27")
         builder.build.assert_not_awaited()
+
+    async def test_existing_snapshot_refresh_uses_dml_without_recreating_table(self):
+        cursor = MagicMock()
+        cursor.execute = AsyncMock()
+        cursor.fetchone = AsyncMock(return_value=None)
+        cursor_context = MagicMock()
+        cursor_context.__aenter__ = AsyncMock(return_value=cursor)
+        cursor_context.__aexit__ = AsyncMock(return_value=None)
+        connection = MagicMock()
+        connection.cursor.return_value = cursor_context
+        connection.begin = AsyncMock()
+        connection.commit = AsyncMock()
+        connection.rollback = AsyncMock()
+        builder = MagicMock(table_suffix="fullChain")
+
+        with patch(
+            "services.sync_engine.get_business_date",
+            new=AsyncMock(return_value=date(2026, 7, 27)),
+        ), patch(
+            "services.report_builders.BUILDERS",
+            {"全链条": builder},
+        ), patch(
+            "services.sync_engine.table_exists",
+            new=AsyncMock(return_value=True),
+        ):
+            await SyncEngine(None)._save_snapshot(
+                connection,
+                "t_fullchain",
+                "全链条",
+            )
+
+        sql = [call.args[0] for call in cursor.execute.await_args_list]
+        self.assertTrue(any(item.startswith("DELETE FROM") for item in sql))
+        self.assertTrue(any(item.startswith("INSERT INTO") for item in sql))
+        self.assertFalse(any("CREATE TABLE" in item or "DROP TABLE" in item for item in sql))
+        connection.begin.assert_awaited_once()
+        connection.commit.assert_awaited_once()
+        connection.rollback.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -8,8 +8,12 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.flink.table.api.EnvironmentSettings;
-import org.apache.flink.table.api.StatementSet;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamStatementSet;
+import org.apache.flink.types.Row;
 
 /** Run private SQL without the SQL client's command echo (which includes secrets). */
 public final class PipelineJob {
@@ -136,13 +140,21 @@ public final class PipelineJob {
 
     public static void main(String[] args) throws Exception {
         String environment = System.getenv("APP_ENVIRONMENT");
-        if (args.length != 0 || !("development".equals(environment) || "staging".equals(environment))) {
+        if (args.length != 1 || !("development".equals(environment) || "staging".equals(environment))) {
             throw new IllegalArgumentException("Non-Production job identity required");
         }
         String sql = Files.readString(Path.of("/opt/flink/private/pipeline.sql"));
-        TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
-        StatementSet statementSet = table.createStatementSet();
+        StreamExecutionEnvironment stream = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamTableEnvironment table = StreamTableEnvironment.create(
+            stream, EnvironmentSettings.inStreamingMode());
+        StreamStatementSet statementSet = table.createStatementSet();
         Set<String> sinks = new HashSet<>();
+        // The shared JobManager has no per-run identity in its process environment.
+        String runId = args[0];
+        boolean validRunId = runId != null && ("development".equals(environment)
+            ? runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+            : runId.matches("STG-[0-9]{8}-[0-9]{2}"));
+        if (!validRunId) throw new IllegalArgumentException("pipeline run identity required");
         int index = 0;
         try {
             for (String statement : splitStatements(sql)) {
@@ -175,7 +187,16 @@ public final class PipelineJob {
             if (!sinks.contains("dev_revisions") || !sinks.contains("dev_task_metadata")) {
                 throw new IllegalArgumentException("base projection sinks missing");
             }
-            statementSet.execute();
+            DataStream<Row> taskEvents = table.toDataStream(table.sqlQuery(
+                "SELECT schema_version,event_id,command_id,event_type,task_id,source_id,revision,operation_id,changed_fields,`timestamp`,environment,run_id,encrypted_payload,view_domain,task_revision,row_group_token " +
+                "FROM dev_task_events_redis WHERE environment='" + environment + "' AND run_id='" +
+                runId + "' AND (schema_version=4 OR schema_version=5 OR schema_version=6) " +
+                "AND (encrypted_payload IS NOT NULL OR event_type='task.deleted')"));
+            taskEvents.addSink(new TaskReadModelRedisSink())
+                .name("task-read-model-redis").uid("task-read-model-redis");
+            // Attach SQL sinks and the custom Redis sink to the same Flink job graph.
+            statementSet.attachAsDataStream();
+            stream.execute(runId);
         } catch (Exception failure) {
             // SQL parser/planner exceptions may contain a JDBC credential.
             StringBuilder types = new StringBuilder();

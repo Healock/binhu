@@ -1384,6 +1384,9 @@ async def release_housing_person_tag(
                     "WHERE id=%s",
                     (user["id"], assignment_id),
                 )
+                from services.watch_matching import emit_watch_view_states_for_assignment
+
+                await emit_watch_view_states_for_assignment(cur, assignment_id)
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -3934,6 +3937,9 @@ async def update_watch_assignment(
                 (data.valid_from, data.valid_to, data.released_at, data.basis.strip(), data.status,
                  user["id"], assignment_id),
             )
+            from services.watch_matching import emit_watch_view_states_for_assignment
+
+            await emit_watch_view_states_for_assignment(cur, assignment_id)
         # 有效期可能覆盖历史任务；回填采用 INSERT IGNORE，解除不会删除既有快照。
         backfilled = await backfill_assignment_snapshots(conn, assignment_id)
         await conn.commit()

@@ -390,6 +390,11 @@ async def reconcile_online_task_graph(
     )
     dependency_id = int(dependency["id"])
     await _archive_pair(cur, online["id"], analysis["id"], dependency_id, actor_user_id)
+    from services.task_view_state import enqueue_online_task_graph_view_state
+
+    await enqueue_online_task_graph_view_state(
+        cur, parser_type=parser_type, row_key=row_key,
+    )
     return {
         "enabled": True,
         "changed": bool(online["changed"] or analysis["changed"] or dependency["changed"]),

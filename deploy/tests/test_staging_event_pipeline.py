@@ -559,27 +559,29 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
                     timeout=240,
                 )
 
-    def test_missing_consumer_group_is_allowed_before_first_event(self):
+    def test_missing_consumer_groups_are_allowed_before_first_event(self):
+        expected = ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"]
         with patch.object(staging_control, "_run", side_effect=ValueError("staging_consumer_group_not_created")):
             self.assertEqual(
-                staging_control._consumer_group(
+                staging_control._consumer_groups(
                     "binhu-staging-event-pipeline-stg-20260920-01",
-                    "STG-20260920-01-flink",
+                    expected,
                 ),
-                ["STG-20260920-01-flink"],
+                expected,
             )
 
-    def test_empty_consumer_group_report_is_allowed_before_first_event(self):
+    def test_empty_consumer_group_reports_are_allowed_before_first_event(self):
+        expected = ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"]
         with patch.object(
                 staging_control, "_run",
                 return_value=subprocess.CompletedProcess([], 0, "", ""),
         ):
             self.assertEqual(
-                staging_control._consumer_group(
+                staging_control._consumer_groups(
                     "binhu-staging-event-pipeline-stg-20260920-01",
-                    "STG-20260920-01-flink",
+                    expected,
                 ),
-                ["STG-20260920-01-flink"],
+                expected,
             )
 
     def test_consumer_group_headers_without_assignment_are_allowed(self):
@@ -592,11 +594,11 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess([], 0, output, ""),
         ):
             self.assertEqual(
-                staging_control._consumer_group(
+                staging_control._consumer_groups(
                     "binhu-staging-event-pipeline-stg-20260920-01",
-                    "STG-20260920-01-flink",
+                    ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"],
                 ),
-                ["STG-20260920-01-flink"],
+                ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"],
             )
 
     def test_consumer_group_report_for_other_topic_is_rejected(self):
@@ -606,9 +608,9 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
                     [], 0, "GROUP TOPIC\nSTG-20260920-01-flink other.topic 0", "",
                 ),
         ), self.assertRaisesRegex(ValueError, "no Staging topic assignment"):
-            staging_control._consumer_group(
+            staging_control._consumer_groups(
                 "binhu-staging-event-pipeline-stg-20260920-01",
-                "STG-20260920-01-flink",
+                ["STG-20260920-01-flink", "STG-20260920-01-flink-redis"],
             )
 
     def test_checkpoint_volume_identity_is_required_before_owner_change(self):
@@ -635,8 +637,10 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
         spec = staging_compose.compose(images(), RUN_ID)
         self.assertEqual(spec["services"]["backend-outbox-relay"]["networks"], ["backend"])
         self.assertEqual(set(spec["services"]["business-bridge"]["networks"]), {"internal", "backend"})
+        self.assertEqual(spec["services"]["taskmanager"]["networks"], ["internal", "backend"])
+        self.assertEqual(spec["services"]["taskmanager"]["env_file"], ["flink-task.env"])
         for name, service in spec["services"].items():
-            if name not in {"backend-outbox-relay", "business-bridge"}:
+            if name not in {"backend-outbox-relay", "business-bridge", "taskmanager"}:
                 self.assertNotIn("backend", service.get("networks", []), name)
 
     def test_flink_uses_independent_checkpoint_volume_and_fixed_limits(self):
@@ -691,14 +695,20 @@ class StagingEventPipelinePrepareTests(unittest.TestCase):
                     RUN_ID, images(), source=source, pipeline_jar=jar,
                     snapshot_id="staging-" + "d" * 16,
                     environ=env, verify_images=False,
+                    task_event_key="fixture-task-event-key-not-for-runtime",
                 )
                 root = base / RUN_ID
                 self.assertEqual(manifest["project"], staging_compose.project_for(RUN_ID))
                 self.assertEqual(json.loads((root / "compose.json").read_text()), staging_compose.compose(images(), RUN_ID))
                 self.assertIn(f"STAGING_RUN_ID={RUN_ID}", (root / "runtime.env").read_text())
+                self.assertIn("TASK_EVENT_ENCRYPTION_KEY=fixture-task-event-key-not-for-runtime", (root / "runtime.env").read_text())
+                flink_env = (root / "flink-task.env").read_text()
+                self.assertIn(f"STAGING_RUN_ID={RUN_ID}", flink_env)
+                self.assertIn("BACKEND_REDIS_URL=redis://:fixture@environment-redis:6379/0", flink_env)
+                self.assertNotIn("MYSQL_PASSWORD=", flink_env)
                 self.assertIn("APP_ENVIRONMENT=staging", (root / "backend-relay.env").read_text())
                 self.assertIn("environment = 'staging'", (root / "pipeline.sql").read_text())
-                self.assertIn("staging.task.events.v1", (root / "pipeline.sql").read_text())
+                self.assertIn("staging.task.read-model.v4", (root / "pipeline.sql").read_text())
                 self.assertIn(
                     "BACKEND_MYSQL_DATABASE=Staging_s" + "d" * 16 + "_OnlineData",
                     (root / "backend-relay.env").read_text(),
@@ -923,12 +933,14 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
             source.mkdir(parents=True)
             load.mkdir(parents=True)
             (source / "PipelineJob.java").write_text("public final class PipelineJob {}\n", encoding="utf-8")
+            (source / "TaskReadModelRedisSink.java").write_text("public final class TaskReadModelRedisSink {}\n", encoding="utf-8")
             (source / "runtime.py").write_text("VALUE = 1\n", encoding="utf-8")
             (load / "locustfile.py").write_text("# synthetic\n", encoding="utf-8")
             (repository / "load-tests" / "requirements.txt").write_text("locust==2.42.6\n", encoding="utf-8")
             jar = Path(directory) / "pipeline-job.jar"
             with zipfile.ZipFile(jar, "w") as archive:
                 archive.writestr("PipelineJob.class", b"synthetic")
+                archive.writestr("TaskReadModelRedisSink.class", b"synthetic")
             bundle = Path(directory) / "candidate.tar.gz"
             result = staging_deploy.build(
                 repository, bundle, run_id=RUN_ID, commit="a" * 40, images=images(),
@@ -957,8 +969,10 @@ class StagingEventPipelineCandidateTests(unittest.TestCase):
                     "install-staging-event-pipeline-gateway.yml").read_text(encoding="utf-8")
         self.assertIn("binhu-staging-deploy", installer)
         self.assertIn("staging_compose.py /usr/local/libexec/staging_compose.py", installer)
+        self.assertIn("domain_pipeline.py /usr/local/libexec/domain_pipeline.py", installer)
         self.assertIn("identity.py /usr/local/libexec/identity.py", installer)
         self.assertIn("deploy/environments/event_pipeline/staging_compose.py", workflow)
+        self.assertIn("deploy/environments/event_pipeline/domain_pipeline.py", workflow)
         self.assertIn("deploy/environments/event_pipeline/identity.py", workflow)
         self.assertIn("^STG-[0-9]{8}-[0-9]{2}$", wrapper)
         self.assertIn('sys.argv[1] == "sample"', gateway)

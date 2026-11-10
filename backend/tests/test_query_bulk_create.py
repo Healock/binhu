@@ -58,6 +58,11 @@ class FakeCursor:
         elif compact.startswith("INSERT INTO `t_fixture`"):
             self.conn.next_id += 1
             self.lastrowid = self.conn.next_id
+        elif compact.startswith("INSERT INTO _online_source_rows"):
+            self.conn.next_source_id += 1
+            self.lastrowid = self.conn.next_source_id
+        elif compact.startswith("SELECT parser_type,physical_row,revision,archived_at FROM _online_source_rows"):
+            self._one = ("fixture", self.conn.next_id, 1, None)
         elif compact.startswith("SELECT id, revision FROM _online_source_rows"):
             self.conn.next_source_id += 1
             self._one = (self.conn.next_source_id, 1)
@@ -106,7 +111,8 @@ class QueryBulkCreateTests(unittest.IsolatedAsyncioTestCase):
         projection = projection or AsyncMock()
         with patch("routers.query.validate_new_row_scope", AsyncMock(return_value=None)), \
              patch("routers.query.rebuild_projection_rows", projection), \
-             patch("routers.query.enqueue_event", AsyncMock()), \
+             patch("services.parsers.get_parser", return_value=FakeParser()), \
+             patch("services.task_commands._append_command_and_outbox", AsyncMock()), \
              patch("routers.query.record_admin_audit", AsyncMock()):
             return await _create_local_source_rows_bulk(
                 parser_type="fixture",

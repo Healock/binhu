@@ -1,5 +1,7 @@
 # 系统是怎么工作的
 
+平台业务域与重构状态索引见[滨湖智慧平台架构树](platform-architecture-tree.md)。本文继续记录系统行为、业务规则和实现细节。
+
 > 当前运行口径：照片调取业务已永久下线。本文中 v0.17.x–v0.19.x 的照片工单、腾讯名单同步、照片 ZIP 导入和 `photo_sheet_outbox` 内容均为历史设计记录，不是当前运行路径；当前接口拒绝新照片工单，专属历史数据只由退役维护脚本清理。
 
 ## 0.28.8 发布分支：工作表与操作记录实时交互
@@ -1326,6 +1328,8 @@ v0.16.0 在同一 MySQL 实例中预留八个数据库：`PlatformData`、`Onlin
 `GET /api/events/stream` 是登录后的 SSE 网关。网关先按 `audiences` 过滤，再向浏览器发送事件；断线时依据 `Last-Event-ID` 从 Stream 补发，使用 `event_id` 去重。浏览器只把事件当作失效提示，按 `aggregate_revision` 丢弃旧事件并重新读取业务数据，SSE 断开时使用低频轮询兜底。事件正文不保存姓名、身份证、电话、地址或其他业务字段。
 
 数据库迁移使用 `python -m migrations.internal_events measure|migrate|verify`，只有明确 `--apply` 才建表。Relay 单独部署，不能在 Web 进程中执行外部同步或阻塞业务事务。
+
+事件传输保留边界和清理开关见[事件保留与清理](event-retention.md)。Redis Stream 与 Kafka 是有界通知/重放窗口；MySQL 成功投递台账建议保留 30 天，失败与死信不自动清理，业务审计和命令历史按各自合同保留。
 
 ## 用户无感问题诊断
 

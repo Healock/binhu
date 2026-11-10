@@ -23,6 +23,9 @@ from services.domain_events import OUTBOX_TABLE, decode_event_row
 RETRY_DELAYS = (1, 2, 5, 10, 30, 60, 120, 300)
 LEASE_SECONDS = 120
 BATCH_SIZE = 100
+TRANSPORT_RETENTION_DAYS = 30
+TRANSPORT_CLEANUP_BATCH_SIZE = 200
+TRANSPORT_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 
 
 def _settings():
@@ -70,6 +73,7 @@ class OutboxRelay:
         self._breaker_until = 0.0
         self._breaker_level = 0
         self._last_trim = 0.0
+        self._last_transport_cleanup = 0.0
 
     async def connect(self) -> None:
         if self.redis is None:
@@ -85,6 +89,9 @@ class OutboxRelay:
                     f"""
                     SELECT event_id, schema_version, domain, event_type,
                            aggregate_type, aggregate_id, aggregate_revision,
+                           command_id,
+                           task_id, source_id, operation_id, changed_fields_json,
+                           payload_envelope_json,
                            audiences_json, status, attempt_count, available_at,
                            locked_by, locked_until, last_error_code,
                            last_error_summary, occurred_at, published_at
@@ -142,7 +149,7 @@ class OutboxRelay:
         published = 0
         for row in rows:
             event_id = str(row[0])
-            attempts = int(row[9] or 0) + 1
+            attempts = int(row[15] or 0) + 1
             try:
                 event = decode_event_row(row)
                 fields = _stream_payload(event)
@@ -172,6 +179,47 @@ class OutboxRelay:
                                        error_code=type(exc).__name__, error_summary=str(exc), available_at=available)
         return published
 
+    async def _cleanup_published_transport_rows(self, pool) -> int:
+        conn = await pool.acquire()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""DELETE FROM `{OUTBOX_TABLE}`
+                        WHERE status='published'
+                          AND published_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+                        ORDER BY published_at,event_id
+                        LIMIT %s""",
+                    (TRANSPORT_RETENTION_DAYS, TRANSPORT_CLEANUP_BATCH_SIZE),
+                )
+                deleted = int(cur.rowcount or 0)
+            await conn.commit()
+            return deleted
+        except Exception:
+            await conn.rollback()
+            raise
+        finally:
+            pool.release(conn)
+
+    async def _maybe_cleanup_transport_rows(self, pools) -> None:
+        cfg = _settings()
+        now = time.monotonic()
+        if (not cfg.EVENT_TRANSPORT_CLEANUP_ENABLED
+                or now - self._last_transport_cleanup < TRANSPORT_CLEANUP_INTERVAL_SECONDS):
+            return
+        self._last_transport_cleanup = now
+        for pool in pools:
+            try:
+                deleted = await self._cleanup_published_transport_rows(pool)
+                if deleted:
+                    print(json.dumps({"component": "redis-outbox-relay",
+                                      "event": "transport_retention_cleanup",
+                                      "deleted": deleted}), flush=True)
+            except Exception:
+                print(json.dumps({"component": "redis-outbox-relay",
+                                  "event": "transport_retention_cleanup",
+                                  "result": "failed",
+                                  "reason_code": "cleanup_query_failed"}), flush=True)
+
     async def run_once(self) -> int:
         if self.redis is None:
             await self.connect()
@@ -195,6 +243,9 @@ class OutboxRelay:
                     self._breaker_level = min(self._breaker_level + 1, 3)
                     self._breaker_until = time.monotonic() + (30, 60, 120, 300)[self._breaker_level]
                 raise exc
+        await self._maybe_cleanup_transport_rows(
+            [db_manager.get_pool(name) for name in ("online_data", "platform")]
+        )
         return total
 
 
