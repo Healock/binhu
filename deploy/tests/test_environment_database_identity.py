@@ -54,6 +54,13 @@ class IdentityResourceTests(unittest.TestCase):
         validate_network.assert_called_once()
         service_state.assert_called_once_with()
 
+    def test_missing_staging_pipeline_network_fails_closed(self):
+        self.mysql['NetworkSettings']['Networks'][database_identity.STAGING_PIPELINE_NETWORK] = {}
+        with patch('deploy.environments.event_pipeline.staging_backend_network.network_if_present',
+                   return_value=None):
+            with self.assertRaisesRegex(ValueError, 'staging_access_network_missing'):
+                self.check()
+
     def test_pipeline_bridge_is_not_allowed_for_backend_or_development(self):
         self.backend['NetworkSettings']['Networks'][database_identity.STAGING_PIPELINE_NETWORK] = {}
         with self.assertRaisesRegex(ValueError, 'network'):
