@@ -573,10 +573,10 @@ export default function MobileTaskList({
         restorationRef.current = null
       }
     } finally {
-      if (requestId === listRequestId.current) setRefreshing(false)
-      if (!silent && requestId === listRequestId.current) {
+      if (requestId === listRequestId.current) {
+        setRefreshing(false)
         setLoading(false)
-        setLoadingMore(false)
+        if (!silent) setLoadingMore(false)
       }
       if (append) loadingMoreRef.current = false
     }
@@ -689,7 +689,7 @@ export default function MobileTaskList({
   useEffect(() => {
     if (!active) return undefined
     const refreshVisibleList = async () => {
-      if (restorationRef.current) return
+      if (restorationRef.current || loading || loadingMore || refreshing) return
       if (document.visibilityState === 'visible') await load(1, false, true)
     }
     const visibilityChanged = () => {
@@ -697,6 +697,7 @@ export default function MobileTaskList({
     }
     const poller = createResilientPoller(refreshVisibleList, {
       intervalMs: 30_000,
+      immediate: false,
       maxDelayMs: 120_000,
       failureThreshold: 4,
       cooldownMs: 120_000,
@@ -714,7 +715,7 @@ export default function MobileTaskList({
       window.removeEventListener('online', online)
       document.removeEventListener('visibilitychange', visibilityChanged)
     }
-  }, [active, load])
+  }, [active, load, loading, loadingMore, refreshing])
 
   useEffect(() => {
     if (!active || !manageUrl) return
