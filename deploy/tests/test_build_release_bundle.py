@@ -84,7 +84,7 @@ class ReleaseBundleTests(unittest.TestCase):
     def test_hotfix_bundle_keeps_version_and_records_unique_identity(self):
         output = self.root / "hotfix.tar.gz"
         manifest = build_bundle(
-            self.repository, None, self.commit, "online", "backend", output,
+            self.repository, None, self.commit, "all", "backend", output,
             release_kind="hotfix", hotfix_id="HF-20260911-589",
         )
         self.assertEqual(manifest["version"], "1.2.3")
@@ -92,9 +92,9 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertEqual(manifest["hotfix_id"], "HF-20260911-589")
         self.assertTrue(manifest["ready_for_hotfix"])
 
-    def test_hotfix_rejects_non_backend_or_wrong_backup_scope(self):
+    def test_hotfix_rejects_non_backend_or_partial_backup_scope(self):
         with self.assertRaises(ValueError):
-            build_bundle(self.repository, None, self.commit, "none", "backend", self.root / "x.tar.gz", release_kind="hotfix", hotfix_id="HF-20260911-589")
+            build_bundle(self.repository, None, self.commit, "online", "backend", self.root / "x.tar.gz", release_kind="hotfix", hotfix_id="HF-20260911-589")
         with self.assertRaises(ValueError):
             build_bundle(self.repository, None, self.commit, "online", "full", self.root / "x.tar.gz", release_kind="hotfix", hotfix_id="HF-20260911-589")
 
