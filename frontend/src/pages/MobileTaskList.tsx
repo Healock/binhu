@@ -689,7 +689,7 @@ export default function MobileTaskList({
   useEffect(() => {
     if (!active) return undefined
     const refreshVisibleList = async () => {
-      if (restorationRef.current || loading || refreshing) return
+      if (restorationRef.current || loading || loadingMore || refreshing) return
       if (document.visibilityState === 'visible') await load(1, false, true)
     }
     const visibilityChanged = () => {
@@ -715,7 +715,7 @@ export default function MobileTaskList({
       window.removeEventListener('online', online)
       document.removeEventListener('visibilitychange', visibilityChanged)
     }
-  }, [active, load, loading, refreshing])
+  }, [active, load, loading, loadingMore, refreshing])
 
   useEffect(() => {
     if (!active || !manageUrl) return
