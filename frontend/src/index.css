@@ -3994,7 +3994,6 @@ html.desktop-shell .ant-notification-topRight {
  * Ant Design Card/Table margins cannot collapse or leave cards touching. */
 .dashboard-mobile-detail-list,
 .dashboard-mobile-report-list,
-.data-query-mobile-list,
 .work-log-drafts__mobile-list,
 .mobile-report-table__layout {
   display: grid;
@@ -4395,7 +4394,6 @@ html.desktop-shell .ant-notification-topRight {
 
   .dashboard-mobile-detail-list,
   .dashboard-mobile-report-list,
-  .data-query-mobile-list,
   .work-log-drafts__mobile-list,
   .mobile-report-table__layout {
     gap: 10px;

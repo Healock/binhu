@@ -71,8 +71,6 @@ import {
 import { canEditOnlineQuery } from '../utils/mobileTaskRouting'
 import { createResilientPoller } from '../utils/resilientPolling'
 
-const MOBILE_CARD_PAGE_SIZE = 50
-
 function errorText(error: any, fallback: string): string {
   const detail = error?.response?.data?.detail
   if (typeof detail === 'string') return detail
@@ -98,7 +96,6 @@ export default function DataQuery() {
   const [columnMeta, setColumnMeta] = useState<QueryColumnMeta[]>([])
   const [dependentOptions, setDependentOptions] = useState<QueryDependentOptions | undefined>()
   const [total, setTotal] = useState(0)
-  const [mobilePage, setMobilePage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [scopeMessage, setScopeMessage] = useState('')
@@ -212,10 +209,6 @@ export default function DataQuery() {
       setDataSourceMode('local')
       dataVersionRef.current = String(result.data_version || '')
       setRefreshAvailable(false)
-      setMobilePage(current => Math.min(
-        current,
-        Math.max(1, Math.ceil(result.total / MOBILE_CARD_PAGE_SIZE)),
-      ))
       setSelectedSheetSelection(null)
       setSheetRevision(current => current + 1)
     } catch (requestError) {
@@ -677,7 +670,6 @@ export default function DataQuery() {
 
   const changeSourceType = (value: 'online' | 'archive') => {
     setSource(value)
-    setMobilePage(1)
     setSheetFilterCriteria({})
     setSortBy(undefined)
     setSortOrder('asc')
@@ -690,7 +682,6 @@ export default function DataQuery() {
 
   const changeBusinessType = (value: string) => {
     setSelectedType(value)
-    setMobilePage(1)
     setSheetFilterCriteria({})
     setSortBy(undefined)
     setSortOrder('asc')
@@ -738,13 +729,13 @@ export default function DataQuery() {
             placeholder="搜索全部字段"
             value={searchInput}
             onChange={event => setSearchInput(event.target.value)}
-            onPressEnter={() => { setKeyword(searchInput); setMobilePage(1) }}
+            onPressEnter={() => { setKeyword(searchInput) }}
             className="min-w-56 flex-1"
           />
           <Button
             type="primary"
             icon={<SearchOutlined />}
-            onClick={() => { setKeyword(searchInput); setMobilePage(1) }}
+            onClick={() => { setKeyword(searchInput) }}
           >
             搜索
           </Button>
@@ -840,7 +831,6 @@ export default function DataQuery() {
                   onClick={() => {
                     setSortBy(undefined)
                     setSortOrder('asc')
-                    setMobilePage(1)
                     setSelectedSheetSelection(null)
                   }}
                 >
@@ -980,13 +970,11 @@ export default function DataQuery() {
               onSortChange={(column, order) => {
                 setSortBy(column)
                 setSortOrder(order)
-                setMobilePage(1)
                 setSelectedSheetSelection(null)
               }}
               onDraftsChange={setDraftRows}
               onFilterCriteriaChange={criteria => {
                 setSheetFilterCriteria(criteria)
-                setMobilePage(1)
               }}
               onSelectionChange={setSelectedSheetSelection}
               onCommit={handleSheetCommit}
@@ -1008,52 +996,6 @@ export default function DataQuery() {
         <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)] px-4 py-2 text-xs text-[var(--app-text-secondary)]">
           蓝色单元格可直接编辑；工作表会连续加载全部查询结果。Univer 表头筛选仅影响当前查看，不会重新查询后端；排序仍按完整结果重新查询，格式调整不写入业务数据。
         </div>
-      </div>
-
-      <div className="data-query-mobile-list md:hidden">
-        {loading ? <div className="app-card p-10 text-center"><Spin /></div> : rows.length === 0 ? (
-          <div className="app-card p-8"><Empty description={error || '没有找到符合条件的数据'} /></div>
-        ) : rows.slice(
-          (mobilePage - 1) * MOBILE_CARD_PAGE_SIZE,
-          mobilePage * MOBILE_CARD_PAGE_SIZE,
-        ).map(row => {
-          const community = String(row['社区'] || row['下发社区'] || '-')
-          const name = String(row['姓名'] || row['参考姓名'] || row['出租屋地址'] || '-')
-          const result = String(row['核查结果'] || row['核查反馈'] || row['实际情况'] || '尚未填写结果')
-          return (
-            <button
-              type="button"
-              key={String(row.__row_key)}
-              className="app-card w-full p-4 text-left"
-              onClick={() => openDetails(row)}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-base font-semibold text-[var(--app-text-strong)]">{name}</div>
-                  <div className="mt-1 text-sm text-[var(--app-text-secondary)]">{community}</div>
-                </div>
-                <div className="flex flex-wrap justify-end gap-1">
-                  {Number(row.__source_count || 0) > 1 && <Tag>{row.__source_count} 条原始行</Tag>}
-                  {row.__pending && <Tag color="gold">待同步</Tag>}
-                  {row.__conflict && <Tag color="red">冲突</Tag>}
-                </div>
-              </div>
-              <div className="mt-3 line-clamp-2 text-sm text-[var(--app-text)]">{result}</div>
-              <div className="mt-3 text-xs text-[var(--app-primary)]">查看详情与可编辑字段</div>
-            </button>
-          )
-        })}
-        {total > MOBILE_CARD_PAGE_SIZE && (
-          <div className="flex justify-center py-2">
-            <Pagination
-              simple
-              current={mobilePage}
-              pageSize={MOBILE_CARD_PAGE_SIZE}
-              total={total}
-              onChange={setMobilePage}
-            />
-          </div>
-        )}
       </div>
 
       <Modal
