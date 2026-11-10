@@ -160,6 +160,7 @@ class BaseReportBuilder:
 
         pool = db_manager.get_pool("daily_report")
         conn = await pool.acquire()
+        transaction_started = False
         try:
             async with conn.cursor() as cur:
                 # 检查当天快照是否存在
@@ -178,6 +179,8 @@ class BaseReportBuilder:
                     await cur.execute(f"CREATE TABLE {t_inspector} ({self.INSPECTOR_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
                 if not await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, community_table):
                     await cur.execute(f"CREATE TABLE {t_community} ({self.COMMUNITY_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+                await conn.begin()
+                transaction_started = True
                 from services.report_ledger import (
                     aggregate_ledger_into_reports,
                     refresh_daily_ledger,
@@ -211,6 +214,9 @@ class BaseReportBuilder:
                         (tname, date_str, self.parser_type, generation_method),
                     )
 
+                await conn.commit()
+                transaction_started = False
+
             return {
                 "date": date_str,
                 "type": self.parser_type,
@@ -219,6 +225,10 @@ class BaseReportBuilder:
                 "ledger_rows": ledger_result["ledger_rows"],
                 "included_rows": ledger_result["included_rows"],
             }
+        except BaseException:
+            if transaction_started:
+                await conn.rollback()
+            raise
         finally:
             pool.release(conn)
 

@@ -218,7 +218,12 @@ class SyncEngine:
                         f"ON DUPLICATE KEY UPDATE {','.join(update_parts)}",
                         (parser.make_row_key(row), *[row.get(column, '') for column in parser.COLUMNS]),
                     )
-            report_date = await self._save_snapshot(conn, parser.table_name, MODEL_THREE_PARSER)
+            report_date = await self._save_snapshot(
+                conn,
+                parser.table_name,
+                MODEL_THREE_PARSER,
+                transaction_managed=True,
+            )
             await conn.commit()
         except Exception:
             await conn.rollback()
@@ -740,7 +745,12 @@ class SyncEngine:
             await cur.execute(f"DELETE FROM {table} WHERE _row_key = %s", (key,))
 
     async def _save_snapshot(
-        self, conn, table: str, parser_type: str
+        self,
+        conn,
+        table: str,
+        parser_type: str,
+        *,
+        transaction_managed: bool = False,
     ) -> str | None:
         """保存快照，返回使用的业务日期；日报在全部数据同步后统一生成。"""
         from services.report_builders import BUILDERS
@@ -748,22 +758,48 @@ class SyncEngine:
         builder = BUILDERS.get(parser_type)
         if not builder:
             return None
-        async with conn.cursor() as cur:
-            today = (await get_business_date(cur)).isoformat()
-            snapshot_table = f"{today}_snapshot_{builder.table_suffix}"
-            if await table_exists(cur, settings.MYSQL_DAILY_REPORT_DB, snapshot_table):
-                await cur.execute(f"DROP TABLE `{settings.MYSQL_DAILY_REPORT_DB}`.`{snapshot_table}`")
-            await cur.execute(
-                f"CREATE TABLE `{settings.MYSQL_DAILY_REPORT_DB}`.`{snapshot_table}` AS "
-                f"SELECT * FROM `{settings.MYSQL_ONLINE_DATA_DB}`.`{table}`"
-            )
-            await cur.execute(
-                f"INSERT INTO `{settings.MYSQL_DAILY_REPORT_DB}`._daily_report_meta "
-                "(table_name, report_date, parser_type, generation_method) "
-                "VALUES (%s, %s, %s, 'snapshot') ON DUPLICATE KEY UPDATE generated_at = NOW()",
-                (snapshot_table, today, f"{parser_type}_snapshot"),
-            )
-            print(f"[SYNC] 快照已保存: {snapshot_table}")
+        transaction_started = False
+        try:
+            async with conn.cursor() as cur:
+                today = (await get_business_date(cur)).isoformat()
+                snapshot_table = f"{today}_snapshot_{builder.table_suffix}"
+                snapshot_identifier = (
+                    f"`{settings.MYSQL_DAILY_REPORT_DB}`.`{snapshot_table}`"
+                )
+                snapshot_exists = await table_exists(
+                    cur, settings.MYSQL_DAILY_REPORT_DB, snapshot_table
+                )
+                if not snapshot_exists:
+                    # CREATE TABLE is DDL and implicitly commits in MySQL.
+                    # Create first, then use a transaction for later refreshes.
+                    await cur.execute(
+                        f"CREATE TABLE {snapshot_identifier} AS "
+                        f"SELECT * FROM `{settings.MYSQL_ONLINE_DATA_DB}`.`{table}`"
+                    )
+                if not transaction_managed:
+                    await conn.begin()
+                    transaction_started = True
+                if snapshot_exists:
+                    await cur.execute(f"DELETE FROM {snapshot_identifier}")
+                    await cur.execute(
+                        f"INSERT INTO {snapshot_identifier} "
+                        f"SELECT * FROM `{settings.MYSQL_ONLINE_DATA_DB}`.`{table}`"
+                    )
+                await cur.execute(
+                    f"INSERT INTO `{settings.MYSQL_DAILY_REPORT_DB}`._daily_report_meta "
+                    "(table_name, report_date, parser_type, generation_method) "
+                    "VALUES (%s, %s, %s, 'snapshot') ON DUPLICATE KEY UPDATE generated_at = NOW()",
+                    (snapshot_table, today, f"{parser_type}_snapshot"),
+                )
+                print(f"[SYNC] 快照已保存: {snapshot_table}")
+
+            if transaction_started:
+                await conn.commit()
+                transaction_started = False
+        except BaseException:
+            if transaction_started:
+                await conn.rollback()
+            raise
 
         return today
 
