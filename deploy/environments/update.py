@@ -242,6 +242,80 @@ def update_failure_reason(error):
     return 'environment_update_failed'
 
 
+def startup_failure_diagnostic(environment, root):
+    """Capture bounded, redacted container startup facts before rollback removes it."""
+    report = {
+        'schema': 1,
+        'environment': environment,
+        'container_found': False,
+        'container_status': 'unavailable',
+        'restart_count': None,
+        'exit_code': None,
+        'oom_killed': None,
+        'logs_read': False,
+        'startup_failed_markers': 0,
+        'traceback_markers': 0,
+        'exception_types': [],
+        'mysql_error_codes': [],
+    }
+    if environment not in {'development', 'staging'}:
+        return report
+    try:
+        compose = subprocess.run(
+            ['docker', 'compose', '-f', str(Path(root) / 'compose.json'), 'ps', '-q', 'backend'],
+            capture_output=True, text=True, timeout=15)
+        container_id = compose.stdout.strip()
+        if compose.returncode or not re.fullmatch(r'[0-9a-f]{12,64}', container_id):
+            return report
+        inspected = subprocess.run(
+            ['docker', 'inspect', container_id], capture_output=True, text=True, timeout=15)
+        if inspected.returncode:
+            return report
+        containers = json.loads(inspected.stdout)
+        if len(containers) != 1:
+            return report
+        container = containers[0]
+        labels = (container.get('Config', {}).get('Labels') or {})
+        if (labels.get('com.docker.compose.project') != 'binhu-' + environment
+                or labels.get('binhu.environment') != environment):
+            return report
+        state = container.get('State') or {}
+        report.update({
+            'container_found': True,
+            'container_status': state.get('Status', 'unknown'),
+            'restart_count': int(container.get('RestartCount', 0)),
+            'exit_code': int(state.get('ExitCode', 0)),
+            'oom_killed': state.get('OOMKilled') is True,
+        })
+        logs = subprocess.run(
+            ['docker', 'logs', '--tail', '500', container_id],
+            capture_output=True, text=True, timeout=20)
+        if logs.returncode:
+            return report
+        text = logs.stdout + '\n' + logs.stderr
+        report['logs_read'] = True
+        report['startup_failed_markers'] = len(re.findall(
+            r'Application startup failed\. Exiting\.', text, re.IGNORECASE))
+        report['traceback_markers'] = len(re.findall(r'Traceback \(most recent call last\):', text))
+        allowed_exceptions = {
+            'ConnectionRefusedError', 'IntegrityError', 'InterfaceError', 'ModuleNotFoundError',
+            'OperationalError', 'ProgrammingError', 'RuntimeError', 'SystemExit', 'TimeoutError',
+            'TypeError', 'ValidationError', 'ValueError',
+        }
+        found = set(re.findall(
+            r'(?:^|[.: ])([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Failure)):', text))
+        report['exception_types'] = sorted(found & allowed_exceptions)
+        mysql_codes = set()
+        for line in text.splitlines():
+            if re.search(r'mysql|mariadb|pymysql|aiomysql|database', line, re.IGNORECASE):
+                mysql_codes.update(re.findall(r'\((\d{3,5})\s*,', line))
+                mysql_codes.update(re.findall(r'\b(?:errno|error code)\s*[=: ]+\s*(\d{3,5})\b', line, re.IGNORECASE))
+        report['mysql_error_codes'] = sorted(mysql_codes)
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError, json.JSONDecodeError):
+        return report
+    return report
+
+
 def apply_environment(environment, artifact, image_directory, expected_id, evidence):
     import fcntl
     from .database_identity import run as verify_database_identity
@@ -333,7 +407,10 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
             return report
         except Exception as error:
             rollback = 'not_required'
+            startup_diagnostic = None
             if changed:
+                if phase == 'health':
+                    startup_diagnostic = startup_failure_diagnostic(environment, root)
                 try:
                     for name in ('backend.env', 'compose.json', 'manifest.json'):
                         replace_file(previous / name, root / name)
@@ -354,6 +431,8 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
                 'rollback_status': rollback,
                 'database_restored': False,
             })
+            if startup_diagnostic is not None:
+                write_json(evidence / 'startup-diagnostic.json', startup_diagnostic)
             raise RuntimeError(f'{environment}_update_failed; inspect private evidence') from None
 
 
