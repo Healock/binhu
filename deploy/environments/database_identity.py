@@ -10,6 +10,7 @@ import json
 import subprocess
 
 ENVIRONMENTS = {'development': 'Dev_', 'staging': 'Staging_'}
+STAGING_PIPELINE_NETWORK = 'binhu-staging-pipeline-backend'
 
 
 def command(args, stdin=None):
@@ -24,16 +25,37 @@ def validate_resources(environment, backend, mysql, network, containers):
         raise ValueError('non-production environment required')
     project = 'binhu-' + environment
     network_name = project + '_internal'
+    pipeline_access_attached = False
     for container, service in ((backend, 'backend'), (mysql, 'environment-mysql')):
         labels = container['Config'].get('Labels') or {}
         if labels.get('com.docker.compose.project') != project or labels.get('com.docker.compose.service') != service:
             raise ValueError('container project identity mismatch')
         if labels.get('binhu.environment') != environment or not container['State']['Running']:
             raise ValueError('container environment identity mismatch')
-        if set(container['NetworkSettings']['Networks']) != {network_name}:
-            raise ValueError('unexpected environment network')
+        attached_networks = set(container['NetworkSettings']['Networks'])
+        if attached_networks != {network_name}:
+            permitted_staging_bridge = (
+                environment == 'staging'
+                and service == 'environment-mysql'
+                and attached_networks == {network_name, STAGING_PIPELINE_NETWORK}
+            )
+            if not permitted_staging_bridge:
+                raise ValueError('unexpected environment network')
+            pipeline_access_attached = True
         if container['HostConfig'].get('NetworkMode') == 'host' or container['HostConfig'].get('Privileged'):
             raise ValueError('unsafe container mode')
+    if pipeline_access_attached:
+        from .event_pipeline.staging_backend_network import (
+            network_if_present,
+            service_state,
+            validate_network,
+        )
+
+        pipeline_network = network_if_present()
+        if pipeline_network is None:
+            raise ValueError('staging_access_network_missing')
+        validate_network(pipeline_network)
+        service_state()
     data = [m for m in mysql['Mounts'] if m['Destination'] == '/var/lib/mysql']
     if len(data) != 1 or data[0]['Type'] != 'volume' or data[0]['Name'] != project + '_mysql':
         raise ValueError('unexpected database storage')

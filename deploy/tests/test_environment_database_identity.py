@@ -1,5 +1,8 @@
 import copy
 import unittest
+from unittest.mock import patch
+
+from deploy.environments import database_identity
 from deploy.environments.database_identity import INNER, validate_resources
 
 
@@ -40,6 +43,41 @@ class IdentityResourceTests(unittest.TestCase):
         self.backend['NetworkSettings']['Networks']['production'] = {}
         with self.assertRaisesRegex(ValueError, 'network'):
             self.check()
+
+    def test_exact_staging_pipeline_bridge_is_validated(self):
+        self.mysql['NetworkSettings']['Networks'][database_identity.STAGING_PIPELINE_NETWORK] = {}
+        with patch('deploy.environments.event_pipeline.staging_backend_network.network_if_present',
+                   return_value={'Name': database_identity.STAGING_PIPELINE_NETWORK}), \
+             patch('deploy.environments.event_pipeline.staging_backend_network.validate_network') as validate_network, \
+             patch('deploy.environments.event_pipeline.staging_backend_network.service_state') as service_state:
+            self.check()
+        validate_network.assert_called_once()
+        service_state.assert_called_once_with()
+
+    def test_missing_staging_pipeline_network_fails_closed(self):
+        self.mysql['NetworkSettings']['Networks'][database_identity.STAGING_PIPELINE_NETWORK] = {}
+        with patch('deploy.environments.event_pipeline.staging_backend_network.network_if_present',
+                   return_value=None):
+            with self.assertRaisesRegex(ValueError, 'staging_access_network_missing'):
+                self.check()
+
+    def test_pipeline_bridge_is_not_allowed_for_backend_or_development(self):
+        self.backend['NetworkSettings']['Networks'][database_identity.STAGING_PIPELINE_NETWORK] = {}
+        with self.assertRaisesRegex(ValueError, 'network'):
+            self.check()
+
+        self.backend['NetworkSettings']['Networks'].pop(database_identity.STAGING_PIPELINE_NETWORK)
+        development_network = 'binhu-development_internal'
+        for item in (self.backend, self.mysql):
+            item['Config']['Labels']['com.docker.compose.project'] = 'binhu-development'
+            item['Config']['Labels']['binhu.environment'] = 'development'
+            item['NetworkSettings']['Networks'] = {
+                development_network: {}, database_identity.STAGING_PIPELINE_NETWORK: {}}
+        self.mysql['Mounts'][0]['Name'] = 'binhu-development_mysql'
+        self.net = {'Containers': {
+            'mysql': {'Name': 'binhu-development-environment-mysql-1'}}}
+        with self.assertRaisesRegex(ValueError, 'network'):
+            validate_resources('development', self.backend, self.mysql, self.net, self.all)
 
     def test_foreign_member_rejected(self):
         self.net['Containers']['other'] = {'Name': 'production-backend'}
