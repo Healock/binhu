@@ -2898,17 +2898,17 @@ async def _address_matches_by_rows(
         await cur.execute(
             f"""
             SELECT row_key,
-                   COALESCE(match.confirmed_entry_id, match.suggested_entry_id),
+                   COALESCE(address_match.confirmed_entry_id, address_match.suggested_entry_id),
                    COALESCE(confirmed_entry.name, suggested_entry.name, ''),
-                   match.match_status, match.match_score,
-                   match.match_method, match.match_reason, match.candidates_json,
-                   match.matcher_version
-            FROM _online_task_address_matches AS match
+                   address_match.match_status, address_match.match_score,
+                   address_match.match_method, address_match.match_reason, address_match.candidates_json,
+                   address_match.matcher_version
+            FROM _online_task_address_matches AS address_match
             LEFT JOIN _police_address_entries AS confirmed_entry
-              ON confirmed_entry.id=match.confirmed_entry_id
+              ON confirmed_entry.id=address_match.confirmed_entry_id
             LEFT JOIN _police_address_entries AS suggested_entry
-              ON suggested_entry.id=match.suggested_entry_id
-            WHERE match.parser_type=%s AND match.row_key IN ({placeholders})
+              ON suggested_entry.id=address_match.suggested_entry_id
+            WHERE address_match.parser_type=%s AND address_match.row_key IN ({placeholders})
             """,
             (parser_type, *batch),
         )
