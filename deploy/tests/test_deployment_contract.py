@@ -113,6 +113,11 @@ class DeploymentContractTests(unittest.TestCase):
 
     def test_server_script_keeps_database_restore_out_of_automatic_path(self) -> None:
         script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
+        self.assertIn('candidate_tag="binhu-backend:${promotion_run_id}"', script)
+        self.assertIn(
+            'if not re.fullmatch(r"binhu-backend:staging-app-[0-9a-f]{16}", image):',
+            script,
+        )
         self.assertIn("sync or backup task is active", script)
         self.assertIn("mysqldump", script)
         for database in (
