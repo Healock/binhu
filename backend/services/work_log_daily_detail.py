@@ -514,15 +514,10 @@ async def build_daily_detail_data(
         known_positions=known_positions,
     )
     online = await get_summary(business_date.isoformat())
-    # Reuse the export request's OnlineData connection; never acquire a
-    # second connection from that pool while the request holds this one.
     async with conn.cursor() as cur:
         summary_types = await _get_summary_types(cur)
-        await cur.execute("SELECT id FROM _txdocs_monitor_target WHERE enabled=1 ORDER BY id")
-        configured_source_ids = [int(row[0]) for row in await cur.fetchall()]
     external = await get_txdocs_business_overlay(
         business_date.isoformat(), business_date.isoformat(), summary_types, None,
-        configured_source_ids=configured_source_ids
     )
     online = merge_external_report_counts(online, external, parser_type="总汇总表")
 

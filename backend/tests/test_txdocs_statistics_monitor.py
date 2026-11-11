@@ -1,4 +1,5 @@
 import inspect
+import json
 import os
 import unittest
 from collections import Counter
@@ -42,6 +43,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
             "monitor_snapshot_failed",
             "monitor_buckets_failed",
             "monitor_task_states_failed",
+            "monitor_row_snapshots_failed",
             "monitor_persist_failed",
         ):
             with self.subTest(code=code):
@@ -184,6 +186,128 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("虚构社区", serialized)
         self.assertFalse(hasattr(next(iter(snapshot)), "physical_row"))
 
+    def test_stored_rows_keep_normalized_fields_without_physical_row_metadata(self):
+        source = [{
+            "physical_row": 87,
+            "values": {
+                "下发日期": "2026-09-14",
+                "截止日期": "2026-09-15",
+                "核查人": "测试人员",
+                "社区": "虚构社区",
+                "姓名": "虚构甲",
+                "身份证号": "SYNTHETIC-ID-001",
+                "联系方式": "联系时间 2026-09-13，13000000000",
+                "地址": "测试路1号",
+                "登记情况": "未登记",
+                "现住址": "测试路2号",
+                "核查结果": "尚未核实",
+                "备注": "虚构备注",
+                "研判": "虚构研判",
+                "二次反馈": "",
+            },
+        }]
+
+        stored = monitor.build_monitor_stored_rows(
+            7, "疑似漏登记", source * 2
+        )
+        current, _ = monitor.build_monitor_snapshot(
+            7, "疑似漏登记", source * 2
+        )
+
+        self.assertEqual(sum(stored.values()), 2)
+        item, count = next(iter(stored.items()))
+        current_item = next(iter(current))
+        values = json.loads(item.values_json)
+        self.assertEqual(count, 2)
+        self.assertEqual(item.business_key_hash, current_item.business_key_hash)
+        self.assertEqual(item.content_hash, current_item.content_hash)
+        self.assertEqual(values["姓名"], "虚构甲")
+        self.assertEqual(values["身份证号"], "SYNTHETIC-ID-001")
+        self.assertEqual(values["联系方式"], "13000000000")
+        self.assertEqual(values["研判"], "虚构研判")
+        self.assertNotIn("physical_row", values)
+        self.assertNotIn("SYNTHETIC-ID-001", item.business_key_hash)
+
+    async def test_success_persistence_links_row_versions_to_the_successful_run(self):
+        class Cursor:
+            def __init__(self):
+                self.query_log = []
+                self.executemany_log = []
+                self.lastrowid = 45
+
+            async def execute(self, query, params=None):
+                self.query_log.append(query)
+
+            async def executemany(self, query, params):
+                self.executemany_log.append((query, list(params)))
+
+            async def fetchall(self):
+                return []
+
+            async def fetchone(self):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        class Connection:
+            def __init__(self):
+                self.cursor_instance = Cursor()
+                self.committed = False
+                self.rolled_back = False
+
+            def cursor(self):
+                return self.cursor_instance
+
+            async def begin(self):
+                return None
+
+            async def commit(self):
+                self.committed = True
+
+            async def rollback(self):
+                self.rolled_back = True
+
+        stored = monitor.build_monitor_stored_rows(
+            7,
+            "疑似未注销模型三",
+            [{"values": {
+                "姓名": "虚构人员",
+                "身份证号": "SYNTHETIC-ID-002",
+                "联系方式": "SYNTHETIC-CONTACT-002",
+                "地址": "虚构地址",
+                "下发社区": "虚构社区",
+                "核查人": "虚构核查人",
+                "核查结果": "在吴",
+            }}],
+        )
+        conn = Connection()
+
+        await monitor._persist_success(
+            conn,
+            {"id": 7, "parser_type": "疑似未注销模型三"},
+            datetime(2026, 9, 20).date(),
+            datetime(2026, 9, 20, 1, 0),
+            Counter(),
+            0,
+            Counter(),
+            [],
+            stored,
+        )
+
+        sql = " ".join(conn.cursor_instance.query_log).upper()
+        executemany_sql = " ".join(
+            query for query, _ in conn.cursor_instance.executemany_log
+        ).upper()
+        self.assertIn("_TXDOCS_MONITOR_ROW_VERSIONS", executemany_sql)
+        self.assertIn("_TXDOCS_MONITOR_RUN_ROWS", executemany_sql)
+        self.assertIn("INSERT INTO _TXDOCS_MONITOR_RUNS", sql)
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+
     def test_business_buckets_use_dispatch_date_and_workflow_state(self):
         rows = [
             {"values": {
@@ -209,6 +333,42 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(counts[("测试人员甲", "2026-09-19", "unchecked", False)], 1)
         self.assertEqual(counts[("测试人员乙", "2026-09-10", "completed", False)], 1)
+
+    def test_retained_normalized_rows_drive_online_report_metrics(self):
+        values = {
+            "截止时间": "2026-10-15",
+            "核查人": "虚构核查人",
+            "姓名": "虚构人员",
+            "身份证号": "SYNTHETIC-ID-003",
+            "联系方式": "SYNTHETIC-CONTACT-003",
+            "地址": "虚构地址",
+            "下发社区": "社区甲",
+            "核查结果": "在吴",
+            "备注": "虚构备注",
+        }
+
+        communities, inspectors = monitor.aggregate_retained_monitor_rows(
+            "疑似未注销模型三",
+            [(json.dumps(values, ensure_ascii=False), 2)],
+            "2026-10-01",
+            "2026-10-31",
+            {"社区甲": "社区甲"},
+            None,
+        )
+
+        self.assertEqual(communities["社区甲"]["total"], 2)
+        self.assertEqual(communities["社区甲"]["completed"], 2)
+        self.assertEqual(communities["社区甲"]["new"], 2)
+        self.assertEqual(inspectors["社区甲"]["虚构核查人"]["total"], 2)
+
+    def test_overlay_uses_latest_successful_row_per_task_not_current_sheet(self):
+        source = inspect.getsource(monitor.get_txdocs_business_overlay)
+        self.assertIn("latest_task_runs", source)
+        self.assertIn("_txdocs_monitor_run_rows", source)
+        self.assertIn("_txdocs_monitor_row_versions", source)
+        self.assertIn("MAX(run.id) AS run_id", source)
+        self.assertIn("GROUP BY run_row.source_id, run_row.parser_type,", source)
+        self.assertNotIn("FROM _txdocs_monitor_current", source)
 
     def test_unable_to_verify_is_a_checked_bucket_dimension(self):
         buckets = monitor.build_monitor_business_buckets(
@@ -489,7 +649,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_monitor_schema_has_no_remote_body_or_physical_row_columns(self):
+    def test_monitor_schema_stores_full_rows_only_in_versioned_snapshot_tables(self):
         source = inspect.getsource(monitor.ensure_txdocs_statistics_schema)
         self.assertIn("business_key_hash", source)
         self.assertIn("content_hash", source)
@@ -497,8 +657,10 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("checker_name", source)
         self.assertIn("_txdocs_monitor_task_state", source)
         self.assertIn("_txdocs_monitor_workload_ledger", source)
+        self.assertIn("_txdocs_monitor_row_versions", source)
+        self.assertIn("_txdocs_monitor_run_rows", source)
+        self.assertIn("values_json JSON NOT NULL", source)
         for forbidden in (
-            "identity_number", "phone", "address", "values_json",
             "physical_row", "access_token", "client_secret",
         ):
             self.assertNotIn(forbidden, source)

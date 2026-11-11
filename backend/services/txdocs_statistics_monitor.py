@@ -1,16 +1,16 @@
-"""Read-only Tencent Docs monitoring for aggregate online statistics.
+"""Read-only Tencent monitoring with retained normalized source snapshots.
 
-This module deliberately does not reuse the retired synchronization switch or
-write any Tencent row into the platform business tables.  It keeps only HMAC
-digests, community-level counts, and privacy-safe run metadata in the reporting
-database.
+Successful reads store normalized rows in isolated reporting tables and derive
+the current snapshot and aggregates in the same transaction. Tencent remains
+read-only: external row identifiers and physical row numbers are never stored,
+and row content is never written to logs or local business tables.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -242,6 +242,15 @@ class MonitorTaskState:
     identity_status: str = "matched"
 
 
+@dataclass(frozen=True)
+class MonitorStoredRow:
+    """One normalized external row version, keyed without source identifiers."""
+
+    business_key_hash: str
+    content_hash: str
+    values_json: str = field(repr=False)
+
+
 class MonitorStageError(RuntimeError):
     """Privacy-safe failure classification for one monitoring stage."""
 
@@ -262,13 +271,12 @@ class MonitorDelta:
 
 @dataclass(frozen=True)
 class MonitorBusinessBucket:
-    """Privacy-safe business classification for one external snapshot.
+    """Privacy-safe aggregate classification for an external snapshot.
 
     Only the fields required by the aggregate report are kept: community,
     checker name, dispatch date and workflow state. The checker is an internal
-    staff label required for inspector statistics; no subject identity number,
-    phone, address, notes, analysis text, photograph, attachment, physical row
-    or other external row content is stored.
+    staff label required for inspector statistics. Full normalized rows are
+    retained separately in the restricted row-version tables.
     """
 
     community: str
@@ -435,6 +443,78 @@ def build_monitor_business_buckets(
     return result
 
 
+def aggregate_retained_monitor_rows(
+    parser_type: str,
+    row_values: Iterable[tuple[Any, Any]],
+    start_date: str,
+    end_date: str,
+    alias_lookup: dict[str, str],
+    allowed_communities: set[str] | None,
+    inspector: str | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, dict[str, Any]]]]:
+    """Aggregate persisted external task versions using report semantics."""
+    totals: dict[str, dict[str, Any]] = defaultdict(lambda: {
+        "total": 0, "carryover": 0, "new": 0,
+        "pending": 0, "unchecked": 0, "checked": 0,
+        "completed": 0, "unable_to_verify": 0, "changed": 0,
+        "sources": ["txdocs_readonly"],
+    })
+    by_checker: dict[str, dict[str, dict[str, Any]]] = defaultdict(
+        lambda: defaultdict(lambda: {
+            "total": 0, "carryover": 0, "new": 0,
+            "pending": 0, "unchecked": 0, "checked": 0,
+            "completed": 0, "unable_to_verify": 0, "changed": 0,
+            "sources": ["txdocs_readonly"],
+        })
+    )
+    inspector_filter = _normalize_checker_name(inspector)
+    fallback_date = date.fromisoformat(end_date)
+    for values_json, row_count in row_values:
+        if isinstance(values_json, dict):
+            values = values_json
+        elif isinstance(values_json, bytes):
+            values = json.loads(values_json.decode("utf-8"))
+        else:
+            values = json.loads(str(values_json))
+        if not isinstance(values, dict):
+            continue
+        count = max(0, int(row_count or 0))
+        for bucket, bucket_count in build_monitor_business_buckets(
+            parser_type, [{"values": values}], fallback_date
+        ).items():
+            community = canonical_monitor_community(
+                bucket.community, alias_lookup
+            )
+            if allowed_communities is not None and community not in allowed_communities:
+                continue
+            checker = _normalize_checker_name(bucket.checker_name)
+            if inspector_filter and checker != inspector_filter:
+                continue
+            amount = count * bucket_count
+            dispatch_text = bucket.dispatch_date.isoformat()
+            for metrics in (totals[community], by_checker[community][checker]):
+                metrics["total"] += amount
+                if bucket.unable_to_verify:
+                    metrics["unable_to_verify"] += amount
+                if bucket.task_state == "completed":
+                    metrics["completed"] += amount
+                else:
+                    metrics["pending"] += amount
+                    if bucket.task_state == "checked":
+                        metrics["checked"] += amount
+                    else:
+                        metrics["unchecked"] += amount
+                if dispatch_text and dispatch_text < start_date:
+                    if bucket.task_state != "completed":
+                        metrics["carryover"] += amount
+                elif start_date <= dispatch_text <= end_date:
+                    metrics["new"] += amount
+    return dict(totals), {
+        community: dict(checkers)
+        for community, checkers in by_checker.items()
+    }
+
+
 def monitoring_spreadsheet_ids(raw: str | None = None) -> tuple[int, ...]:
     """Parse the fixed server-side spreadsheet allowlist."""
     value = settings.TXDOCS_MONITORING_SPREADSHEET_IDS if raw is None else raw
@@ -460,6 +540,34 @@ def _hmac_digest(*parts: str) -> str:
     return hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _monitor_row_hashes(
+    source_id: int,
+    parser_type: str,
+    parser,
+    normalized: dict[str, str],
+) -> tuple[str, str, bool]:
+    ordered_values = tuple(
+        str(normalized.get(column, "") or "") for column in parser.COLUMNS
+    )
+    content_hash = _hmac_digest(
+        "txdocs-monitor-content", str(source_id), parser_type, *ordered_values
+    )
+    business_values = tuple(
+        str(normalized.get(column, "") or "").strip()
+        for column in parser.get_business_key()
+    )
+    if any(business_values):
+        business_key_hash = _hmac_digest(
+            "txdocs-monitor-business-key", str(source_id), parser_type,
+            *business_values,
+        )
+        return business_key_hash, content_hash, False
+    business_key_hash = _hmac_digest(
+        "txdocs-monitor-unkeyed", str(source_id), parser_type, content_hash
+    )
+    return business_key_hash, content_hash, True
+
+
 def build_monitor_snapshot(
     spreadsheet_id: int,
     parser_type: str,
@@ -474,35 +582,14 @@ def build_monitor_snapshot(
         normalized = parser.normalize_source_row(
             raw_values if isinstance(raw_values, dict) else {}
         )
-        ordered_values = tuple(str(normalized.get(column, "") or "") for column in parser.COLUMNS)
-        content_hash = _hmac_digest(
-            "txdocs-monitor-content",
-            str(spreadsheet_id),
-            parser_type,
-            *ordered_values,
+        business_key_hash, content_hash, is_unkeyed = _monitor_row_hashes(
+            spreadsheet_id, parser_type, parser, normalized
         )
-        business_values = tuple(
-            str(normalized.get(column, "") or "").strip()
-            for column in parser.get_business_key()
-        )
-        if any(business_values):
-            business_key_hash = _hmac_digest(
-                "txdocs-monitor-business-key",
-                str(spreadsheet_id),
-                parser_type,
-                *business_values,
-            )
-        else:
+        if is_unkeyed:
             # Malformed rows still contribute to the external row count.  They
             # cannot be followed across content edits without persisting a
             # physical row or personal text, so a content-derived key is safer.
             unkeyed += 1
-            business_key_hash = _hmac_digest(
-                "txdocs-monitor-unkeyed",
-                str(spreadsheet_id),
-                parser_type,
-                content_hash,
-            )
         community = parser.community_value(normalized)
         community_hash = _hmac_digest("txdocs-monitor-community", community)
         result[
@@ -514,6 +601,34 @@ def build_monitor_snapshot(
             )
         ] += 1
     return result, unkeyed
+
+
+def build_monitor_stored_rows(
+    spreadsheet_id: int,
+    parser_type: str,
+    rows: Iterable[dict[str, Any]],
+) -> Counter[MonitorStoredRow]:
+    """Build deduplicated normalized row versions for historical snapshots."""
+    parser = get_parser(parser_type)
+    result: Counter[MonitorStoredRow] = Counter()
+    for source_row in rows:
+        raw_values = source_row.get("values", source_row)
+        normalized = parser.normalize_source_row(
+            raw_values if isinstance(raw_values, dict) else {}
+        )
+        business_key_hash, content_hash, _is_unkeyed = _monitor_row_hashes(
+            spreadsheet_id, parser_type, parser, normalized
+        )
+        stored = MonitorStoredRow(
+            business_key_hash=business_key_hash,
+            content_hash=content_hash,
+            values_json=json.dumps(
+                normalized, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        result[stored] += 1
+    return result
 
 
 def build_monitor_task_states(
@@ -538,27 +653,9 @@ def build_monitor_task_states(
         normalized = parser.normalize_source_row(
             raw_values if isinstance(raw_values, dict) else {}
         )
-        ordered_values = tuple(
-            str(normalized.get(column, "") or "")
-            for column in parser.COLUMNS
+        business_key_hash, content_hash, _is_unkeyed = _monitor_row_hashes(
+            spreadsheet_id, parser_type, parser, normalized
         )
-        content_hash = _hmac_digest(
-            "txdocs-monitor-content", str(spreadsheet_id), parser_type,
-            *ordered_values,
-        )
-        business_values = tuple(
-            str(normalized.get(column, "") or "").strip()
-            for column in parser.get_business_key()
-        )
-        if any(business_values):
-            business_key_hash = _hmac_digest(
-                "txdocs-monitor-business-key", str(spreadsheet_id),
-                parser_type, *business_values,
-            )
-        else:
-            business_key_hash = _hmac_digest(
-                "txdocs-monitor-unkeyed", str(spreadsheet_id), content_hash
-            )
         community = parser.community_value(normalized)
         community_hash = _hmac_digest("txdocs-monitor-community", community)
         checker_name = _normalize_checker_name(normalized.get("核查人"))
@@ -785,6 +882,7 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
             observed_date DATE NOT NULL,
             status VARCHAR(20) NOT NULL,
             is_baseline TINYINT(1) NOT NULL DEFAULT 0,
+            row_snapshot_version TINYINT(1) NOT NULL DEFAULT 0,
             row_count INT UNSIGNED NOT NULL DEFAULT 0,
             added_count INT UNSIGNED NOT NULL DEFAULT 0,
             changed_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -803,6 +901,24 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
           COLLATE=utf8mb4_unicode_ci
         """
     )
+    await cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema=DATABASE()
+          AND table_name='_txdocs_monitor_runs'
+          AND column_name='row_snapshot_version'
+        """
+    )
+    has_row_snapshot_version = bool((await cur.fetchone() or [0])[0])
+    if not has_row_snapshot_version:
+        await cur.execute(
+            """
+            ALTER TABLE _txdocs_monitor_runs
+            ADD COLUMN row_snapshot_version TINYINT(1) NOT NULL DEFAULT 0
+                AFTER is_baseline
+            """
+        )
     await cur.execute(
         """
         CREATE TABLE IF NOT EXISTS _txdocs_monitor_run_communities (
@@ -859,6 +975,42 @@ async def ensure_txdocs_statistics_schema(cur) -> None:
             PRIMARY KEY (source_id, parser_type, business_key_hash),
             INDEX idx_txdocs_monitor_state_scope (
                 parser_type, community_hash, last_observed_date
+            )
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    await cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_row_versions (
+            source_id BIGINT UNSIGNED NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            business_key_hash CHAR(64) NOT NULL,
+            content_hash CHAR(64) NOT NULL,
+            values_json JSON NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (
+                source_id, parser_type, business_key_hash, content_hash
+            ),
+            INDEX idx_txdocs_monitor_row_hash (
+                parser_type, business_key_hash
+            )
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    await cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _txdocs_monitor_run_rows (
+            run_id BIGINT NOT NULL,
+            source_id BIGINT UNSIGNED NOT NULL,
+            parser_type VARCHAR(50) NOT NULL,
+            business_key_hash CHAR(64) NOT NULL,
+            content_hash CHAR(64) NOT NULL,
+            row_count INT UNSIGNED NOT NULL DEFAULT 1,
+            PRIMARY KEY (run_id, business_key_hash, content_hash),
+            INDEX idx_txdocs_monitor_run_row_latest (
+                parser_type, source_id, business_key_hash, run_id
             )
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
           COLLATE=utf8mb4_unicode_ci
@@ -1095,6 +1247,7 @@ async def _persist_success(
     unkeyed: int,
     buckets: Counter[MonitorBusinessBucket],
     task_states: list[MonitorTaskState],
+    stored_rows: Counter[MonitorStoredRow],
 ) -> None:
     async with conn.cursor() as cur:
         await conn.begin()
@@ -1157,10 +1310,11 @@ async def _persist_success(
                 """
                 INSERT INTO _txdocs_monitor_runs (
                     spreadsheet_id, parser_type, observed_date, status,
-                    is_baseline, row_count, added_count, changed_count,
+                    is_baseline, row_snapshot_version, row_count,
+                    added_count, changed_count,
                     removed_count, unkeyed_count, error_code,
                     started_at, finished_at
-                ) VALUES (%s,%s,%s,'success',%s,%s,%s,%s,%s,%s,'',%s,%s)
+                ) VALUES (%s,%s,%s,'success',%s,1,%s,%s,%s,%s,%s,'',%s,%s)
                 """,
                 (
                     config["id"], config["parser_type"], business_date,
@@ -1169,6 +1323,38 @@ async def _persist_success(
                 ),
             )
             run_id = int(cur.lastrowid)
+            if stored_rows:
+                await cur.executemany(
+                    """
+                    INSERT IGNORE INTO _txdocs_monitor_row_versions (
+                        source_id, parser_type, business_key_hash,
+                        content_hash, values_json
+                    ) VALUES (%s,%s,%s,%s,%s)
+                    """,
+                    [
+                        (
+                            config["id"], config["parser_type"],
+                            stored.business_key_hash, stored.content_hash,
+                            stored.values_json,
+                        )
+                        for stored in stored_rows
+                    ],
+                )
+                await cur.executemany(
+                    """
+                    INSERT INTO _txdocs_monitor_run_rows (
+                        run_id, source_id, parser_type, business_key_hash,
+                        content_hash, row_count
+                    ) VALUES (%s,%s,%s,%s,%s,%s)
+                    """,
+                    [
+                        (
+                            run_id, config["id"], config["parser_type"],
+                            stored.business_key_hash, stored.content_hash, count,
+                        )
+                        for stored, count in stored_rows.items()
+                    ],
+                )
             workload_rows = []
             for state in task_states:
                 previous_state = previous_states.get(state.business_key_hash)
@@ -1434,9 +1620,16 @@ async def run_txdocs_statistics_once(
                 except Exception as exc:
                     raise MonitorStageError("monitor_task_states_failed", exc) from exc
                 try:
+                    stored_rows = build_monitor_stored_rows(
+                        config["id"], config["parser_type"], rows
+                    )
+                except Exception as exc:
+                    raise MonitorStageError("monitor_row_snapshots_failed", exc) from exc
+                try:
                     await _persist_success(
                         report_conn, config, business_date, started_at,
                         snapshot, unkeyed + ambiguous_count, buckets, task_states,
+                        stored_rows,
                     )
                 except Exception as exc:
                     raise MonitorStageError("monitor_persist_failed", exc) from exc
@@ -1514,24 +1707,29 @@ async def run_txdocs_statistics_monitor() -> None:
 
 async def _configured_monitor_source_ids(
     parser_types: list[str] | None = None,
+    *,
+    enabled_only: bool = True,
 ) -> list[int]:
-    """Return enabled target IDs in the optional business-type scope."""
+    """Return configured target IDs in the requested enabled/type scope."""
     from database import db_manager
 
     pool = db_manager.get_pool("online_data")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
-            type_clause = ""
+            query = "SELECT id FROM _txdocs_monitor_target"
+            clauses: list[str] = []
             params: tuple[Any, ...] = ()
+            if enabled_only:
+                clauses.append("enabled=1")
             if parser_types:
-                type_clause = " AND parser_type IN (" + ",".join(
+                clauses.append("parser_type IN (" + ",".join(
                     ["%s"] * len(parser_types)
-                ) + ")"
+                ) + ")")
                 params = tuple(parser_types)
             await cur.execute(
-                "SELECT id FROM _txdocs_monitor_target WHERE enabled=1" +
-                type_clause + " ORDER BY id",
+                query + (" WHERE " + " AND ".join(clauses) if clauses else "") +
+                " ORDER BY id",
                 params,
             )
             ids = [int(row[0]) for row in await cur.fetchall()]
@@ -1551,12 +1749,11 @@ async def get_txdocs_business_overlay(
     *,
     configured_source_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Return external business counts for overlaying local statistics.
+    """Return retained external task counts for overlaying local statistics.
 
-    The query uses only the privacy-safe bucket table written by the monitor.
-    It never reads or reconstructs external row bodies.  The latest successful
-    snapshot at or before ``end_date`` supplies total/state counts; dispatch
-    dates are used to classify carryover and new rows for the requested range.
+    Each task uses its latest successfully observed row at or before
+    ``end_date``. A later full read that omits a task does not erase the last
+    known source row, matching local task retention semantics.
     """
     result = {
         "available": False,
@@ -1576,22 +1773,29 @@ async def get_txdocs_business_overlay(
         return result
     if communities is not None and not communities:
         return result
-    source_ids = (await _configured_monitor_source_ids()
-                  if configured_source_ids is None else configured_source_ids)
-    if not source_ids:
+    source_ids = configured_source_ids
+    if source_ids is not None and not source_ids:
         return result
 
     from database import db_manager
 
     type_marks = ", ".join(["%s"] * len(valid_types))
-    source_marks = ", ".join(["%s"] * len(source_ids))
+    row_source_clause = ""
+    run_source_clause = ""
+    community_source_clause = ""
+    source_params: list[int] = []
+    if source_ids is not None:
+        source_marks = ", ".join(["%s"] * len(source_ids))
+        row_source_clause = f" AND run_row.source_id IN ({source_marks})"
+        run_source_clause = f" AND source_run.spreadsheet_id IN ({source_marks})"
+        community_source_clause = f" AND run.spreadsheet_id IN ({source_marks})"
+        source_params = source_ids
     pool = db_manager.get_pool("daily_report")
     conn = await pool.acquire()
     try:
         async with conn.cursor() as cur:
-            # The monitor stores the source label in its privacy-safe bucket
-            # tables.  Resolve that label at read time so historical snapshots
-            # also follow the current formal-name/alias configuration.
+            # Resolve row communities at read time so historical rows follow
+            # current formal-name and alias configuration.
             try:
                 alias_lookup = await get_community_alias_lookup(cur)
             except Exception:
@@ -1611,33 +1815,80 @@ async def get_txdocs_business_overlay(
             try:
                 await cur.execute(
                     f"""
-                    SELECT bucket.community, bucket.checker_name,
-                           bucket.dispatch_date,
-                           bucket.task_state, bucket.unable_to_verify,
-                           SUM(bucket.row_count),
-                           MAX(run.finished_at)
-                    FROM _txdocs_monitor_run_buckets bucket
-                    JOIN _txdocs_monitor_runs run ON run.id=bucket.run_id
-                    JOIN (
-                        SELECT spreadsheet_id, parser_type, MAX(id) AS id
-                        FROM _txdocs_monitor_runs
-                        WHERE status='success' AND observed_date<=%s
-                          AND parser_type IN ({type_marks})
-                          AND spreadsheet_id IN ({source_marks})
-                        GROUP BY spreadsheet_id, parser_type
-                    ) latest ON latest.id=run.id
-                    WHERE run.status='success'
-                    GROUP BY bucket.community, bucket.checker_name,
-                             bucket.dispatch_date, bucket.task_state,
-                             bucket.unable_to_verify
+                    WITH latest_task_runs AS (
+                        SELECT run_row.source_id, run_row.parser_type,
+                               run_row.business_key_hash, MAX(run.id) AS run_id
+                        FROM _txdocs_monitor_run_rows run_row
+                        JOIN _txdocs_monitor_runs run ON run.id=run_row.run_id
+                        WHERE run.status='success'
+                          AND run.row_snapshot_version=1
+                          AND run.observed_date<=%s
+                          AND run_row.parser_type IN ({type_marks})
+                          {row_source_clause}
+                        GROUP BY run_row.source_id, run_row.parser_type,
+                                 run_row.business_key_hash
+                    )
+                    SELECT run_row.parser_type, row_version.values_json,
+                           run_row.row_count
+                    FROM latest_task_runs latest
+                    JOIN _txdocs_monitor_run_rows run_row
+                      ON run_row.run_id=latest.run_id
+                     AND run_row.source_id=latest.source_id
+                     AND run_row.parser_type=latest.parser_type
+                     AND run_row.business_key_hash=latest.business_key_hash
+                    JOIN _txdocs_monitor_row_versions row_version
+                      ON row_version.source_id=run_row.source_id
+                     AND row_version.parser_type=run_row.parser_type
+                     AND row_version.business_key_hash=run_row.business_key_hash
+                     AND row_version.content_hash=run_row.content_hash
                     """,
-                    (end_date, *valid_types, *source_ids),
+                    (end_date, *valid_types, *source_params),
                 )
-                bucket_rows = await cur.fetchall()
+                retained_rows = await cur.fetchall()
             except Exception:
-                # Older rolling deployments may not have created the bucket
-                # table yet.  The existing raw change monitor must continue to
-                # work and the overlay remains absent until the next startup.
+                # Older rolling deployments may not have created the row
+                # snapshot tables yet. Keep the report readable until startup
+                # completes the idempotent schema creation.
+                return result
+
+            try:
+                await cur.execute(
+                    f"""
+                    SELECT run.parser_type, bucket.community,
+                           bucket.checker_name, bucket.dispatch_date,
+                           bucket.task_state, bucket.unable_to_verify,
+                           SUM(bucket.row_count)
+                    FROM _txdocs_monitor_runs run
+                    JOIN (
+                        SELECT source_run.spreadsheet_id,
+                               source_run.parser_type, MAX(source_run.id) AS id
+                        FROM _txdocs_monitor_runs source_run
+                        WHERE source_run.status='success'
+                          AND source_run.observed_date<=%s
+                          AND source_run.parser_type IN ({type_marks})
+                          {run_source_clause}
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM _txdocs_monitor_runs versioned_run
+                              WHERE versioned_run.spreadsheet_id=source_run.spreadsheet_id
+                                AND versioned_run.parser_type=source_run.parser_type
+                                AND versioned_run.status='success'
+                                AND versioned_run.row_snapshot_version=1
+                                AND versioned_run.observed_date<=%s
+                          )
+                        GROUP BY source_run.spreadsheet_id,
+                                 source_run.parser_type
+                    ) latest ON latest.id=run.id
+                    JOIN _txdocs_monitor_run_buckets bucket
+                      ON bucket.run_id=run.id
+                    GROUP BY run.parser_type, bucket.community,
+                             bucket.checker_name, bucket.dispatch_date,
+                             bucket.task_state, bucket.unable_to_verify
+                    """,
+                    (end_date, *valid_types, *source_params, end_date),
+                )
+                legacy_bucket_rows = await cur.fetchall()
+            except Exception:
                 return result
 
             def empty_metrics() -> dict[str, Any]:
@@ -1652,11 +1903,33 @@ async def get_txdocs_business_overlay(
             assignee_metrics: dict[str, dict[str, dict[str, Any]]] = defaultdict(
                 lambda: defaultdict(empty_metrics)
             )
+            grouped_rows: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
+            for parser_type, values_json, row_count in retained_rows:
+                grouped_rows[str(parser_type)].append((values_json, row_count))
+            for parser_type, rows_for_type in grouped_rows.items():
+                type_totals, type_assignees = aggregate_retained_monitor_rows(
+                    parser_type, rows_for_type, start_date, end_date,
+                    alias_lookup, allowed_communities, inspector,
+                )
+                for community, item in type_totals.items():
+                    for key in (
+                        "total", "carryover", "new", "pending", "unchecked",
+                        "checked", "completed", "unable_to_verify", "changed",
+                    ):
+                        metrics[community][key] += item[key]
+                for community, checkers in type_assignees.items():
+                    for checker, item in checkers.items():
+                        for key in (
+                            "total", "carryover", "new", "pending", "unchecked",
+                            "checked", "completed", "unable_to_verify", "changed",
+                        ):
+                            assignee_metrics[community][checker][key] += item[key]
+
             inspector_filter = _normalize_checker_name(inspector)
             for (
-                community, checker_name, dispatch_date, task_state,
-                unable_to_verify, row_count, _finished,
-            ) in bucket_rows:
+                _parser_type, community, checker_name, dispatch_date,
+                task_state, unable_to_verify, row_count,
+            ) in legacy_bucket_rows:
                 name = canonical_monitor_community(community, alias_lookup)
                 if allowed_communities is not None and name not in allowed_communities:
                     continue
@@ -1664,6 +1937,7 @@ async def get_txdocs_business_overlay(
                 if inspector_filter and checker != inspector_filter:
                     continue
                 count = int(row_count or 0)
+                dispatch_text = str(dispatch_date or "")[:10]
                 for item in (metrics[name], assignee_metrics[name][checker]):
                     item["total"] += count
                     if int(unable_to_verify or 0):
@@ -1676,7 +1950,6 @@ async def get_txdocs_business_overlay(
                             item["checked"] += count
                         else:
                             item["unchecked"] += count
-                    dispatch_text = str(dispatch_date or "")[:10]
                     if dispatch_text and dispatch_text < start_date:
                         if str(task_state or "") != "completed":
                             item["carryover"] += count
@@ -1692,10 +1965,10 @@ async def get_txdocs_business_overlay(
                 WHERE run.status='success' AND run.is_baseline=0
                   AND run.observed_date BETWEEN %s AND %s
                   AND run.parser_type IN ({type_marks})
-                  AND run.spreadsheet_id IN ({source_marks})
+                  {community_source_clause}
                 GROUP BY run_community.community
                 """,
-                (start_date, end_date, *valid_types, *source_ids),
+                (start_date, end_date, *valid_types, *source_params),
             )
             for community, changed in await cur.fetchall():
                 name = canonical_monitor_community(community, alias_lookup)
@@ -1708,15 +1981,18 @@ async def get_txdocs_business_overlay(
                 SELECT MAX(run.finished_at)
                 FROM _txdocs_monitor_runs run
                 JOIN (
-                    SELECT spreadsheet_id, parser_type, MAX(id) AS id
-                    FROM _txdocs_monitor_runs
-                    WHERE status='success' AND observed_date<=%s
-                      AND parser_type IN ({type_marks})
-                      AND spreadsheet_id IN ({source_marks})
-                    GROUP BY spreadsheet_id, parser_type
+                    SELECT source_run.spreadsheet_id,
+                           source_run.parser_type, MAX(source_run.id) AS id
+                    FROM _txdocs_monitor_runs source_run
+                    WHERE source_run.status='success'
+                      AND source_run.observed_date<=%s
+                      AND source_run.parser_type IN ({type_marks})
+                      {run_source_clause}
+                    GROUP BY source_run.spreadsheet_id,
+                             source_run.parser_type
                 ) latest ON latest.id=run.id
                 """,
-                (end_date, *valid_types, *source_ids),
+                (end_date, *valid_types, *source_params),
             )
             last_success = (await cur.fetchone() or [None])[0]
     finally:

@@ -1773,8 +1773,8 @@ CREATE TABLE IF NOT EXISTS _daily_task_ledger_runs (
     INDEX idx_ledger_run_date (report_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 腾讯表只读统计监控只保存 HMAC 摘要、社区计数和运行状态。
--- 它不属于在线任务来源，也不保存或回写腾讯表正文。
+-- 外部监控保持对腾讯只读；成功读取的规范化源行在 reporting DB 中单独留档。
+-- 行内容不进入平台本地业务表，也不保存外部物理行号或写回腾讯。
 CREATE TABLE IF NOT EXISTS _txdocs_monitor_current (
     spreadsheet_id INT NOT NULL,
     parser_type VARCHAR(50) NOT NULL,
@@ -1795,6 +1795,7 @@ CREATE TABLE IF NOT EXISTS _txdocs_monitor_runs (
     observed_date DATE NOT NULL,
     status VARCHAR(20) NOT NULL,
     is_baseline TINYINT(1) NOT NULL DEFAULT 0,
+    row_snapshot_version TINYINT(1) NOT NULL DEFAULT 0,
     row_count INT UNSIGNED NOT NULL DEFAULT 0,
     added_count INT UNSIGNED NOT NULL DEFAULT 0,
     changed_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -1817,6 +1818,28 @@ CREATE TABLE IF NOT EXISTS _txdocs_monitor_run_communities (
     removed_count INT UNSIGNED NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, community_hash),
     INDEX idx_txdocs_monitor_run_community (community_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_row_versions (
+    source_id BIGINT UNSIGNED NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    business_key_hash CHAR(64) NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    values_json JSON NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_id, parser_type, business_key_hash, content_hash),
+    INDEX idx_txdocs_monitor_row_hash (parser_type, business_key_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS _txdocs_monitor_run_rows (
+    run_id BIGINT NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    parser_type VARCHAR(50) NOT NULL,
+    business_key_hash CHAR(64) NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    row_count INT UNSIGNED NOT NULL DEFAULT 1,
+    PRIMARY KEY (run_id, business_key_hash, content_hash),
+    INDEX idx_txdocs_monitor_run_row_latest (parser_type, source_id, business_key_hash, run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Daily attendance schema; activation is an explicit measure/apply/verify migration.
