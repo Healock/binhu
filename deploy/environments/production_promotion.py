@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import gzip
 import hashlib
 import json
@@ -48,6 +49,19 @@ SAFE_FAILURE_CODES = frozenset({
     "image_identity_mismatch", "image_content_mismatch",
     "environment_image_content_check_failed", "environment_image_inspect_failed",
 })
+SAFE_IO_FAILURE_CODES = {
+    errno.ENOENT: "promotion_io_missing",
+    errno.EACCES: "promotion_io_permission_denied",
+    errno.EPERM: "promotion_io_permission_denied",
+    errno.ENOSPC: "promotion_io_no_space",
+    errno.EDQUOT: "promotion_io_quota",
+    errno.EEXIST: "promotion_io_collision",
+    errno.EROFS: "promotion_io_read_only",
+    errno.EXDEV: "promotion_io_cross_device",
+    errno.EIO: "promotion_io_device_error",
+    errno.EMFILE: "promotion_io_file_limit",
+    errno.ENFILE: "promotion_io_file_limit",
+}
 
 
 def safe_failure_code(error: Exception) -> str:
@@ -59,7 +73,7 @@ def safe_failure_code(error: Exception) -> str:
     if isinstance(error, subprocess.SubprocessError):
         return "promotion_subprocess_failed"
     if isinstance(error, OSError):
-        return "promotion_io_failed"
+        return SAFE_IO_FAILURE_CODES.get(error.errno, "promotion_io_failed")
     return "promotion_validation_failed"
 
 
