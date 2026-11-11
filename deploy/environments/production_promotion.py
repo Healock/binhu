@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -29,6 +30,37 @@ ACCEPTED_FIELDS = (
     "environment", "run_id", "artifact_id", "image_id", "commit", "version",
     "dev_acceptance_run_id", "accepted", "production_modified",
 )
+SAFE_FAILURE_CODES = frozenset({
+    "staging_ledger_invalid", "promotion_identity_invalid",
+    "production_candidate_invalid", "production_candidate_identity_conflict",
+    "production_candidate_digest_mismatch", "staging_image_identity_invalid",
+    "staging_image_save_failed", "staging_image_digest_mismatch",
+    "staging_ledger_not_accepted_or_mismatch", "staging_acceptance_record_mismatch",
+    "promotion_root_invalid", "staging_candidate_invalid",
+    "staging_artifact_identity_mismatch", "production_compose_identity_mismatch",
+    "production_compose_contract_invalid", "staging_image_manifest_mismatch",
+    "staging_image_labels_mismatch", "artifact_path_invalid",
+    "artifact_failed_run", "artifact_manifest_invalid", "artifact_digest_mismatch",
+    "artifact_content_mismatch", "artifact_archive_invalid",
+    "artifact_source_scope_invalid", "artifact_private_config_forbidden",
+    "artifact_identity_mismatch",
+    "image_path_invalid", "image_failed_run", "image_manifest_invalid",
+    "image_identity_mismatch", "image_content_mismatch",
+    "environment_image_content_check_failed", "environment_image_inspect_failed",
+})
+
+
+def safe_failure_code(error: Exception) -> str:
+    """Return only a fixed validation code; never expose subprocess or OS details."""
+    if isinstance(error, (ValueError, RuntimeError)) and len(error.args) == 1:
+        code = error.args[0]
+        if isinstance(code, str) and code in SAFE_FAILURE_CODES:
+            return code
+    if isinstance(error, subprocess.SubprocessError):
+        return "promotion_subprocess_failed"
+    if isinstance(error, OSError):
+        return "promotion_io_failed"
+    return "promotion_validation_failed"
 
 
 def _json(path: Path) -> dict:
@@ -286,8 +318,9 @@ def main() -> None:
     args = parser.parse_args()
     try:
         result = promote_accepted_run(**vars(args))
-    except (OSError, ValueError, subprocess.SubprocessError):
-        raise SystemExit("Staging promotion rejected; inspect private deployment evidence") from None
+    except Exception as error:
+        print(f"promotion_failure_code={safe_failure_code(error)}", file=sys.stderr)
+        raise SystemExit("Staging promotion rejected") from None
     print(json.dumps({key: result[key] for key in (
         "staging_run_id", "artifact_id", "artifact_manifest_sha256", "image_id", "commit", "version")},
         sort_keys=True))
