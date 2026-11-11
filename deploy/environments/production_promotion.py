@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import gzip
 import hashlib
 import json
 import os
@@ -220,7 +219,7 @@ def promote_accepted_candidate(*, run_id: str, artifact_id: str, artifact_sha256
         copied.mkdir(mode=0o700)
         for name in ("artifact.json", "source.tar", "frontend.tar"):
             shutil.copyfile(artifact_dir / name, copied / name)
-        shutil.copyfile(candidate / "image.json", temporary_target / "image.json")
+        shutil.copyfile(candidate / "image" / "image.json", temporary_target / "image.json")
         shutil.copyfile(candidate / "accept.json", temporary_target / "accept.json")
         shutil.copyfile(candidate / "promotion.json", temporary_target / "staging-ledger.json")
         config = temporary_target / "production-config"
@@ -252,9 +251,18 @@ def promote_accepted_candidate(*, run_id: str, artifact_id: str, artifact_sha256
         with tarfile.open(source_archive, "w:gz") as archive:
             for path in sorted(item for item in source_dir.rglob("*") if item.is_file()):
                 archive.add(path, arcname=path.relative_to(source_dir).as_posix(), recursive=False)
-        with (copied / "frontend.tar").open("rb") as source, frontend_archive.open("wb") as output:
-            with gzip.GzipFile(fileobj=output, mode="wb", mtime=0) as compressed:
-                shutil.copyfileobj(source, compressed)
+        # Environment artifacts contain paths relative to the web root; the
+        # Production deployer extracts this archive into frontend/ and requires
+        # every member to be rooted at dist/. Keep the accepted file bytes.
+        with tarfile.open(copied / "frontend.tar") as source, \
+                tarfile.open(frontend_archive, "w:gz") as output:
+            for member in source:
+                if member.isfile():
+                    info = tarfile.TarInfo("dist/" + member.name)
+                    info.size = member.size
+                    info.mode = 0o644
+                    with source.extractfile(member) as stream:
+                        output.addfile(info, stream)
         files = {
             source_archive.name: {"sha256": file_hash(source_archive), "size": source_archive.stat().st_size},
             frontend_archive.name: {"sha256": file_hash(frontend_archive), "size": frontend_archive.stat().st_size},

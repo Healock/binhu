@@ -46,10 +46,10 @@ class ProductionPromotionTests(unittest.TestCase):
         frontend_tar = self.candidate / "artifact" / "frontend.tar"
         with tarfile.open(frontend_tar, "w") as archive:
             data = b"index"
-            info = tarfile.TarInfo("dist/index.html")
+            info = tarfile.TarInfo("index.html")
             info.size = len(data)
             archive.addfile(info, __import__("io").BytesIO(data))
-        (self.candidate / "image.json").write_text("{}", encoding="utf-8")
+        (self.candidate / "image" / "image.json").write_text("{}", encoding="utf-8")
         accepted = {
             "environment": "staging", "run_id": self.run_id,
             "artifact_id": self.artifact_id, "image_id": self.image_id,
@@ -123,6 +123,11 @@ class ProductionPromotionTests(unittest.TestCase):
         self.assertEqual((target / "production-config" / "docker-compose.yml").read_bytes(),
                          self.compose.read_bytes())
         self.assertEqual((target / "image.tar").read_bytes(), b"docker image archive")
+        self.assertEqual((target / "image.json").read_bytes(),
+                         (self.candidate / "image" / "image.json").read_bytes())
+        with tarfile.open(target / "frontend-dist.tar.gz") as archive:
+            self.assertEqual(archive.getnames(), ["dist/index.html"])
+            self.assertEqual(archive.extractfile("dist/index.html").read(), b"index")
         self.assertEqual(result["files"]["image.tar"]["sha256"],
                          hashlib.sha256((target / "image.tar").read_bytes()).hexdigest())
 
