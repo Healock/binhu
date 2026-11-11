@@ -9,6 +9,7 @@ umask 077
 : "${BINHU_DEPLOY_MAX_BUNDLE_BYTES:=134217728}"
 : "${BINHU_DEPLOY_MAX_HOTFIX_BUNDLE_BYTES:=1073741824}"
 : "${BINHU_DEPLOY_PUBLIC_URL:=}"
+: "${BINHU_COMPOSE_PROJECT_NAME:=binhu}"
 
 log() {
   printf '[binhu-deploy] %s\n' "$*"
@@ -733,6 +734,109 @@ payload = {
 PY
 timing_database_backup=$(( $(date +%s) - database_backup_started ))
 log "database backup scope ${backup_scope} completed in ${timing_database_backup}s"
+
+run_task_command_read_model_migration() {
+  local phase="$1"
+  local command="$2"
+  shift
+  shift
+  local output="$release_dir/task-command-read-model-${phase}.json"
+  local error_output="$release_dir/task-command-read-model-${phase}.stderr"
+  local container_name="binhu-task-command-migration-${release_id}-${phase}"
+  "${candidate_compose[@]}" run --rm --no-deps --no-TTY --name "$container_name" \
+    backend python -m migrations.task_command_read_model "$@" \
+    >"$output" 2>"$error_output" || fail "task_command_read_model_${phase}_failed"
+  chmod 0600 "$output" "$error_output"
+  python3 - "$output" "$phase" "$command" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+phase = sys.argv[2]
+command = sys.argv[3]
+expected_apply = command == "migrate"
+expected_databases = {"OnlineData", "PlatformData"}
+databases = payload.get("databases")
+if (payload.get("command") != command
+        or payload.get("apply") is not expected_apply
+        or not isinstance(databases, list)
+        or {item.get("database") for item in databases if isinstance(item, dict)} != expected_databases
+        or len(databases) != len(expected_databases)
+        or any(not isinstance(item, dict) for item in databases)):
+    raise SystemExit("task_command_read_model_migration_evidence_invalid")
+if phase in {"migrate", "verify"} and payload.get("consistent") is not True:
+    raise SystemExit("task_command_read_model_schema_inconsistent")
+PY
+}
+
+run_task_command_read_model_migration_if_required() {
+  [[ "$release_scope" == full ]] || return 0
+  local candidate_source="$release_dir/source"
+  [[ -f "$candidate_source/backend/migrations/task_command_read_model.py" ]] || return 0
+  [[ -f "$candidate_source/docker-compose.yml" && -f "$project_dir/.env" ]] \
+    || fail "task_command_read_model_migration_configuration_missing"
+  [[ ! -L "$candidate_source/docker-compose.yml" && ! -L "$project_dir/.env" ]] \
+    || fail "task_command_read_model_migration_configuration_unsafe"
+
+  local compose_override="$work_dir/task-command-read-model-compose.yml"
+  python3 - "$compose_override" "$candidate_tag" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+path, image = sys.argv[1:]
+if not re.fullmatch(r"binhu-backend:staging-app-[0-9a-f]{16}", image):
+    raise SystemExit("task_command_read_model_candidate_image_invalid")
+Path(path).write_text(
+    "services:" + chr(10) + "  backend:" + chr(10) + "    image: " + image + chr(10),
+    encoding="utf-8",
+)
+PY
+  local candidate_compose=(docker compose --project-directory "$candidate_source"
+    --env-file "$project_dir/.env" -f "$candidate_source/docker-compose.yml"
+    -f "$compose_override" -p "$BINHU_COMPOSE_PROJECT_NAME")
+  local target_identity="$release_dir/task-command-read-model-target.json"
+  "${candidate_compose[@]}" run --rm --no-deps --no-TTY \
+    --name "binhu-task-command-migration-${release_id}-identity" \
+    backend python -c 'from config import settings; import json; assert settings.APP_ENVIRONMENT == "production"; assert settings.MYSQL_ONLINE_DATA_DB == "OnlineData"; assert settings.MYSQL_PLATFORM_DB == "PlatformData"; print(json.dumps({"environment": settings.APP_ENVIRONMENT, "databases": sorted([settings.MYSQL_ONLINE_DATA_DB, settings.MYSQL_PLATFORM_DB])}))' \
+    >"$target_identity" 2>"$release_dir/task-command-read-model-target.stderr" \
+    || fail "task_command_read_model_target_identity_failed"
+  chmod 0600 "$target_identity" "$release_dir/task-command-read-model-target.stderr"
+
+  run_task_command_read_model_migration measure measure
+  local measured_hash current_hash
+  measured_hash="$(python3 - "$release_dir/task-command-read-model-measure.json" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+print(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+PY
+)"
+  run_task_command_read_model_migration pre_apply measure
+  current_hash="$(python3 - "$release_dir/task-command-read-model-pre_apply.json" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+print(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+PY
+)"
+  [[ "$current_hash" == "$measured_hash" ]] || fail "task_command_read_model_measurement_changed"
+  run_task_command_read_model_migration migrate migrate --apply
+  run_task_command_read_model_migration verify verify
+  log "task command read model migration verified (measurement ${measured_hash})"
+}
+
+run_task_command_read_model_migration_if_required
 
 log "switching from ${previous_version} to ${release_version}"
 switch_files_started="$(date +%s)"
