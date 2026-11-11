@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -275,8 +276,12 @@ class ProductionPromotionTests(unittest.TestCase):
             "promotion_validation_failed",
         )
         self.assertEqual(
-            promotion.safe_failure_code(OSError("secret path /private/customer-data")),
-            "promotion_io_failed",
+            promotion.safe_failure_code(OSError(errno.ENOSPC, "secret path /private/customer-data")),
+            "promotion_io_no_space",
+        )
+        self.assertEqual(
+            promotion.safe_failure_code(OSError(errno.ENOENT, "secret path /private/customer-data")),
+            "promotion_io_missing",
         )
 
 
