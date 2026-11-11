@@ -204,7 +204,7 @@ jobs:
       - name: Run autosave browser regression tests
         # Exercise real React editors against fictional, intercepted API responses.
         # Browser binaries are kept outside the dependency lockfile.
-        run: npx playwright install --with-deps chromium && npm run test:autosave:browser
+        run: npx playwright install chromium && npm run test:autosave:browser
         working-directory: frontend
       - name: Check pending registration free-address editing
         run: npm run test:pending-registration:browser
