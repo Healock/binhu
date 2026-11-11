@@ -8,10 +8,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from deps import get_current_user
+from deps import get_current_user, has_permission
 from routers.workflow import get_workflow_db
 from services.permissions import (
     WORKFLOW_CONFIG_MANAGE,
@@ -25,6 +25,18 @@ from services.process_engine import ProcessEngine, ProcessValidationError, valid
 
 
 router = APIRouter(prefix="/api/processes", tags=["流程引擎"])
+
+
+async def require_process_definition_access(user: dict = Depends(get_current_user)) -> dict:
+    if not any(
+        has_permission(user, permission)
+        for permission in (WORKFLOW_TICKET_CREATE, WORKFLOW_CONFIG_MANAGE)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="当前权限组不能读取流程定义",
+        )
+    return user
 
 
 class ProcessDefinitionPayload(BaseModel):
@@ -281,30 +293,49 @@ async def publish_process_version(process_definition_id: int, payload: ProcessVe
 
 @router.get("/definitions/{process_definition_id}")
 async def get_process_definition(process_definition_id: int, conn=Depends(get_workflow_db),
-                                 user: dict = Depends(require_permission(WORKFLOW_CONFIG_MANAGE))):
-    del user
+                                 user: dict = Depends(require_process_definition_access)):
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT id,code,name,description,form_definition_id,module_id,default_due_hours,enabled,current_version_id "
-            "FROM process_definitions WHERE id=%s", (process_definition_id,),
+            "SELECT process.id,process.code,process.name,process.description,process.form_definition_id,"
+            "process.module_id,process.default_due_hours,process.enabled,process.current_version_id,"
+            "form_version.schema_json FROM process_definitions process "
+            "LEFT JOIN form_definitions form_definition ON form_definition.id=process.form_definition_id "
+            "LEFT JOIN form_versions form_version ON form_version.id=form_definition.current_version_id "
+            "AND form_version.form_definition_id=form_definition.id AND form_version.status='published' "
+            "WHERE process.id=%s", (process_definition_id,),
         )
         row = await cur.fetchone()
         if not row:
             raise HTTPException(404, "流程定义不存在")
-        await cur.execute(
-            "SELECT id,version_no,nodes_json,status,published_by,published_at,created_at "
-            "FROM process_versions WHERE process_definition_id=%s ORDER BY version_no DESC",
-            (process_definition_id,),
-        )
-        versions = await cur.fetchall()
+        is_config_admin = has_permission(user, WORKFLOW_CONFIG_MANAGE)
+        if not is_config_admin and (not row[7] or not row[8]):
+            raise HTTPException(404, "流程当前不可发起")
+        if is_config_admin:
+            await cur.execute(
+                "SELECT id,version_no,nodes_json,status,published_by,published_at,created_at "
+                "FROM process_versions WHERE process_definition_id=%s ORDER BY version_no DESC",
+                (process_definition_id,),
+            )
+            versions = await cur.fetchall()
+        else:
+            await cur.execute(
+                "SELECT id,version_no,nodes_json,status,published_by,published_at,created_at "
+                "FROM process_versions WHERE id=%s AND process_definition_id=%s AND status='published'",
+                (row[8], process_definition_id),
+            )
+            current_version = await cur.fetchone()
+            versions = [current_version] if current_version else []
+        if not versions and not is_config_admin:
+            raise HTTPException(404, "流程当前版本不可用")
     return {
         "id": int(row[0]), "code": row[1], "name": row[2], "description": row[3],
         "form_definition_id": row[4], "module_id": row[5], "default_due_hours": row[6],
         "enabled": bool(row[7]), "current_version_id": row[8],
-        "versions": [{"id": int(item[0]), "version_no": item[1],
-                       "nodes": json.loads(item[2]) if isinstance(item[2], str) else item[2],
-                       "status": item[3], "published_by": item[4],
-                       "published_at": item[5], "created_at": item[6]} for item in versions],
+        "form_schema": json.loads(row[9]) if isinstance(row[9], str) else row[9],
+        "versions": [{"id": int(version[0]), "version_no": version[1],
+                       "nodes": json.loads(version[2]) if isinstance(version[2], str) else version[2],
+                       "status": version[3], "published_by": version[4],
+                       "published_at": version[5], "created_at": version[6]} for version in versions],
     }
 
 
