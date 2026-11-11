@@ -53,6 +53,28 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertNotIn('"root@$DEPLOY_HOST"', workflow)
         self.assertIn('"binhu-deploy@$DEPLOY_HOST"', workflow)
 
+    def test_production_promotion_runs_candidate_task_schema_migration_after_backup(self) -> None:
+        deployer = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
+        migration_call = deployer.rindex("run_task_command_read_model_migration_if_required\n")
+        switch = deployer.index('log "switching from ${previous_version} to ${release_version}"')
+        backup = deployer.index('log "database backup scope ${backup_scope} completed')
+
+        self.assertLess(backup, migration_call)
+        self.assertLess(migration_call, switch)
+        self.assertIn("--project-directory \"$candidate_source\"", deployer)
+        self.assertIn("--env-file \"$project_dir/.env\"", deployer)
+        self.assertIn("-f \"$candidate_source/docker-compose.yml\"", deployer)
+        self.assertIn('backend python -m migrations.task_command_read_model "$@"', deployer)
+        self.assertIn("run_task_command_read_model_migration measure measure", deployer)
+        self.assertIn("run_task_command_read_model_migration pre_apply measure", deployer)
+        self.assertIn("run_task_command_read_model_migration migrate migrate --apply", deployer)
+        self.assertIn("run_task_command_read_model_migration verify verify", deployer)
+        self.assertIn('settings.APP_ENVIRONMENT == "production"', deployer)
+        self.assertIn('settings.MYSQL_ONLINE_DATA_DB == "OnlineData"', deployer)
+        self.assertIn('settings.MYSQL_PLATFORM_DB == "PlatformData"', deployer)
+        self.assertIn('"task_command_read_model_measurement_changed"', deployer)
+        self.assertIn('"task_command_read_model_schema_inconsistent"', deployer)
+
     def test_gateway_has_no_date_or_arbitrary_command_escape(self) -> None:
         gateway = (ROOT / "deploy/binhu-deploy-gateway").read_text(encoding="utf-8")
         self.assertIn("production-maintenance", gateway)
