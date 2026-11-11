@@ -265,6 +265,20 @@ class ProductionPromotionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "staging_image_digest_mismatch"):
                 self.promote()
 
+    def test_safe_failure_code_exposes_only_allowlisted_diagnostics(self):
+        self.assertEqual(
+            promotion.safe_failure_code(RuntimeError("environment_image_content_check_failed")),
+            "environment_image_content_check_failed",
+        )
+        self.assertEqual(
+            promotion.safe_failure_code(RuntimeError("secret path /private/customer-data")),
+            "promotion_validation_failed",
+        )
+        self.assertEqual(
+            promotion.safe_failure_code(OSError("secret path /private/customer-data")),
+            "promotion_io_failed",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
