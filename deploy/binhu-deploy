@@ -565,7 +565,7 @@ previous_version="$(tr -d '\r\n' < "$project_dir/VERSION")"
 
 rollback_tag="binhu-backend:auto-rollback-${previous_version}-${timestamp}"
 if [[ "$release_kind" == "staging-promotion" ]]; then
-  candidate_tag="binhu-backend:staging-${promotion_run_id}"
+  candidate_tag="binhu-backend:${promotion_run_id}"
   readonly promotion_candidate="$state_dir/candidates/$promotion_run_id"
   python3 - "$promotion_candidate/promotion.json" "$promotion_candidate/image.tar" \
     "$promotion_run_id" "$promotion_artifact_id" "$promotion_artifact_sha256" \
