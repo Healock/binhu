@@ -49,7 +49,7 @@ class ProductionPromotionTests(unittest.TestCase):
             info = tarfile.TarInfo("dist/index.html")
             info.size = len(data)
             archive.addfile(info, __import__("io").BytesIO(data))
-        (self.candidate / "image.json").write_text("{}", encoding="utf-8")
+        (self.candidate / "image" / "image.json").write_text("{}", encoding="utf-8")
         accepted = {
             "environment": "staging", "run_id": self.run_id,
             "artifact_id": self.artifact_id, "image_id": self.image_id,

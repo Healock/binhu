@@ -220,7 +220,7 @@ def promote_accepted_candidate(*, run_id: str, artifact_id: str, artifact_sha256
         copied.mkdir(mode=0o700)
         for name in ("artifact.json", "source.tar", "frontend.tar"):
             shutil.copyfile(artifact_dir / name, copied / name)
-        shutil.copyfile(candidate / "image.json", temporary_target / "image.json")
+        shutil.copyfile(candidate / "image" / "image.json", temporary_target / "image.json")
         shutil.copyfile(candidate / "accept.json", temporary_target / "accept.json")
         shutil.copyfile(candidate / "promotion.json", temporary_target / "staging-ledger.json")
         config = temporary_target / "production-config"
