@@ -118,6 +118,13 @@ class DeploymentContractTests(unittest.TestCase):
             'if not re.fullmatch(r"binhu-backend:staging-app-[0-9a-f]{16}", image):',
             script,
         )
+        for invocation in (
+            "run_task_command_read_model_migration measure measure measure",
+            "run_task_command_read_model_migration pre_apply measure measure",
+            "run_task_command_read_model_migration migrate migrate migrate --apply",
+            "run_task_command_read_model_migration verify verify verify",
+        ):
+            self.assertIn(invocation, script)
         self.assertIn("sync or backup task is active", script)
         self.assertIn("mysqldump", script)
         for database in (
