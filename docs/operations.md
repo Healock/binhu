@@ -211,6 +211,7 @@ XLSX 清理和导入不包含在程序发布中，必须另有文件、影子核
 
 - 当前准备发布版本为 `0.19.14`；实际运行版本仍应以健康接口为准。八库分域迁移记录继续按 `0.16.0` 保留，不能把本地构建结果直接当作生产迁移完成。
 - 正式发布统一使用 GitHub Actions 的 `Deploy production` 工作流；开发电脑不再逐文件上传程序。
+- Production GitHub Environment 必须配置 `SAKURAFRP_ACCESS_PASSWORD` secret。发布 runner 在 SSH 前按 SakuraFRP 自动化认证合同授权当前出口 IP，使用 `persist_auth=off`，不打印响应正文或认证密码；隧道重启后仍按每次发布重新授权。访问地址固定为 `https://frp-cat.com:50840`，不得用该密码替代 SSH 部署密钥。
 - 生产服务由 `binhu-backend`、`binhu-mysql` 和 `binhu-ops-agent` 三个容器组成。后端只监听服务器本机，公网统一经过 nginx HTTPS。
 - `binhu-backend` 单独配置 `119.29.29.29` 和 `223.5.5.5` 两个 DNS 上游，避免腾讯文档同步依赖单一运营商 DNS；不修改服务器系统 DNS。部署后用容器内解析检查确认 `docs.qq.com` 可解析。
 - 所有登录用户访问 `/` 先进入仪表盘；在线数据汇总使用 `/summary`；电脑端 `/query` 为 Univer 在线工作表，手机端按岗位转入相应任务工作台。
