@@ -67,7 +67,10 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn('backend python -m migrations.task_command_read_model "$@"', deployer)
         self.assertIn("run_task_command_read_model_migration measure measure", deployer)
         self.assertIn("run_task_command_read_model_migration pre_apply measure", deployer)
-        self.assertIn("run_task_command_read_model_migration migrate migrate --apply", deployer)
+        self.assertIn(
+            "run_task_command_read_model_migration migrate migrate migrate --apply",
+            deployer,
+        )
         self.assertIn("run_task_command_read_model_migration verify verify", deployer)
         self.assertIn('settings.APP_ENVIRONMENT == "production"', deployer)
         self.assertIn('settings.MYSQL_ONLINE_DATA_DB == "OnlineData"', deployer)

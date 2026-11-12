@@ -805,7 +805,7 @@ PY
     || fail "task_command_read_model_target_identity_failed"
   chmod 0600 "$target_identity" "$release_dir/task-command-read-model-target.stderr"
 
-  run_task_command_read_model_migration measure measure
+  run_task_command_read_model_migration measure measure measure
   local measured_hash current_hash
   measured_hash="$(python3 - "$release_dir/task-command-read-model-measure.json" <<'PY'
 import hashlib
@@ -818,7 +818,7 @@ canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(
 print(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
 PY
 )"
-  run_task_command_read_model_migration pre_apply measure
+  run_task_command_read_model_migration pre_apply measure measure
   current_hash="$(python3 - "$release_dir/task-command-read-model-pre_apply.json" <<'PY'
 import hashlib
 import json
@@ -831,8 +831,8 @@ print(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
 PY
 )"
   [[ "$current_hash" == "$measured_hash" ]] || fail "task_command_read_model_measurement_changed"
-  run_task_command_read_model_migration migrate migrate --apply
-  run_task_command_read_model_migration verify verify
+  run_task_command_read_model_migration migrate migrate migrate --apply
+  run_task_command_read_model_migration verify verify verify
   log "task command read model migration verified (measurement ${measured_hash})"
 }
 
