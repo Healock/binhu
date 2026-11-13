@@ -886,13 +886,32 @@ done
 main_asset="$(python3 - "$project_dir/frontend/dist/index.html" <<'PY'
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 html = Path(sys.argv[1]).read_text(encoding="utf-8")
-match = re.search(r'src="/(assets/[^"]+\.js)"', html)
+match = re.search(
+    r'<script\b[^>]*\bsrc=["\']((?:\./|/)?assets/[^"\']+\.js(?:\?[^"\']*)?)["\']',
+    html,
+    re.IGNORECASE,
+)
 if not match:
     raise SystemExit("main frontend asset not found")
-print(match.group(1))
+
+asset_url_path = unquote(urlsplit(match.group(1)).path)
+if asset_url_path.startswith("./"):
+    asset_url_path = asset_url_path[2:]
+elif asset_url_path.startswith("/"):
+    asset_url_path = asset_url_path[1:]
+asset_path = PurePosixPath(asset_url_path)
+if (
+    asset_path.is_absolute()
+    or len(asset_path.parts) < 2
+    or asset_path.parts[0] != "assets"
+    or any(part in {"", ".", ".."} for part in asset_path.parts)
+):
+    raise SystemExit("main frontend asset path is invalid")
+print(asset_path.as_posix())
 PY
 )"
 [[ -f "$project_dir/frontend/dist/$main_asset" ]] || fail "frontend asset is missing"
