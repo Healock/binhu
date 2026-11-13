@@ -161,7 +161,9 @@ def container_baseline(environment):
         if previous['image'] != current['image'] or previous['name'] != current['name']:
             raise ValueError('environment_other_container_changed')
         current['baseline_unstable'] = (
-            previous['restarts'] != current['restarts']
+            previous['status'] == 'restarting'
+            or current['status'] == 'restarting'
+            or previous['restarts'] != current['restarts']
             or previous['started'] != current['started']
             or previous['status'] != current['status']
         )

@@ -49,13 +49,13 @@ class EnvironmentUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'environment_image_reference_invalid'):
             image_digest_reference('binhu-backend:latest')
 
-    def test_container_baseline_marks_restart_during_preflight_as_unstable(self):
+    def test_container_baseline_marks_preexisting_restart_loop_as_unstable(self):
         container_id = 'd' * 64
         snapshots = [
-            {'Id': container_id, 'State': {'StartedAt': 'first', 'Running': True, 'Status': 'running'},
+            {'Id': container_id, 'State': {'StartedAt': 'first', 'Running': True, 'Status': 'restarting'},
              'Name': '/binhu-event-relay', 'Image': 'sha256:' + 'a' * 64, 'RestartCount': 7},
-            {'Id': container_id, 'State': {'StartedAt': 'second', 'Running': True, 'Status': 'running'},
-             'Name': '/binhu-event-relay', 'Image': 'sha256:' + 'a' * 64, 'RestartCount': 8},
+            {'Id': container_id, 'State': {'StartedAt': 'first', 'Running': True, 'Status': 'restarting'},
+             'Name': '/binhu-event-relay', 'Image': 'sha256:' + 'a' * 64, 'RestartCount': 7},
         ]
         outputs = [SimpleNamespace(returncode=0, stdout=container_id, stderr=''),
                    SimpleNamespace(returncode=0, stdout=json.dumps(snapshots[:1]), stderr=''),
@@ -65,7 +65,7 @@ class EnvironmentUpdateTests(unittest.TestCase):
                 patch.object(update.time, 'sleep') as sleep:
             baseline = update.container_baseline('staging')
         self.assertTrue(baseline[container_id]['baseline_unstable'])
-        self.assertEqual(baseline[container_id]['restarts'], 8)
+        self.assertEqual(baseline[container_id]['restarts'], 7)
         sleep.assert_called_once_with(10)
 
     def test_verify_baseline_ignores_only_preexisting_unstable_runtime_state(self):
