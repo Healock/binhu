@@ -136,20 +136,54 @@ def command(arguments):
     return result.stdout
 
 
-def container_baseline(environment):
+def _container_snapshot(environment):
     ids = command(['docker', 'ps', '-aq']).split()
+    if not ids:
+        return {}
     containers = json.loads(command(['docker', 'inspect', *ids]))
     return {container['Id']: {'name': container['Name'], 'image': container['Image'],
                              'started': container['State']['StartedAt'],
-                             'running': container['State']['Running'], 'restarts': container['RestartCount']}
+                             'running': container['State']['Running'],
+                             'status': container['State']['Status'],
+                             'restarts': container['RestartCount']}
             for container in containers
             if not container['Name'].startswith(f'/binhu-{environment}-backend-')}
 
 
+def container_baseline(environment):
+    before = _container_snapshot(environment)
+    time.sleep(10)
+    after = _container_snapshot(environment)
+    if before.keys() != after.keys():
+        raise ValueError('environment_other_container_changed')
+    for container_id, current in after.items():
+        previous = before[container_id]
+        if previous['image'] != current['image'] or previous['name'] != current['name']:
+            raise ValueError('environment_other_container_changed')
+        current['baseline_unstable'] = (
+            previous['restarts'] != current['restarts']
+            or previous['started'] != current['started']
+            or previous['status'] != current['status']
+        )
+    return after
+
+
 def verify_baseline(before, environment):
     current = container_baseline(environment)
-    if any(current.get(key) != value for key, value in before.items()):
+    if current.keys() != before.keys():
         raise ValueError('environment_other_container_changed')
+    unstable = []
+    for container_id, previous in before.items():
+        observed = current[container_id]
+        if any(previous[key] != observed[key] for key in ('name', 'image')):
+            raise ValueError('environment_other_container_changed')
+        if previous.get('baseline_unstable'):
+            unstable.append(previous['name'].lstrip('/'))
+            continue
+        if any(previous[key] != observed[key]
+               for key in ('started', 'running', 'status', 'restarts')):
+            raise ValueError('environment_other_container_changed')
+    return unstable
 
 
 def backup_databases(environment, root, manifest, evidence):
@@ -400,7 +434,7 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
                     != ['APP_VERSION=' + image['version']]):
                 raise ValueError('environment_running_image_mismatch')
             phase = 'baseline'
-            verify_baseline(baseline, environment)
+            report['baseline_unstable_containers'] = verify_baseline(baseline, environment)
             report.update({'artifact_id': expected_id, 'image_id': image['image_id'],
                            'commit': image['commit'], 'business_acceptance': False})
             write_json(evidence / 'result.json', report)

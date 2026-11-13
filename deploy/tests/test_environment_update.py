@@ -49,6 +49,56 @@ class EnvironmentUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'environment_image_reference_invalid'):
             image_digest_reference('binhu-backend:latest')
 
+    def test_container_baseline_marks_restart_during_preflight_as_unstable(self):
+        container_id = 'd' * 64
+        snapshots = [
+            {'Id': container_id, 'State': {'StartedAt': 'first', 'Running': True, 'Status': 'running'},
+             'Name': '/binhu-event-relay', 'Image': 'sha256:' + 'a' * 64, 'RestartCount': 7},
+            {'Id': container_id, 'State': {'StartedAt': 'second', 'Running': True, 'Status': 'running'},
+             'Name': '/binhu-event-relay', 'Image': 'sha256:' + 'a' * 64, 'RestartCount': 8},
+        ]
+        outputs = [SimpleNamespace(returncode=0, stdout=container_id, stderr=''),
+                   SimpleNamespace(returncode=0, stdout=json.dumps(snapshots[:1]), stderr=''),
+                   SimpleNamespace(returncode=0, stdout=container_id, stderr=''),
+                   SimpleNamespace(returncode=0, stdout=json.dumps(snapshots[1:]), stderr='')]
+        with patch.object(update, 'command', side_effect=[item.stdout for item in outputs]), \
+                patch.object(update.time, 'sleep') as sleep:
+            baseline = update.container_baseline('staging')
+        self.assertTrue(baseline[container_id]['baseline_unstable'])
+        self.assertEqual(baseline[container_id]['restarts'], 8)
+        sleep.assert_called_once_with(10)
+
+    def test_verify_baseline_ignores_only_preexisting_unstable_runtime_state(self):
+        container_id = 'e' * 64
+        before = {container_id: {
+            'name': '/binhu-event-relay', 'image': 'sha256:' + 'a' * 64,
+            'started': 'first', 'running': True, 'status': 'running', 'restarts': 7,
+            'baseline_unstable': True}}
+        current = {container_id: {
+            'name': '/binhu-event-relay', 'image': 'sha256:' + 'a' * 64,
+            'started': 'later', 'running': True, 'status': 'running', 'restarts': 9,
+            'baseline_unstable': True}}
+        with patch.object(update, 'container_baseline', return_value=current):
+            self.assertEqual(update.verify_baseline(before, 'staging'), ['binhu-event-relay'])
+        current[container_id]['image'] = 'sha256:' + 'b' * 64
+        with patch.object(update, 'container_baseline', return_value=current), \
+                self.assertRaisesRegex(ValueError, 'environment_other_container_changed'):
+            update.verify_baseline(before, 'staging')
+
+    def test_verify_baseline_still_rejects_new_restart_of_stable_container(self):
+        container_id = 'f' * 64
+        before = {container_id: {
+            'name': '/binhu-mysql', 'image': 'sha256:' + 'a' * 64,
+            'started': 'first', 'running': True, 'status': 'running', 'restarts': 0,
+            'baseline_unstable': False}}
+        current = {container_id: {
+            'name': '/binhu-mysql', 'image': 'sha256:' + 'a' * 64,
+            'started': 'later', 'running': True, 'status': 'running', 'restarts': 1,
+            'baseline_unstable': False}}
+        with patch.object(update, 'container_baseline', return_value=current), \
+                self.assertRaisesRegex(ValueError, 'environment_other_container_changed'):
+            update.verify_baseline(before, 'staging')
+
     def test_startup_diagnostic_keeps_only_redacted_failure_facts(self):
         container_id = 'a' * 64
         outputs = [
