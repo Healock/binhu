@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +13,45 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class DeploymentContractTests(unittest.TestCase):
+    def test_production_health_check_accepts_root_and_relative_frontend_asset_paths(
+        self,
+    ) -> None:
+        script = (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8")
+        marker = 'main_asset="$(python3 - "$project_dir/frontend/dist/index.html" <<\'PY\'\n'
+        self.assertIn(marker, script)
+        parser = script.split(marker, 1)[1].split("\nPY\n)\"", 1)[0]
+
+        for src in ("/assets/app.js", "./assets/app.js", "assets/app.js"):
+            with self.subTest(src=src), tempfile.TemporaryDirectory() as temp_dir:
+                index = Path(temp_dir) / "index.html"
+                index.write_text(
+                    f'<script type="module" src="{src}"></script>',
+                    encoding="utf-8",
+                )
+                result = subprocess.run(
+                    [sys.executable, "-c", parser, str(index)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("assets/app.js", result.stdout.strip())
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            index = Path(temp_dir) / "index.html"
+            index.write_text(
+                '<script type="module" src="./assets/../secret.js"></script>',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", parser, str(index)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("main frontend asset path is invalid", result.stderr)
+
     def test_production_workflow_only_promotes_accepted_staging_candidates(self) -> None:
         workflow = (ROOT / ".github/workflows/deploy-production.yml").read_text(
             encoding="utf-8"
