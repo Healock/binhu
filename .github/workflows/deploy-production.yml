@@ -37,6 +37,8 @@ on:
         required: true
       BINHU_DEPLOY_PORT:
         required: true
+      SAKURAFRP_ACCESS_PASSWORD:
+        required: true
 
 permissions:
   contents: read
@@ -104,6 +106,21 @@ jobs:
           chmod 600 "$RUNNER_TEMP/binhu-ssh/deploy_key" "$RUNNER_TEMP/binhu-ssh/known_hosts"
           ssh-keygen -y -f "$RUNNER_TEMP/binhu-ssh/deploy_key" >/dev/null
           [[ -s "$RUNNER_TEMP/binhu-ssh/known_hosts" ]]
+      - name: Authorize this runner with SakuraFRP
+        shell: bash
+        env:
+          SAKURAFRP_ACCESS_PASSWORD: ${{ secrets.SAKURAFRP_ACCESS_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$SAKURAFRP_ACCESS_PASSWORD" ]]
+          auth_status="$(curl --insecure --fail --silent --show-error --max-time 20 \
+            --output /dev/null --write-out '%{http_code}' \
+            --request POST \
+            --data-urlencode 'persist_auth=off' \
+            --data-urlencode "pw=$SAKURAFRP_ACCESS_PASSWORD" \
+            'https://frp-cat.com:50840')"
+          [[ "$auth_status" =~ ^[23][0-9]{2}$ ]]
+          printf 'SakuraFRP runner authorization request completed (HTTP %s).\n' "$auth_status"
       - name: Promote through the fixed Production gateway
         shell: bash
         env:

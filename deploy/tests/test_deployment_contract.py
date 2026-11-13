@@ -34,6 +34,16 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("-o BatchMode=yes", workflow)
         self.assertIn("-o StrictHostKeyChecking=yes", workflow)
         self.assertIn("-o PasswordAuthentication=no", workflow)
+        self.assertIn("SAKURAFRP_ACCESS_PASSWORD:", workflow)
+        self.assertIn("name: Authorize this runner with SakuraFRP", workflow)
+        self.assertIn("--data-urlencode 'persist_auth=off'", workflow)
+        self.assertIn('--data-urlencode "pw=$SAKURAFRP_ACCESS_PASSWORD"', workflow)
+        self.assertIn("--output /dev/null", workflow)
+        self.assertLess(
+            workflow.index("name: Authorize this runner with SakuraFRP"),
+            workflow.index("name: Promote through the fixed Production gateway"),
+        )
+        self.assertNotIn("echo $SAKURAFRP_ACCESS_PASSWORD", workflow)
         self.assertIn(
             '"promote $EXPECTED_VERSION $STAGING_RUN_ID $RELEASE_COMMIT $PRODUCTION_COMPOSE_SHA256 $PRODUCTION_COMPOSE_SIZE"',
             workflow,
