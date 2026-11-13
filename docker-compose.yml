@@ -207,6 +207,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "services.redis_relay"]
     environment:
+      APP_ENVIRONMENT: production
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_USER: ${BINHU_MYSQL_USER:-binhu}
@@ -214,6 +215,12 @@ services:
       MYSQL_POOL_SIZE: 3
       MYSQL_ONLINE_DATA_DB: OnlineData
       MYSQL_PLATFORM_DB: PlatformData
+      MYSQL_DOMAIN_DATABASES_ENABLED: ${BINHU_DOMAIN_DATABASES_ENABLED:-true}
+      PLATFORM_DOMAIN_ACTIVE: ${BINHU_PLATFORM_DOMAIN_ACTIVE:-false}
+      VISIT_DOMAIN_ACTIVE: ${BINHU_VISIT_DOMAIN_ACTIVE:-false}
+      DISPATCH_DOMAIN_ACTIVE: ${BINHU_DISPATCH_DOMAIN_ACTIVE:-false}
+      DAILY_DOMAIN_ACTIVE: ${BINHU_DAILY_DOMAIN_ACTIVE:-false}
+      REGISTRY_ADDRESS_DOMAIN_ACTIVE: ${BINHU_REGISTRY_ADDRESS_DOMAIN_ACTIVE:-false}
       REDIS_URL: redis://:${BINHU_REDIS_PASSWORD:?Set BINHU_REDIS_PASSWORD in .env}@redis:6379/0
       REDIS_STREAM_KEY: binhu:events
       REDIS_PUBSUB_CHANNEL: binhu:events:published
@@ -232,6 +239,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "services.diagnostic_worker"]
     environment:
+      APP_ENVIRONMENT: production
       MYSQL_HOST: mysql
       MYSQL_PORT: 3306
       MYSQL_USER: ${BINHU_MYSQL_USER:-binhu}
@@ -240,6 +248,11 @@ services:
       MYSQL_ONLINE_DATA_DB: OnlineData
       MYSQL_PLATFORM_DB: PlatformData
       MYSQL_DOMAIN_DATABASES_ENABLED: ${BINHU_DOMAIN_DATABASES_ENABLED:-true}
+      PLATFORM_DOMAIN_ACTIVE: ${BINHU_PLATFORM_DOMAIN_ACTIVE:-false}
+      VISIT_DOMAIN_ACTIVE: ${BINHU_VISIT_DOMAIN_ACTIVE:-false}
+      DISPATCH_DOMAIN_ACTIVE: ${BINHU_DISPATCH_DOMAIN_ACTIVE:-false}
+      DAILY_DOMAIN_ACTIVE: ${BINHU_DAILY_DOMAIN_ACTIVE:-false}
+      REGISTRY_ADDRESS_DOMAIN_ACTIVE: ${BINHU_REGISTRY_ADDRESS_DOMAIN_ACTIVE:-false}
       REDIS_URL: redis://:${BINHU_REDIS_PASSWORD:?Set BINHU_REDIS_PASSWORD in .env}@redis:6379/0
       ENCRYPTION_KEY: ${BINHU_ENCRYPTION_KEY:?Set BINHU_ENCRYPTION_KEY in .env}
     depends_on:
