@@ -115,6 +115,15 @@ class DeploymentContractTests(unittest.TestCase):
 
     def test_database_workers_use_the_production_platform_domain(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        required_environment = (
+            "APP_ENVIRONMENT: production",
+            "MYSQL_DOMAIN_DATABASES_ENABLED: ${BINHU_DOMAIN_DATABASES_ENABLED:-true}",
+            "PLATFORM_DOMAIN_ACTIVE: ${BINHU_PLATFORM_DOMAIN_ACTIVE:-false}",
+            "VISIT_DOMAIN_ACTIVE: ${BINHU_VISIT_DOMAIN_ACTIVE:-false}",
+            "DISPATCH_DOMAIN_ACTIVE: ${BINHU_DISPATCH_DOMAIN_ACTIVE:-false}",
+            "DAILY_DOMAIN_ACTIVE: ${BINHU_DAILY_DOMAIN_ACTIVE:-false}",
+            "REGISTRY_ADDRESS_DOMAIN_ACTIVE: ${BINHU_REGISTRY_ADDRESS_DOMAIN_ACTIVE:-false}",
+        )
         for service in ("event-relay", "diagnostic-worker"):
             with self.subTest(service=service):
                 match = re.search(
@@ -123,14 +132,8 @@ class DeploymentContractTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(match)
                 block = match.group(1)
-                self.assertIn(
-                    "MYSQL_DOMAIN_DATABASES_ENABLED: ${BINHU_DOMAIN_DATABASES_ENABLED:-true}",
-                    block,
-                )
-                self.assertIn(
-                    "PLATFORM_DOMAIN_ACTIVE: ${BINHU_PLATFORM_DOMAIN_ACTIVE:-false}",
-                    block,
-                )
+                for environment in required_environment:
+                    self.assertIn(environment, block)
 
     def test_ci_never_references_production_secrets_or_gateway(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
