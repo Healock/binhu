@@ -113,6 +113,25 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertNotRegex(compose, re.compile(r"(?m)^\s+build\s*:"))
         self.assertGreaterEqual(compose.count("image: binhu-backend"), 3)
 
+    def test_database_workers_use_the_production_platform_domain(self) -> None:
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        for service in ("event-relay", "diagnostic-worker"):
+            with self.subTest(service=service):
+                match = re.search(
+                    rf"(?ms)^  {re.escape(service)}:(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+                    compose,
+                )
+                self.assertIsNotNone(match)
+                block = match.group(1)
+                self.assertIn(
+                    "MYSQL_DOMAIN_DATABASES_ENABLED: ${BINHU_DOMAIN_DATABASES_ENABLED:-true}",
+                    block,
+                )
+                self.assertIn(
+                    "PLATFORM_DOMAIN_ACTIVE: ${BINHU_PLATFORM_DOMAIN_ACTIVE:-false}",
+                    block,
+                )
+
     def test_ci_never_references_production_secrets_or_gateway(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("pull_request:", workflow)
