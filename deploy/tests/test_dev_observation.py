@@ -152,7 +152,7 @@ dev-20260919-dualtrack-monitor40-flink dev.task.events.v1 1 200 200 0 - - -
             self.assertIn("--property=NoNewPrivileges=true", command)
             self.assertEqual(command[-3:], ["run", RUN_ID, OBSERVATION_ID])
 
-    def test_gateway_installer_and_workflow_expose_only_fixed_observation_commands(self):
+    def test_gateway_installer_and_workflow_expose_only_fixed_observation_and_pause_commands(self):
         repo = Path(__file__).parents[2]
         root = repo / "deploy/environments/event_pipeline"
         wrapper = (root / "binhu-dev-event-pipeline-gateway").read_text(encoding="utf-8")
@@ -160,9 +160,15 @@ dev-20260919-dualtrack-monitor40-flink dev.task.events.v1 1 200 200 0 - - -
         installer = (root / "install-dev-gateway.sh").read_text(encoding="utf-8")
         workflow = (repo / ".github/workflows/observe-dev-event-pipeline.yml").read_text(encoding="utf-8")
         self.assertIn("observe-start|observe-status", wrapper)
+        self.assertIn("pause|resume", wrapper)
         self.assertIn('action in {"observe-start", "observe-status"}', gateway)
         self.assertIn("binhu-dev-event-pipeline-observation.py", installer)
-        self.assertIn('"observe-$ACTION $RUN_ID $OBSERVATION_ID"', workflow)
+        self.assertIn("- gateway-status", workflow)
+        self.assertIn("- pause", workflow)
+        self.assertIn("- resume", workflow)
+        self.assertIn('command="$ACTION $RUN_ID $PAUSE_ID"', workflow)
+        self.assertIn("dev-pause-", workflow)
+        self.assertIn("exit 64", workflow)
         self.assertNotIn("Production", workflow)
         self.assertNotIn("Staging", workflow)
 
