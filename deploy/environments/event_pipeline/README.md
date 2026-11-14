@@ -338,9 +338,13 @@ Production、Staging 或 Shadow。正常发布日志按每个 worker 每 1000 �
 全部通过后，核心持续运行门禁使用独立的固定 6 小时观察：每 30 分钟记录 monitor、
 Python worker、relay、Redis、MySQL、Kafka、Flink、磁盘和日志轮换，共 13 个采样点；
 开始时额外执行一次元数据双轨对账和 Schema Registry 合同核对。部署账号只接受
-`observe-start <run_id> <observation_id>` 和
-`observe-status <run_id> <observation_id>`，观察进程由服务器 systemd 管理，SSH 连接
-立即结束，不维持后台连接。
+`observe-start <run_id> <observation_id>`、
+`observe-status <run_id> <observation_id>`、`status`、
+`pause <run_id> <pause_id>` 和 `resume <run_id> <pause_id>`。GitHub 的
+`Control Dev event pipeline` workflow 只转发这些固定命令；服务器强制命令再次校验
+参数。观察进程由服务器 systemd 管理，SSH 连接立即结束，不维持后台连接。
+Actions 手动运行时，`gateway-status` 不需要运行编号；`pause` 需要当前运行编号和新建
+的唯一 pause ID；`resume` 必须原样使用暂停成功时的同一对编号。
 
 6 小时内要求无未归因差异、容器重启计数不增加且无 OOM、Redis 驱逐和 OOM 计数不增加、MySQL
 无当前锁等待或新增死锁、Kafka lag 最终连续三个采样为 0、Flink checkpoint 持续推进，
