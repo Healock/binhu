@@ -17,14 +17,18 @@ def inspect_holders(items):
         for mount in item.get("Mounts", []):
             if mount.get("Name") != VOLUME:
                 continue
+            name = item["Name"].lstrip("/")
             labels = item.get("Config", {}).get("Labels", {})
+            expected_networks = {"binhu-development-eventbus_internal"}
+            if name == TM:
+                expected_networks.add("binhu-development_internal")
             if (item["Name"].lstrip("/") not in {JM, TM}
                 or labels.get("com.docker.compose.project") != "binhu-development-flink"
                 or labels.get("binhu.environment") != "development"
                 or mount.get("Destination") != TARGET or not mount.get("RW")
-                or set(item["NetworkSettings"]["Networks"]) != {"binhu-development-eventbus_internal"}):
+                or set(item["NetworkSettings"]["Networks"]) != expected_networks):
                 raise ValueError("checkpoint volume has foreign dependency")
-            holders.append(item["Name"].lstrip("/"))
+            holders.append(name)
     if sorted(holders) != sorted([JM, TM]):
         raise ValueError("checkpoint volume holders differ")
     return holders
