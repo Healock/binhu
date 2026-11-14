@@ -124,6 +124,39 @@ class FlinkStateContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Dev pause service stop failed"):
             control._compose_action(Path("/etc/anything.yml"), "stop", ("mysql",))
 
+    def test_dev_measure_accepts_only_manifest_pinned_mount_drift(self):
+        expected = {
+            "name": control.PROJECT,
+            "networks": {"internal": {"name": control.NETWORK}},
+            "services": {"relay": {"image": "sha256:" + "a" * 64,
+                                     "networks": ["internal"], "volumes": []}},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mounted = root / "runtime.py"
+            mounted.write_text("fixed runtime source", encoding="utf-8")
+            digest = hashlib.sha256(mounted.read_bytes()).hexdigest()
+            manifest = {"hashes": {"runtime.py": digest}}
+            deployed = copy.deepcopy(expected)
+            deployed["services"]["relay"]["volumes"] = [
+                "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
+                "mysql:/var/lib/mysql",
+            ]
+            with patch.object(control, "ROOT", root):
+                control._validate_runtime_compose(deployed, expected, manifest)
+
+                changed_resource = copy.deepcopy(deployed)
+                changed_resource["services"]["relay"]["privileged"] = True
+                with self.assertRaisesRegex(ValueError, "closed Dev resource definition"):
+                    control._validate_runtime_compose(changed_resource, expected, manifest)
+
+                unpinned_mount = copy.deepcopy(deployed)
+                unpinned_mount["services"]["relay"]["volumes"][0] = (
+                    "../runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro"
+                )
+                with self.assertRaisesRegex(ValueError, "closed Dev resource definition"):
+                    control._validate_runtime_compose(unpinned_mount, expected, manifest)
+
     def test_pause_evidence_binds_completed_savepoint_to_same_dev_run(self):
         run_id = "dev-20261114-taskreadmodel10"
         pause_id = "dev-pause-20261114-memory01"

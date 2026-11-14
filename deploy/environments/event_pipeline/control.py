@@ -144,6 +144,61 @@ def expected_networks(service):
     return {NETWORK}
 
 
+def _without_service_volumes(spec: dict) -> dict:
+    return {
+        **spec,
+        "services": {
+            name: {key: value for key, value in service.items() if key != "volumes"}
+            for name, service in spec.get("services", {}).items()
+        },
+    }
+
+
+def _validate_runtime_compose(spec: dict, expected: dict, manifest: dict) -> None:
+    # The manifest hash pins this run's Compose file. Bind mounts evolved between
+    # Dev runs, so compare the closed resource contract while validating every
+    # deployed mount against that run's own hashed files.
+    if _without_service_volumes(spec) != _without_service_volumes(expected):
+        raise ValueError("runtime differs from closed Dev resource definition")
+
+    named_volumes = {
+        "mysql": "/var/lib/mysql",
+        "redis": "/data",
+        "evidence": "/var/lib/binhu-dev-event-pipeline/evidence",
+    }
+    hashes = manifest.get("hashes", {})
+    for service in spec.get("services", {}).values():
+        volumes = service.get("volumes", [])
+        if not isinstance(volumes, list):
+            raise ValueError("runtime differs from closed Dev resource definition")
+        for volume in volumes:
+            if not isinstance(volume, str):
+                raise ValueError("runtime differs from closed Dev resource definition")
+            parts = volume.split(":")
+            if len(parts) not in {2, 3}:
+                raise ValueError("runtime differs from closed Dev resource definition")
+            source, target = parts[:2]
+            mode = parts[2] if len(parts) == 3 else ""
+            if source in named_volumes:
+                if target != named_volumes[source] or mode not in {"", "rw"}:
+                    raise ValueError("runtime differs from closed Dev resource definition")
+                continue
+            relative = source[2:] if source.startswith("./") else ""
+            path = ROOT / relative
+            digest = hashes.get(relative)
+            if (
+                not relative or "/" in relative or "\\" in relative
+                or not (
+                    target.startswith("/opt/dev-pipeline/event_pipeline/")
+                    or target.startswith("/docker-entrypoint-initdb.d/")
+                )
+                or mode != "ro" or path.parent != ROOT or path.is_symlink()
+                or not path.is_file() or not digest
+                or hashlib.sha256(path.read_bytes()).hexdigest() != digest
+            ):
+                raise ValueError("runtime differs from closed Dev resource definition")
+
+
 def evidence_initializer_command(run_id: str) -> list[str]:
     """Build the one-shot command that grants the monitor its run directory.
 
@@ -185,8 +240,7 @@ def measure():
         if path.is_symlink() or path.parent != ROOT or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             raise ValueError("runtime file identity mismatch")
     spec = json.loads((ROOT / "compose.json").read_text())
-    if spec != compose(manifest["images"]):
-        raise ValueError("runtime differs from closed Dev resource definition")
+    _validate_runtime_compose(spec, compose(manifest["images"]), manifest)
     network = json.loads(checked(["docker", "network", "inspect", NETWORK]))[0]
     if not network.get("Internal") or network.get("Labels", {}).get("com.docker.compose.project") != "binhu-development-eventbus":
         raise ValueError("Dev event network identity mismatch")
