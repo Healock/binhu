@@ -311,7 +311,10 @@ async def run_checks(job: dict[str, Any]) -> list[CheckResult]:
             pool.release(conn)
     except Exception:
         results.append(CheckResult("outbox_health", "skipped", "Outbox 状态暂不可读取", {}))
-    results.append(CheckResult("relay_health", "healthy", "事件中继配置正常", {"source": "outbox"}))
+    results.append(CheckResult(
+        "relay_health", "skipped", "中继容器状态未由深度诊断采集，请查看运维总览",
+        {"source": "operations_overview"},
+    ))
     results.append(CheckResult("sse_health", "healthy", "实时事件通道已启用", {"endpoint": "/api/events/stream"}))
     results.append(CheckResult("permission_config", "healthy", "权限配置可用", {}))
     elapsed = int((asyncio.get_running_loop().time() - started) * 1000)
