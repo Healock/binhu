@@ -117,6 +117,7 @@ class DevGatewayContractTests(unittest.TestCase):
 
     def test_installer_is_dev_scoped(self):
         text = (ROOT / "deploy/environments/event_pipeline/install-dev-gateway.sh").read_text(encoding="utf-8")
+        gateway = IMPLEMENTATION.read_text(encoding="utf-8")
         self.assertIn("binhu-dev-deploy", text)
         self.assertIn("binhu-dev-event-pipeline-gateway", text)
         self.assertIn("usermod --password", text)
@@ -128,6 +129,8 @@ class DevGatewayContractTests(unittest.TestCase):
         self.assertNotIn("/root/binhu", text)
         self.assertIn("event-pipeline-source.tar.gz", text)
         self.assertIn("binhu-dev-event-pipeline-source", text)
+        self.assertIn('mv "$source_stage/deploy" "$source_target"', text)
+        self.assertIn('CONTROL_SOURCE = Path("/usr/local/libexec/binhu-dev-event-pipeline-source/environments")', gateway)
         self.assertNotIn("staging", text.lower())
         self.assertNotIn("production", text.lower())
 
