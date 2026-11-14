@@ -992,16 +992,29 @@ volumes:
         self.assertEqual(client.submission, ("candidate.jar", run_id))
 
     def test_checkpoint_repair_rejects_shared_or_foreign_volume(self):
-        items = [{"Name": name, "Config": {"Labels": {"com.docker.compose.project": "binhu-development-flink",
-                  "binhu.environment": "development"}},
-                  "Mounts": [{"Name": checkpoint.VOLUME, "Destination": checkpoint.TARGET, "RW": True}],
-                  "NetworkSettings": {"Networks": {"binhu-development-eventbus_internal": {}}}}
-                 for name in (checkpoint.JM, checkpoint.TM)]
+        items = []
+        for name in (checkpoint.JM, checkpoint.TM):
+            networks = {"binhu-development-eventbus_internal": {}}
+            if name == checkpoint.TM:
+                networks["binhu-development_internal"] = {}
+            items.append({
+                "Name": name,
+                "Config": {"Labels": {
+                    "com.docker.compose.project": "binhu-development-flink",
+                    "binhu.environment": "development",
+                }},
+                "Mounts": [{"Name": checkpoint.VOLUME, "Destination": checkpoint.TARGET, "RW": True}],
+                "NetworkSettings": {"Networks": networks},
+            })
         self.assertEqual(len(checkpoint.inspect_holders(items)), 2)
         foreign = copy.deepcopy(items[0])
         foreign["Name"] = "binhu-backend"
         with self.assertRaises(ValueError):
             checkpoint.inspect_holders(items + [foreign])
+        items[1]["NetworkSettings"]["Networks"]["binhu-production_internal"] = {}
+        with self.assertRaises(ValueError):
+            checkpoint.inspect_holders(items)
+        del items[1]["NetworkSettings"]["Networks"]["binhu-production_internal"]
         items[0]["Mounts"][0]["Destination"] = "/unexpected"
         with self.assertRaises(ValueError):
             checkpoint.inspect_holders(items)
