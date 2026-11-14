@@ -30,7 +30,7 @@ ALLOWED_SCALES = frozenset({1002, 10_000, 100_000})
 ACCEPT_TIMEOUTS = {1002: 420, 10_000: 3720, 100_000: 21_720}
 OBSERVATION = Path("/usr/local/libexec/binhu-dev-event-pipeline-observation.py")
 OBSERVATION_RE = re.compile(r"^obs-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
-CONTROL_SOURCE = Path("/usr/local/libexec/binhu-dev-event-pipeline-source/deploy/environments")
+CONTROL_SOURCE = Path("/usr/local/libexec/binhu-dev-event-pipeline-source/environments")
 PAUSE_ID_RE = re.compile(r"^dev-pause-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
 
 
