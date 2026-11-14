@@ -135,11 +135,16 @@ class FlinkStateContractTests(unittest.TestCase):
             root = Path(tmp)
             mounted = root / "runtime.py"
             mounted.write_text("fixed runtime source", encoding="utf-8")
-            digest = hashlib.sha256(mounted.read_bytes()).hexdigest()
-            manifest = {"hashes": {"runtime.py": digest}}
+            redis_config = root / "redis.conf"
+            redis_config.write_text("fixed redis config", encoding="utf-8")
+            manifest = {"hashes": {
+                "runtime.py": hashlib.sha256(mounted.read_bytes()).hexdigest(),
+                "redis.conf": hashlib.sha256(redis_config.read_bytes()).hexdigest(),
+            }}
             deployed = copy.deepcopy(expected)
             deployed["services"]["relay"]["volumes"] = [
                 "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
+                "./redis.conf:/usr/local/etc/redis/redis.conf:ro",
                 "mysql:/var/lib/mysql",
             ]
             with patch.object(control, "ROOT", root):

@@ -191,6 +191,7 @@ def _validate_runtime_compose(spec: dict, expected: dict, manifest: dict) -> Non
                 or not (
                     target.startswith("/opt/dev-pipeline/event_pipeline/")
                     or target.startswith("/docker-entrypoint-initdb.d/")
+                    or target.startswith("/usr/local/etc/redis/")
                 )
                 or mode != "ro" or path.parent != ROOT or path.is_symlink()
                 or not path.is_file() or not digest
