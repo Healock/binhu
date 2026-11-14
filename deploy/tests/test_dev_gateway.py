@@ -55,6 +55,13 @@ class DevGatewayContractTests(unittest.TestCase):
         self.assertNotIn("cat |", text)
         self.assertNotIn("python -", text)
 
+    def test_wrapper_exposes_only_run_and_pause_id_scoped_controls(self):
+        text = WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("pause|resume)", text)
+        self.assertIn("dev-pause-[0-9]{8}-[A-Za-z0-9]", text)
+        self.assertIn('"${parts[0]}" "${parts[1]}" "${parts[2]}"', text)
+        self.assertNotIn("docker compose", text)
+
     def test_accept_workflow_uses_deploy_key_and_fixed_choices(self):
         workflow = ROOT / ".github/workflows/accept-dev-event-pipeline.yml"
         self.assertTrue(workflow.is_file())
@@ -119,6 +126,8 @@ class DevGatewayContractTests(unittest.TestCase):
         self.assertNotIn("/usr/sbin/nologin", text)
         self.assertNotIn("binhu-deploy-gateway", text)
         self.assertNotIn("/root/binhu", text)
+        self.assertIn("event-pipeline-source.tar.gz", text)
+        self.assertIn("binhu-dev-event-pipeline-source", text)
         self.assertNotIn("staging", text.lower())
         self.assertNotIn("production", text.lower())
 
@@ -126,6 +135,13 @@ class DevGatewayContractTests(unittest.TestCase):
         text = (ROOT / "deploy/environments/event_pipeline/install-dev-gateway.sh").read_text(encoding="utf-8")
         self.assertIn("binhu-dev-event-pipeline-gateway.py accept *", text)
         self.assertNotIn("ALL=(ALL)", text)
+
+    def test_gateway_pause_and_resume_are_current_run_bound(self):
+        source = IMPLEMENTATION.read_text(encoding="utf-8")
+        self.assertIn('current.get("paused", False) is not paused', source)
+        self.assertIn('current.get("pause_id") != pause_id', source)
+        self.assertIn('"event_pipeline.control", action, run_id, pause_id', source)
+        self.assertIn('current.update({"paused": True, "pause_id": pause_id', source)
 
 
 if __name__ == "__main__":

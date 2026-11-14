@@ -11,13 +11,24 @@ import tempfile
 from urllib.parse import urlsplit
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
-from . import flink_compose, flink_submission
+from . import checkpoint
+from . import flink_compose, flink_submission, kafka_compose
 from .domain_pipeline import DOMAIN_PIPELINES, DomainPipelineOrchestrator, domain_spec
 from .identity import environment_for_run_id
 FLINK_COMPOSE = Path("/srv/binhu-environments/development-eventbus/flink-pipeline-compose.json")
+EVENTBUS_COMPOSE = Path("/srv/binhu-environments/development-eventbus/compose.yml")
 FLINK_JOBMANAGER = "binhu-development-flink-jobmanager-1"
 KAFKA_CONTAINER = "binhu-development-eventbus-kafka-1-1"
 FLINK_CANDIDATE_JAR = "/tmp/dev-pipeline-job.jar"
+PAUSE_EVIDENCE_ROOT = ROOT / "pause-evidence"
+PAUSE_ID_RE = re.compile(r"^dev-pause-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
+PIPELINE_WORKER_SERVICES = (
+    "relay", "bridge", "business-bridge", "backend-outbox-relay",
+    "python-metadata-worker", "dual-track-monitor",
+)
+PIPELINE_DATA_SERVICES = ("dev-derived-mysql", "dev-derived-redis")
+FLINK_SERVICES = ("jobmanager", "taskmanager")
+EVENTBUS_SERVICES = ("schema-registry", "kafka-1", "kafka-2", "kafka-3")
 _SAFE_CONTROL_FAILURES = frozenset(
     {
         "unexpected Dev root",
@@ -90,6 +101,21 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Flink SQL task/view-state schema versions are incomplete",
         "Flink SQL consumer groups do not match manifest",
         "Flink SQL run_id does not match manifest",
+        "current Dev run is not active",
+        "invalid Dev pause id",
+        "Dev pause evidence already exists",
+        "Dev pause evidence is missing",
+        "Dev pause evidence identity mismatch",
+        "Dev pause savepoint path mismatch",
+        "Dev pause requires one running Flink job",
+        "Dev pause service stop failed",
+        "Dev pause savepoint failed",
+        "Dev pause job did not stop",
+        "Dev pause runtime state mismatch",
+        "Dev resume requires a paused run",
+        "Dev resume service start failed",
+        "Dev resume savepoint restore failed",
+        "Dev resume runtime validation failed",
     }
 )
 
@@ -192,6 +218,326 @@ def _run_checked(command: list[str], *, timeout: int = 120) -> subprocess.Comple
     if result.returncode:
         raise ValueError("Dev Flink runtime command failed")
     return result
+
+
+def _compose_action(compose_file: Path, action: str, services: tuple[str, ...], *, timeout: int = 180) -> None:
+    """Run a fixed Compose action without accepting arbitrary service names."""
+    allowed = {
+        str(ROOT / "compose.json"): set(PIPELINE_WORKER_SERVICES + PIPELINE_DATA_SERVICES),
+        str(FLINK_COMPOSE): set(FLINK_SERVICES),
+        str(EVENTBUS_COMPOSE): set(EVENTBUS_SERVICES),
+    }
+    if str(compose_file) not in allowed or action not in {"stop", "up"}:
+        raise ValueError("Dev pause service stop failed")
+    if not services or any(service not in allowed[str(compose_file)] for service in services):
+        raise ValueError("Dev pause service stop failed")
+    command = ["docker", "compose", "-f", str(compose_file), action]
+    if action == "up":
+        command += ["-d"]
+    else:
+        command += ["-t", "60"]
+    command += list(services)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        raise ValueError("Dev pause service stop failed")
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    if PAUSE_EVIDENCE_ROOT.is_symlink():
+        raise ValueError("Dev pause evidence identity mismatch")
+    evidence_root = PAUSE_EVIDENCE_ROOT.resolve()
+    parent = path.parent.resolve()
+    if parent != evidence_root and evidence_root not in parent.parents:
+        raise ValueError("Dev pause evidence identity mismatch")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        raise ValueError("Dev pause evidence already exists")
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _validate_dev_pause_id(pause_id: str) -> str:
+    if not PAUSE_ID_RE.fullmatch(pause_id or ""):
+        raise ValueError("invalid Dev pause id")
+    return pause_id
+
+
+def _manifest() -> dict:
+    try:
+        value = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise ValueError("manifest identity mismatch") from None
+    if value.get("environment") != "development" or value.get("project") != PROJECT:
+        raise ValueError("manifest identity mismatch")
+    return value
+
+
+def _active_flink_job(run_id: str) -> tuple[flink_submission.FlinkRest, str]:
+    client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
+    overview = flink_submission.wait_for_rest(client)
+    current, _ = flink_submission.partition_active_jobs(overview, run_id)
+    other_active = [
+        job for job in overview
+        if job.get("state") in {"RUNNING", "RESTARTING"}
+        and job.get("name") != run_id
+    ]
+    if other_active or len(current) != 1 or current[0].get("state") != "RUNNING":
+        raise ValueError("Dev pause requires one running Flink job")
+    job_id = str(current[0].get("jid", ""))
+    details = client.details(job_id)
+    try:
+        flink_submission.validate_job_graph(details, run_id, flink_submission.EXPECTED_SINKS)
+    except ValueError as exc:
+        raise ValueError("Dev pause runtime state mismatch") from exc
+    return client, job_id
+
+
+def _required_volume_names() -> tuple[str, ...]:
+    return (
+        "binhu-development-pipeline_mysql",
+        "binhu-development-pipeline_redis",
+        "binhu-development-pipeline_evidence",
+        "binhu-development_flink-checkpoints",
+        "binhu-development-eventbus_kafka-1-data",
+        "binhu-development-eventbus_kafka-2-data",
+        "binhu-development-eventbus_kafka-3-data",
+    )
+
+
+def _verify_retained_volumes() -> None:
+    for volume in _required_volume_names():
+        result = subprocess.run(
+            ["docker", "volume", "inspect", volume],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode:
+            raise ValueError("Dev pause runtime state mismatch")
+
+
+def _verify_checkpoint_volume_exists() -> None:
+    result = subprocess.run(
+        ["docker", "volume", "inspect", checkpoint.VOLUME],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode:
+        raise ValueError("Dev resume savepoint restore failed")
+    try:
+        volumes = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise ValueError("Dev resume savepoint restore failed") from None
+    if len(volumes) != 1 or volumes[0].get("Name") != checkpoint.VOLUME:
+        raise ValueError("Dev resume savepoint restore failed")
+
+
+def _wait_dev_kafka_ready(timeout: float = 180.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["docker", "exec", KAFKA_CONTAINER,
+             "/opt/kafka/bin/kafka-broker-api-versions.sh",
+             "--bootstrap-server", "kafka-1:9092"],
+            capture_output=True, text=True, timeout=20,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(3)
+    raise ValueError("Dev resume service start failed")
+
+
+def _load_pause_evidence(pause_id: str, run_id: str) -> tuple[Path, dict]:
+    _validate_dev_pause_id(pause_id)
+    if PAUSE_EVIDENCE_ROOT.is_symlink():
+        raise ValueError("Dev pause evidence identity mismatch")
+    path = PAUSE_EVIDENCE_ROOT / pause_id / "pause.json"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Dev pause evidence is missing")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise ValueError("Dev pause evidence identity mismatch") from None
+    if (
+        payload.get("accepted") is not True
+        or payload.get("environment") != "development"
+        or payload.get("project") != PROJECT
+        or payload.get("run_id") != run_id
+        or payload.get("pause_id") != pause_id
+    ):
+        raise ValueError("Dev pause evidence identity mismatch")
+    location = payload.get("savepoint", {}).get("location")
+    try:
+        flink_submission.validate_savepoint_location(run_id, pause_id, location)
+    except ValueError as exc:
+        raise ValueError("Dev pause savepoint path mismatch") from exc
+    return path, payload
+
+
+def _pause_evidence_directory(pause_id: str) -> Path:
+    _validate_dev_pause_id(pause_id)
+    if PAUSE_EVIDENCE_ROOT.is_symlink():
+        raise ValueError("Dev pause evidence identity mismatch")
+    path = PAUSE_EVIDENCE_ROOT / pause_id
+    if path.exists() or path.is_symlink():
+        raise ValueError("Dev pause evidence already exists")
+    path.mkdir(mode=0o700, parents=True)
+    return path
+
+
+def pause(run_id: str, pause_id: str) -> dict:
+    """Save Flink state, stop only Dev event-pipeline services, and retain volumes."""
+    if environment_for_run_id(run_id) != "development":
+        raise ValueError("current Dev run is not active")
+    _validate_dev_pause_id(pause_id)
+    measured = measure()
+    if measured.get("run_id") != run_id:
+        raise ValueError("current Dev run is not active")
+    manifest = _manifest()
+    if manifest.get("run_id") != run_id:
+        raise ValueError("current Dev run is not active")
+    evidence = _pause_evidence_directory(pause_id)
+    phase = "preflight"
+    workers_stopped = False
+    try:
+        checkpoint_report = checkpoint.measure()
+        if not checkpoint_report.get("ownership_verified"):
+            raise ValueError("Dev pause runtime state mismatch")
+        client, job_id = _active_flink_job(run_id)
+        location = flink_submission.savepoint_target(run_id, pause_id)
+        _write_private_json(evidence / "started.json", {
+            "environment": "development", "project": PROJECT,
+            "run_id": run_id, "pause_id": pause_id,
+            "phase": "savepoint", "job_id": job_id,
+        })
+
+        phase = "worker_stop"
+        workers_stopped = True
+        _compose_action(ROOT / "compose.json", "stop", PIPELINE_WORKER_SERVICES)
+
+        phase = "savepoint"
+        trigger_id = client.trigger_savepoint(job_id, location)
+        savepoint = flink_submission.wait_for_savepoint(client, job_id, trigger_id, location)
+
+        phase = "job_stop"
+        client.cancel(job_id)
+        flink_submission.wait_for_job_absent(client, run_id)
+
+        phase = "flink_stop"
+        _compose_action(FLINK_COMPOSE, "stop", FLINK_SERVICES)
+        phase = "eventbus_stop"
+        _compose_action(EVENTBUS_COMPOSE, "stop", EVENTBUS_SERVICES)
+        phase = "data_stop"
+        _compose_action(ROOT / "compose.json", "stop", PIPELINE_DATA_SERVICES)
+        _verify_retained_volumes()
+        result = {
+            "environment": "development", "project": PROJECT,
+            "run_id": run_id, "pause_id": pause_id, "accepted": True,
+            "job_id": job_id, "savepoint": savepoint,
+            "stopped_services": {
+                "pipeline_workers": list(PIPELINE_WORKER_SERVICES),
+                "pipeline_data": list(PIPELINE_DATA_SERVICES),
+                "flink": list(FLINK_SERVICES), "eventbus": list(EVENTBUS_SERVICES),
+            },
+            "retained_volumes": list(_required_volume_names()),
+        }
+        _write_private_json(evidence / "pause.json", result)
+        return result
+    except Exception as error:
+        restarted = False
+        if workers_stopped:
+            try:
+                _compose_action(ROOT / "compose.json", "up", PIPELINE_WORKER_SERVICES)
+                restarted = True
+            except Exception:
+                restarted = False
+        _write_private_json(evidence / "pause-failure.json", {
+            "environment": "development", "project": PROJECT,
+            "run_id": run_id, "pause_id": pause_id,
+            "phase": phase, "error_code": safe_control_failure_detail(error),
+            "workers_restarted": restarted,
+        })
+        if phase in {"savepoint"}:
+            raise ValueError("Dev pause savepoint failed") from None
+        if phase == "job_stop":
+            raise ValueError("Dev pause job did not stop") from None
+        if phase in {"worker_stop", "flink_stop", "eventbus_stop", "data_stop"}:
+            raise ValueError("Dev pause service stop failed") from None
+        raise
+
+
+def resume(run_id: str, pause_id: str) -> dict:
+    """Restart the retained Dev resources and restore the same Flink savepoint."""
+    if environment_for_run_id(run_id) != "development":
+        raise ValueError("Dev resume requires a paused run")
+    manifest = _manifest()
+    if manifest.get("run_id") != run_id:
+        raise ValueError("Dev resume requires a paused run")
+    _, pause_record = _load_pause_evidence(pause_id, run_id)
+    expected_location = pause_record["savepoint"]["location"]
+    phase = "preflight"
+    submitted_job_id: str | None = None
+    evidence = PAUSE_EVIDENCE_ROOT / pause_id
+    try:
+        measured = measure()
+        if measured.get("run_id") != run_id:
+            raise ValueError("Dev resume runtime validation failed")
+        _validate_flink_compose()
+        _validate_flink_sql(manifest)
+        kafka_compose.measure()
+        _verify_checkpoint_volume_exists()
+        phase = "eventbus_start"
+        _compose_action(EVENTBUS_COMPOSE, "up", EVENTBUS_SERVICES)
+        _wait_dev_kafka_ready()
+        phase = "pipeline_start"
+        _compose_action(ROOT / "compose.json", "up", PIPELINE_WORKER_SERVICES + PIPELINE_DATA_SERVICES, timeout=240)
+        phase = "flink_start"
+        _compose_action(FLINK_COMPOSE, "up", FLINK_SERVICES, timeout=180)
+        checkpoint_report = checkpoint.measure()
+        if not checkpoint_report.get("ownership_verified"):
+            raise ValueError("Dev resume savepoint restore failed")
+        client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
+        flink_submission.wait_for_rest(client)
+        phase = "savepoint_restore"
+        overview = client.overview()
+        current, _ = flink_submission.partition_active_jobs(overview, run_id)
+        other_active = [
+            job for job in overview
+            if job.get("state") in {"RUNNING", "RESTARTING"}
+            and job.get("name") != run_id
+        ]
+        if other_active or len(current) > 1:
+            raise ValueError("Dev resume runtime validation failed")
+        if not current:
+            jar_id = client.upload_jar("/opt/flink/usrlib/dev-pipeline-job.jar")
+            submitted_job_id = client.run_jar(jar_id, run_id, savepoint_path=expected_location)
+        verified = flink_submission.wait_for_runtime(
+            client, run_id, lambda: _consumer_groups(
+                DomainPipelineOrchestrator("development", run_id).plan().consumer_groups
+            ), expected_sinks=flink_submission.EXPECTED_SINKS,
+        )
+        result = {
+            "environment": "development", "project": PROJECT,
+            "run_id": run_id, "pause_id": pause_id, "resumed": True,
+            "savepoint_location": expected_location,
+            "resume_mode": "reconciled" if current else "restored",
+            "flink": verified,
+        }
+        _write_private_json(evidence / "resume.json", result)
+        return result
+    except Exception as error:
+        if submitted_job_id:
+            try:
+                client.cancel(submitted_job_id)
+            except Exception:
+                pass
+        _write_private_json(evidence / f"resume-failure-{time.time_ns()}.json", {
+            "environment": "development", "project": PROJECT,
+            "run_id": run_id, "pause_id": pause_id,
+            "phase": phase, "error_code": safe_control_failure_detail(error),
+        })
+        if phase == "savepoint_restore":
+            raise ValueError("Dev resume savepoint restore failed") from None
+        if phase in {"eventbus_start", "pipeline_start", "flink_start"}:
+            raise ValueError("Dev resume service start failed") from None
+        raise ValueError("Dev resume runtime validation failed") from None
 
 
 def _consumer_groups(expected_groups: list[str]) -> list[str]:
@@ -497,10 +843,24 @@ def apply():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("measure", "apply"))
+    parser.add_argument("mode", choices=("measure", "apply", "pause", "resume"))
+    parser.add_argument("run_id", nargs="?")
+    parser.add_argument("pause_id", nargs="?")
     args = parser.parse_args()
     try:
-        print(json.dumps(apply() if args.mode == "apply" else measure()))
+        if args.mode in {"measure", "apply"} and (args.run_id or args.pause_id):
+            raise ValueError("invalid Dev control arguments")
+        if args.mode in {"pause", "resume"} and (not args.run_id or not args.pause_id):
+            raise ValueError("invalid Dev control arguments")
+        if args.mode == "apply":
+            result = apply()
+        elif args.mode == "measure":
+            result = measure()
+        elif args.mode == "pause":
+            result = pause(args.run_id, args.pause_id)
+        else:
+            result = resume(args.run_id, args.pause_id)
+        print(json.dumps(result, sort_keys=True))
     except Exception as error:
         print(json.dumps({
             "error": "dev_control_failed",

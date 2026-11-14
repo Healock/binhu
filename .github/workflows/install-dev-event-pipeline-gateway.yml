@@ -40,16 +40,18 @@ jobs:
           printf '%s\n' "$DEV_KNOWN_HOSTS" > "$RUNNER_TEMP/dev-ssh/known_hosts"
           printf '%s\n' "$DEV_PUBLIC_KEY" > "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub"
           chmod 600 "$RUNNER_TEMP/dev-ssh/key" "$RUNNER_TEMP/dev-ssh/known_hosts" "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub"
+          git ls-files -z -- deploy/environments/event_pipeline | tar --null -T - -czf "$RUNNER_TEMP/dev-ssh/event-pipeline-source.tar.gz"
           scp -P "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" \
             deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway \
             deploy/environments/event_pipeline/binhu-dev-event-pipeline-gateway.py \
             deploy/environments/event_pipeline/observation_control.py \
             deploy/environments/event_pipeline/dev_image_source_diagnostic.py \
             deploy/environments/event_pipeline/install-dev-gateway.sh \
+            "$RUNNER_TEMP/dev-ssh/event-pipeline-source.tar.gz" \
             "$RUNNER_TEMP/dev-ssh/dev-deploy-key.pub" \
             "root@$DEV_HOST:/tmp/"
           ssh -p "$DEV_PORT" -i "$RUNNER_TEMP/dev-ssh/key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/dev-ssh/known_hosts" "root@$DEV_HOST" \
-            "cd /tmp && ./install-dev-gateway.sh /tmp/dev-deploy-key.pub"
+            "cd /tmp && ./install-dev-gateway.sh /tmp/dev-deploy-key.pub /tmp/event-pipeline-source.tar.gz"
       - name: Record fixed Dev eventbus image identities
         if: inputs.action == 'install'
         shell: bash

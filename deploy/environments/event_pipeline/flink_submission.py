@@ -13,6 +13,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
+from urllib.parse import urlsplit
 
 from .identity import DEV_RUN_RE, STAGING_RUN_RE, environment_for_run_id
 from .domain_pipeline import DomainPipelineOrchestrator
@@ -32,6 +33,8 @@ REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_tim
 # shorter HTTP request timeout.  This covers the observed Flink 1.20 staging
 # startup path while still leaving a finite bound for an actually lost job.
 SUBMISSION_RECONCILIATION_TIMEOUT = 120.0
+SAVEPOINT_ROOT = "/opt/flink/checkpoints/savepoints"
+SAVEPOINT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{3,63}$")
 
 
 class FlinkRestError(ValueError):
@@ -59,6 +62,29 @@ class FlinkRuntimeValidationError(ValueError):
 
     def diagnostic(self) -> dict[str, Any]:
         return {"stage": self.stage, "error_code": str(self)}
+
+
+def savepoint_target(run_id: str, pause_id: str) -> str:
+    """Return the only savepoint namespace accepted by the Dev controller."""
+    environment_for_run_id(run_id)
+    if not run_id.startswith("dev-"):
+        raise ValueError("development savepoint run required")
+    if not SAVEPOINT_ID_RE.fullmatch(pause_id or ""):
+        raise ValueError("invalid Dev pause id")
+    return f"file://{SAVEPOINT_ROOT}/{run_id}/{pause_id}"
+
+
+def validate_savepoint_location(run_id: str, pause_id: str, value: object) -> str:
+    expected = savepoint_target(run_id, pause_id)
+    if not isinstance(value, str):
+        raise FlinkRuntimeValidationError("Flink savepoint location mismatch", "savepoint_location")
+    parsed = urlsplit(value)
+    expected_path = expected.removeprefix("file://")
+    if (parsed.scheme != "file" or parsed.netloc
+            or not parsed.path.startswith(expected_path + "/savepoint-")
+            or not re.fullmatch(r"/opt/flink/checkpoints/savepoints/[^/]+/[^/]+/savepoint-[A-Za-z0-9_-]+", parsed.path)):
+        raise FlinkRuntimeValidationError("Flink savepoint location mismatch", "savepoint_location")
+    return "file://" + parsed.path
 
 
 def _one(pattern: str, text: str, label: str) -> str:
@@ -304,7 +330,11 @@ class FlinkRest:
 
     def upload_jar(self, container_path: str) -> str:
         """Upload the JAR compiled from the current candidate source."""
-        if container_path not in {"/tmp/dev-pipeline-job.jar", "/opt/flink/private/pipeline-job.jar"}:
+        if container_path not in {
+            "/tmp/dev-pipeline-job.jar",
+            "/opt/flink/private/pipeline-job.jar",
+            "/opt/flink/usrlib/dev-pipeline-job.jar",
+        }:
             raise ValueError("unexpected Dev Flink JAR path")
         command = ["docker", "exec", self.container, "curl", "-sS", "--max-time", "30",
                    "-w", "\n__BINHU_HTTP_STATUS__:%{http_code}", "-X", "POST",
@@ -335,13 +365,26 @@ class FlinkRest:
             raise ValueError("Flink JAR upload was not accepted")
         return filename.rsplit("/", 1)[-1]
 
-    def run_jar(self, jar_id: str, expected_run_id: str) -> str:
+    def run_jar(self, jar_id: str, expected_run_id: str, *, savepoint_path: str | None = None) -> str:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+\.jar", jar_id or ""):
             raise ValueError("invalid Dev Flink JAR id")
         environment_for_run_id(expected_run_id)
+        payload: dict[str, Any] = {
+            "parallelism": 1,
+            "entryClass": "PipelineJob",
+            "programArgsList": [expected_run_id],
+        }
+        if savepoint_path is not None:
+            match = re.fullmatch(
+                rf"file://{re.escape(SAVEPOINT_ROOT)}/{re.escape(expected_run_id)}/([^/]+)/savepoint-[A-Za-z0-9_-]+",
+                savepoint_path,
+            )
+            if not match or not SAVEPOINT_ID_RE.fullmatch(match.group(1)):
+                raise ValueError("invalid Dev savepoint path")
+            payload["savepointPath"] = savepoint_path
+            payload["allowNonRestoredState"] = False
         response = self.request("/jars/" + jar_id + "/run", method="POST",
-                                payload={"parallelism": 1, "entryClass": "PipelineJob",
-                                         "programArgsList": [expected_run_id]})
+                                payload=payload)
         jid = str(response.get("jobid", ""))
         if not re.fullmatch(r"[0-9a-f]{32}", jid):
             raise ValueError("Flink JAR submission returned no job id")
@@ -354,6 +397,26 @@ class FlinkRest:
 
     def cancel(self, jid: str) -> None:
         self.request("/jobs/" + jid, method="PATCH")
+
+    def trigger_savepoint(self, jid: str, target_directory: str) -> str:
+        """Trigger a savepoint without cancelling the running job."""
+        if not re.fullmatch(r"file:///opt/flink/checkpoints/savepoints/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+", target_directory):
+            raise ValueError("invalid Dev savepoint target")
+        response = self.request(
+            "/jobs/" + jid + "/savepoints", method="POST",
+            payload={"target-directory": target_directory, "cancel-job": False},
+        )
+        trigger_id = str(response.get("request-id", ""))
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", trigger_id):
+            raise ValueError("Flink savepoint trigger id missing")
+        return trigger_id
+
+    def savepoint_status(self, jid: str, trigger_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[0-9a-f]{32}", jid or "") and not re.fullmatch(r"jid-[A-Za-z0-9_-]+", jid or ""):
+            raise ValueError("invalid Flink job id")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", trigger_id or ""):
+            raise ValueError("invalid Flink savepoint trigger id")
+        return dict(self.request("/jobs/" + jid + "/savepoints/" + trigger_id))
 
 
 def submit_jar_or_reconcile(
@@ -450,6 +513,41 @@ def wait_for_runtime(
     if last_transient is not None:
         raise last_transient
     raise FlinkRuntimeValidationError("Flink jobs not ready", "job_discovery")
+
+
+def wait_for_savepoint(
+    client: FlinkRest, jid: str, trigger_id: str, expected_location: str,
+    timeout: float = 180.0,
+) -> dict[str, str]:
+    """Wait for a completed savepoint and fence its location to the Dev volume."""
+    deadline = time.monotonic() + timeout
+    last_status = ""
+    while time.monotonic() < deadline:
+        payload = client.savepoint_status(jid, trigger_id)
+        status = payload.get("status")
+        status_id = status.get("id") if isinstance(status, dict) else status
+        last_status = str(status_id or "")
+        if last_status == "COMPLETED":
+            operation = payload.get("operation") or {}
+            parsed = urlsplit(expected_location)
+            run_id, pause_id = parsed.path.split("/")[-2:]
+            location = validate_savepoint_location(run_id, pause_id, operation.get("location"))
+            return {"trigger_id": trigger_id, "status": last_status, "location": location}
+        if last_status in {"FAILED", "CANCELED"}:
+            raise FlinkRuntimeValidationError("Flink savepoint did not complete", "savepoint")
+        time.sleep(2)
+    raise FlinkRuntimeValidationError("Flink savepoint timed out", "savepoint")
+
+
+def wait_for_job_absent(client: FlinkRest, expected_run_id: str, timeout: float = 90.0) -> None:
+    """Wait until the fixed Dev JobGraph has stopped before stopping its containers."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current, _ = partition_active_jobs(client.overview(), expected_run_id)
+        if not current:
+            return
+        time.sleep(1)
+    raise FlinkRuntimeValidationError("Flink job did not stop", "job_stop")
 
 
 def wait_for_stale_clear(client: FlinkRest, expected_run_id: str, timeout: float = 60.0) -> None:

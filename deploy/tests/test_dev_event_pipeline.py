@@ -64,6 +64,86 @@ def event():
 
 
 class FlinkStateContractTests(unittest.TestCase):
+    def test_dev_savepoint_target_is_run_scoped_and_restore_rejects_foreign_path(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        pause_id = "dev-pause-20261114-memory01"
+        expected = (
+            "file:///opt/flink/checkpoints/savepoints/"
+            "dev-20261114-taskreadmodel10/dev-pause-20261114-memory01"
+        )
+        self.assertEqual(control.flink_submission.savepoint_target(run_id, pause_id), expected)
+        completed = expected + "/savepoint-abc123"
+        self.assertEqual(
+            control.flink_submission.validate_savepoint_location(run_id, pause_id, completed),
+            completed,
+        )
+        with self.assertRaises(ValueError):
+            control.flink_submission.savepoint_target("STG-20261114-01", pause_id)
+        with self.assertRaises(ValueError):
+            control.flink_submission.savepoint_target(run_id, "../other")
+
+    def test_flink_restore_request_is_bound_to_the_exact_dev_run_and_savepoint(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        location = control.flink_submission.savepoint_target(
+            run_id, "dev-pause-20261114-memory01",
+        ) + "/savepoint-abc123"
+        requests = []
+
+        def runner(command, **kwargs):
+            requests.append(command)
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"jobid":"' + "a" * 32 + '"}\n__BINHU_HTTP_STATUS__:200',
+            )
+
+        client = control.flink_submission.FlinkRest("fixed-dev-jobmanager", runner=runner)
+        self.assertEqual(
+            client.run_jar("candidate.jar", run_id, savepoint_path=location),
+            "a" * 32,
+        )
+        payload = json.loads(requests[0][requests[0].index("--data-binary") + 1])
+        self.assertEqual(payload["programArgsList"], [run_id])
+        self.assertEqual(payload["savepointPath"], location)
+        self.assertIs(payload["allowNonRestoredState"], False)
+        with self.assertRaises(ValueError):
+            client.run_jar("candidate.jar", run_id, savepoint_path="file:///tmp/foreign")
+
+    def test_dev_pause_compose_actions_are_fixed_to_registered_projects(self):
+        self.assertEqual(
+            set(control.PIPELINE_WORKER_SERVICES),
+            {"relay", "bridge", "business-bridge", "backend-outbox-relay",
+             "python-metadata-worker", "dual-track-monitor"},
+        )
+        with patch.object(control.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+            control._compose_action(
+                control.FLINK_COMPOSE, "stop", ("taskmanager", "jobmanager"),
+            )
+        self.assertIn("taskmanager", run.call_args.args[0])
+        with self.assertRaisesRegex(ValueError, "Dev pause service stop failed"):
+            control._compose_action(control.FLINK_COMPOSE, "stop", ("backend",))
+        with self.assertRaisesRegex(ValueError, "Dev pause service stop failed"):
+            control._compose_action(Path("/etc/anything.yml"), "stop", ("mysql",))
+
+    def test_pause_evidence_binds_completed_savepoint_to_same_dev_run(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        pause_id = "dev-pause-20261114-memory01"
+        location = control.flink_submission.savepoint_target(run_id, pause_id) + "/savepoint-abc123"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pause-evidence"
+            evidence = root / pause_id
+            evidence.mkdir(parents=True)
+            payload = {
+                "accepted": True, "environment": "development",
+                "project": control.PROJECT, "run_id": run_id,
+                "pause_id": pause_id, "savepoint": {"location": location},
+            }
+            (evidence / "pause.json").write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(control, "PAUSE_EVIDENCE_ROOT", root):
+                _, loaded = control._load_pause_evidence(pause_id, run_id)
+                with self.assertRaisesRegex(ValueError, "Dev pause evidence identity mismatch"):
+                    control._load_pause_evidence(pause_id, "dev-20261114-other999")
+        self.assertEqual(loaded["savepoint"]["location"], location)
+
     def test_dev_image_source_diagnostic_redacts_to_fixed_identity(self):
         payload = {
             "Image": "sha256:" + "a" * 64,
