@@ -108,6 +108,7 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Dev pause evidence identity mismatch",
         "Dev pause savepoint path mismatch",
         "Dev pause requires one running Flink job",
+        "Dev pause found conflicting Flink jobs",
         "Dev pause service stop failed",
         "Dev pause savepoint failed",
         "Dev pause job did not stop",
@@ -327,18 +328,26 @@ def _manifest() -> dict:
     return value
 
 
-def _active_flink_job(run_id: str) -> tuple[flink_submission.FlinkRest, str]:
+def _active_flink_job(run_id: str) -> tuple[flink_submission.FlinkRest, str | None]:
     client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
     overview = flink_submission.wait_for_rest(client)
-    current, _ = flink_submission.partition_active_jobs(overview, run_id)
+    terminal_states = {"CANCELED", "FAILED", "FINISHED"}
+    current = [job for job in overview if job.get("name") == run_id]
+    active_current = [job for job in current if job.get("state") not in terminal_states]
     other_active = [
         job for job in overview
-        if job.get("state") in {"RUNNING", "RESTARTING"}
+        if job.get("state") not in terminal_states
         and job.get("name") != run_id
     ]
-    if other_active or len(current) != 1 or current[0].get("state") != "RUNNING":
+    if other_active or len(active_current) > 1:
+        raise ValueError("Dev pause found conflicting Flink jobs")
+    if not active_current:
+        return client, None
+    if len(current) != 1 or active_current[0].get("state") != "RUNNING":
         raise ValueError("Dev pause requires one running Flink job")
-    job_id = str(current[0].get("jid", ""))
+    job_id = str(active_current[0].get("jid", ""))
+    if not job_id:
+        raise ValueError("Dev pause requires one running Flink job")
     details = client.details(job_id)
     try:
         flink_submission.validate_job_graph(details, run_id, flink_submission.EXPECTED_SINKS)
@@ -418,11 +427,21 @@ def _load_pause_evidence(pause_id: str, run_id: str) -> tuple[Path, dict]:
         or payload.get("pause_id") != pause_id
     ):
         raise ValueError("Dev pause evidence identity mismatch")
-    location = payload.get("savepoint", {}).get("location")
-    try:
-        flink_submission.validate_savepoint_location(run_id, pause_id, location)
-    except ValueError as exc:
-        raise ValueError("Dev pause savepoint path mismatch") from exc
+    # Pause evidence created before recovery_mode was introduced always required
+    # a savepoint; keep those records resumable with their original contract.
+    recovery_mode = payload.get("recovery_mode", "savepoint")
+    if recovery_mode == "savepoint":
+        savepoint = payload.get("savepoint")
+        location = savepoint.get("location") if isinstance(savepoint, dict) else None
+        try:
+            flink_submission.validate_savepoint_location(run_id, pause_id, location)
+        except ValueError as exc:
+            raise ValueError("Dev pause savepoint path mismatch") from exc
+    elif recovery_mode == "kafka_offsets":
+        if payload.get("savepoint") is not None or payload.get("job_id") is not None:
+            raise ValueError("Dev pause evidence identity mismatch")
+    else:
+        raise ValueError("Dev pause evidence identity mismatch")
     return path, payload
 
 
@@ -456,24 +475,28 @@ def pause(run_id: str, pause_id: str) -> dict:
         if not checkpoint_report.get("ownership_verified"):
             raise ValueError("Dev pause runtime state mismatch")
         client, job_id = _active_flink_job(run_id)
-        location = flink_submission.savepoint_target(run_id, pause_id)
+        recovery_mode = "savepoint" if job_id else "kafka_offsets"
+        location = flink_submission.savepoint_target(run_id, pause_id) if job_id else None
         _write_private_json(evidence / "started.json", {
             "environment": "development", "project": PROJECT,
             "run_id": run_id, "pause_id": pause_id,
-            "phase": "savepoint", "job_id": job_id,
+            "phase": "savepoint" if job_id else "no_active_job",
+            "job_id": job_id,
         })
 
         phase = "worker_stop"
         workers_stopped = True
         _compose_action(ROOT / "compose.json", "stop", PIPELINE_WORKER_SERVICES)
 
-        phase = "savepoint"
-        trigger_id = client.trigger_savepoint(job_id, location)
-        savepoint = flink_submission.wait_for_savepoint(client, job_id, trigger_id, location)
+        savepoint = None
+        if job_id:
+            phase = "savepoint"
+            trigger_id = client.trigger_savepoint(job_id, location)
+            savepoint = flink_submission.wait_for_savepoint(client, job_id, trigger_id, location)
 
-        phase = "job_stop"
-        client.cancel(job_id)
-        flink_submission.wait_for_job_absent(client, run_id)
+            phase = "job_stop"
+            client.cancel(job_id)
+            flink_submission.wait_for_job_absent(client, run_id)
 
         phase = "flink_stop"
         _compose_action(FLINK_COMPOSE, "stop", FLINK_SERVICES)
@@ -486,6 +509,7 @@ def pause(run_id: str, pause_id: str) -> dict:
             "environment": "development", "project": PROJECT,
             "run_id": run_id, "pause_id": pause_id, "accepted": True,
             "job_id": job_id, "savepoint": savepoint,
+            "recovery_mode": recovery_mode,
             "stopped_services": {
                 "pipeline_workers": list(PIPELINE_WORKER_SERVICES),
                 "pipeline_data": list(PIPELINE_DATA_SERVICES),
@@ -519,14 +543,17 @@ def pause(run_id: str, pause_id: str) -> dict:
 
 
 def resume(run_id: str, pause_id: str) -> dict:
-    """Restart the retained Dev resources and restore the same Flink savepoint."""
+    """Restart retained Dev resources using the recorded savepoint or Kafka offsets."""
     if environment_for_run_id(run_id) != "development":
         raise ValueError("Dev resume requires a paused run")
     manifest = _manifest()
     if manifest.get("run_id") != run_id:
         raise ValueError("Dev resume requires a paused run")
     _, pause_record = _load_pause_evidence(pause_id, run_id)
-    expected_location = pause_record["savepoint"]["location"]
+    recovery_mode = pause_record.get("recovery_mode", "savepoint")
+    expected_location = (
+        pause_record["savepoint"]["location"] if recovery_mode == "savepoint" else None
+    )
     phase = "preflight"
     submitted_job_id: str | None = None
     evidence = PAUSE_EVIDENCE_ROOT / pause_id
@@ -550,7 +577,7 @@ def resume(run_id: str, pause_id: str) -> dict:
             raise ValueError("Dev resume savepoint restore failed")
         client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
         flink_submission.wait_for_rest(client)
-        phase = "savepoint_restore"
+        phase = "savepoint_restore" if expected_location else "job_start"
         overview = client.overview()
         current, _ = flink_submission.partition_active_jobs(overview, run_id)
         other_active = [
@@ -562,7 +589,12 @@ def resume(run_id: str, pause_id: str) -> dict:
             raise ValueError("Dev resume runtime validation failed")
         if not current:
             jar_id = client.upload_jar("/opt/flink/usrlib/dev-pipeline-job.jar")
-            submitted_job_id = client.run_jar(jar_id, run_id, savepoint_path=expected_location)
+            if expected_location:
+                submitted_job_id = client.run_jar(
+                    jar_id, run_id, savepoint_path=expected_location,
+                )
+            else:
+                submitted_job_id = client.run_jar(jar_id, run_id)
         verified = flink_submission.wait_for_runtime(
             client, run_id, lambda: _consumer_groups(
                 DomainPipelineOrchestrator("development", run_id).plan().consumer_groups
@@ -572,7 +604,12 @@ def resume(run_id: str, pause_id: str) -> dict:
             "environment": "development", "project": PROJECT,
             "run_id": run_id, "pause_id": pause_id, "resumed": True,
             "savepoint_location": expected_location,
-            "resume_mode": "reconciled" if current else "restored",
+            "recovery_mode": recovery_mode,
+            "resume_mode": (
+                "reconciled" if current else
+                "restored" if expected_location else
+                "restarted_from_kafka_offsets"
+            ),
             "flink": verified,
         }
         _write_private_json(evidence / "resume.json", result)

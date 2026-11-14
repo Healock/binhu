@@ -9,7 +9,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from deploy.environments.event_pipeline.runtime import (
     configuration,
@@ -64,6 +64,102 @@ def event():
 
 
 class FlinkStateContractTests(unittest.TestCase):
+    def test_dev_pause_allows_current_run_without_an_active_flink_job(self):
+        client = SimpleNamespace()
+        with patch.object(control.flink_submission, "FlinkRest", return_value=client), \
+             patch.object(control.flink_submission, "wait_for_rest", return_value=[]):
+            resolved_client, job_id = control._active_flink_job("dev-20261114-taskreadmodel10")
+
+        self.assertIs(resolved_client, client)
+        self.assertIsNone(job_id)
+
+    def test_dev_pause_rejects_another_active_flink_job_without_stopping_it(self):
+        client = SimpleNamespace()
+        jobs = [{"name": "dev-20261114-other999", "state": "CANCELLING", "jid": "foreign"}]
+        with patch.object(control.flink_submission, "FlinkRest", return_value=client), \
+             patch.object(control.flink_submission, "wait_for_rest", return_value=jobs):
+            with self.assertRaisesRegex(ValueError, "Dev pause found conflicting Flink jobs"):
+                control._active_flink_job("dev-20261114-taskreadmodel10")
+
+    def test_dev_pause_evidence_accepts_kafka_offset_recovery(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        pause_id = "dev-pause-20261114-memory02"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pause-evidence"
+            evidence = root / pause_id
+            evidence.mkdir(parents=True)
+            payload = {
+                "accepted": True, "environment": "development",
+                "project": control.PROJECT, "run_id": run_id,
+                "pause_id": pause_id, "recovery_mode": "kafka_offsets",
+                "job_id": None, "savepoint": None,
+            }
+            (evidence / "pause.json").write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(control, "PAUSE_EVIDENCE_ROOT", root):
+                _, loaded = control._load_pause_evidence(pause_id, run_id)
+
+        self.assertEqual(loaded["recovery_mode"], "kafka_offsets")
+
+    def test_dev_pause_without_job_stops_fixed_services_and_records_no_savepoint(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        pause_id = "dev-pause-20261114-memory03"
+        client = SimpleNamespace(trigger_savepoint=Mock(), cancel=Mock())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pause-evidence"
+            with patch.object(control, "PAUSE_EVIDENCE_ROOT", root), \
+                 patch.object(control, "measure", return_value={"run_id": run_id}), \
+                 patch.object(control, "_manifest", return_value={"run_id": run_id}), \
+                 patch.object(control.checkpoint, "measure", return_value={"ownership_verified": True}), \
+                 patch.object(control, "_active_flink_job", return_value=(client, None)), \
+                 patch.object(control, "_compose_action") as compose_action, \
+                 patch.object(control, "_verify_retained_volumes"):
+                result = control.pause(run_id, pause_id)
+
+            self.assertEqual(result["recovery_mode"], "kafka_offsets")
+            self.assertIsNone(result["savepoint"])
+            self.assertIsNone(result["job_id"])
+            self.assertEqual(compose_action.call_count, 4)
+            client.trigger_savepoint.assert_not_called()
+            client.cancel.assert_not_called()
+            saved = json.loads((root / pause_id / "pause.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["recovery_mode"], "kafka_offsets")
+
+    def test_dev_resume_without_savepoint_reuses_kafka_offsets(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        pause_id = "dev-pause-20261114-memory04"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pause-evidence"
+            evidence = root / pause_id
+            evidence.mkdir(parents=True)
+            client = SimpleNamespace(
+                overview=Mock(return_value=[]),
+                upload_jar=Mock(return_value="jar-id"),
+                run_jar=Mock(return_value="job-id"),
+            )
+            pause_record = {
+                "recovery_mode": "kafka_offsets", "savepoint": None,
+                "job_id": None,
+            }
+            with patch.object(control, "PAUSE_EVIDENCE_ROOT", root), \
+                 patch.object(control, "measure", return_value={"run_id": run_id}), \
+                 patch.object(control, "_manifest", return_value={"run_id": run_id}), \
+                 patch.object(control, "_load_pause_evidence", return_value=(evidence / "pause.json", pause_record)), \
+                 patch.object(control, "_validate_flink_compose"), \
+                 patch.object(control, "_validate_flink_sql"), \
+                 patch.object(control.kafka_compose, "measure"), \
+                 patch.object(control, "_verify_checkpoint_volume_exists"), \
+                 patch.object(control, "_compose_action"), \
+                 patch.object(control, "_wait_dev_kafka_ready"), \
+                 patch.object(control.checkpoint, "measure", return_value={"ownership_verified": True}), \
+                 patch.object(control.flink_submission, "FlinkRest", return_value=client), \
+                 patch.object(control.flink_submission, "wait_for_rest"), \
+                 patch.object(control.flink_submission, "wait_for_runtime", return_value={"run_id": run_id}):
+                result = control.resume(run_id, pause_id)
+
+        client.run_jar.assert_called_once_with("jar-id", run_id)
+        self.assertEqual(result["recovery_mode"], "kafka_offsets")
+        self.assertEqual(result["resume_mode"], "restarted_from_kafka_offsets")
+
     def test_dev_savepoint_target_is_run_scoped_and_restore_rejects_foreign_path(self):
         run_id = "dev-20261114-taskreadmodel10"
         pause_id = "dev-pause-20261114-memory01"

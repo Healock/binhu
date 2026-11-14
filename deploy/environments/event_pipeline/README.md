@@ -364,18 +364,22 @@ Staging 或生产灰度补充。checkpoint/savepoint 兼容恢复、完整第 6�
 固定形如 `dev-pause-YYYYMMDD-...`，每次暂停必须唯一。入口只接受 `current.json` 中当前
 Development run，并把证据写到私有 `pause-evidence/<pause-id>` 目录。
 
-暂停控制器先校验当前运行和 Flink checkpoint 卷，再停止该 Dev run 的 relay、bridge、
-outbox relay、元数据 worker 与 monitor；随后为唯一匹配的 Flink JobGraph 触发 savepoint，
-确认 savepoint 路径固定在 `binhu-development_flink-checkpoints` 对应的挂载目录后，取消
-该 JobGraph，并依次停止 Dev Flink、Dev Kafka/Schema Registry、Dev 派生 MySQL/Redis。
+暂停控制器先校验当前运行和 Flink checkpoint 卷，并确认没有其他 Flink 作业正在运行，
+再停止该 Dev run 的 relay、bridge、outbox relay、元数据 worker 与 monitor。若当前 run 有
+唯一的 RUNNING JobGraph，就触发并校验位于 `binhu-development_flink-checkpoints` 对应挂载目录
+中的 savepoint，再取消该作业；若当前没有活动作业，则记录 `recovery_mode=kafka_offsets`，
+不伪造 savepoint。随后依次停止 Dev Flink、Dev Kafka/Schema Registry、Dev 派生 MySQL/Redis。
 Development API、Staging 和 Production 不在停止清单中。过程只执行 Compose `stop`，不执行
 `down`，不删除或重建命名卷、网络、candidate、Kafka 数据、checkpoint 或证据。
 
-恢复必须提供完全相同的 run ID 与 pause ID。控制器先确认保存点证据与固定卷仍存在，然后
-启动原有 Dev eventbus、pipeline 数据服务、worker 和 Flink；Flink 作业从精确保存点恢复，
-并再次验证 run ID、JobGraph sink/source、consumer group 和 Redis sink。恢复失败保留已启动
-资源与脱敏失败阶段，不能自动创建新运行、改用空状态或清理任何卷。暂停和恢复只改变资源
-运行状态，不把事件管道验收状态改成通过；恢复后仍须遵守原有验收流程。
+恢复必须提供完全相同的 run ID 与 pause ID。控制器先确认暂停证据与固定卷仍存在，然后启动
+原有 Dev eventbus、pipeline 数据服务、worker 和 Flink。`recovery_mode=savepoint` 时从精确
+savepoint 恢复；`recovery_mode=kafka_offsets` 时不传 savepoint，沿用同一 Kafka consumer group
+已提交的偏移继续消费；若该组没有已提交偏移，SQL 中的 `earliest-offset` 会从保留的最早事件
+开始读。Redis 与 Kafka 数据卷都会保留，派生 sink 以 revision/幂等规则处理重放。恢复后重新
+验证 run ID、JobGraph sink/source、consumer group 和 Redis sink。恢复失败保留已启动资源与脱敏
+失败阶段，不能自动创建新运行、改用空状态或清理任何卷。暂停和恢复只改变资源运行状态，不把
+事件管道验收状态改成通过；恢复后仍须遵守原有验收流程。
 
 ### Workflow environment contract
 All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.
