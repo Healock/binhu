@@ -270,7 +270,7 @@ services:
       OPS_AGENT_TOKEN: ${BINHU_OPS_AGENT_TOKEN:?Set BINHU_OPS_AGENT_TOKEN in .env}
       ENVIRONMENT_ACCOUNT_GATEWAY_URLS: ${ENVIRONMENT_ACCOUNT_GATEWAY_URLS:-}
       ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS: ${ENVIRONMENT_ACCOUNT_GATEWAY_TOKENS:-}
-      OPS_AGENT_CONTAINERS: backend=binhu-backend,mysql=binhu-mysql
+      OPS_AGENT_CONTAINERS: backend=binhu-backend,mysql=binhu-mysql,redis=binhu-redis,event-relay=binhu-event-relay
       DOCKER_SOCKET_PATH: /var/run/docker.sock
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

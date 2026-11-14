@@ -40,7 +40,7 @@ export interface AppNotification {
 
 // 超级管理员运维中心
 export interface OpsContainer {
-  source: 'backend' | 'mysql'
+  source: 'backend' | 'mysql' | 'redis' | 'event-relay'
   name: string
   image?: string
   status: string
@@ -107,6 +107,25 @@ export interface OpsOverview {
     connections?: number
     max_connections?: number
     error?: string
+  }
+  task_pipeline: {
+    environment: string
+    components: Array<{
+      id: string
+      label: string
+      status: 'healthy' | 'warning' | 'unavailable' | 'not_deployed' | 'disabled' | 'unknown'
+      summary: string
+      details?: Record<string, string | number | boolean | null>
+    }>
+    outbox: {
+      available: boolean
+      domains: Array<{
+        domain: string
+        statuses: Record<string, number>
+        pending: number
+        oldest_pending_seconds: number
+      }>
+    }
   }
   databases: OpsDatabase[]
   latest_sync: {

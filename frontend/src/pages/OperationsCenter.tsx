@@ -95,6 +95,10 @@ const STATUS_COLORS: Record<string, string> = {
   conflict: 'warning',
   unhealthy: 'error',
   unavailable: 'error',
+  warning: 'warning',
+  not_deployed: 'default',
+  disabled: 'default',
+  unknown: 'default',
   expired: 'default',
 }
 
@@ -112,6 +116,10 @@ const STATUS_LABELS: Record<string, string> = {
   healthy: '健康',
   unhealthy: '异常',
   unavailable: '不可用',
+  warning: '需关注',
+  not_deployed: '未部署',
+  disabled: '未启用',
+  unknown: '未知',
   manual: '手动',
   scheduled: '自动',
 }
@@ -335,6 +343,45 @@ function OverviewTab({
           </div>
         </Card>
       </div>
+
+      <Panel title="指令核查派生链路" description="显示当前环境实际组件状态、Outbox 聚合积压和读模型开关；未部署或未启用会明确标记">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {(data?.task_pipeline?.components || []).map(component => (
+            <div key={component.id} className="grid gap-2 rounded border border-slate-200 p-3 dark:border-slate-700">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-medium">{component.label}</span>
+                <StatusTag value={component.status} />
+              </div>
+              <div className="text-sm text-slate-600 dark:text-slate-300">{component.summary}</div>
+              {component.details && Object.keys(component.details).length > 0 && (
+                <div className="grid gap-1 text-xs text-slate-500">
+                  {component.details.container_status && <span>容器：{component.details.container_status}</span>}
+                  {typeof component.details.restart_count === 'number' && <span>重启次数：{component.details.restart_count}</span>}
+                  {typeof component.details.ping === 'boolean' && <span>Redis 连通：{component.details.ping ? '是' : '否'}</span>}
+                  {typeof component.details.enabled === 'boolean' && <span>读模型开关：{component.details.enabled ? '开启' : '关闭'}</span>}
+                  {component.details.error && <span>错误：{component.details.error}</span>}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 grid gap-2">
+          <div className="font-medium">Outbox 按业务域</div>
+          {!data?.task_pipeline?.outbox?.available ? (
+            <Alert type="warning" showIcon message="Outbox 统计不可用" />
+          ) : data.task_pipeline.outbox.domains.length === 0 ? (
+            <div className="text-sm text-slate-500">当前没有 Outbox 记录</div>
+          ) : data.task_pipeline.outbox.domains.map(item => (
+            <div key={item.domain} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-slate-100 py-2 text-sm dark:border-slate-800">
+              <span className="min-w-32 font-medium">{item.domain}</span>
+              <span>待发布 {item.pending}</span>
+              <span>近 24 小时已发布 {item.statuses.published || 0}</span>
+              <span>最久等待 {formatDuration(item.oldest_pending_seconds)}</span>
+              <span className="text-slate-500">死信 {item.statuses.dead_letter || 0} · 阻塞 {item.statuses.blocked || 0}</span>
+            </div>
+          ))}
+        </div>
+      </Panel>
 
       <Panel title="容器状态" description="内存按 Docker 口径显示工作内存，可回收文件缓存单独列出；只读显示，不提供重启或命令执行">
         <div className="grid gap-4 lg:grid-cols-2">

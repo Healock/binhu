@@ -1,6 +1,8 @@
 """Combined read-only health information for the operations center."""
 
+import asyncio
 import os
+import re
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -190,6 +192,149 @@ def build_daily_txdocs_usage(
     }
 
 
+def _container_component(containers: list[dict], source: str, label: str) -> dict:
+    container = next((item for item in containers if item.get("source") == source), None)
+    if not container:
+        return {"id": source, "label": label, "status": "unavailable", "summary": "容器状态无法读取"}
+    status = str(container.get("health") or container.get("status") or "unknown")
+    normalized = "healthy" if status in {"healthy", "running"} else "unavailable" if status in {"unavailable", "unknown"} else "warning"
+    details = {
+        "container_status": status,
+        "restart_count": int(container.get("restart_count") or 0),
+    }
+    if container.get("error"):
+        details["error"] = redact_text(str(container["error"]))[:120]
+    summary = "容器运行中" if normalized == "healthy" else "容器状态异常" if normalized == "warning" else "容器状态不可用"
+    return {"id": source, "label": label, "status": normalized, "summary": summary, "details": details}
+
+
+async def build_task_pipeline_snapshot(containers: list[dict], mysql_status: dict) -> dict:
+    """Collect safe, aggregate-only status for the Production task event path."""
+    environment = settings.APP_ENVIRONMENT
+    outbox = {"available": False, "domains": []}
+    outbox_status = "unavailable"
+    try:
+        domain_rows: dict[str, dict] = {}
+        missing_database = False
+        for database in ("online_data", "platform"):
+            try:
+                pool = db_manager.get_pool(database)
+            except ValueError:
+                missing_database = True
+                break
+            conn = await asyncio.wait_for(pool.acquire(), timeout=2)
+            try:
+                async with conn.cursor() as cur:
+                    await asyncio.wait_for(cur.execute(
+                        "SELECT domain, status, COUNT(*), "
+                        "COALESCE(MAX(CASE WHEN status IN ('pending','retry','publishing') "
+                        "THEN TIMESTAMPDIFF(SECOND, occurred_at, UTC_TIMESTAMP()) ELSE 0 END), 0) "
+                        "FROM _domain_event_outbox "
+                        "WHERE status IN ('pending','publishing','retry','blocked','dead_letter') "
+                        "OR (status='published' AND published_at >= UTC_TIMESTAMP() - INTERVAL 1 DAY) "
+                        "GROUP BY domain, status"
+                    ), timeout=3)
+                    rows = await asyncio.wait_for(cur.fetchall(), timeout=3)
+                for domain_value, status_value, count_value, oldest_value in rows:
+                    domain_value = str(domain_value or "")
+                    status = str(status_value or "")
+                    if status not in {
+                        "pending", "publishing", "published", "retry", "blocked", "dead_letter"
+                    }:
+                        continue
+                    domain = domain_value if re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", domain_value) else "other"
+                    domain_key = f"{database}:{domain}"
+                    item = domain_rows.setdefault(domain_key, {
+                        "domain": domain_key, "statuses": {}, "pending": 0,
+                        "oldest_pending_seconds": 0,
+                    })
+                    count = int(count_value or 0)
+                    item["statuses"][status] = item["statuses"].get(status, 0) + count
+                    if status in {"pending", "retry", "publishing"}:
+                        item["pending"] += count
+                        item["oldest_pending_seconds"] = max(
+                            item["oldest_pending_seconds"], int(oldest_value or 0)
+                        )
+            finally:
+                pool.release(conn)
+        if missing_database:
+            raise RuntimeError("required outbox database unavailable")
+        outbox = {"available": True, "domains": sorted(domain_rows.values(), key=lambda item: item["domain"])}
+        pending = sum(item["pending"] for item in outbox["domains"])
+        blocked = sum(
+            item["statuses"].get("blocked", 0) + item["statuses"].get("dead_letter", 0)
+            for item in outbox["domains"]
+        )
+        oldest = max((item["oldest_pending_seconds"] for item in outbox["domains"]), default=0)
+        outbox_status = "unavailable" if not mysql_status.get("connected") else (
+            "warning" if blocked or pending >= 500 or oldest >= 30 else "healthy"
+        )
+    except Exception:
+        pass
+
+    try:
+        import redis.asyncio as redis
+        client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            await asyncio.wait_for(client.ping(), timeout=2)
+            redis_reachable = True
+        finally:
+            await client.aclose()
+    except Exception:
+        redis_reachable = False
+
+    redis_component = _container_component(containers, "redis", "Redis")
+    redis_component["status"] = "healthy" if redis_reachable and redis_component["status"] == "healthy" else "unavailable"
+    redis_component["summary"] = "Redis 连通" if redis_component["status"] == "healthy" else "Redis 容器或连接不可用"
+    redis_component.setdefault("details", {})["ping"] = redis_reachable
+
+    relay = _container_component(containers, "event-relay", "实时事件中继 (Redis)")
+    relay_component = relay
+    relay_component["summary"] = "中继进程运行中" if relay["status"] == "healthy" else relay["summary"]
+
+    read_model_enabled = bool(settings.TASK_READ_MODEL_ENABLED)
+    pending_total = sum(item["pending"] for item in outbox["domains"])
+    oldest_pending = max((item["oldest_pending_seconds"] for item in outbox["domains"]), default=0)
+    blocked_total = sum(
+        item["statuses"].get("blocked", 0) + item["statuses"].get("dead_letter", 0)
+        for item in outbox["domains"]
+    )
+    outbox_component = {
+        "id": "outbox", "label": "事务 Outbox", "status": outbox_status,
+        "summary": "按业务域统计待发布事件" if outbox["available"] else "Outbox 状态无法读取",
+        "details": {
+            "pending": pending_total,
+            "blocked_or_dead_letter": blocked_total,
+            "oldest_pending_seconds": oldest_pending,
+        },
+    }
+    components = [
+        {
+            "id": "mysql-authority", "label": "MySQL 权威写入",
+            "status": "healthy" if mysql_status.get("connected") else "unavailable",
+            "summary": "业务事务与 Outbox 权威存储",
+        },
+        outbox_component,
+        redis_component,
+        relay_component,
+        {
+            "id": "kafka", "label": "Kafka", "status": "not_deployed",
+            "summary": "当前 Production 未部署 Kafka",
+        },
+        {
+            "id": "flink", "label": "Flink", "status": "not_deployed",
+            "summary": "当前 Production 未部署 Flink",
+        },
+        {
+            "id": "task-read-model", "label": "指令核查 Redis 读模型",
+            "status": "unknown" if read_model_enabled else "disabled",
+            "summary": "配置已启用，但本面板未验证读模型水位" if read_model_enabled else "Production 配置关闭，MySQL 仍是页面读取路径",
+            "details": {"enabled": read_model_enabled},
+        },
+    ]
+    return {"environment": environment, "components": components, "outbox": outbox}
+
+
 async def build_operations_overview() -> dict:
     try:
         container_data = await get_container_overview()
@@ -342,12 +487,14 @@ async def build_operations_overview() -> dict:
             }
         )
 
+    task_pipeline = await build_task_pipeline_snapshot(containers, mysql_status)
     return {
         "server_time": iso(server_time),
         "containers": containers,
         "container_error": container_error,
         "disk": disk,
         "mysql": mysql_status,
+        "task_pipeline": task_pipeline,
         "databases": databases,
         "latest_sync": {
             "id": sync_row[0],
