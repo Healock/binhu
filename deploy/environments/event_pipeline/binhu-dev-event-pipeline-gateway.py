@@ -30,6 +30,8 @@ ALLOWED_SCALES = frozenset({1002, 10_000, 100_000})
 ACCEPT_TIMEOUTS = {1002: 420, 10_000: 3720, 100_000: 21_720}
 OBSERVATION = Path("/usr/local/libexec/binhu-dev-event-pipeline-observation.py")
 OBSERVATION_RE = re.compile(r"^obs-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
+CONTROL_SOURCE = Path("/usr/local/libexec/binhu-dev-event-pipeline-source/deploy/environments")
+PAUSE_ID_RE = re.compile(r"^dev-pause-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
 
 
 def fail(message: str) -> None:
@@ -329,6 +331,82 @@ def stop(run_id: str) -> None:
                       "run_id": run_id, "stopped": stopped}, sort_keys=True))
 
 
+def _current_run(run_id: str, *, paused: bool) -> tuple[Path, dict]:
+    if not RUN_RE.fullmatch(run_id or ""):
+        fail("invalid Dev run id")
+    path = STATE / "current.json"
+    if not path.is_file() or path.is_symlink():
+        fail("current Dev run missing")
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        fail("current Dev run state invalid")
+    if (current.get("environment") != "development" or current.get("project") != PROJECT
+            or current.get("run_id") != run_id or current.get("started") is not True
+            or current.get("paused", False) is not paused):
+        fail("current Dev run state mismatch")
+    return path, current
+
+
+def _run_fixed_control(action: str, run_id: str, pause_id: str) -> dict:
+    if action not in {"pause", "resume"} or not PAUSE_ID_RE.fullmatch(pause_id or ""):
+        fail("invalid Dev pause identity")
+    if not CONTROL_SOURCE.is_dir() or CONTROL_SOURCE.is_symlink():
+        fail("installed Dev control source missing")
+    environment = os.environ.copy()
+    environment.update({
+        "PYTHONPATH": str(CONTROL_SOURCE),
+        "DEV_RUN_ID": run_id,
+        "APP_ENVIRONMENT": "development",
+    })
+    result = subprocess.run(
+        [sys.executable, "-m", "event_pipeline.control", action, run_id, pause_id],
+        env=environment, capture_output=True, text=True, timeout=900,
+    )
+    if result.returncode:
+        fail(f"Dev pipeline {action} failed; inspect fixed private evidence")
+    try:
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        fail(f"Dev pipeline {action} evidence invalid")
+    if payload.get("environment") != "development" or payload.get("run_id") != run_id:
+        fail(f"Dev pipeline {action} identity mismatch")
+    return payload
+
+
+def pause_pipeline(run_id: str, pause_id: str) -> None:
+    path, current = _current_run(run_id, paused=False)
+    if not PAUSE_ID_RE.fullmatch(pause_id or ""):
+        fail("invalid Dev pause identity")
+    result = _run_fixed_control("pause", run_id, pause_id)
+    current.update({"paused": True, "pause_id": pause_id,
+                    "pause_evidence": result.get("pause_id")})
+    temporary = path.with_suffix(".pending")
+    temporary.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+    print(json.dumps({"environment": "development", "project": PROJECT,
+                      "run_id": run_id, "pause_id": pause_id,
+                      "paused": True, "retained_volumes": len(result.get("retained_volumes", []))}))
+
+
+def resume_pipeline(run_id: str, pause_id: str) -> None:
+    path, current = _current_run(run_id, paused=True)
+    if current.get("pause_id") != pause_id or not PAUSE_ID_RE.fullmatch(pause_id or ""):
+        fail("Dev pause identity mismatch")
+    result = _run_fixed_control("resume", run_id, pause_id)
+    current.update({"paused": False, "last_resumed_pause_id": pause_id})
+    current.pop("pause_id", None)
+    current.pop("pause_evidence", None)
+    temporary = path.with_suffix(".pending")
+    temporary.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+    print(json.dumps({"environment": "development", "project": PROJECT,
+                      "run_id": run_id, "pause_id": pause_id,
+                      "resumed": True, "flink_job_count": result.get("flink", {}).get("job_count")}))
+
+
 def observe(action: str, run_id: str, observation_id: str) -> None:
     if action not in {"start", "status"} or not RUN_RE.fullmatch(run_id or "") or not OBSERVATION_RE.fullmatch(observation_id or ""):
         fail("invalid Dev observation command")
@@ -356,6 +434,8 @@ def main() -> None:
         accept(sys.argv[2], sys.argv[3])
     elif action == "stop" and len(sys.argv) == 3:
         stop(sys.argv[2])
+    elif action in {"pause", "resume"} and len(sys.argv) == 4:
+        (pause_pipeline if action == "pause" else resume_pipeline)(sys.argv[2], sys.argv[3])
     elif action in {"observe-start", "observe-status"} and len(sys.argv) == 4:
         observe(action.removeprefix("observe-"), sys.argv[2], sys.argv[3])
     else:
