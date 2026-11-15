@@ -16,6 +16,7 @@ import {
 import dayjs from "dayjs";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
+  apiErrorMessage,
   changeAttendance,
   getAttendanceCalendar,
   getAttendanceHistory,
@@ -59,9 +60,7 @@ type Editor = {
   leaveReason: string;
 };
 const errorText = (e: any) =>
-  typeof e?.response?.data?.detail === "string"
-    ? e.response.data.detail
-    : "操作失败，请稍后重试；草稿仍保留";
+  apiErrorMessage(e, "操作失败，请稍后重试；草稿仍保留");
 const historyLabels = {
   active: "有效",
   corrected: "已更正",
@@ -308,6 +307,11 @@ export default function AttendanceCalendar() {
   };
   const preview = async () => {
     if (!editor) return;
+    if (!editor.reason.trim()) {
+      setPending(null);
+      setError("请填写调整／更正原因");
+      return;
+    }
     const seq = ++previewSeq.current;
     setPending(null);
     setBusy(true);
@@ -530,7 +534,7 @@ export default function AttendanceCalendar() {
             actions={
               <>
                 <Button onClick={() => setHistoryOpen(true)}>
-                  请假历史／更正
+                  请假与离岗历史
                 </Button>
                 <Button
                   disabled={!writable || !ids.length}
@@ -951,7 +955,7 @@ export default function AttendanceCalendar() {
       </Drawer>
       <Drawer
         open={historyOpen}
-        title="请假历史与更正"
+        title="请假与离岗历史更正"
         width="min(96vw,800px)"
         onClose={() => setHistoryOpen(false)}
       >
