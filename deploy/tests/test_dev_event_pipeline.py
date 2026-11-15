@@ -1041,6 +1041,8 @@ volumes:
                 patch.object(control, "_build_candidate_flink_jar", return_value=candidate), \
                 patch.object(control.flink_submission, "FlinkRest", return_value=Client()), \
                 patch.object(control.flink_submission, "wait_for_rest", return_value=[ready_job]) as ready, \
+                patch.object(control.flink_submission, "wait_for_taskmanager_slots",
+                             return_value={"taskmanagers": 1, "slots_total": 1, "slots_available": 1}), \
                 patch.object(control.flink_submission, "wait_for_runtime", return_value=verified):
             report = control._submit_and_verify_flink(
                 {"run_id": run_id}, Path(tmp)
@@ -1080,6 +1082,8 @@ volumes:
                 patch.object(control, "_build_candidate_flink_jar", return_value=candidate), \
                 patch.object(control.flink_submission, "FlinkRest", return_value=client), \
                 patch.object(control.flink_submission, "wait_for_rest", return_value=[]), \
+                patch.object(control.flink_submission, "wait_for_taskmanager_slots",
+                             return_value={"taskmanagers": 1, "slots_total": 1, "slots_available": 1}), \
                 patch.object(control.flink_submission, "partition_active_jobs", return_value=([], [])), \
                 patch.object(control.flink_submission, "wait_for_runtime", return_value=verified):
             report = control._submit_and_verify_flink({"run_id": run_id}, Path(tmp))

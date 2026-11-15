@@ -150,6 +150,12 @@ def test_production_compose_reuses_backend_redis_without_derived_datastores():
     assert services["jobmanager"]["healthcheck"]["test"][-1] == (
         "http://127.0.0.1:8081/overview"
     )
+    assert services["taskmanager"]["healthcheck"]["test"][0] == "CMD-SHELL"
+    taskmanager_healthcheck = services["taskmanager"]["healthcheck"]["test"][1]
+    assert "taskmanagers" in taskmanager_healthcheck
+    assert "freeSlots" in taskmanager_healthcheck
+    assert "slotsNumber" not in taskmanager_healthcheck
+    assert submitter["depends_on"]["taskmanager"]["condition"] == "service_healthy"
     assert spec["x-binhu-contract"]["rendered_memory_mib"] <= 5 * 1024
     assert spec["x-binhu-contract"]["topics"] == [
         "production.task.read-model.v4", "production.task.read-model.dlq.v4",
