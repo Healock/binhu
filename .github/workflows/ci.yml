@@ -157,6 +157,15 @@ jobs:
           python-version: "3.11"
       - name: Install deployment test dependencies
         run: python -m pip install --disable-pip-version-check -r backend/requirements-test.txt
+      - name: Set up Java 17 for the event-pipeline artifact
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4.5.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: deploy/environments/event_pipeline/pom.xml
+      - name: Build the event-pipeline Flink artifact
+        run: mvn -B -q -f deploy/environments/event_pipeline/pom.xml package
       - name: Run deployment tests
         run: python -m unittest discover -s deploy/tests
       - name: Validate Docker Compose configuration

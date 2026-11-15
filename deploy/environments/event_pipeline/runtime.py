@@ -38,20 +38,43 @@ def runtime_error_message(error: BaseException) -> str:
     detail = getattr(error, "safe_detail", "")
     if isinstance(detail, str) and _SAFE_RUNTIME_DETAIL.fullmatch(detail):
         return detail
-    return "Dev pipeline stopped; identity or runtime check failed"
+    return "Event pipeline stopped; identity or runtime check failed"
 
 
 def pipeline_run_id(config):
-    value = config.get("RUN_ID") or config.get("DEV_RUN_ID") or config.get("STAGING_RUN_ID", "")
+    value = (config.get("RUN_ID") or config.get("DEV_RUN_ID")
+             or config.get("STAGING_RUN_ID") or config.get("PRODUCTION_RUN_ID", ""))
     validate_identity(config.get("APP_ENVIRONMENT"), value)
     return value
 
 
-def configuration(environ=None):
+def configuration(environ=None, *, require_task_event_key: bool = True):
     env = os.environ if environ is None else environ
     environment = env.get("APP_ENVIRONMENT", "")
-    run_id = env.get("PIPELINE_RUN_ID") or env.get("DEV_RUN_ID") or env.get("STAGING_RUN_ID", "")
+    run_id = (env.get("PIPELINE_RUN_ID") or env.get("DEV_RUN_ID")
+              or env.get("STAGING_RUN_ID") or env.get("PRODUCTION_RUN_ID", ""))
     validate_identity(environment, run_id)
+    if environment == "production":
+        backend_url = env.get("BACKEND_REDIS_URL", "")
+        backend_redis = urlsplit(backend_url)
+        event_key = env.get("TASK_EVENT_ENCRYPTION_KEY", "")
+        if (env.get("KAFKA_BOOTSTRAP_SERVERS") != "production-kafka:9092"
+                or backend_redis.scheme != "redis"
+                or backend_redis.hostname != "redis"
+                or backend_redis.port != 6379 or backend_redis.path != "/0"
+                or not backend_redis.password or backend_redis.query or backend_redis.fragment
+                or (require_task_event_key and len(event_key.encode("utf-8")) < 32)
+                or env.get("BACKEND_REDIS_STREAM_KEY", "binhu:events") != "binhu:events"):
+            raise ValueError("fixed Production Kafka and Backend Redis identity required")
+        return {
+            "APP_ENVIRONMENT": environment, "RUN_ID": run_id,
+            "PRODUCTION_RUN_ID": run_id,
+            "TOPIC": topic_for(environment),
+            "KAFKA_BOOTSTRAP_SERVERS": "production-kafka:9092",
+            "BACKEND_REDIS_URL": backend_url,
+            "BACKEND_REDIS_STREAM_KEY": "binhu:events",
+            "TASK_EVENT_ENCRYPTION_KEY": event_key,
+        }
     targets = ({
         "MYSQL_HOST": "dev-derived-mysql", "MYSQL_DATABASE": "Dev_EventPipeline",
         "MYSQL_USER": "dev_pipeline", "REDIS_HOST": "dev-derived-redis",
@@ -297,7 +320,7 @@ async def dual_track_monitor(config):
 
 
 def backend_relay_configuration(environ=None):
-    """Validate an isolated Dev or Staging Backend outbox relay target."""
+    """Validate an isolated Development or Staging Backend outbox relay target."""
     env = os.environ if environ is None else environ
     environment = env.get("APP_ENVIRONMENT", "")
     run_id = env.get("PIPELINE_RUN_ID") or env.get("DEV_RUN_ID") or env.get("STAGING_RUN_ID", "")
@@ -409,6 +432,10 @@ async def backend_outbox_relay(config):
 
 
 async def main(mode):
+    if mode == "production-bridge":
+        from .business_bridge import run_production
+        await run_production(configuration(require_task_event_key=False))
+        return
     if mode == "backend-outbox-relay":
         await backend_outbox_relay(backend_relay_configuration())
         return
@@ -441,7 +468,7 @@ async def main(mode):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay", "python-metadata-worker", "dual-track-monitor"))
+    parser.add_argument("mode", choices=("relay", "bridge", "business-bridge", "backend-outbox-relay", "production-bridge", "python-metadata-worker", "dual-track-monitor"))
     args = parser.parse_args()
     try:
         asyncio.run(main(args.mode))

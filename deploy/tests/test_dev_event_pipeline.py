@@ -326,7 +326,7 @@ class FlinkStateContractTests(unittest.TestCase):
             "runtime_failure_type=PermissionError runtime_failure_stage=evidence_write",
         )
         self.assertEqual(runtime_error_message(ValueError("password=must-not-leak")),
-                         "Dev pipeline stopped; identity or runtime check failed")
+                         "Event pipeline stopped; identity or runtime check failed")
 
     def test_pipeline_job_builds_one_statement_set_with_two_insert_branches(self):
         source = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "PipelineJob.java").read_text(encoding="utf-8")

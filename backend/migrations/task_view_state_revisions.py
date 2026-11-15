@@ -38,8 +38,8 @@ async def inspect(cur) -> dict:
 
 
 async def run(command: str, apply: bool = False) -> dict:
-    if settings.APP_ENVIRONMENT not in {"development", "staging"}:
-        raise ValueError("isolated environment required")
+    if settings.APP_ENVIRONMENT not in {"development", "staging", "production"}:
+        raise ValueError("supported task read-model environment required")
     conn = await aiomysql.connect(
         host=settings.MYSQL_HOST, port=settings.MYSQL_PORT,
         user=settings.MYSQL_USER, password=settings.MYSQL_PASSWORD,

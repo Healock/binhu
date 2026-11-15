@@ -29,8 +29,8 @@ def delivery_topic(
 ) -> str:
     if channel not in {"events", "dlq"}:
         raise EventContractError("unsupported Dev delivery route")
-    if environment not in {"development", "staging"}:
-        raise EventContractError("non-Production pipeline topic required")
+    if environment not in {"development", "staging", "production"}:
+        raise EventContractError("unsupported pipeline environment")
     if event_type in SUMMARY_EVENT_TYPES:
         if schema_version != 1:
             raise OnlineSummaryContractError("unsupported online summary schema")

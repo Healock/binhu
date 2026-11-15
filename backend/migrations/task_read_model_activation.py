@@ -26,8 +26,8 @@ BATCH_SIZE = 500
 def _identity() -> tuple[str, str]:
     environment = settings.APP_ENVIRONMENT
     run_id = settings.TASK_READ_MODEL_RUN_ID.strip()
-    if environment not in {"development", "staging"}:
-        raise ValueError("isolated environment required")
+    if environment not in {"development", "staging", "production"}:
+        raise ValueError("supported task read-model environment required")
     task_read_model_keys(environment, run_id, "t_fullchain:1")
     if len(settings.TASK_EVENT_ENCRYPTION_KEY.encode("utf-8")) < 32:
         raise ValueError("task read-model encryption identity required")

@@ -140,8 +140,9 @@ public final class PipelineJob {
 
     public static void main(String[] args) throws Exception {
         String environment = System.getenv("APP_ENVIRONMENT");
-        if (args.length != 1 || !("development".equals(environment) || "staging".equals(environment))) {
-            throw new IllegalArgumentException("Non-Production job identity required");
+        if (args.length != 1 || !("development".equals(environment)
+                || "staging".equals(environment) || "production".equals(environment))) {
+            throw new IllegalArgumentException("pipeline job environment required");
         }
         String sql = Files.readString(Path.of("/opt/flink/private/pipeline.sql"));
         StreamExecutionEnvironment stream = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -151,9 +152,12 @@ public final class PipelineJob {
         Set<String> sinks = new HashSet<>();
         // The shared JobManager has no per-run identity in its process environment.
         String runId = args[0];
-        boolean validRunId = runId != null && ("development".equals(environment)
-            ? runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
-            : runId.matches("STG-[0-9]{8}-[0-9]{2}"));
+        boolean validRunId = runId != null && switch (environment) {
+            case "development" -> runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
+            case "staging" -> runId.matches("STG-[0-9]{8}-[0-9]{2}");
+            case "production" -> runId.matches("PRD-[A-Za-z0-9_-]{1,48}");
+            default -> false;
+        };
         if (!validRunId) throw new IllegalArgumentException("pipeline run identity required");
         int index = 0;
         try {
@@ -184,7 +188,11 @@ public final class PipelineJob {
                     }
                 }
             }
-            if (!sinks.contains("dev_revisions") || !sinks.contains("dev_task_metadata")) {
+            if ("production".equals(environment) && !sinks.isEmpty()) {
+                throw new IllegalArgumentException("Production SQL sinks are forbidden");
+            }
+            if (!"production".equals(environment)
+                    && (!sinks.contains("dev_revisions") || !sinks.contains("dev_task_metadata"))) {
                 throw new IllegalArgumentException("base projection sinks missing");
             }
             DataStream<Row> taskEvents = table.toDataStream(table.sqlQuery(
@@ -204,7 +212,7 @@ public final class PipelineJob {
             for (int depth = 0; depth < 12 && cause != null; depth++, cause = cause.getCause()) {
                 types.append(cause.getClass().getSimpleName()).append(" ");
             }
-            throw new IllegalStateException("Non-Production statement " + index + " failed: "
+            throw new IllegalStateException("pipeline statement " + index + " failed: "
                 + safeFailureCode(failure) + " " + types);
         }
     }

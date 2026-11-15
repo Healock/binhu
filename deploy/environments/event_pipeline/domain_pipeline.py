@@ -8,6 +8,7 @@ from typing import Iterable
 
 _DEV_RUN_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _STAGING_RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
+_PRODUCTION_RUN_RE = re.compile(r"^PRD-[A-Za-z0-9_-]{1,48}$")
 ENVIRONMENTS = ("development", "staging")
 
 
@@ -19,13 +20,16 @@ class KafkaTopicSpec:
     schema_contract: str | None
     schema_versions: tuple[int, ...] = ()
     provision_environments: tuple[str, ...] = ENVIRONMENTS
+    production: str | None = None
 
     def name(self, environment: str) -> str:
         if environment == "development":
             return self.development
         if environment == "staging":
             return self.staging
-        raise ValueError("non-Production pipeline topic required")
+        if environment == "production" and self.production:
+            return self.production
+        raise ValueError("topic is not registered for this environment")
 
     def provisioned(self, environment: str) -> bool:
         return environment in self.provision_environments
@@ -36,6 +40,7 @@ class FlinkSourceSpec:
     table: str
     topic_role: str
     group_suffix: str
+    environments: tuple[str, ...] = ENVIRONMENTS
 
 
 @dataclass(frozen=True)
@@ -72,10 +77,14 @@ TASK_READ_MODEL = DomainPipelineSpec(
         KafkaTopicSpec(
             "events", "dev.task.read-model.v4", "staging.task.read-model.v4",
             "task_read_model", (4, 5, 6),
+            provision_environments=("development", "staging", "production"),
+            production="production.task.read-model.v4",
         ),
         KafkaTopicSpec(
             "dlq", "dev.task.read-model.dlq.v4", "staging.task.read-model.dlq.v4",
             "task_read_model", (4, 5, 6),
+            provision_environments=("development", "staging", "production"),
+            production="production.task.read-model.dlq.v4",
         ),
         KafkaTopicSpec(
             "legacy_events", "dev.task.events.v1", "staging.task.events.v1",
@@ -89,7 +98,10 @@ TASK_READ_MODEL = DomainPipelineSpec(
     stages=("outbox", "relay", "redis_stream", "kafka", "flink", "redis", "api"),
     flink_sources=(
         FlinkSourceSpec("dev_events", "events", "-flink"),
-        FlinkSourceSpec("dev_task_events_redis", "events", "-flink-redis"),
+        FlinkSourceSpec(
+            "dev_task_events_redis", "events", "-flink-redis",
+            environments=("development", "staging", "production"),
+        ),
     ),
     flink_schema_versions=(4, 6),
     flink_sinks=("task-read-model-redis",),
@@ -155,10 +167,19 @@ def validate_registry(specs: Iterable[DomainPipelineSpec] = DOMAIN_PIPELINES) ->
                 if name in seen_topics:
                     raise ValueError("domain Kafka topics must be unique")
                 seen_topics.add(name)
+            if topic.production is not None:
+                if not re.fullmatch(r"production\.[a-z0-9._-]+", topic.production):
+                    raise ValueError("Production Kafka topic must use its fixed namespace")
+                if topic.production in seen_topics:
+                    raise ValueError("domain Kafka topics must be unique")
+                seen_topics.add(topic.production)
         for source in spec.flink_sources:
             if source.table in seen_sources or not source.group_suffix:
                 raise ValueError("Flink source identities must be unique and complete")
-            spec.topic("development", source.topic_role)
+            if not source.environments or not set(source.environments) <= {*ENVIRONMENTS, "production"}:
+                raise ValueError("Flink source environments are invalid")
+            for environment in source.environments:
+                spec.topic(environment, source.topic_role)
             seen_sources.add(source.table)
             group_key = (source.group_suffix, spec.domain_id)
             if group_key in seen_groups:
@@ -199,7 +220,9 @@ def validate_run_identity(environment: object, run_id: object) -> tuple[str, str
         return env, run
     if env == "staging" and _STAGING_RUN_RE.fullmatch(run):
         return env, run
-    raise ValueError("non-Production pipeline identity required")
+    if env == "production" and _PRODUCTION_RUN_RE.fullmatch(run):
+        return env, run
+    raise ValueError("pipeline environment and run identity mismatch")
 
 
 @dataclass(frozen=True)
@@ -215,7 +238,7 @@ class PipelineRunPlan:
 
 
 class DomainPipelineOrchestrator:
-    """Resolve and validate fixed domain contracts for one non-Production run."""
+    """Resolve and validate fixed domain contracts for one environment run."""
 
     def __init__(self, environment: str, run_id: str):
         validate_registry()
@@ -234,6 +257,8 @@ class DomainPipelineOrchestrator:
         schema_versions: set[int] = set()
         for spec in DOMAIN_PIPELINES:
             for source in spec.flink_sources:
+                if self.environment not in source.environments:
+                    continue
                 group = self.run_id + source.group_suffix
                 if source.table in sources or group in groups:
                     raise ValueError("resolved Flink source or consumer group is ambiguous")

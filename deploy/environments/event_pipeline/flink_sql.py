@@ -13,6 +13,33 @@ def render(environ):
         name: source["consumer_group"]
         for name, source in pipeline.flink_sources.items()
     }
+    if environment == "production":
+        source = pipeline.flink_sources["dev_task_events_redis"]
+        return f"""SET 'execution.checkpointing.interval' = '10 s';
+SET 'execution.checkpointing.mode' = 'EXACTLY_ONCE';
+SET 'execution.checkpointing.externalized-checkpoint-retention' = 'RETAIN_ON_CANCELLATION';
+SET 'state.checkpoints.dir' = 'file:///opt/flink/checkpoints/production-pipeline';
+SET 'state.savepoints.dir' = 'file:///opt/flink/checkpoints/production-savepoints';
+SET 'parallelism.default' = '1';
+SET 'pipeline.name' = '{run}';
+CREATE TABLE dev_task_events_redis (
+ schema_version INT, event_id STRING, command_id STRING, event_type STRING,
+ task_id STRING, source_id BIGINT, revision BIGINT, operation_id STRING,
+ changed_fields ARRAY<STRING>, `timestamp` STRING, environment STRING, run_id STRING,
+ encrypted_payload ROW<algorithm STRING,key_version STRING,nonce STRING,
+                      ciphertext STRING,aad STRING,ciphertext_sha256 STRING>,
+ view_domain STRING, task_revision BIGINT, row_group_token STRING
+) WITH (
+ 'connector' = 'kafka', 'topic' = '{source["topic"]}',
+ 'properties.bootstrap.servers' = '{config["KAFKA_BOOTSTRAP_SERVERS"]}',
+ 'properties.group.id' = '{source["consumer_group"]}', 'scan.startup.mode' = 'earliest-offset',
+ 'format' = 'json', 'json.fail-on-missing-field' = 'false',
+ 'json.ignore-parse-errors' = 'false'
+);
+CREATE VIEW production_task_events AS
+SELECT * FROM dev_task_events_redis
+WHERE environment = '{environment}' AND run_id = '{run}' AND schema_version IN (4, 6);
+"""
     checkpoint_scope = "dev" if environment == "development" else "staging"
     password = config["MYSQL_PASSWORD"]
     return f"""SET 'execution.checkpointing.interval' = '10 s';

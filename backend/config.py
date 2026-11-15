@@ -1,5 +1,7 @@
 """应用配置 - 通过环境变量读取（docker-compose 或 .env 注入）"""
 
+import re
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from urllib.parse import urlsplit
@@ -80,19 +82,26 @@ class Settings(BaseSettings):
     def validate_task_read_model_identity(self):
         if not self.TASK_READ_MODEL_ENABLED:
             return self
-        if self.APP_ENVIRONMENT not in {"development", "staging"}:
-            raise ValueError("task read model may only be enabled in isolated environments")
+        if self.APP_ENVIRONMENT not in {"development", "staging", "production"}:
+            raise ValueError("task read model environment is unsupported")
         if len(self.TASK_EVENT_ENCRYPTION_KEY.encode("utf-8")) < 32:
             raise ValueError("task read model requires its dedicated encryption key")
         redis_target = urlsplit(self.REDIS_URL)
+        allowed_redis_hosts = (
+            {"redis"} if self.APP_ENVIRONMENT == "production"
+            else {"redis", "environment-redis"}
+        )
         if (redis_target.scheme != "redis"
-                or redis_target.hostname not in {"redis", "environment-redis"}
+                or redis_target.hostname not in allowed_redis_hosts
                 or redis_target.port != 6379 or redis_target.path != "/0"
                 or not redis_target.password or redis_target.query or redis_target.fragment):
             raise ValueError("task read model requires the isolated application Redis target")
-        if self.APP_ENVIRONMENT == "development" and not self.TASK_READ_MODEL_RUN_ID.startswith("dev-"):
-            raise ValueError("task read model run identity mismatch")
-        if self.APP_ENVIRONMENT == "staging" and not self.TASK_READ_MODEL_RUN_ID.startswith("STG-"):
+        run_patterns = {
+            "development": r"dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}",
+            "staging": r"STG-[0-9]{8}-[0-9]{2}",
+            "production": r"PRD-[A-Za-z0-9_-]{1,48}",
+        }
+        if not re.fullmatch(run_patterns[self.APP_ENVIRONMENT], self.TASK_READ_MODEL_RUN_ID):
             raise ValueError("task read model run identity mismatch")
         return self
 

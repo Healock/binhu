@@ -30,6 +30,24 @@ subject，不混入任务事件 schema。现有 `backend-outbox-relay` 只有在
 Flink source 或 Redis 读模型。新增业务先补注册合同，再由共享控制路径校验环境身份、topic、
 consumer group 与 sink；未登记、身份冲突或合同不完整时必须拒绝运行。
 
+### Production 指令核查候选模型
+
+`production_compose.py` 只生成静态 Compose 定义，不调用 Docker，也不代表 Production 已部署。
+它复用现有 `binhu-event-relay` 写入的 `binhu:events` Stream，由稳定消费组
+`binhu-production-task-read-model-v4` 转发到 Production Kafka，再由 Flink 写入现有 Backend Redis。
+Production 不启动第二个 MySQL Outbox relay，不带派生 MySQL/Redis；Kafka 使用单 broker，
+事件保留 7 天，全部容器内存硬限额合计不超过 5 GiB。Compose 会等待 JobManager REST 就绪后
+通过一次性 Flink CLI 服务提交固定 `PipelineJob`。接入发布入口时还必须检查提交服务退出状态并
+核验实际 JobGraph；当前 Production 发布入口尚未接入此模型。
+单 broker 不具备节点级高可用，
+必须在 Staging 验证和资源核算通过后再按维护流程部署。
+
+生产候选提供独立运行环境文件：bridge 仅有 Kafka/Redis 传输凭据，不持有任务解密密钥；
+Schema Registry 初始化容器只持有 Production 环境与运行编号；只有 Flink TaskManager 需要
+任务事件密钥与 Backend Redis 凭据。Kafka topics 和 Schema Registry 合同使用显式 bootstrap
+profile 初始化。部署前仍需把候选绑定到已通过 Staging 的相同不可变镜像和 JAR，并使用现有
+Production 部署/维护入口；该 Compose 模型本身尚未真实服务器验证或启用读路径。
+
 ## 操作顺序
 
 ### 受控退役旧 Staging 运行

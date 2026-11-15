@@ -234,13 +234,20 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> {
     @Override
     public void open(Configuration parameters) throws Exception {
         environment = required("APP_ENVIRONMENT");
-        runId = required(environment.equals("development") ? "DEV_RUN_ID" : "STAGING_RUN_ID");
-        if (!(environment.equals("development") || environment.equals("staging"))) {
-            throw new IllegalStateException("isolated event pipeline required");
-        }
-        if (!(environment.equals("development")
-                ? runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
-                : runId.matches("STG-[0-9]{8}-[0-9]{2}"))) {
+        String runKey = switch (environment) {
+            case "development" -> "DEV_RUN_ID";
+            case "staging" -> "STAGING_RUN_ID";
+            case "production" -> "PRODUCTION_RUN_ID";
+            default -> throw new IllegalStateException("pipeline environment identity required");
+        };
+        runId = required(runKey);
+        boolean validRunId = switch (environment) {
+            case "development" -> runId.matches("dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
+            case "staging" -> runId.matches("STG-[0-9]{8}-[0-9]{2}");
+            case "production" -> runId.matches("PRD-[A-Za-z0-9_-]{1,48}");
+            default -> false;
+        };
+        if (!validRunId) {
             throw new IllegalStateException("pipeline runtime identity mismatch");
         }
         String secret = required("TASK_EVENT_ENCRYPTION_KEY");
@@ -256,8 +263,12 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> {
         URI redisUri = URI.create(required("BACKEND_REDIS_URL"));
         if (!"redis".equals(redisUri.getScheme()) || redisUri.getHost() == null
             || redisUri.getPort() != 6379 || !"/0".equals(redisUri.getPath())
-            || !(redisUri.getHost().equalsIgnoreCase("redis")
-                || redisUri.getHost().equalsIgnoreCase("environment-redis"))
+            || redisUri.getUserInfo() == null || redisUri.getUserInfo().isBlank()
+            || redisUri.getQuery() != null || redisUri.getFragment() != null
+            || !(environment.equals("production")
+                ? redisUri.getHost().equalsIgnoreCase("redis")
+                : redisUri.getHost().equalsIgnoreCase("redis")
+                    || redisUri.getHost().equalsIgnoreCase("environment-redis"))
             || redisUri.getHost().equalsIgnoreCase("staging-derived-redis")
             || redisUri.getHost().equalsIgnoreCase("dev-derived-redis")) {
             throw new IllegalStateException("Backend Redis identity unavailable");
