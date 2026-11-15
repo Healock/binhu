@@ -22,6 +22,20 @@ from services.external_acquisition_registry import (
 _tasks: set[asyncio.Task] = set()
 
 
+def _code_summary_quality(aggregated: dict[str, dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Keep only aggregate source-quality counters in external run history."""
+    return {
+        source: {
+            "raw_count": int(result.get("raw_count") or 0),
+            "valid_count": int(result.get("valid_count") or 0),
+            "excluded_record_count": int(result.get("excluded_count") or 0),
+            "unclassified_location_count": int(result.get("unclassified_count") or 0),
+            "invalid_time_count": int(result.get("invalid_time_count") or 0),
+        }
+        for source, result in sorted(aggregated.items())
+    }
+
+
 def _date_param(params: dict[str, Any], key: str, fallback: date) -> date:
     value = params.get(key)
     if value in (None, ""):
@@ -171,32 +185,53 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
             if start_date > end_date:
                 raise ValueError("开始日期不能晚于结束日期")
             payload = DateRangeRequest(start_date=start_date, end_date=end_date)
+            await ctx.update(phase="loading_directories", current=0, total=4, message="正在读取汇总目录")
             pool = db_manager.get_pool("online_data")
             async with pool.acquire() as conn:
                 personnel, places = await _directories(conn)
                 labels = await _manual_location_labels(conn, "peace")
-                fetched = await fetch_sources(start_date, end_date)
-                registration_counts: dict[date, int] = {}
-                if not fetched["peace"].get("error"):
-                    try:
+            await ctx.update(phase="reading_sources", current=1, total=4, message="正在分页读取平安码和管家码来源")
+            fetched = await fetch_sources(start_date, end_date)
+            registration_counts: dict[date, int] = {}
+            if not fetched["peace"].get("error"):
+                try:
+                    async with pool.acquire() as conn:
                         registration_counts = await count_fullchain_registrations(conn, start_date, end_date)
-                    except CodeSummaryError as exc:
-                        fetched["peace"] = {"error": exc}
-                aggregated: dict[str, dict[str, Any]] = {}
-                for source in ("peace", "manager"):
-                    source_result = fetched[source]
-                    if source_result.get("error"):
-                        error = source_result["error"]
-                        return {"status": "failed", "auto_commit_status": "skipped", "safety_gate_code": getattr(error, "code", "source_failed")}
-                    aggregate = aggregate_rows(
-                        source, source_result["rows"], start_date, end_date,
-                        personnel_names=personnel, place_names=places,
-                        manual_labels=labels,
-                        new_registration_counts=registration_counts if source == "peace" else None,
-                    )
-                    if any(int(aggregate.get(key) or 0) for key in ("excluded_count", "unclassified_count", "invalid_time_count")):
-                        return {"status": "failed", "auto_commit_status": "skipped", "safety_gate_code": "code_summary_incomplete"}
-                    aggregated[source] = aggregate
+                except CodeSummaryError as exc:
+                    fetched["peace"] = {"error": exc}
+            await ctx.update(phase="aggregating", current=2, total=4, message="正在校验并汇总来源数据")
+            aggregated: dict[str, dict[str, Any]] = {}
+            for source in ("peace", "manager"):
+                source_result = fetched[source]
+                if source_result.get("error"):
+                    error = source_result["error"]
+                    return {"status": "failed", "auto_commit_status": "skipped", "safety_gate_code": getattr(error, "code", "source_failed")}
+                aggregate = aggregate_rows(
+                    source, source_result["rows"], start_date, end_date,
+                    personnel_names=personnel, place_names=places,
+                    manual_labels=labels,
+                    new_registration_counts=registration_counts if source == "peace" else None,
+                )
+                aggregated[source] = aggregate
+            quality = _code_summary_quality(aggregated)
+            if any(
+                counters[key]
+                for counters in quality.values()
+                for key in (
+                    "excluded_record_count",
+                    "unclassified_location_count",
+                    "invalid_time_count",
+                )
+            ):
+                return {
+                    "status": "failed",
+                    "auto_commit_status": "skipped",
+                    "safety_gate_code": "code_summary_incomplete",
+                    "message": "来源完整性检查未通过，自动提交已跳过",
+                    "quality": quality,
+                }
+            await ctx.update(phase="committing", current=3, total=4, message="来源完整，正在提交汇总")
+            async with pool.acquire() as conn:
                 await conn.begin()
                 try:
                     for source, aggregate in aggregated.items():

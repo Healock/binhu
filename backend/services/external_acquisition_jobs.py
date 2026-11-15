@@ -32,6 +32,13 @@ def _safe_error_message(exc: BaseException) -> str:
     return "外部来源运行失败，请查看错误码后重试"
 
 
+def _terminal_progress_message(status: str, message: Any) -> str:
+    text = str(message or "").strip()
+    if text:
+        return text[:500]
+    return "已完成" if status == "success" else "未完成"
+
+
 _REDACTED_RESULT_KEYS = {
     "rows", "payload", "payload_json", "response", "raw_rows", "unresolved",
     "source_rows", "body", "content", "password", "token", "secret",
@@ -297,7 +304,7 @@ async def _execute(run_id: int, runner: Callable[[JobContext], Awaitable[dict[st
             await cur.execute(
                 "UPDATE _external_acquisition_runs SET status=%s,phase='finished',result_json=%s,"
                 "progress_message=%s,auto_commit_status=%s,safety_gate_code=%s,finished_at=UTC_TIMESTAMP() WHERE id=%s",
-                (status, _safe_json(_safe_result(result)), str(result.get("message", "已完成"))[:500],
+                (status, _safe_json(_safe_result(result)), _terminal_progress_message(status, result.get("message")),
                  auto_commit_status, gate_code, run_id),
             )
     await _sync_schedule_terminal(run_id, status, gate_code)

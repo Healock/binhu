@@ -5,7 +5,13 @@ import pytest
 from fastapi import HTTPException
 
 from routers import external_acquisition
-from services.external_acquisition_jobs import _has_incompatible_semantics, _kind_variants
+from services.external_acquisition_jobs import (
+    _has_incompatible_semantics,
+    _kind_variants,
+    _safe_result,
+    _terminal_progress_message,
+)
+from services.external_acquisition_scheduler import _code_summary_quality
 
 
 def test_legacy_and_canonical_kinds_share_one_lease_family():
@@ -57,3 +63,47 @@ def test_schedule_listing_hides_sources_without_read_permission():
         assert result["data"] == [schedules[0]]
 
     asyncio.run(scenario())
+
+
+def test_code_summary_incomplete_quality_is_aggregate_only_and_survives_run_redaction():
+    quality = _code_summary_quality({
+        "peace": {
+            "raw_count": 12,
+            "valid_count": 10,
+            "excluded_count": 1,
+            "unclassified_count": 1,
+            "invalid_time_count": 0,
+            "location_counts": [{"display_name": "Sensitive location"}],
+        },
+        "manager": {
+            "raw_count": 8,
+            "valid_count": 7,
+            "excluded_count": 1,
+            "unclassified_count": 0,
+            "invalid_time_count": 0,
+        },
+    })
+
+    assert quality == {
+        "manager": {
+            "raw_count": 8,
+            "valid_count": 7,
+            "excluded_record_count": 1,
+            "unclassified_location_count": 0,
+            "invalid_time_count": 0,
+        },
+        "peace": {
+            "raw_count": 12,
+            "valid_count": 10,
+            "excluded_record_count": 1,
+            "unclassified_location_count": 1,
+            "invalid_time_count": 0,
+        },
+    }
+    assert _safe_result({"quality": quality}) == {"quality": quality}
+
+
+def test_failed_external_run_does_not_get_success_message():
+    assert _terminal_progress_message("failed", None) == "未完成"
+    assert _terminal_progress_message("success", None) == "已完成"
+    assert _terminal_progress_message("failed", "来源不完整") == "来源不完整"
