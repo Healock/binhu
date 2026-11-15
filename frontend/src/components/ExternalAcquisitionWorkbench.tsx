@@ -33,6 +33,31 @@ function runLabel(run: ExternalAcquisitionRun | null | undefined) {
   return '排队中'
 }
 
+const CODE_SUMMARY_SOURCE_LABELS: Record<string, string> = {
+  peace: '平安码',
+  manager: '管家码',
+}
+
+function CodeSummaryQuality({ run }: { run: ExternalAcquisitionRun }) {
+  const quality = run.result?.quality
+  if (run.safety_gate_code !== 'code_summary_incomplete' || !quality) return null
+  return <Alert
+    type="warning"
+    showIcon
+    message="汇总未提交：来源数据未通过完整性检查"
+    description={<div className="grid gap-2">
+      <div>自动提交已跳过，本次不会覆盖现有汇总。以下仅为脱敏统计：</div>
+      <div className="grid gap-1">
+        {Object.entries(quality).map(([source, counts]: [string, any]) => <div key={source}>
+          <strong>{CODE_SUMMARY_SOURCE_LABELS[source] || source}</strong>
+          {`：共 ${counts.raw_count ?? 0} 条，有效 ${counts.valid_count ?? 0} 条，记录身份无效 ${counts.excluded_record_count ?? 0} 条，地点未分类 ${counts.unclassified_location_count ?? 0} 条，时间无效 ${counts.invalid_time_count ?? 0} 条。`}
+        </div>)}
+      </div>
+      <div>地点未分类请到码汇总的“地点分类”维护；身份或时间无效需由来源数据负责人核对。修正后再重新运行。</div>
+    </div>}
+  />
+}
+
 export default function ExternalAcquisitionWorkbench() {
   const { user, systemTimezone } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -106,7 +131,7 @@ export default function ExternalAcquisitionWorkbench() {
       <Button className="justify-self-start lg:hidden" onClick={() => { setSelectedKey(''); const next = new URLSearchParams(searchParams); next.delete('source'); next.delete('panel'); setSearchParams(next, { replace: true }) }}>返回来源目录</Button>
       <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="m-0 text-lg">{selected.name}</h2><p className="mt-1 text-sm text-[var(--app-text-secondary)]">{selected.description}</p></div><Tag>{selected.supports_auto_commit ? '完整成功才提交' : '只读/需人工确认'}</Tag></div><div className="flex flex-wrap items-center gap-3 text-sm"><span>最近结果：<strong>{runLabel(selected.latest_run)}</strong></span>{selected.latest_run?.error_code && <Tag color="red">{selected.latest_run.error_code}</Tag>}{selected.latest_run?.auto_commit_status && <span>自动提交：{selected.latest_run.auto_commit_status}</span>}</div>{selected.latest_run?.error_message && <Alert type="warning" showIcon message={selected.latest_run.error_message} />}<Button type="primary" loading={runLoading} disabled={!selected.accessible || !selected.supports_manual} onClick={() => void runNow()}>立即读取/运行</Button></section>
       {selected.supports_schedule && <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="m-0">自动调度</h3><div className="mt-1 text-xs text-[var(--app-text-secondary)]">默认关闭；系统时区：{draft.timezone}</div></div>{!admin && <Tag>仅超级管理员可修改</Tag>}</div><div className="flex flex-wrap items-center gap-3"><Switch checked={draft.enabled} disabled={!admin} onChange={enabled => setDraft(current => ({ ...current, enabled }))} /><span>{draft.enabled ? '已启用' : '已停用'}</span><Select className="w-44" value={COMMON_CRONS.some(item => item.value === draft.cron_expr) ? draft.cron_expr : undefined} placeholder="常用时间" disabled={!admin} options={COMMON_CRONS} onChange={cron_expr => setDraft(current => ({ ...current, cron_expr }))} /><Input className="min-w-[220px] flex-1" value={draft.cron_expr} disabled={!admin} onChange={event => setDraft(current => ({ ...current, cron_expr: event.target.value }))} placeholder="高级 Cron：分 时 日 月 周" /></div>{selected.params_schema === 'date_range' && <div className="flex flex-wrap gap-3"><label className="grid gap-1 text-sm"><span>开始日期</span><Input type="date" value={draft.params.start_date || ''} disabled={!admin} onChange={event => setDraft(current => ({ ...current, params: { ...current.params, start_date: event.target.value } }))} /></label><label className="grid gap-1 text-sm"><span>结束日期</span><Input type="date" value={draft.params.end_date || ''} disabled={!admin} onChange={event => setDraft(current => ({ ...current, params: { ...current.params, end_date: event.target.value } }))} /></label></div>}{admin ? <Button loading={saving} onClick={() => void save()}>保存调度</Button> : <div className="text-sm text-[var(--app-text-secondary)]">当前账号可以查看计划状态；如需调整请联系超级管理员。</div>}</section>}
-      <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex items-center justify-between gap-2"><h3 className="m-0">最近 20 次运行</h3><Button size="small" onClick={() => void getExternalAcquisitionRuns(selected.source_key, 20).then(setRuns)}>刷新</Button></div>{runs.length ? <div className="grid gap-2">{runs.map(run => <div key={run.id} className="grid gap-2 rounded-md border border-[var(--app-border)] p-3 sm:grid-cols-[1fr_auto] sm:items-center"><div><div className="flex flex-wrap items-center gap-2"><strong>#{run.id}</strong><Tag color={run.status === 'success' ? 'green' : run.status === 'failed' ? 'red' : 'gold'}>{runLabel(run)}</Tag>{run.safety_gate_code && <Tag>{run.safety_gate_code}</Tag>}</div><div className="mt-1 text-xs text-[var(--app-text-secondary)]">{run.created_at ? formatUTCTime(run.created_at, systemTimezone) : ''} · {run.message}</div></div>{run.status === 'failed' && <Button size="small" onClick={() => void retry(run)}>重试</Button>}</div>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚无运行记录" />}</section>
+      <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex items-center justify-between gap-2"><h3 className="m-0">最近 20 次运行</h3><Button size="small" onClick={() => void getExternalAcquisitionRuns(selected.source_key, 20).then(setRuns)}>刷新</Button></div>{runs.length ? <div className="grid gap-2">{runs.map(run => <div key={run.id} className="grid gap-2 rounded-md border border-[var(--app-border)] p-3 sm:grid-cols-[1fr_auto] sm:items-center"><div className="grid gap-2"><div><div className="flex flex-wrap items-center gap-2"><strong>#{run.id}</strong><Tag color={run.status === 'success' ? 'green' : run.status === 'failed' ? 'red' : 'gold'}>{runLabel(run)}</Tag>{run.safety_gate_code && <Tag>{run.safety_gate_code}</Tag>}</div><div className="mt-1 text-xs text-[var(--app-text-secondary)]">{run.created_at ? formatUTCTime(run.created_at, systemTimezone) : ''} · {run.message}</div></div><CodeSummaryQuality run={run} /></div>{run.status === 'failed' && <Button size="small" onClick={() => void retry(run)}>重试</Button>}</div>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚无运行记录" />}</section>
     </>}</main>
   </div>
 }
