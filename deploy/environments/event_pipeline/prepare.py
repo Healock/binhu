@@ -139,7 +139,7 @@ def compose(images):
             "mem_limit": "768m", "memswap_limit": "1536m", "cpus": .5,
             "healthcheck": {"test": ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "--silent"],
                             "interval": "5s", "timeout": "3s", "retries": 36, "start_period": "180s"},
-            "command": ["--innodb-buffer-pool-size=128M", "--max-connections=20",
+            "command": ["--innodb-buffer-pool-size=128M", "--max-connections=24",
                         # The derived Dev database keeps the controlled acceptance
                         # ledger and both projections in a shared system tablespace.
                         # 1 GiB is exhausted before the 100,000-event gate; keep a
