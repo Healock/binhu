@@ -49,12 +49,43 @@ def test_staging_plan_uses_staging_topics_and_keeps_compat_topics_provisioned():
     assert not any(topic.startswith("dev.") or topic.startswith("dev-") for topic in plan.kafka_topics)
 
 
+def test_production_plan_uses_only_fixed_production_topics_and_namespaces():
+    plan = DomainPipelineOrchestrator("production", "PRD-rollout-20261114").plan()
+
+    assert plan.environment == "production"
+    assert plan.run_id == "PRD-rollout-20261114"
+    assert plan.kafka_topics == (
+        "production.task.read-model.dlq.v4",
+        "production.task.read-model.v4",
+    )
+    assert all(
+        source["consumer_group"].startswith("PRD-rollout-20261114")
+        for source in plan.flink_sources.values()
+    )
+    assert all(source["topic"].startswith("production.") for source in plan.flink_sources.values())
+
+
+def test_registry_rejects_a_production_topic_outside_its_namespace():
+    invalid = DomainPipelineSpec(
+        domain_id="other", event_types=("other.event",),
+        topics=(KafkaTopicSpec(
+            "events", "other.dev", "other.staging", "other", (1,),
+            provision_environments=("development", "staging", "production"),
+            production="staging.other.events",
+        ),),
+        stages=("kafka",), schema_result_key="other",
+    )
+
+    with pytest.raises(ValueError, match="fixed namespace"):
+        validate_registry((*DOMAIN_PIPELINES, invalid))
+
+
 @pytest.mark.parametrize(
     "environment,run_id",
     [
         ("development", "STG-20261109-01"),
         ("staging", "dev-contract"),
-        ("production", "PRD-20261109-01"),
+        ("production", "STG-20261109-01"),
     ],
 )
 def test_orchestrator_rejects_invalid_environment_identity(environment, run_id):

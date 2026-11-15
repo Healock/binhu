@@ -12,6 +12,7 @@ from .domain_pipeline import (
 
 DEV_RUN_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 STAGING_RUN_RE = re.compile(r"^STG-[0-9]{8}-[0-9]{2}$")
+PRODUCTION_RUN_RE = re.compile(r"^PRD-[A-Za-z0-9_-]{1,48}$")
 
 
 def validate_identity(environment: object, run_id: object) -> tuple[str, str]:
@@ -24,6 +25,8 @@ def environment_for_run_id(run_id: object) -> str:
         return "development"
     if STAGING_RUN_RE.fullmatch(run):
         return "staging"
+    if PRODUCTION_RUN_RE.fullmatch(run):
+        return "production"
     raise ValueError("invalid pipeline run ID")
 
 
@@ -36,9 +39,9 @@ def summary_topic_for(environment: str, *, dead_letter: bool = False) -> str:
 
 
 def source_name(environment: str, engine: str) -> str:
-    if environment not in {"development", "staging"} or engine not in {"python", "flink"}:
+    if environment not in {"development", "staging", "production"} or engine not in {"python", "flink"}:
         raise ValueError("invalid pipeline source identity")
-    suffix = "dev" if environment == "development" else "staging"
+    suffix = {"development": "dev", "staging": "staging", "production": "production"}[environment]
     return f"{engine}-{suffix}"
 
 

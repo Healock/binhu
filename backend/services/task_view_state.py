@@ -65,11 +65,13 @@ def task_view_state_events_enabled() -> bool:
     from config import settings
 
     return bool(
-        settings.APP_ENVIRONMENT in {"development", "staging"}
+        settings.APP_ENVIRONMENT in {"development", "staging", "production"}
         and str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
     )
 _TASK_ID = re.compile(r"^(t_[a-z0-9_]+):([1-9][0-9]{0,18})$")
-_RUN_ID = re.compile(r"^(?:dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}|STG-[0-9]{8}-[0-9]{2})$")
+_RUN_ID = re.compile(
+    r"^(?:dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}|STG-[0-9]{8}-[0-9]{2}|PRD-[A-Za-z0-9_-]{1,48})$"
+)
 
 TASK_VIEW_STATE_REVISIONS_SQL = """
 CREATE TABLE IF NOT EXISTS `_task_view_state_revisions` (
@@ -208,7 +210,7 @@ async def enqueue_source_task_view_state(
 
     if type(source_id) is not int or source_id < 1 or domain not in TASK_VIEW_STATE_DOMAINS:
         raise TaskCommandContractError("invalid task view state source")
-    if settings.APP_ENVIRONMENT not in {"development", "staging"}:
+    if settings.APP_ENVIRONMENT not in {"development", "staging", "production"}:
         raise TaskCommandContractError("task view state pipeline is not enabled here")
     online_db = str(settings.MYSQL_ONLINE_DATA_DB or "")
     if not re.fullmatch(r"[A-Za-z0-9_]+", online_db):

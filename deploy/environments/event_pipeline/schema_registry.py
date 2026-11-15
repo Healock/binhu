@@ -31,10 +31,11 @@ def summary_subject_for(environment: str) -> str:
 
 def schema(environment: str = "development"):
     topic_for(environment)
-    run_pattern = (
-        "^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-        if environment == "development" else "^STG-[0-9]{8}-[0-9]{2}$"
-    )
+    run_pattern = {
+        "development": "^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        "staging": "^STG-[0-9]{8}-[0-9]{2}$",
+        "production": "^PRD-[A-Za-z0-9_-]{1,48}$",
+    }[environment]
     uuid = {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
     contract = {"$schema": "http://json-schema.org/draft-07/schema#", "title": "TaskReadModelEventV4OrV5",
             "type": "object", "additionalProperties": False,
@@ -90,10 +91,11 @@ def schema(environment: str = "development"):
 
 def summary_schema(environment: str = "development"):
     summary_topic_for(environment)
-    run_pattern = (
-        "^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-        if environment == "development" else "^STG-[0-9]{8}-[0-9]{2}$"
-    )
+    run_pattern = {
+        "development": "^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        "staging": "^STG-[0-9]{8}-[0-9]{2}$",
+        "production": "^PRD-[A-Za-z0-9_-]{1,48}$",
+    }[environment]
     uuid = {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
     token = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     return {
@@ -140,7 +142,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def request(path, method="GET", body=None, *, subject=SUBJECT):
     allowed_subjects = {
         subject_for("development"), subject_for("staging"),
-        summary_subject_for("development"), summary_subject_for("staging"),
+        subject_for("production"), summary_subject_for("development"),
+        summary_subject_for("staging"),
     }
     if subject not in allowed_subjects:
         raise ValueError("unsupported schema subject")
@@ -167,12 +170,29 @@ def _verify_subject(environment: str, subject: str, expected: dict):
             "schema_version": result["version"], "contract_sha256": digest, "verified": True}
 
 
+def _contracts(environment: str):
+    if environment not in {"development", "staging", "production"}:
+        raise ValueError("unsupported event-pipeline schema environment")
+    contracts = {}
+    for spec in DOMAIN_PIPELINES:
+        if not spec.schema_result_key:
+            continue
+        provisioned = any(
+            topic.schema_contract and topic.provisioned(environment)
+            for topic in spec.topics
+        )
+        if not provisioned:
+            continue
+        if spec.domain_id == "instruction_audit":
+            contracts[spec.domain_id] = schema(environment)
+        elif spec.domain_id == "online_summary_facts":
+            contracts[spec.domain_id] = summary_schema(environment)
+    return contracts
+
+
 def verify(environment: str | None = None):
     environment = environment or os.environ.get("APP_ENVIRONMENT", "development")
-    contracts = {
-        "instruction_audit": schema(environment),
-        "online_summary_facts": summary_schema(environment),
-    }
+    contracts = _contracts(environment)
     subjects = {
         spec.schema_result_key: _verify_subject(
             environment, subject_for(environment, spec.domain_id), contracts[spec.domain_id],
@@ -184,10 +204,7 @@ def verify(environment: str | None = None):
 
 def apply(environment: str | None = None):
     environment = environment or os.environ.get("APP_ENVIRONMENT", "development")
-    contracts = {
-        "instruction_audit": schema(environment),
-        "online_summary_facts": summary_schema(environment),
-    }
+    contracts = _contracts(environment)
     for spec in DOMAIN_PIPELINES:
         if spec.domain_id not in contracts:
             continue
@@ -206,4 +223,4 @@ if __name__ == "__main__":
     try:
         print(json.dumps(apply() if args.mode == "apply" else verify()))
     except Exception:
-        raise SystemExit("Dev schema registration/verification failed") from None
+        raise SystemExit("event-pipeline schema registration/verification failed") from None

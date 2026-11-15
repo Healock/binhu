@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 import socket
 import os
@@ -36,6 +37,8 @@ SAFE_CHANGED_FIELDS = {
     "small_community", "person_tags", "task_graph", "online_summary",
 }
 TABLE_PARSERS = {table: parser for parser, table in PARSER_TABLES.items()}
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+PRODUCTION_TASK_CONSUMER_GROUP = "binhu-production-task-read-model-v4"
 
 
 def _source_id(parser_type: str, row_key: str) -> int:
@@ -286,4 +289,113 @@ async def run(config: Mapping[str, str], pool) -> None:
             for stream_id, values in entries:
                 await process(stream_id, values)
     finally:
+        await client.aclose()
+
+
+async def run_production(config: Mapping[str, str]) -> None:
+    """Publish directly from the durable Backend stream without a MySQL ledger."""
+    from aiokafka import AIOKafkaProducer
+    from redis.asyncio import Redis
+    from .services.kafka_envelope import (
+        delivery_topic, event_partition_key, serialize_event,
+    )
+
+    environment = config.get("APP_ENVIRONMENT", "")
+    run_id = config.get("RUN_ID") or config.get("PRODUCTION_RUN_ID", "")
+    if environment != "production" or not run_id.startswith("PRD-"):
+        raise ValueError("Production bridge identity required")
+    producer = AIOKafkaProducer(
+        bootstrap_servers=config["KAFKA_BOOTSTRAP_SERVERS"],
+        enable_idempotence=True, acks="all", request_timeout_ms=15000,
+        client_id=run_id + "-redis-bridge",
+    )
+    client = Redis.from_url(
+        config["BACKEND_REDIS_URL"], decode_responses=True,
+        socket_timeout=10, socket_connect_timeout=5,
+    )
+    stream = config["BACKEND_REDIS_STREAM_KEY"]
+    # Keep the cursor stable across run-id changes so a rollout cannot strand
+    # pending Backend stream entries in a group that will never be consumed.
+    group = PRODUCTION_TASK_CONSUMER_GROUP
+    consumer = f"production-bridge-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:10]}"
+    quarantine = f"binhu:task-rm:v4:production:{run_id}:transport-quarantine"
+    state_key = f"binhu:task-rm:v4:production:{run_id}:transport-state"
+
+    async def ensure_group() -> None:
+        try:
+            await client.xgroup_create(stream, group, id="0-0", mkstream=True)
+        except Exception as exc:
+            if "BUSYGROUP" not in str(exc).upper():
+                raise
+
+    async def recover_pending():
+        result = await client.xautoclaim(
+            stream, group, consumer, min_idle_time=60_000,
+            start_id="0-0", count=100,
+        )
+        return list(result[1] or []) if isinstance(result, (list, tuple)) and len(result) >= 2 else []
+
+    async def read_new():
+        batches = await client.xreadgroup(
+            group, consumer, {stream: ">"}, count=100, block=5000,
+        )
+        return [entry for _stream_name, batch in batches or [] for entry in batch or []]
+
+    async def ack(entry_id: str, *, reason: str | None = None, event_id: str = ""):
+        if reason:
+            record = json.dumps({
+                "event_id": event_id if _UUID_RE.fullmatch(event_id) else "",
+                "reason_code": reason,
+                "stream_id": entry_id,
+                "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }, separators=(",", ":"))
+            await client.lpush(quarantine, record)
+            await client.ltrim(quarantine, 0, 4999)
+        # The Backend stream is shared by domains. Acknowledging this group's
+        # entry must not delete it before another domain consumer can read it.
+        await client.xack(stream, group, entry_id)
+        await client.hset(state_key, mapping={
+            "run_id": run_id, "last_acknowledged_stream_id": entry_id,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+
+    producer_started = False
+    try:
+        await client.ping()
+        await producer.start()
+        producer_started = True
+        await ensure_group()
+        while True:
+            entries = await recover_pending()
+            if not entries:
+                entries = await read_new()
+            for entry_id, values in entries:
+                raw = values.get("event") if isinstance(values, Mapping) else None
+                stream_event_id = str(values.get("event_id") or "") if isinstance(values, Mapping) else ""
+                try:
+                    event = json.loads(raw) if raw else None
+                except (TypeError, ValueError):
+                    event = None
+                if not isinstance(event, Mapping):
+                    await ack(entry_id, reason="event_json_invalid", event_id=stream_event_id)
+                    continue
+                source_type = str(event.get("event_type") or "")
+                task_event = event_to_task_event(event, run_id, environment)
+                if task_event is None:
+                    if source_type in EVENT_TYPES or source_type == "online.task.view_state_changed":
+                        await ack(entry_id, reason="task_event_contract_rejected",
+                                  event_id=str(event.get("event_id") or stream_event_id))
+                    else:
+                        await ack(entry_id)
+                    continue
+                payload = serialize_event(task_event)
+                await producer.send_and_wait(
+                    delivery_topic(task_event["event_type"], "events",
+                                   task_event["schema_version"], environment),
+                    value=payload, key=event_partition_key(task_event),
+                )
+                await ack(entry_id)
+    finally:
+        if producer_started:
+            await producer.stop()
         await client.aclose()

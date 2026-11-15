@@ -139,7 +139,7 @@ def parse_sql_identity(sql: str) -> dict[str, Any]:
         r"INSERT\s+INTO\s+(dev_[A-Za-z0-9_]+)\b", sql, flags=re.IGNORECASE,
     ))
     allowed = projection_names()
-    if not BASE_PROJECTION_NAMES <= sinks:
+    if environment != "production" and not BASE_PROJECTION_NAMES <= sinks:
         missing = ",".join(sorted(BASE_PROJECTION_NAMES - sinks))
         raise ValueError(f"Flink SQL missing INSERT sink: {missing}")
     if not sinks <= allowed:
@@ -159,10 +159,11 @@ def parse_runtime_identity(runtime: str) -> str:
         if not line or line.lstrip().startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        if separator and key in {"APP_ENVIRONMENT", "PIPELINE_RUN_ID", "DEV_RUN_ID", "STAGING_RUN_ID"}:
+        if separator and key in {"APP_ENVIRONMENT", "PIPELINE_RUN_ID", "DEV_RUN_ID", "STAGING_RUN_ID", "PRODUCTION_RUN_ID"}:
             values[key] = value
     environment = values.get("APP_ENVIRONMENT", "")
-    run_id = values.get("PIPELINE_RUN_ID") or values.get("DEV_RUN_ID") or values.get("STAGING_RUN_ID", "")
+    run_id = (values.get("PIPELINE_RUN_ID") or values.get("DEV_RUN_ID")
+              or values.get("STAGING_RUN_ID") or values.get("PRODUCTION_RUN_ID", ""))
     try:
         run_environment = environment_for_run_id(run_id)
     except ValueError:
@@ -225,7 +226,9 @@ def validate_job_graph(
     expected_topics = {item["topic"] for item in plan.flink_sources.values()}
     if topic_markers and topic_markers != expected_topics:
         raise FlinkRuntimeValidationError("Flink JobGraph topic does not match environment identity", "job_topic")
-    required = frozenset(expected_sinks or EXPECTED_SINKS)
+    default_sinks = (frozenset(plan.flink_sinks) if environment == "production"
+                     else BASE_PROJECTION_NAMES | frozenset(plan.flink_sinks))
+    required = frozenset(expected_sinks) if expected_sinks is not None else default_sinks
     sources = _named_operators(descriptions, "Source")
     expected_sources = set(DomainPipelineOrchestrator(
         environment, expected_run_id,
@@ -271,7 +274,11 @@ def validate_runtime(
 ) -> dict[str, Any]:
     if len(jobs) != 1:
         raise FlinkRuntimeValidationError("Flink runtime must have exactly one matching job", "job_count")
-    required = frozenset(expected_sinks or EXPECTED_SINKS)
+    environment = environment_for_run_id(expected_run_id)
+    plan = DomainPipelineOrchestrator(environment, expected_run_id).plan()
+    default_sinks = (frozenset(plan.flink_sinks) if environment == "production"
+                     else BASE_PROJECTION_NAMES | frozenset(plan.flink_sinks))
+    required = frozenset(expected_sinks) if expected_sinks is not None else default_sinks
     job_reports = [validate_job_graph(item, expected_run_id, required) for item in jobs]
     sinks = {sink for report in job_reports for sink in report["sinks"]}
     if sinks - required:
@@ -280,7 +287,6 @@ def validate_runtime(
     if not required <= sinks:
         missing = ",".join(sorted(required - sinks))
         raise FlinkRuntimeValidationError(f"Flink runtime missing INSERT sink: {missing}", "job_sinks")
-    plan = DomainPipelineOrchestrator(environment_for_run_id(expected_run_id), expected_run_id).plan()
     expected_groups = set(plan.consumer_groups)
     if set(consumer_groups) != expected_groups:
         raise FlinkRuntimeValidationError("Flink consumer group does not match current run", "consumer_group")
