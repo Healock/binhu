@@ -148,6 +148,7 @@ class Settings(BaseSettings):
     VISIT_SOURCE_DETAIL_FIELD_MAP: str = ""
     VISIT_SOURCE_RATING_FIELD_MAP: str = ""
     VISIT_SOURCE_TIMEOUT_SECONDS: int = 30
+    CODE_SUMMARY_FETCH_TIMEOUT_SECONDS: int = 900
     VISIT_SOURCE_MOCK: bool = False
     VISIT_SOURCE_POLICE_CODE: str = "320584710000"
     VISIT_SOURCE_POLICE_NAME: str = "滨湖新城派出所"
@@ -178,6 +179,13 @@ class Settings(BaseSettings):
         if hour > 23 or minute > 59:
             raise ValueError("告知书每日读取时间超出有效范围")
         return f"{hour:02d}:{minute:02d}"
+
+    @field_validator("CODE_SUMMARY_FETCH_TIMEOUT_SECONDS")
+    @classmethod
+    def validate_code_summary_timeout(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("码汇总来源读取时限必须大于 0")
+        return value
 
     # 全民防模型三 API 单条预演与封闭登记。所有敏感值仅在生产环境注入；
     # 两个协议确认和对应开关必须分别完成实测后才可开启。
