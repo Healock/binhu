@@ -829,7 +829,29 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
         }, indent=2) + "\n", encoding="utf-8")
         readiness_path.chmod(0o600)
         jar_id = client.upload_jar(candidate_jar["container_path"])
-        client.run_jar(jar_id, manifest["run_id"])
+        try:
+            submission = flink_submission.submit_jar_or_reconcile(
+                client, jar_id, manifest["run_id"],
+            )
+        except Exception as error:
+            diagnostic = (
+                error.diagnostic()
+                if isinstance(error, flink_submission.FlinkRestError)
+                else {"error_code": safe_control_failure_detail(error)}
+            )
+            submission_path = evidence / "flink-submission-failure.json"
+            submission_path.write_text(json.dumps({
+                "environment": "development", "run_id": manifest["run_id"],
+                "phase": "job_submission_reconciliation", **diagnostic,
+            }, indent=2) + "\n", encoding="utf-8")
+            submission_path.chmod(0o600)
+            raise
+        submission_path = evidence / "flink-submission.json"
+        submission_path.write_text(json.dumps({
+            "environment": "development", "run_id": manifest["run_id"],
+            **submission,
+        }, indent=2) + "\n", encoding="utf-8")
+        submission_path.chmod(0o600)
     verified = flink_submission.wait_for_runtime(
         client, manifest["run_id"], lambda: _consumer_groups(identity["consumer_groups"]),
         expected_sinks=identity.get("sinks", flink_submission.EXPECTED_SINKS),

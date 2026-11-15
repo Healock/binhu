@@ -1094,12 +1094,20 @@ volumes:
         verified = {"run_id": run_id, "job_count": 1}
 
         class Client:
+            def __init__(self):
+                self.run_calls = 0
+
             def upload_jar(self, _path):
                 return "candidate.jar"
 
             def run_jar(self, jar_id, expected_run_id):
-                self.submission = (jar_id, expected_run_id)
-                return "c" * 32
+                self.run_calls += 1
+                raise control.flink_submission.FlinkRestError(
+                    "flink_rest_transport_failed", "/jars/candidate.jar/run",
+                )
+
+            def overview(self):
+                return []
 
         client = Client()
         with tempfile.TemporaryDirectory() as tmp, \
@@ -1112,12 +1120,20 @@ volumes:
                 patch.object(control.flink_submission, "wait_for_rest", return_value=[]), \
                 patch.object(control.flink_submission, "wait_for_taskmanager_slots",
                              return_value={"taskmanagers": 1, "slots_total": 1, "slots_available": 1}), \
-                patch.object(control.flink_submission, "partition_active_jobs", return_value=([], [])), \
+                patch.object(control.flink_submission, "partition_active_jobs", side_effect=[
+                    ([], []), ([{"name": run_id, "state": "RUNNING", "jid": "c" * 32}], []),
+                ]), \
+                patch.object(control.flink_submission.time, "sleep"), \
                 patch.object(control.flink_submission, "wait_for_runtime", return_value=verified):
             report = control._submit_and_verify_flink({"run_id": run_id}, Path(tmp))
+            saved_submission = json.loads(
+                (Path(tmp) / "flink-submission.json").read_text(encoding="utf-8")
+            )
 
         self.assertEqual(report, verified)
-        self.assertEqual(client.submission, ("candidate.jar", run_id))
+        self.assertEqual(client.run_calls, 1)
+        self.assertEqual(saved_submission["mode"], "reconciled")
+        self.assertEqual(saved_submission["job_id"], "c" * 32)
 
     def test_checkpoint_repair_rejects_shared_or_foreign_volume(self):
         items = []
