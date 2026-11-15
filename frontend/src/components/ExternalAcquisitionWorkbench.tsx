@@ -12,6 +12,10 @@ import {
   updateExternalAcquisitionSchedule,
   formatUTCTime,
 } from '../api/client'
+import {
+  EXTERNAL_RUN_POLL_INTERVAL_MS,
+  hasActiveExternalAcquisitionRun,
+} from '../utils/externalAcquisitionPolling'
 
 const SOURCE_ALIASES: Record<string, string> = { registry: 'registry_certificate', txdocs: 'txdocs_monitor', qmf: 'qmf_source', residence: 'residence_full_scan', visits: 'visit_source', codes: 'code_summary', venue: 'venue_cloud' }
 const COMMON_CRONS = [
@@ -91,6 +95,35 @@ export default function ExternalAcquisitionWorkbench() {
     setDraft({ enabled: Boolean(schedule?.enabled), cron_expr: schedule?.cron_expr || '0 2 * * *', timezone: schedule?.timezone || systemTimezone || 'Asia/Shanghai', params: schedule?.params || {}, revision: schedule?.revision || 1 })
     void getExternalAcquisitionRuns(selected.source_key, 20).then(setRuns).catch(() => setRuns([]))
   }, [selected?.source_key, selected?.schedule?.revision])
+  const hasActiveRuns = hasActiveExternalAcquisitionRun(runs)
+  useEffect(() => {
+    if (!selected || !hasActiveRuns) return
+    let disposed = false
+    let refreshing = false
+    const refreshRuns = async () => {
+      if (refreshing) return
+      refreshing = true
+      try {
+        const latestRuns = await getExternalAcquisitionRuns(selected.source_key, 20)
+        if (disposed) return
+        setRuns(latestRuns)
+        if (latestRuns[0]) {
+          setCatalog(current => current.map(item => item.source_key === selected.source_key
+            ? { ...item, latest_run: latestRuns[0] }
+            : item))
+        }
+      } catch {
+        // Keep the last known state; the manual refresh remains available.
+      } finally {
+        refreshing = false
+      }
+    }
+    const timer = window.setInterval(() => void refreshRuns(), EXTERNAL_RUN_POLL_INTERVAL_MS)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [selected?.source_key, hasActiveRuns])
   const choose = (sourceKey: string) => {
     setSelectedKey(sourceKey)
     const next = new URLSearchParams(searchParams); next.set('tab', 'external'); next.set('source', sourceKey); next.delete('panel'); setSearchParams(next, { replace: true })
