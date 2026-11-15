@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import date, timedelta
 from typing import Any
 
+from config import settings
 from services.external_acquisition_jobs import create_job, get_job
 from services.external_acquisition_registry import (
     claim_due_schedule,
@@ -55,6 +57,18 @@ async def _previous_business_date() -> date:
         async with conn.cursor() as cur:
             current = await get_business_date(cur)
     return current - timedelta(days=1)
+
+
+async def _fetch_code_summary_sources(start_date, end_date, progress_callback):
+    from services.code_summary import CodeSummaryError, fetch_sources
+
+    try:
+        async with asyncio.timeout(settings.CODE_SUMMARY_FETCH_TIMEOUT_SECONDS):
+            return await fetch_sources(start_date, end_date, progress_callback)
+    except TimeoutError as exc:
+        raise CodeSummaryError(
+            "source_timeout", "平安码与管家码来源读取超过时限",
+        ) from exc
 
 
 async def _wait_certificate(run_id: int, ctx) -> dict[str, Any]:
@@ -177,7 +191,7 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
             from routers.code_summaries import (
                 DateRangeRequest, _commit_source, _directories, _manual_location_labels,
             )
-            from services.code_summary import aggregate_rows, count_fullchain_registrations, fetch_sources, CodeSummaryError
+            from services.code_summary import aggregate_rows, count_fullchain_registrations, CodeSummaryError
 
             business_date = await _previous_business_date()
             start_date = _date_param(params, "start_date", business_date)
@@ -191,7 +205,32 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                 personnel, places = await _directories(conn)
                 labels = await _manual_location_labels(conn, "peace")
             await ctx.update(phase="reading_sources", current=1, total=4, message="正在分页读取平安码和管家码来源")
-            fetched = await fetch_sources(start_date, end_date)
+            last_progress_at = 0.0
+
+            async def report_page_progress(source: str, page: int, pages: int,
+                                           loaded: int, expected: int) -> None:
+                nonlocal last_progress_at
+                now = time.monotonic()
+                if page != 1 and page != pages and now - last_progress_at < 10:
+                    return
+                last_progress_at = now
+                label = "平安码" if source == "peace" else "管家码"
+                await ctx.update(
+                    phase="reading_sources", current=page, total=pages,
+                    message=f"正在读取{label}：第 {page}/{pages} 页，已读取 {loaded}/{expected} 条",
+                )
+
+            try:
+                fetched = await _fetch_code_summary_sources(
+                    start_date, end_date, report_page_progress,
+                )
+            except CodeSummaryError as error:
+                return {
+                    "status": "failed",
+                    "auto_commit_status": "skipped",
+                    "safety_gate_code": error.code,
+                    "message": "来源读取超过时限，自动提交已跳过，现有汇总保持不变",
+                }
             registration_counts: dict[date, int] = {}
             if not fetched["peace"].get("error"):
                 try:

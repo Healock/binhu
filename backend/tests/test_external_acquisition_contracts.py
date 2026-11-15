@@ -11,7 +11,10 @@ from services.external_acquisition_jobs import (
     _safe_result,
     _terminal_progress_message,
 )
-from services.external_acquisition_scheduler import _code_summary_quality
+from services.external_acquisition_scheduler import (
+    _code_summary_quality,
+    _fetch_code_summary_sources,
+)
 
 
 def test_legacy_and_canonical_kinds_share_one_lease_family():
@@ -101,6 +104,25 @@ def test_code_summary_incomplete_quality_is_aggregate_only_and_survives_run_reda
         },
     }
     assert _safe_result({"quality": quality}) == {"quality": quality}
+
+
+def test_code_summary_total_source_timeout_is_bounded_and_classified():
+    async def scenario():
+        from config import settings
+        from services.code_summary import CodeSummaryError
+
+        async def slow_fetch(*_args):
+            await asyncio.sleep(2)
+
+        with (
+            patch.object(settings, "CODE_SUMMARY_FETCH_TIMEOUT_SECONDS", 1),
+            patch("services.code_summary.fetch_sources", new=slow_fetch),
+            pytest.raises(CodeSummaryError) as captured,
+        ):
+            await _fetch_code_summary_sources(None, None, None)
+        assert captured.value.code == "source_timeout"
+
+    asyncio.run(scenario())
 
 
 def test_failed_external_run_does_not_get_success_message():

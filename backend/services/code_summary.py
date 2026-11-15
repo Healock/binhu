@@ -8,7 +8,7 @@ import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from hashlib import sha256
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
@@ -408,6 +408,7 @@ async def _fetch_kind(
     kind: str,
     start_date: date,
     end_date: date,
+    progress_callback: Callable[[str, int, int, int, int], Awaitable[None]] | None = None,
 ) -> list[dict[str, Any]]:
     meta = SOURCE_META[kind]
     rows: list[dict[str, Any]] = []
@@ -464,6 +465,9 @@ async def _fetch_kind(
         rows.extend(page_rows)
         if len(rows) > settings.VISIT_SOURCE_MAX_RECORDS:
             raise CodeSummaryError("too_many_records", "旧平台码数据超过记录数保护阈值")
+        if progress_callback:
+            pages = max(1, (expected_total + PAGE_SIZE - 1) // PAGE_SIZE)
+            await progress_callback(kind, page, max(page, pages), len(rows), expected_total)
         if len(page_rows) < PAGE_SIZE:
             if len(rows) != expected_total:
                 raise CodeSummaryError("pagination_incomplete", "旧平台分页记录数与总数不一致")
@@ -471,7 +475,11 @@ async def _fetch_kind(
     raise CodeSummaryError("too_many_pages", "旧平台码数据超过分页保护阈值")
 
 
-async def fetch_sources(start_date: date, end_date: date) -> dict[str, Any]:
+async def fetch_sources(
+    start_date: date,
+    end_date: date,
+    progress_callback: Callable[[str, int, int, int, int], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     if not settings.VISIT_SOURCE_BASE_URL:
         raise CodeSummaryError("not_configured", "旧平台地址尚未配置")
     async with httpx.AsyncClient(
@@ -483,7 +491,9 @@ async def fetch_sources(start_date: date, end_date: date) -> dict[str, Any]:
         results: dict[str, Any] = {}
         for kind in ("peace", "manager"):
             try:
-                results[kind] = {"rows": await _fetch_kind(client, kind, start_date, end_date)}
+                results[kind] = {"rows": await _fetch_kind(
+                    client, kind, start_date, end_date, progress_callback,
+                )}
             except CodeSummaryError as exc:
                 results[kind] = {"error": exc}
         return results
