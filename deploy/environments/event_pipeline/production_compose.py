@@ -250,6 +250,11 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
         "env_file": ["runtime.env"],
         "networks": ["internal", "backend"],
         "mem_limit": "2048m", "memswap_limit": "2304m", "cpus": 1.5,
+        "healthcheck": {
+            "test": ["CMD-SHELL", "curl -fsS http://jobmanager:8081/taskmanagers | grep -Eq '\"slotsNumber\"[[:space:]]*:[[:space:]]*[1-9]'"],
+            "interval": "5s", "timeout": "3s", "retries": 24,
+            "start_period": "30s",
+        },
         "depends_on": {
             "production-kafka": {"condition": "service_healthy"},
             "jobmanager": {"condition": "service_started"},
@@ -276,7 +281,7 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
         ],
         "depends_on": {
             "jobmanager": {"condition": "service_healthy"},
-            "taskmanager": {"condition": "service_started"},
+            "taskmanager": {"condition": "service_healthy"},
         },
     }
 

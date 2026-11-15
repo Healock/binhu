@@ -334,6 +334,28 @@ class FlinkRest:
     def overview(self) -> list[dict[str, Any]]:
         return list((self.request("/jobs/overview") or {}).get("jobs", []))
 
+    def taskmanager_slots(self) -> dict[str, int]:
+        payload = self.request("/taskmanagers")
+        taskmanagers = payload.get("taskmanagers") if isinstance(payload, dict) else None
+        if not isinstance(taskmanagers, list):
+            raise FlinkRestError("flink_rest_response_invalid", "/taskmanagers")
+        slots_total = 0
+        slots_available = 0
+        for taskmanager in taskmanagers:
+            if not isinstance(taskmanager, dict):
+                raise FlinkRestError("flink_rest_response_invalid", "/taskmanagers")
+            total = taskmanager.get("slotsNumber")
+            available = taskmanager.get("freeSlots")
+            if type(total) is not int or type(available) is not int:
+                raise FlinkRestError("flink_rest_response_invalid", "/taskmanagers")
+            slots_total += max(0, total)
+            slots_available += max(0, available)
+        return {
+            "taskmanagers": len(taskmanagers),
+            "slots_total": slots_total,
+            "slots_available": slots_available,
+        }
+
     def upload_jar(self, container_path: str) -> str:
         """Upload the JAR compiled from the current candidate source."""
         if container_path not in {
@@ -477,6 +499,27 @@ def wait_for_rest(client: FlinkRest, timeout: float = 60.0) -> list[dict[str, An
                 raise
         if time.monotonic() >= deadline:
             raise FlinkRestError("flink_rest_timeout", "/jobs/overview") from None
+        time.sleep(1)
+
+
+def wait_for_taskmanager_slots(
+    client: FlinkRest, min_slots: int = 1, timeout: float = 90.0,
+) -> dict[str, int]:
+    """Wait until at least one registered TaskManager exposes free slots."""
+    if type(min_slots) is not int or min_slots < 1:
+        raise ValueError("minimum Flink slot count must be positive")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            report = client.taskmanager_slots()
+        except FlinkRestError as exc:
+            if exc.code not in REST_TRANSIENT_CODES:
+                raise
+            report = None
+        if report is not None and report["slots_available"] >= min_slots:
+            return report
+        if time.monotonic() >= deadline:
+            raise FlinkRestError("flink_taskmanager_slots_timeout", "/taskmanagers") from None
         time.sleep(1)
 
 

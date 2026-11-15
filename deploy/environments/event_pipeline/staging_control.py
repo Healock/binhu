@@ -553,6 +553,12 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
     submission = {"mode": "existing"}
     if not current:
         try:
+            slot_readiness = flink_submission.wait_for_taskmanager_slots(client)
+            (evidence / "flink-taskmanager-readiness.json").write_text(
+                json.dumps({
+                    "environment": "staging", "run_id": run_id, **slot_readiness,
+                }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
             jar_id = client.upload_jar("/opt/flink/private/pipeline-job.jar")
             submission = flink_submission.submit_jar_or_reconcile(client, jar_id, run_id)
         except ValueError as error:

@@ -104,6 +104,45 @@ class FlinkSubmissionContractTests(unittest.TestCase):
                 flink_submission.wait_for_rest(Client(), timeout=0.5)
         sleep.assert_not_called()
 
+    def test_taskmanager_readiness_waits_for_a_registered_free_slot(self):
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def taskmanager_slots(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"taskmanagers": 0, "slots_total": 0, "slots_available": 0}
+                return {"taskmanagers": 1, "slots_total": 1, "slots_available": 1}
+
+        client = Client()
+        with patch.object(flink_submission.time, "sleep") as sleep:
+            result = flink_submission.wait_for_taskmanager_slots(client, timeout=5)
+        self.assertEqual(result["slots_available"], 1)
+        self.assertEqual(client.calls, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_taskmanager_slot_summary_counts_only_registered_capacity(self):
+        client = flink_submission.FlinkRest("dev-jobmanager")
+        with patch.object(client, "request", return_value={"taskmanagers": [
+            {"slotsNumber": 3, "freeSlots": 2},
+            {"slotsNumber": 1, "freeSlots": 0},
+        ]}):
+            self.assertEqual(client.taskmanager_slots(), {
+                "taskmanagers": 2, "slots_total": 4, "slots_available": 2,
+            })
+
+    def test_taskmanager_readiness_fails_with_a_fixed_timeout_code(self):
+        class Client:
+            def taskmanager_slots(self):
+                return {"taskmanagers": 0, "slots_total": 0, "slots_available": 0}
+
+        with patch.object(flink_submission.time, "monotonic", side_effect=[10.0, 11.0]), \
+                patch.object(flink_submission.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "flink_taskmanager_slots_timeout"):
+                flink_submission.wait_for_taskmanager_slots(Client(), timeout=0.5)
+        sleep.assert_not_called()
+
     def test_runtime_wait_retries_a_transient_rest_transport_failure(self):
         class Client:
             def __init__(self):

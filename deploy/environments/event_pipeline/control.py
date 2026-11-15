@@ -73,6 +73,7 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Flink jobs not ready",
         "old Dev Flink dual-track jobs did not stop",
         "Flink job is not RUNNING",
+        "flink_taskmanager_slots_timeout",
         "Flink JobGraph run_id does not match",
         "Flink JobGraph run_id filter does not match",
         "Flink JobGraph environment filter is missing",
@@ -818,6 +819,12 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     if len(current) not in (0, 1):
         raise ValueError("Dev Flink current run has an incomplete job set")
     if len(current) == 0:
+        slot_readiness = flink_submission.wait_for_taskmanager_slots(client)
+        readiness_path = evidence / "flink-taskmanager-readiness.json"
+        readiness_path.write_text(json.dumps({
+            "environment": "development", "run_id": manifest["run_id"], **slot_readiness,
+        }, indent=2) + "\n", encoding="utf-8")
+        readiness_path.chmod(0o600)
         jar_id = client.upload_jar(candidate_jar["container_path"])
         client.run_jar(jar_id, manifest["run_id"])
     verified = flink_submission.wait_for_runtime(
