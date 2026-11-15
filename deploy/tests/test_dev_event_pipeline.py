@@ -911,33 +911,59 @@ volumes:
         with self.assertRaisesRegex(ValueError, "identity mismatch"):
             validate_existing_container_identity(foreign)
 
-    def test_failed_schema_registration_prevents_start_and_keeps_each_attempt(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}), patch('time.time_ns', return_value=123):
-            with patch.object(control.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout="", stderr="schema unavailable")) as command:
-                for attempt in range(2):
-                    with self.assertRaises(ValueError):
-                        control.apply()
-                self.assertEqual(command.call_count, 2)
-                self.assertTrue(all(call.args[0][-1] == "apply" for call in command.call_args_list))
-                self.assertTrue(all(call.kwargs["timeout"] == 90 for call in command.call_args_list))
-                self.assertTrue(all("up" not in call.args[0] for call in command.call_args_list))
-            evidence = list(Path(tmp).glob("apply-evidence-*"))
-            self.assertEqual(len(evidence), 2)
-            self.assertTrue(all((entry / "schema-registration.log").exists() for entry in evidence))
+    def test_apply_starts_eventbus_before_schema_registration_and_refuses_workers_on_failure(self):
+        operation_order = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(control, "ROOT", Path(tmp)), \
+                patch.object(control, "measure", return_value={}), \
+                patch.object(control, "_compose_action") as compose_action, \
+                patch.object(control, "_wait_dev_kafka_ready"), \
+                patch.object(control.time, "sleep"), \
+                patch.object(control.subprocess, "run") as command:
+            compose_action.side_effect = lambda *_args, **_kwargs: operation_order.append("eventbus")
+            command.side_effect = lambda *_args, **_kwargs: (
+                operation_order.append("schema") or
+                SimpleNamespace(returncode=1, stdout="", stderr="schema unavailable")
+            )
+            with self.assertRaisesRegex(ValueError, "register the fixed Dev schema"):
+                control.apply()
+
+            self.assertEqual(operation_order[0:2], ["eventbus", "schema"])
+            compose_action.assert_called_once_with(
+                control.EVENTBUS_COMPOSE, "up", control.EVENTBUS_SERVICES, timeout=420,
+            )
+            self.assertEqual(command.call_count, 6)
+            self.assertTrue(all(call.args[0][-1] == "apply" for call in command.call_args_list))
+            self.assertTrue(all(call.kwargs["timeout"] == 120 for call in command.call_args_list))
+            evidence = next(Path(tmp).glob("apply-evidence-*"))
+            self.assertTrue((evidence / "schema-registration.log").exists())
+            self.assertEqual(json.loads(
+                (evidence / "schema-registration-failure.json").read_text(encoding="utf-8")
+            ), {
+                "phase": "schema_registration", "attempts": 6,
+                "error_code": "schema_registration_failed",
+            })
 
     def test_schema_registration_timeout_records_safe_phase_and_prevents_start(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(control, "ROOT", Path(tmp)), patch.object(control, "measure", return_value={}):
-            with patch.object(control.subprocess, "run", side_effect=control.subprocess.TimeoutExpired(["docker", "compose"], 90)) as command:
-                with self.assertRaisesRegex(ValueError, "Schema Registry registration timed out"):
-                    control.apply()
-                self.assertEqual(command.call_count, 1)
-                self.assertNotIn("up", command.call_args.args[0])
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(control, "ROOT", Path(tmp)), \
+                patch.object(control, "measure", return_value={}), \
+                patch.object(control, "_compose_action"), \
+                patch.object(control, "_wait_dev_kafka_ready"), \
+                patch.object(control.time, "sleep"), \
+                patch.object(control.subprocess, "run", side_effect=control.subprocess.TimeoutExpired(
+                    ["docker", "compose"], 120)) as command:
+            with self.assertRaisesRegex(ValueError, "register the fixed Dev schema"):
+                control.apply()
+            self.assertEqual(command.call_count, 6)
+            self.assertNotIn("up", command.call_args.args[0])
             evidence = list(Path(tmp).glob("apply-evidence-*"))
             self.assertEqual(len(evidence), 1)
-            marker = evidence[0] / "schema-registration-timeout.json"
+            marker = evidence[0] / "schema-registration-failure.json"
             self.assertTrue(marker.exists())
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), {
-                "phase": "schema_registration", "timed_out": True, "timeout_seconds": 90,
+                "phase": "schema_registration", "attempts": 6,
+                "error_code": "schema_registration_failed",
             })
 
     def test_evidence_initializer_targets_only_current_run_directory(self):
@@ -993,6 +1019,8 @@ volumes:
                 return SimpleNamespace(returncode=0, stdout="started", stderr="")
 
             with patch.object(control, "ROOT", root), patch.object(control, "measure", return_value={}), \
+                    patch.object(control, "_compose_action"), \
+                    patch.object(control, "_wait_dev_kafka_ready"), \
                     patch.object(control.subprocess, "run", side_effect=run), \
                     patch.object(control, "_ensure_registered_topics", return_value={
                         "online_summary_facts": ["dev.online-summary.facts.v1", "dev.online-summary.facts.dlq.v1"],

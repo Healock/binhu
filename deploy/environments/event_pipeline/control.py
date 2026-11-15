@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.parse import urlsplit
 
 from .prepare import ROOT, PROJECT, NETWORK, checked, compose
@@ -67,6 +68,8 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Dev Flink current run has an incomplete job set",
         "register the fixed Dev schema before starting workers",
         "Dev Schema Registry registration timed out",
+        "Dev event bus start failed",
+        "Dev event bus did not become ready",
         "startup deadline reached; preserve resources and remeasure",
         "startup failed; preserve private diagnostics",
         "Dev delivery index migration failed",
@@ -890,23 +893,42 @@ def apply():
     # which stub measure() with an empty report.
     if report.get("run_id"):
         _prepare_evidence_directory(report["run_id"])
-    schema_timeout = 90
     try:
-        schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
-                                 "run", "--rm", "--no-deps", "relay", "python", "-m",
-                                 "event_pipeline.schema_registry", "apply"],
-                                capture_output=True, text=True, timeout=schema_timeout)
-    except subprocess.TimeoutExpired:
-        path = evidence / "schema-registration-timeout.json"
-        path.write_text(json.dumps({"phase": "schema_registration",
-                                    "timed_out": True,
-                                    "timeout_seconds": schema_timeout}) + "\n")
+        _compose_action(EVENTBUS_COMPOSE, "up", EVENTBUS_SERVICES, timeout=420)
+        _wait_dev_kafka_ready()
+    except Exception:
+        path = evidence / "eventbus-readiness-failure.json"
+        path.write_text(json.dumps({"phase": "eventbus_readiness",
+                                    "error_code": "eventbus_not_ready"}) + "\n")
         path.chmod(0o600)
-        raise ValueError("Dev Schema Registry registration timed out") from None
+        raise ValueError("Dev event bus did not become ready") from None
+
+    schema_timeout = 120
+    schema = None
+    schema_output = []
+    for attempt in range(6):
+        try:
+            schema = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
+                                     "run", "--rm", "--no-deps", "relay", "python", "-m",
+                                     "event_pipeline.schema_registry", "apply"],
+                                    capture_output=True, text=True, timeout=schema_timeout)
+        except subprocess.TimeoutExpired:
+            schema_output.append(f"attempt={attempt + 1} timeout={schema_timeout}")
+        else:
+            schema_output.append(schema.stdout + "\n" + schema.stderr)
+            if schema.returncode == 0:
+                break
+        if attempt < 5:
+            time.sleep(min(2 ** attempt, 15))
     path = evidence / "schema-registration.log"
-    path.write_text(schema.stdout + "\n" + schema.stderr)
+    path.write_text("\n".join(schema_output))
     path.chmod(0o600)
-    if schema.returncode:
+    if schema is None or schema.returncode:
+        path = evidence / "schema-registration-failure.json"
+        path.write_text(json.dumps({"phase": "schema_registration",
+                                    "attempts": len(schema_output),
+                                    "error_code": "schema_registration_failed"}) + "\n")
+        path.chmod(0o600)
         raise ValueError("register the fixed Dev schema before starting workers")
     try:
         result = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
