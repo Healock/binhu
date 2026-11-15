@@ -445,7 +445,7 @@ export default function WeekendDuty() {
                                 title={`${member.name} ${dayNames[index]} ${labels[state]}，点击调整`}
                               >
                                 <strong>{labels[state]}</strong>
-                                <small>{leave ? "出勤记录" : isDraft ? "待保存" : original.source === "default" ? "默认" : "已安排"}</small>
+                                <small>{leave ? "请假/离岗" : isDraft ? "待保存" : original.source === "default" ? "默认" : "已安排"}</small>
                               </button>
                             </td>
                           );

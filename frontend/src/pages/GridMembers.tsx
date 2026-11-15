@@ -404,7 +404,7 @@ export default function GridMembers() {
               icon={<HistoryOutlined />}
               onClick={() => setHistoryOpen(true)}
             >
-              出勤记录
+              请假与离岗历史
             </Button>}
             {canManageAttendance && <Button
               icon={<CalendarOutlined />}
@@ -711,19 +711,19 @@ export default function GridMembers() {
       <Drawer
         open={historyOpen}
         width={720}
-        title={`出勤记录（共 ${historyTotal} 条）`}
+        title={`请假与离岗历史（共 ${historyTotal} 条）`}
         onClose={() => setHistoryOpen(false)}
       >
         <Alert
           showIcon
           type="info"
-          message="这里保留临时请假和长期离岗历史；双休日在岗安排请到“双休日备勤”查看"
+          message="这里保留临时请假和长期离岗记录。请在对应记录中更正或撤销；双休日在岗安排请到“双休日备勤”查看。"
           className="mb-4"
         />
         <List
           loading={historyLoading}
           dataSource={historyRows}
-          locale={{ emptyText: '暂无出勤变动记录' }}
+          locale={{ emptyText: '暂无请假或离岗记录' }}
           renderItem={item => (
             <List.Item>
               <div className="w-full min-w-0">
@@ -1379,11 +1379,6 @@ function LeaveModal({
   )
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
-  const hasLeave = (
-    member.status === '离岗'
-    || Boolean(member.leave_start_date && member.leave_end_date)
-  )
-
   const handleSave = async () => {
     if (
       mode === 'temporary'
@@ -1422,18 +1417,6 @@ function LeaveModal({
     }
   }
 
-  const handleClear = async () => {
-    setSaving(true)
-    setFormError('')
-    try {
-      window.location.assign(`/grid-members/attendance-calendar?history=1&member=${member.id}`)
-    } catch (error: any) {
-      setFormError(error?.response?.data?.detail || '恢复失败')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   return (
     <Modal
       open
@@ -1448,21 +1431,11 @@ function LeaveModal({
         },
       }}
       footer={(
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <Button
-            className="min-h-11 w-full sm:min-h-0 sm:w-auto"
-            disabled={!hasLeave}
-            loading={saving}
-            onClick={handleClear}
-          >
-            恢复正常
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+          <Button className="min-h-11 sm:min-h-0" disabled={saving} onClick={onClose}>取消</Button>
+          <Button className="min-h-11 sm:min-h-0" type="primary" loading={saving} onClick={handleSave}>
+            保存
           </Button>
-          <div className="grid grid-cols-2 gap-2 sm:flex">
-            <Button className="min-h-11 sm:min-h-0" disabled={saving} onClick={onClose}>取消</Button>
-            <Button className="min-h-11 sm:min-h-0" type="primary" loading={saving} onClick={handleSave}>
-              保存
-            </Button>
-          </div>
         </div>
       )}
     >
@@ -1541,7 +1514,7 @@ function LeaveModal({
               />
             </div>
             <p className="mt-1.5 text-xs text-slate-500">
-              日期结束后会自动恢复正常。
+              请假将在所选结束日期后自动结束。
             </p>
           </div>
         ) : (
@@ -1549,7 +1522,7 @@ function LeaveModal({
             type="info"
             showIcon
             message="长期没有结束日期"
-            description="人员恢复工作时，再打开此窗口点击“恢复正常”。"
+            description="人员恢复工作时，请到“请假与离岗历史”中选择这条记录并办理更正或撤销。"
           />
         )}
 

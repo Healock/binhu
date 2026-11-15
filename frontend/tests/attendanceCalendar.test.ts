@@ -79,3 +79,23 @@ test("系统建议在岗使用只读接口并明确区分正式排班", () => {
   assert.match(page, /suggestion_state/);
   assert.match(page, /不会修改正式排班/);
 });
+
+test("出勤更正预览先校验原因，并展示后端字段校验信息", () => {
+  const page = readFileSync(new URL("../src/pages/AttendanceCalendar.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /apiErrorMessage\(e, "操作失败，请稍后重试；草稿仍保留"\)/);
+  assert.match(page, /if \(!editor\.reason\.trim\(\)\)\s*\{\s*setPending\(null\);\s*setError\("请填写调整／更正原因"\);\s*return;/);
+});
+
+test("人员请假设置不提供一键恢复，历史记录提供更正入口且名称准确", () => {
+  const members = readFileSync(new URL("../src/pages/GridMembers.tsx", import.meta.url), "utf8");
+  const weekendDuty = readFileSync(new URL("../src/pages/WeekendDuty.tsx", import.meta.url), "utf8");
+
+  assert.match(members, /title=\{`请假与离岗历史（共 \$\{historyTotal\} 条）`\}/);
+  assert.match(members, /更正／撤销/);
+  assert.doesNotMatch(members, /<Button[\s\S]{0,160}>\s*恢复正常/);
+  assert.doesNotMatch(members, /handleClear|window\.location\.assign\(/);
+  assert.match(members, /到“请假与离岗历史”中选择这条记录并办理更正或撤销/);
+  assert.doesNotMatch(members, /出勤记录/);
+  assert.match(weekendDuty, /请假\/离岗/);
+});
