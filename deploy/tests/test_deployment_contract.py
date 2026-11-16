@@ -107,8 +107,8 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("'backup_scope': 'all'", workflow)
         self.assertIn('"hotfix $EXPECTED_VERSION $commit all backend $size $HOTFIX_ID $bundle_sha256"', workflow)
         self.assertIn('"binhu-deploy@$DEPLOY_HOST"', workflow)
-        self.assertRegex(workflow, r"(?s)  deploy:\n.*?timeout-minutes: 180")
-        self.assertIn("(( elapsed <= 10800 ))", workflow)
+        self.assertRegex(workflow, r"(?s)  deploy:\n.*?timeout-minutes: 360")
+        self.assertIn("(( elapsed <= 21600 ))", workflow)
         self.assertIn("docker image load --input \"$work_dir/image.tar.gz\"", (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8"))
         self.assertIn("docker image load --input \"$promotion_candidate/image.tar\"", (ROOT / "deploy/binhu-deploy").read_text(encoding="utf-8"))
 
