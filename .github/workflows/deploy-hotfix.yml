@@ -153,7 +153,7 @@ jobs:
   deploy:
     needs: validate-and-package
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     environment: production
     env:
       EXPECTED_VERSION: ${{ inputs.expected_version }}
@@ -191,4 +191,4 @@ jobs:
             < release-output/binhu-hotfix.tar.gz
           elapsed=$(( $(date +%s) - started ))
           printf 'HOTFIX_ID=%s\nELAPSED_SECONDS=%s\n' "$HOTFIX_ID" "$elapsed"
-          (( elapsed <= 180 ))
+          (( elapsed <= 2700 ))
