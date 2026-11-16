@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Empty, Input, Progress, Select, Switch, Tag, message } from 'antd'
+import { Alert, Button, DatePicker, Empty, Input, Progress, Select, Switch, Tag, message } from 'antd'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import {
@@ -18,6 +19,8 @@ import {
 } from '../utils/externalAcquisitionPolling'
 
 const SOURCE_ALIASES: Record<string, string> = { registry: 'registry_certificate', txdocs: 'txdocs_monitor', qmf: 'qmf_source', residence: 'residence_full_scan', visits: 'visit_source', codes: 'code_summary', venue: 'venue_cloud' }
+const { RangePicker } = DatePicker
+const MAX_MANUAL_RANGE_DAYS = 31
 const COMMON_CRONS = [
   { label: '每天 02:00', value: '0 2 * * *' }, { label: '每天 06:00', value: '0 6 * * *' },
   { label: '每天 12:00', value: '0 12 * * *' }, { label: '每小时', value: '0 * * * *' },
@@ -44,22 +47,34 @@ const CODE_SUMMARY_SOURCE_LABELS: Record<string, string> = {
 
 function CodeSummaryQuality({ run }: { run: ExternalAcquisitionRun }) {
   const quality = run.result?.quality
-  if (run.safety_gate_code !== 'code_summary_incomplete' || !quality) return null
+  if (!quality) return null
+  const sourceCounts = Object.entries(quality) as [string, any][]
+  const unclassifiedCount = sourceCounts.reduce((total, [, counts]) => total + Number(counts.unclassified_location_count || 0), 0)
+  const successfulWithLocationsToClassify = run.status === 'success' && unclassifiedCount > 0
+  if (!successfulWithLocationsToClassify && run.safety_gate_code !== 'code_summary_incomplete') return null
   return <Alert
-    type="warning"
+    type={successfulWithLocationsToClassify ? 'success' : 'warning'}
     showIcon
-    message="汇总未提交：来源数据未通过完整性检查"
+    message={successfulWithLocationsToClassify ? '汇总已提交，仍有地点待分类' : '汇总未提交：来源数据未通过完整性检查'}
     description={<div className="grid gap-2">
-      <div>自动提交已跳过，本次不会覆盖现有汇总。以下仅为脱敏统计：</div>
+      <div>{successfulWithLocationsToClassify ? '未分类地点已计入汇总，分类后可重新计算。以下仅为脱敏统计：' : '自动提交已跳过，本次不会覆盖现有汇总。以下仅为脱敏统计：'}</div>
       <div className="grid gap-1">
-        {Object.entries(quality).map(([source, counts]: [string, any]) => <div key={source}>
+        {sourceCounts.map(([source, counts]) => <div key={source}>
           <strong>{CODE_SUMMARY_SOURCE_LABELS[source] || source}</strong>
           {`：共 ${counts.raw_count ?? 0} 条，有效 ${counts.valid_count ?? 0} 条，记录身份无效 ${counts.excluded_record_count ?? 0} 条，地点未分类 ${counts.unclassified_location_count ?? 0} 条，时间无效 ${counts.invalid_time_count ?? 0} 条。`}
         </div>)}
       </div>
-      <div>地点未分类请到码汇总的“地点分类”维护；身份或时间无效需由来源数据负责人核对。修正后再重新运行。</div>
+      <div>{successfulWithLocationsToClassify ? '可在“平安码/管家码汇总”的“地点分类”维护地点，再重新计算；身份或时间异常仍需先由来源数据负责人核对。' : '地点未分类请到码汇总的“地点分类”维护；身份或时间无效需由来源数据负责人核对。修正后再重新运行。'}</div>
     </div>}
   />
+}
+
+function previousBusinessDate(timezone: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone || 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date())
+  const current = `${parts.find(part => part.type === 'year')?.value}-${parts.find(part => part.type === 'month')?.value}-${parts.find(part => part.type === 'day')?.value}`
+  return dayjs(current).subtract(1, 'day')
 }
 
 export default function ExternalAcquisitionWorkbench() {
@@ -72,6 +87,9 @@ export default function ExternalAcquisitionWorkbench() {
   const [runLoading, setRunLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [manualDateRange, setManualDateRange] = useState<[Dayjs, Dayjs]>([
+    dayjs().subtract(1, 'day'), dayjs().subtract(1, 'day'),
+  ])
   const [draft, setDraft] = useState({ enabled: false, cron_expr: '0 2 * * *', timezone: systemTimezone || 'Asia/Shanghai', params: {} as Record<string, any>, revision: 1 })
   const admin = isSuperAdmin(user)
   const selected = useMemo(() => catalog.find(item => item.source_key === selectedKey) || null, [catalog, selectedKey])
@@ -93,6 +111,8 @@ export default function ExternalAcquisitionWorkbench() {
     if (!selected) return
     const schedule = selected.schedule
     setDraft({ enabled: Boolean(schedule?.enabled), cron_expr: schedule?.cron_expr || '0 2 * * *', timezone: schedule?.timezone || systemTimezone || 'Asia/Shanghai', params: schedule?.params || {}, revision: schedule?.revision || 1 })
+    const defaultDate = previousBusinessDate(systemTimezone || 'Asia/Shanghai')
+    setManualDateRange([defaultDate, defaultDate])
     void getExternalAcquisitionRuns(selected.source_key, 20).then(setRuns).catch(() => setRuns([]))
   }, [selected?.source_key, selected?.schedule?.revision])
   const hasActiveRuns = hasActiveExternalAcquisitionRun(runs)
@@ -130,9 +150,23 @@ export default function ExternalAcquisitionWorkbench() {
   }
   const runNow = async () => {
     if (!selected) return
+    const params: Record<string, any> = {}
+    if (selected.params_schema === 'date_range') {
+      const [startDate, endDate] = manualDateRange
+      if (startDate.isAfter(endDate, 'day')) {
+        message.error('开始日期不能晚于结束日期')
+        return
+      }
+      if (endDate.diff(startDate, 'day') + 1 > MAX_MANUAL_RANGE_DAYS) {
+        message.error(`单次最多读取 ${MAX_MANUAL_RANGE_DAYS} 天，请缩短日期范围`)
+        return
+      }
+      params.start_date = startDate.format('YYYY-MM-DD')
+      params.end_date = endDate.format('YYYY-MM-DD')
+    }
     setRunLoading(true)
     try {
-      const result = await runExternalAcquisitionSource(selected.source_key, draft.params)
+      const result = await runExternalAcquisitionSource(selected.source_key, params)
       setRuns(current => [result.data, ...current.filter(item => item.id !== result.data.id)].slice(0, 20))
       message.success(result.reused ? '已有相同来源任务，已展示原任务' : '来源读取已启动')
     } catch (reason: any) { message.error(reason?.response?.data?.detail || '来源读取启动失败') } finally { setRunLoading(false) }
@@ -162,7 +196,7 @@ export default function ExternalAcquisitionWorkbench() {
     </aside>
     <main className={`${selectedKey ? 'grid' : 'hidden lg:grid'} content-start gap-4 min-w-0`}>{!selected ? <Empty description="请选择来源" /> : <>
       <Button className="justify-self-start lg:hidden" onClick={() => { setSelectedKey(''); const next = new URLSearchParams(searchParams); next.delete('source'); next.delete('panel'); setSearchParams(next, { replace: true }) }}>返回来源目录</Button>
-      <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="m-0 text-lg">{selected.name}</h2><p className="mt-1 text-sm text-[var(--app-text-secondary)]">{selected.description}</p></div><Tag>{selected.supports_auto_commit ? '完整成功才提交' : '只读/需人工确认'}</Tag></div><div className="flex flex-wrap items-center gap-3 text-sm"><span>最近结果：<strong>{runLabel(selected.latest_run)}</strong></span>{selected.latest_run?.error_code && <Tag color="red">{selected.latest_run.error_code}</Tag>}{selected.latest_run?.auto_commit_status && <span>自动提交：{selected.latest_run.auto_commit_status}</span>}</div>{selected.latest_run?.error_message && <Alert type="warning" showIcon message={selected.latest_run.error_message} />}<Button type="primary" loading={runLoading} disabled={!selected.accessible || !selected.supports_manual} onClick={() => void runNow()}>立即读取/运行</Button></section>
+      <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="m-0 text-lg">{selected.name}</h2><p className="mt-1 text-sm text-[var(--app-text-secondary)]">{selected.description}</p></div><Tag>{selected.source_key === 'code_summary' ? '未分类地点可先汇总' : selected.supports_auto_commit ? '完整成功才提交' : '只读/需人工确认'}</Tag></div><div className="flex flex-wrap items-center gap-3 text-sm"><span>最近结果：<strong>{runLabel(selected.latest_run)}</strong></span>{selected.latest_run?.error_code && <Tag color="red">{selected.latest_run.error_code}</Tag>}{selected.latest_run?.auto_commit_status && <span>自动提交：{selected.latest_run.auto_commit_status}</span>}</div>{selected.latest_run?.error_message && <Alert type="warning" showIcon message={selected.latest_run.error_message} />}{selected.params_schema === 'date_range' && <div className="grid justify-items-start gap-1"><label className="grid gap-1 text-sm"><span>本次读取的业务日期范围</span><RangePicker value={manualDateRange} allowClear={false} placeholder={['开始日期', '结束日期']} onChange={value => { if (value?.[0] && value[1]) setManualDateRange([value[0], value[1]]) }} /></label><span className="text-xs text-[var(--app-text-secondary)]">默认读取前一业务日；单次最多 31 天。此范围只用于本次手动读取。</span></div>}<Button type="primary" loading={runLoading} disabled={!selected.accessible || !selected.supports_manual} onClick={() => void runNow()}>立即读取/运行</Button></section>
       {selected.supports_schedule && <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="m-0">自动调度</h3><div className="mt-1 text-xs text-[var(--app-text-secondary)]">默认关闭；系统时区：{draft.timezone}</div></div>{!admin && <Tag>仅超级管理员可修改</Tag>}</div><div className="flex flex-wrap items-center gap-3"><Switch checked={draft.enabled} disabled={!admin} onChange={enabled => setDraft(current => ({ ...current, enabled }))} /><span>{draft.enabled ? '已启用' : '已停用'}</span><Select className="w-44" value={COMMON_CRONS.some(item => item.value === draft.cron_expr) ? draft.cron_expr : undefined} placeholder="常用时间" disabled={!admin} options={COMMON_CRONS} onChange={cron_expr => setDraft(current => ({ ...current, cron_expr }))} /><Input className="min-w-[220px] flex-1" value={draft.cron_expr} disabled={!admin} onChange={event => setDraft(current => ({ ...current, cron_expr: event.target.value }))} placeholder="高级 Cron：分 时 日 月 周" /></div>{selected.params_schema === 'date_range' && <div className="flex flex-wrap gap-3"><label className="grid gap-1 text-sm"><span>开始日期</span><Input type="date" value={draft.params.start_date || ''} disabled={!admin} onChange={event => setDraft(current => ({ ...current, params: { ...current.params, start_date: event.target.value } }))} /></label><label className="grid gap-1 text-sm"><span>结束日期</span><Input type="date" value={draft.params.end_date || ''} disabled={!admin} onChange={event => setDraft(current => ({ ...current, params: { ...current.params, end_date: event.target.value } }))} /></label></div>}{admin ? <Button loading={saving} onClick={() => void save()}>保存调度</Button> : <div className="text-sm text-[var(--app-text-secondary)]">当前账号可以查看计划状态；如需调整请联系超级管理员。</div>}</section>}
       <section className="grid gap-3 rounded-md border border-[var(--app-border)] p-4"><div className="flex items-center justify-between gap-2"><h3 className="m-0">最近 20 次运行</h3><Button size="small" onClick={() => void getExternalAcquisitionRuns(selected.source_key, 20).then(setRuns)}>刷新</Button></div>{runs.length ? <div className="grid gap-2">{runs.map(run => <div key={run.id} className="grid gap-2 rounded-md border border-[var(--app-border)] p-3 sm:grid-cols-[1fr_auto] sm:items-center"><div className="grid gap-2"><div><div className="flex flex-wrap items-center gap-2"><strong>#{run.id}</strong><Tag color={run.status === 'success' ? 'green' : run.status === 'failed' ? 'red' : 'gold'}>{runLabel(run)}</Tag>{run.safety_gate_code && <Tag>{run.safety_gate_code}</Tag>}</div><div className="mt-1 text-xs text-[var(--app-text-secondary)]">{run.created_at ? formatUTCTime(run.created_at, systemTimezone) : ''} · {run.phase}</div>{run.message && <div className="mt-1 text-xs text-[var(--app-text-secondary)]">{run.message}</div>}{run.status === 'running' && run.progress !== null && <Progress percent={run.progress} size="small" status="active" />}</div><CodeSummaryQuality run={run} /></div>{run.status === 'failed' && <Button size="small" onClick={() => void retry(run)}>重试</Button>}</div>)}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚无运行记录" />}</section>
     </>}</main>

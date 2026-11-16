@@ -38,6 +38,14 @@ def _code_summary_quality(aggregated: dict[str, dict[str, Any]]) -> dict[str, di
     }
 
 
+def _code_summary_has_blocking_quality(quality: dict[str, dict[str, int]]) -> bool:
+    return any(
+        counters[key]
+        for counters in quality.values()
+        for key in ("excluded_record_count", "invalid_time_count")
+    )
+
+
 def _date_param(params: dict[str, Any], key: str, fallback: date) -> date:
     value = params.get(key)
     if value in (None, ""):
@@ -267,15 +275,7 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                     }
                 aggregated[source] = aggregate
             quality = _code_summary_quality(aggregated)
-            if any(
-                counters[key]
-                for counters in quality.values()
-                for key in (
-                    "excluded_record_count",
-                    "unclassified_location_count",
-                    "invalid_time_count",
-                )
-            ):
+            if _code_summary_has_blocking_quality(quality):
                 return {
                     "status": "failed",
                     "auto_commit_status": "skipped",
@@ -284,7 +284,15 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                     "message": "来源完整性检查未通过，自动提交已跳过",
                     "quality": quality,
                 }
-            await ctx.update(phase="committing", current=3, total=4, message="来源完整，正在提交汇总")
+            has_unclassified_locations = any(
+                counters["unclassified_location_count"] for counters in quality.values()
+            )
+            commit_message = (
+                "汇总正在提交；部分地点尚未分类"
+                if has_unclassified_locations
+                else "来源完整，正在提交汇总"
+            )
+            await ctx.update(phase="committing", current=3, total=4, message=commit_message)
             async with pool.acquire() as conn:
                 await conn.begin()
                 try:
@@ -294,7 +302,16 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                 except Exception:
                     await conn.rollback()
                     raise
-            return {"status": "success", "auto_commit_status": "committed", "sources": {source: {"raw_count": value["raw_count"], "valid_count": value["valid_count"]} for source, value in aggregated.items()}}
+            return {
+                "status": "success",
+                "auto_commit_status": "committed",
+                "message": "汇总已提交，仍有地点待分类" if has_unclassified_locations else "汇总已提交",
+                "sources": {
+                    source: {"raw_count": value["raw_count"], "valid_count": value["valid_count"]}
+                    for source, value in aggregated.items()
+                },
+                "quality": quality,
+            }
         # Unknown or preview-only sources are fail-closed.  They remain visible
         # in the catalog without silently converting a manual confirmation into
         # an automatic write.

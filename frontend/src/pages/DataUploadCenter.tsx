@@ -31,7 +31,7 @@ export default function DataUploadCenter() {
     {activePanel === 'analysis' && activeTab === 'files' && canManageAnalysis && <div className="grid gap-3"><Button className="justify-self-start" onClick={() => setSearchParams({ tab: 'files' }, { replace: true })}>返回上传文件</Button><Panel title="研判结果工作簿"><AnalysisImportPanel /></Panel></div>}
     {activePanel === 'txdocs' && activeTab === 'external' && canManageTxDocs && <div className="grid gap-3"><Button className="justify-self-start" onClick={() => setSearchParams({ tab: 'external' }, { replace: true })}>返回读取外部</Button><TxDocsMonitorSettings /></div>}
 
-    {activeTab === 'external' && activePanel !== 'txdocs' && <div className="grid gap-3"><Alert type="info" showIcon message="自动任务默认关闭" description="外部来源按来源独立管理。自动提交只接受完整、无冲突且通过安全门禁的结果；腾讯只读监控不进入业务写入链路。" /><ExternalAcquisitionWorkbench /></div>}
+    {activeTab === 'external' && activePanel !== 'txdocs' && <div className="grid gap-3"><Alert type="info" showIcon message="自动任务默认关闭" description="外部来源按来源独立管理；读取日期范围可在本次运行前单独选择。平安码地点未分类时仍会先汇总并提示，身份或时间异常会阻止提交。腾讯只读监控不进入业务写入链路。" /><ExternalAcquisitionWorkbench /></div>}
 
     {!activePanel && activeTab === 'files' && <div className="grid gap-4">
       <PoliceDispatchPanel enabled={canManagePoliceDispatch} />

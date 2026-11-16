@@ -16,6 +16,7 @@ from services.external_acquisition_jobs import (
     db_manager,
 )
 from services.external_acquisition_scheduler import (
+    _code_summary_has_blocking_quality,
     _code_summary_quality,
     _fetch_code_summary_sources,
     run_registered_source,
@@ -109,6 +110,89 @@ def test_code_summary_incomplete_quality_is_aggregate_only_and_survives_run_reda
         },
     }
     assert _safe_result({"quality": quality}) == {"quality": quality}
+
+
+def test_unclassified_locations_do_not_block_code_summary_but_invalid_records_do():
+    assert not _code_summary_has_blocking_quality({
+        "peace": {
+            "excluded_record_count": 0,
+            "unclassified_location_count": 44,
+            "invalid_time_count": 0,
+        },
+    })
+    assert _code_summary_has_blocking_quality({
+        "peace": {
+            "excluded_record_count": 1,
+            "unclassified_location_count": 0,
+            "invalid_time_count": 0,
+        },
+    })
+    assert _code_summary_has_blocking_quality({
+        "manager": {
+            "excluded_record_count": 0,
+            "unclassified_location_count": 0,
+            "invalid_time_count": 1,
+        },
+    })
+
+
+def test_code_summary_commits_when_only_locations_are_unclassified():
+    async def scenario():
+        class Pool:
+            def acquire(self):
+                return self
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def begin(self):
+                pass
+
+            async def commit(self):
+                self.committed = True
+
+            async def rollback(self):
+                self.rolled_back = True
+
+        async def inline_job(_kind, _requested_by, _params, runner, **_kwargs):
+            return await runner(SimpleNamespace(run_id=42, update=AsyncMock())), False
+
+        aggregates = {
+            "peace": {"raw_count": 45, "valid_count": 45, "excluded_count": 0,
+                      "unclassified_count": 44, "invalid_time_count": 0},
+            "manager": {"raw_count": 3, "valid_count": 3, "excluded_count": 0,
+                        "unclassified_count": 0, "invalid_time_count": 0},
+        }
+        pool = Pool()
+        with (
+            patch("services.external_acquisition_scheduler._previous_business_date", new=AsyncMock(return_value=date(2026, 11, 15))),
+            patch("services.external_acquisition_scheduler._fetch_code_summary_sources", new=AsyncMock(return_value={
+                "peace": {"rows": []}, "manager": {"rows": []},
+            })),
+            patch.object(db_manager, "get_pool", return_value=pool),
+            patch("routers.code_summaries._directories", new=AsyncMock(return_value=(set(), set()))),
+            patch("routers.code_summaries._manual_location_labels", new=AsyncMock(return_value={})),
+            patch("services.code_summary.count_fullchain_registrations", new=AsyncMock(return_value={})),
+            patch("services.code_summary.aggregate_rows", side_effect=lambda source, *_args, **_kwargs: aggregates[source]),
+            patch("routers.code_summaries._commit_source", new=AsyncMock()) as commit_source,
+            patch("services.external_acquisition_scheduler.create_job", new=AsyncMock(side_effect=inline_job)),
+        ):
+            result, reused = await run_registered_source("code_summary", 7, {
+                "start_date": "2026-11-15", "end_date": "2026-11-15",
+            })
+
+        assert not reused
+        assert result["status"] == "success"
+        assert result["auto_commit_status"] == "committed"
+        assert result["message"] == "汇总已提交，仍有地点待分类"
+        assert result["quality"]["peace"]["unclassified_location_count"] == 44
+        assert commit_source.await_count == 2
+        assert pool.committed
+
+    asyncio.run(scenario())
 
 
 def test_code_summary_total_source_timeout_is_bounded_and_classified():
