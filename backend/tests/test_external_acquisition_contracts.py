@@ -1,4 +1,6 @@
 import asyncio
+from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -6,14 +8,17 @@ from fastapi import HTTPException
 
 from routers import external_acquisition
 from services.external_acquisition_jobs import (
+    _execute,
     _has_incompatible_semantics,
     _kind_variants,
     _safe_result,
     _terminal_progress_message,
+    db_manager,
 )
 from services.external_acquisition_scheduler import (
     _code_summary_quality,
     _fetch_code_summary_sources,
+    run_registered_source,
 )
 
 
@@ -121,6 +126,113 @@ def test_code_summary_total_source_timeout_is_bounded_and_classified():
         ):
             await _fetch_code_summary_sources(None, None, None)
         assert captured.value.code == "source_timeout"
+
+    asyncio.run(scenario())
+
+
+def test_code_summary_aggregation_error_is_classified_and_not_committed():
+    async def scenario():
+        from services.code_summary import CodeSummaryError
+
+        class Pool:
+            def acquire(self):
+                return self
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        async def inline_job(_kind, _requested_by, _params, runner, **_kwargs):
+            result = await runner(SimpleNamespace(run_id=41, update=AsyncMock()))
+            return result, False
+
+        with (
+            patch("services.external_acquisition_scheduler._previous_business_date", new=AsyncMock(return_value=date(2026, 11, 15))),
+            patch("services.external_acquisition_scheduler._fetch_code_summary_sources", new=AsyncMock(return_value={
+                "peace": {"rows": [{"private": "source row"}]}, "manager": {"rows": []},
+            })),
+            patch.object(db_manager, "get_pool", return_value=Pool()),
+            patch("routers.code_summaries._directories", new=AsyncMock(return_value=(set(), set()))),
+            patch("routers.code_summaries._manual_location_labels", new=AsyncMock(return_value={})),
+            patch("services.code_summary.count_fullchain_registrations", new=AsyncMock(return_value={})),
+            patch("services.code_summary.aggregate_rows", side_effect=CodeSummaryError(
+                "scope_mismatch", "must not expose source row"
+            )),
+            patch("services.external_acquisition_scheduler.create_job", new=AsyncMock(side_effect=inline_job)),
+        ):
+            result, reused = await run_registered_source(
+                "code_summary", 7,
+                {"start_date": "2026-11-10", "end_date": "2026-11-11"},
+            )
+
+        assert not reused
+        assert result["status"] == "failed"
+        assert result["auto_commit_status"] == "skipped"
+        assert result["error_code"] == "scope_mismatch"
+        assert result["safety_gate_code"] == "scope_mismatch"
+        assert result["message"] == "平安码来源数据校验未通过，自动提交已跳过，现有汇总保持不变"
+        assert "must not expose" not in result["message"]
+
+    asyncio.run(scenario())
+
+
+def test_external_job_persists_safe_runner_error_code():
+    async def scenario():
+        class Cursor:
+            def __init__(self, statements):
+                self.statements = statements
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def execute(self, sql, params=()):
+                self.statements.append((sql, params))
+
+            async def fetchone(self):
+                return (None,)
+
+        class Connection:
+            def __init__(self, statements):
+                self.statements = statements
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def cursor(self):
+                return Cursor(self.statements)
+
+        class Pool:
+            def __init__(self):
+                self.statements = []
+
+            def acquire(self):
+                return Connection(self.statements)
+
+        pool = Pool()
+
+        async def runner(_ctx):
+            return {
+                "status": "failed", "auto_commit_status": "skipped",
+                "error_code": "scope_mismatch", "safety_gate_code": "scope_mismatch",
+                "message": "来源校验未通过，现有汇总保持不变",
+                "raw_rows": [{"private": "must not persist"}],
+            }
+
+        with patch.object(db_manager, "get_pool", return_value=pool):
+            await _execute(41, runner)
+
+        terminal = next(params for sql, params in pool.statements if "phase='finished'" in sql)
+        assert terminal[3] == "scope_mismatch"
+        assert terminal[5] == "scope_mismatch"
+        assert "must not persist" not in terminal[1]
 
     asyncio.run(scenario())
 

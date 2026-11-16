@@ -228,6 +228,7 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                 return {
                     "status": "failed",
                     "auto_commit_status": "skipped",
+                    "error_code": error.code,
                     "safety_gate_code": error.code,
                     "message": "来源读取超过时限，自动提交已跳过，现有汇总保持不变",
                 }
@@ -241,16 +242,29 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
             await ctx.update(phase="aggregating", current=2, total=4, message="正在校验并汇总来源数据")
             aggregated: dict[str, dict[str, Any]] = {}
             for source in ("peace", "manager"):
+                source_label = "平安码" if source == "peace" else "管家码"
                 source_result = fetched[source]
                 if source_result.get("error"):
                     error = source_result["error"]
-                    return {"status": "failed", "auto_commit_status": "skipped", "safety_gate_code": getattr(error, "code", "source_failed")}
-                aggregate = aggregate_rows(
-                    source, source_result["rows"], start_date, end_date,
-                    personnel_names=personnel, place_names=places,
-                    manual_labels=labels,
-                    new_registration_counts=registration_counts if source == "peace" else None,
-                )
+                    error_code = getattr(error, "code", "source_failed")
+                    return {
+                        "status": "failed", "auto_commit_status": "skipped",
+                        "error_code": error_code, "safety_gate_code": error_code,
+                        "message": f"{source_label}来源读取失败，自动提交已跳过，现有汇总保持不变",
+                    }
+                try:
+                    aggregate = aggregate_rows(
+                        source, source_result["rows"], start_date, end_date,
+                        personnel_names=personnel, place_names=places,
+                        manual_labels=labels,
+                        new_registration_counts=registration_counts if source == "peace" else None,
+                    )
+                except CodeSummaryError as error:
+                    return {
+                        "status": "failed", "auto_commit_status": "skipped",
+                        "error_code": error.code, "safety_gate_code": error.code,
+                        "message": f"{source_label}来源数据校验未通过，自动提交已跳过，现有汇总保持不变",
+                    }
                 aggregated[source] = aggregate
             quality = _code_summary_quality(aggregated)
             if any(
@@ -265,6 +279,7 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                 return {
                     "status": "failed",
                     "auto_commit_status": "skipped",
+                    "error_code": "code_summary_incomplete",
                     "safety_gate_code": "code_summary_incomplete",
                     "message": "来源完整性检查未通过，自动提交已跳过",
                     "quality": quality,
