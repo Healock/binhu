@@ -102,6 +102,8 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("run.get('event') != 'push'", workflow)
         self.assertIn("run.get('head_sha') != sys.argv[3]", workflow)
         self.assertIn("binhu-hotfix-candidate-${{ inputs.ref }}", workflow)
+        self.assertIn("'SHA256SUMS'", workflow)
+        self.assertIn("hotfix candidate SHA256SUMS mismatch", workflow)
         self.assertIn("'backup_scope': 'all'", workflow)
         self.assertIn('"hotfix $EXPECTED_VERSION $commit all backend $size $HOTFIX_ID $bundle_sha256"', workflow)
         self.assertIn('"binhu-deploy@$DEPLOY_HOST"', workflow)

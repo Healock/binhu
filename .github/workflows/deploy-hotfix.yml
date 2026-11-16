@@ -94,8 +94,9 @@ jobs:
           candidate_root, output_root = map(pathlib.Path, sys.argv[1:3])
           commit, version, hotfix_id = sys.argv[3:]
           files = [path for path in candidate_root.rglob('*') if path.is_file()]
-          if len(files) != 3 or {path.name for path in files} != {'manifest.json', 'source.tar.gz', 'image.tar.gz'}:
-              raise SystemExit('candidate must contain exactly one manifest and its two payloads')
+          expected_names = {'manifest.json', 'source.tar.gz', 'image.tar.gz', 'SHA256SUMS'}
+          if len(files) != len(expected_names) or {path.name for path in files} != expected_names:
+              raise SystemExit('candidate must contain its manifest, two payloads, and SHA256SUMS')
           candidate_path = candidate_root / 'manifest.json'
           candidate = json.loads(candidate_path.read_text(encoding='utf-8'))
           if (candidate.get('schema') != 1 or candidate.get('commit') != commit
@@ -111,6 +112,12 @@ jobs:
               digest = hashlib.sha256(path.read_bytes()).hexdigest()
               if item.get('sha256') != digest or item.get('size') != path.stat().st_size:
                   raise SystemExit('hotfix candidate file digest mismatch')
+          expected_sums = ''.join(
+              f"{hashlib.sha256((candidate_root / name).read_bytes()).hexdigest()}  {name}\n"
+              for name in ('source.tar.gz', 'image.tar.gz')
+          )
+          if (candidate_root / 'SHA256SUMS').read_text(encoding='ascii') != expected_sums:
+              raise SystemExit('hotfix candidate SHA256SUMS mismatch')
           if candidate['artifact_id'] != metadata['source.tar.gz']['sha256']:
               raise SystemExit('hotfix candidate artifact identity mismatch')
           output_root.mkdir(parents=True, exist_ok=True)
