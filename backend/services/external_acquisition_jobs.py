@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 
@@ -299,13 +300,16 @@ async def _execute(run_id: int, runner: Callable[[JobContext], Awaitable[dict[st
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             status = str(result.pop("status", "success"))
+            error_code = result.pop("error_code", None)
+            if not isinstance(error_code, str) or not re.fullmatch(r"[a-z0-9_]{1,60}", error_code):
+                error_code = None
             gate_code = result.pop("safety_gate_code", None)
             auto_commit_status = result.pop("auto_commit_status", None)
             await cur.execute(
                 "UPDATE _external_acquisition_runs SET status=%s,phase='finished',result_json=%s,"
-                "progress_message=%s,auto_commit_status=%s,safety_gate_code=%s,finished_at=UTC_TIMESTAMP() WHERE id=%s",
+                "progress_message=%s,error_code=%s,auto_commit_status=%s,safety_gate_code=%s,finished_at=UTC_TIMESTAMP() WHERE id=%s",
                 (status, _safe_json(_safe_result(result)), _terminal_progress_message(status, result.get("message")),
-                 auto_commit_status, gate_code, run_id),
+                 error_code, auto_commit_status, gate_code, run_id),
             )
     await _sync_schedule_terminal(run_id, status, gate_code)
 
