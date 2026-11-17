@@ -361,6 +361,36 @@ CREATE TABLE dev_online_source_projection (
             "dev_revisions", "dev_task_metadata", "task-read-model-redis",
         ])
 
+    def test_job_graph_uses_runtime_vertices_when_optimizer_plan_omits_operator_labels(self):
+        runtime = {
+            **job(),
+            "plan": {"nodes": [{"description": "optimizer plan without runtime operator labels"}]},
+            "vertices": [
+                {"name": "Source: dev_events[4] -> Calc[5] -> Sink: dev_revisions[9]"},
+                {"name": "Source: dev_task_events_redis[1] -> Calc[2] -> Sink: task-read-model-redis"},
+                {"name": "Sink: dev_task_metadata[18]"},
+            ],
+        }
+        self.assertEqual(
+            flink_submission.validate_job_graph(
+                runtime, RUN_ID,
+                expected_sinks=("dev_revisions", "dev_task_metadata", "task-read-model-redis"),
+            )["sinks"],
+            ["dev_revisions", "dev_task_metadata", "task-read-model-redis"],
+        )
+
+    def test_job_graph_does_not_let_optimizer_plan_hide_runtime_source_mismatch(self):
+        runtime = {
+            **job(),
+            "vertices": [
+                {"name": "Source: dev_events[4] -> Calc[5] -> Sink: dev_revisions[9]"},
+                {"name": "Sink: dev_task_metadata[18]"},
+                {"name": "Sink: task-read-model-redis"},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "sources do not match"):
+            flink_submission.validate_job_graph(runtime, RUN_ID)
+
     def test_job_graph_requires_exact_named_source_and_sinks(self):
         with self.assertRaisesRegex(ValueError, "sources do not match"):
             flink_submission.validate_job_graph(
