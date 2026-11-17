@@ -192,6 +192,13 @@ def _job_descriptions(job: dict[str, Any]) -> list[str]:
     return [str(node.get("description", "")) for node in nodes if isinstance(node, dict)]
 
 
+def _runtime_operator_descriptions(job: dict[str, Any]) -> list[str]:
+    vertices = job.get("vertices")
+    if isinstance(vertices, list):
+        return [str(vertex.get("name", "")) for vertex in vertices if isinstance(vertex, dict)]
+    return _job_descriptions(job)
+
+
 def _named_operators(descriptions: list[str], kind: str) -> list[str]:
     return [
         match.group(1)
@@ -216,8 +223,9 @@ def validate_job_graph(
     # name is the stable run identity; SQL identity is checked before submit.
     if str(job.get("name", "")) != expected_run_id:
         raise FlinkRuntimeValidationError("Flink JobGraph run_id does not match", "job_name")
-    descriptions = _job_descriptions(job)
-    text = "\n".join(descriptions)
+    plan_descriptions = _job_descriptions(job)
+    operator_descriptions = _runtime_operator_descriptions(job)
+    text = "\n".join(plan_descriptions)
     # Table plans in Flink 1.20 do not always include connector options.  The
     # SQL identity fence and Kafka group check cover that case.  If a plan does
     # expose a topic marker, it must still be the fixed environment topic.
@@ -229,13 +237,13 @@ def validate_job_graph(
     default_sinks = (frozenset(plan.flink_sinks) if environment == "production"
                      else BASE_PROJECTION_NAMES | frozenset(plan.flink_sinks))
     required = frozenset(expected_sinks) if expected_sinks is not None else default_sinks
-    sources = _named_operators(descriptions, "Source")
+    sources = _named_operators(operator_descriptions, "Source")
     expected_sources = set(DomainPipelineOrchestrator(
         environment, expected_run_id,
     ).plan().flink_sources)
     if len(sources) != len(expected_sources) or set(sources) != expected_sources:
         raise FlinkRuntimeValidationError("Flink runtime Kafka sources do not match", "job_source")
-    sinks = set(_named_operators(descriptions, "Sink"))
+    sinks = set(_named_operators(operator_descriptions, "Sink"))
     if sinks - required:
         unexpected = ",".join(sorted(sinks - required))
         raise FlinkRuntimeValidationError(f"Flink runtime unexpected sink: {unexpected}", "job_sinks")
