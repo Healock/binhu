@@ -14,6 +14,7 @@ from services.report_rebuild import (
     rebuild_effective_workload_history,
     preview_effective_workload_rebuild,
 )
+from migrations.report_history_rebuild import build_parser
 
 
 def test_rebuild_rejects_invalid_date_before_touching_database():
@@ -75,3 +76,16 @@ def test_rebuild_runs_snapshots_in_date_order_and_forces_ledger_reset():
         call.kwargs == {"generation_method": "workload_backfill"}
         for call in summary.await_args_list
     )
+
+
+def test_history_rebuild_cli_accepts_scope_after_command():
+    args = build_parser().parse_args([
+        "measure",
+        "--start-date", "2026-08-03",
+        "--end-date", "2026-08-04",
+        "--parser-type", "全链条",
+    ])
+    assert args.command == "measure"
+    assert args.start_date == "2026-08-03"
+    assert args.end_date == "2026-08-04"
+    assert args.parser_types == ["全链条"]

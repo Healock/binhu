@@ -1757,6 +1757,8 @@ async def get_txdocs_business_overlay(
     """
     result = {
         "available": False,
+        "history_complete": True,
+        "history_blocked_dates": [],
         "total_tasks": 0,
         "carryover_tasks": 0,
         "new_tasks": 0,
@@ -1812,6 +1814,57 @@ async def get_txdocs_business_overlay(
                     if str(value or "").strip()
                 }
             )
+            # A multi-day report needs task identities to preserve a task
+            # that completed and disappeared from a later source snapshot.
+            # Legacy runs only stored aggregate buckets, so using them here
+            # would silently drop completed work or double-count carryover.
+            # Keep single-day reports compatible, but refuse an incomplete
+            # range overlay with an explicit diagnostic.
+            if start_date != end_date:
+                legacy_clause = ""
+                legacy_params: list[Any] = [start_date, end_date, *valid_types]
+                if source_ids is not None:
+                    legacy_clause = (
+                        " AND run.spreadsheet_id IN ("
+                        + ", ".join(["%s"] * len(source_ids))
+                        + ")"
+                    )
+                    legacy_params.extend(source_ids)
+                try:
+                    await cur.execute(
+                        """
+                        SELECT DISTINCT run.observed_date
+                        FROM _txdocs_monitor_runs AS run
+                        WHERE run.status='success'
+                          AND run.observed_date BETWEEN %s AND %s
+                          AND run.parser_type IN ("""
+                        + type_marks
+                        + ")"
+                        + legacy_clause
+                        + " AND run.row_snapshot_version=0 ORDER BY run.observed_date",
+                        tuple(legacy_params),
+                    )
+                    legacy_dates = [
+                        str(row[0])[:10] for row in await cur.fetchall()
+                    ]
+                except Exception:
+                    # Rolling deployments without the version column cannot
+                    # claim a complete multi-day history.
+                    return {
+                        **result,
+                        "history_complete": False,
+                        "message": "外部历史快照缺少任务级版本信息，无法安全计算区间汇总",
+                    }
+                if legacy_dates:
+                    return {
+                        **result,
+                        "history_complete": False,
+                        "history_blocked_dates": legacy_dates,
+                        "message": (
+                            "所选区间包含旧版外部快照，缺少任务级历史映射；"
+                            "请先完成历史回算"
+                        ),
+                    }
             try:
                 await cur.execute(
                     f"""

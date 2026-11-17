@@ -370,6 +370,13 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GROUP BY run_row.source_id, run_row.parser_type,", source)
         self.assertNotIn("FROM _txdocs_monitor_current", source)
 
+    def test_multi_day_overlay_rejects_legacy_bucket_only_history(self):
+        source = inspect.getsource(monitor.get_txdocs_business_overlay)
+        self.assertIn("history_complete", source)
+        self.assertIn("history_blocked_dates", source)
+        self.assertIn("row_snapshot_version=0", source)
+        self.assertIn("请先完成历史回算", source)
+
     def test_unable_to_verify_is_a_checked_bucket_dimension(self):
         buckets = monitor.build_monitor_business_buckets(
             "全链条",
