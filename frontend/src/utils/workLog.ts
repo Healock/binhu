@@ -86,3 +86,39 @@ export function deriveWorkLogValues(values: Values): Values {
   }
   return derived
 }
+
+export async function dailyDetailExportFailure(
+  error: unknown,
+  fallback = '生成工作每日明细失败',
+): Promise<{ message: string; noVisitData: boolean }> {
+  const responseData = (
+    error && typeof error === 'object' && 'response' in error
+      ? (error as { response?: { data?: unknown } }).response?.data
+      : undefined
+  )
+  let data = responseData
+  if (data instanceof Blob) {
+    try {
+      data = JSON.parse(await data.text())
+    } catch {
+      data = undefined
+    }
+  }
+  const detail = (
+    data && typeof data === 'object' && 'detail' in data
+      ? (data as { detail?: unknown }).detail
+      : undefined
+  )
+  if (detail === '来源平台返回空数据') {
+    return {
+      message: '所选日期暂无走访明细，请先到“数据上传中心 > 读取外部”获取并确认走访数据，再重新生成。',
+      noVisitData: true,
+    }
+  }
+  return {
+    message: typeof detail === 'string'
+      ? detail
+      : error instanceof Error ? error.message : fallback,
+    noVisitData: false,
+  }
+}

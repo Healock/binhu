@@ -54,6 +54,7 @@ import type {
 } from '../types'
 import type { WorkLogDailyDetailPopulationRow } from '../api/client'
 import {
+  dailyDetailExportFailure,
   deriveWorkLogValues,
   leafWorkLogColumns,
 } from '../utils/workLog'
@@ -750,7 +751,9 @@ export default function WorkLog() {
       )
       if (saved) message.success('工作每日明细 XLSX 已生成，目标数已保存')
     } catch (error) {
-      message.error(errorMessage(error, '生成工作每日明细失败'))
+      const failure = await dailyDetailExportFailure(error)
+      if (failure.noVisitData) message.warning(failure.message)
+      else message.error(failure.message)
     } finally {
       setDailyDetailExporting(false)
     }
