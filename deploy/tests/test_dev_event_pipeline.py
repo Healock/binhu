@@ -5,6 +5,8 @@ from decimal import Decimal
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 import unittest
 import tempfile
 from pathlib import Path
@@ -1600,6 +1602,20 @@ volumes:
         payload = json.dumps(first, ensure_ascii=False).lower()
         for forbidden in ("name", "phone", "identity", "address", "remark", "password", "token"):
             self.assertNotIn(forbidden, payload)
+
+    def test_acceptance_controller_import_does_not_require_crypto_on_host(self):
+        code = """
+import importlib.abc
+import sys
+class NoCryptography(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "cryptography" or fullname.startswith("cryptography."):
+            raise ModuleNotFoundError(fullname)
+sys.meta_path.insert(0, NoCryptography())
+from deploy.environments.event_pipeline.acceptance_control import validate_scale
+assert validate_scale(1002) == 1002
+"""
+        subprocess.run([sys.executable, "-c", code], check=True)
 
     def test_scale_acceptance_allows_only_fixed_cumulative_targets(self):
         module_path = Path(event_prepare.__file__).with_name("scale_acceptance.py")

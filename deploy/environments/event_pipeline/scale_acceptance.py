@@ -18,9 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-
 ALLOWED_SCALES = frozenset({1002, 10_000, 100_000})
 RUN_RE = re.compile(r"^dev-[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 SOURCE_BASE = 8_000_000_000_000_000_000
@@ -60,6 +57,8 @@ def validate_scale(value: Any) -> int:
 
 def fixture(run_id: str, index: int) -> dict[str, Any]:
     """Return one stable, schema-v4 metadata event from the reserved Dev range."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
     if not RUN_RE.fullmatch(run_id or ""):
         raise ValueError("Dev run identity required")
     if type(index) is not int or index < 0 or index >= max(ALLOWED_SCALES):
