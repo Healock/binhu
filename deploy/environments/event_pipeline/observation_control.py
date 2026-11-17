@@ -121,6 +121,19 @@ def validate_identity(run_id: str, observation_id: str) -> None:
         raise ObservationError("invalid Dev observation identity")
 
 
+def _comparison_action(action: str) -> None:
+    if action not in {"up", "stop"}:
+        raise ObservationError("invalid Dev comparison action")
+    command = ["docker", "compose", "-f", str(STATE / "compose.json"),
+               "--profile", "comparison", action]
+    if action == "up":
+        command += ["-d"]
+    else:
+        command += ["-t", "60"]
+    command.extend(("python-metadata-worker", "dual-track-monitor"))
+    checked(command, timeout=120)
+
+
 def evidence_root(run_id: str) -> Path:
     raw = json.loads(checked(["docker", "volume", "inspect", EVIDENCE_VOLUME]))
     if not isinstance(raw, list) or len(raw) != 1:
@@ -500,6 +513,15 @@ def run(run_id: str, observation_id: str) -> None:
             "samples_completed": len(samples), "samples_required": SAMPLE_COUNT,
             "failure_reasons": [stage + "_" + type(error).__name__]})
         raise
+    finally:
+        try:
+            _comparison_action("stop")
+        except (OSError, ValueError, ObservationError, subprocess.TimeoutExpired):
+            _write_status(status_path, {"environment": "development", "run_id": run_id,
+                "observation_id": observation_id, "status": "failed", "failed_at": iso(),
+                "samples_completed": len(samples), "samples_required": SAMPLE_COUNT,
+                "failure_reasons": ["comparison_services_stop_failed"]})
+            raise ObservationError("Dev comparison services did not stop") from None
 
 
 def start(run_id: str, observation_id: str) -> dict[str, Any]:
@@ -510,6 +532,10 @@ def start(run_id: str, observation_id: str) -> dict[str, Any]:
     current = json.loads(current_path.read_text(encoding="utf-8"))
     if current.get("environment") != "development" or current.get("project") != PROJECT or current.get("run_id") != run_id:
         raise ObservationError("current Dev observation identity mismatch")
+    from . import control
+    measured = control.measure()
+    if measured.get("run_id") != run_id or measured.get("environment") != "development":
+        raise ObservationError("current Dev observation identity mismatch")
     directory = evidence_root(run_id) / observation_id
     directory.mkdir(mode=0o700, parents=False, exist_ok=False)
     started = utc_now()
@@ -518,6 +544,11 @@ def start(run_id: str, observation_id: str) -> dict[str, Any]:
                "expected_complete_at": iso(started + timedelta(seconds=OBSERVATION_SECONDS)),
                "samples_completed": 0, "samples_required": SAMPLE_COUNT}
     _write_status(directory / "observation-status.json", initial)
+    try:
+        _comparison_action("up")
+    except (OSError, ValueError, ObservationError, subprocess.TimeoutExpired):
+        shutil.rmtree(directory, ignore_errors=True)
+        raise ObservationError("Dev comparison services did not start") from None
     unit = "binhu-dev-observe-" + hashlib.sha256(observation_id.encode()).hexdigest()[:16]
     result = subprocess.run([
         "systemd-run", "--unit", unit, "--collect", "--property=Type=exec",
@@ -525,6 +556,10 @@ def start(run_id: str, observation_id: str) -> dict[str, Any]:
         "run", run_id, observation_id,
     ], capture_output=True, text=True, timeout=30)
     if result.returncode:
+        try:
+            _comparison_action("stop")
+        except (OSError, ValueError, ObservationError, subprocess.TimeoutExpired):
+            pass
         shutil.rmtree(directory, ignore_errors=True)
         raise ObservationError("Dev observation service did not start")
     return initial

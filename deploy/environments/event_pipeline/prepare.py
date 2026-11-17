@@ -186,7 +186,10 @@ def compose(images):
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {}}
     services["python-metadata-worker"] = {**common, "image": images["worker"],
-        "env_file": ["runtime.env"], "mem_limit": "256m", "cpus": .25,
+        # Keep the legacy projector available only for explicit synthetic
+        # comparison runs. Normal Dev apply must not start it.
+        "profiles": ["comparison"], "env_file": ["runtime.env"],
+        "mem_limit": "256m", "cpus": .25,
         "read_only": True, "tmpfs": ["/tmp:size=16m"],
         "volumes": [
             "./python_metadata_worker.py:/opt/dev-pipeline/event_pipeline/services/python_metadata_worker.py:ro",
@@ -195,7 +198,8 @@ def compose(images):
         "environment": {"PYTHONDONTWRITEBYTECODE": "1"},
         "depends_on": {"dev-derived-mysql": {"condition": "service_healthy"}}}
     services["dual-track-monitor"] = {**common, "image": images["worker"],
-        "env_file": ["runtime.env"], "mem_limit": "128m", "cpus": .2,
+        "profiles": ["comparison"], "env_file": ["runtime.env"],
+        "mem_limit": "128m", "cpus": .2,
         "read_only": True, "tmpfs": ["/tmp:size=16m"],
         "volumes": ["evidence:/var/lib/binhu-dev-event-pipeline/evidence",
                     "./runtime.py:/opt/dev-pipeline/event_pipeline/runtime.py:ro",
@@ -456,8 +460,8 @@ CREATE TABLE dev_task_metadata_python_events (
         "mysql.env": f"MYSQL_ROOT_PASSWORD={root_password}\nMYSQL_DATABASE=Dev_EventPipeline\nMYSQL_USER=dev_pipeline\nMYSQL_PASSWORD={db_password}\n",
         "redis.conf": redis_configuration(redis_password),
         "pipeline.sql": render(env),
-        # The existing worker digest predates the resident monitor.  Mount the
-        # the small dispatcher and health modules read-only so this service is bound to
+        # The existing worker digest predates the comparison profile. Mount the
+        # dispatcher and health modules read-only so comparison stays bound to
         # the candidate source without rebuilding or mutating the worker image.
         # Mount the actual runtime dispatcher into the legacy worker image.
         # ``__file__`` is prepare.py here; reading it would make the mounted

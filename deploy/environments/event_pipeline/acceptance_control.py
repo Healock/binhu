@@ -47,17 +47,34 @@ def execute(run_id: str, scale: int) -> dict:
     ):
         raise ValueError("current Dev acceptance identity mismatch")
     compose = ["docker", "compose", "-f", str(ROOT / "compose.json")]
+    comparison = subprocess.run(
+        [*compose, "--profile", "comparison", "up", "-d", "python-metadata-worker", "dual-track-monitor"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if comparison.returncode:
+        raise ValueError("Dev acceptance comparison start failed")
     stopped = subprocess.run(
-        [*compose, "stop", "dual-track-monitor"], capture_output=True, text=True, timeout=60
+        [*compose, "--profile", "comparison", "stop", "dual-track-monitor"],
+        capture_output=True, text=True, timeout=60,
     )
     if stopped.returncode:
+        subprocess.run([*compose, "--profile", "comparison", "stop", *control.COMPARISON_SERVICES],
+                       capture_output=True, text=True, timeout=60)
         raise ValueError("Dev acceptance monitor pause failed")
-    result = subprocess.run(
-        [*compose, "--profile", "acceptance", "run", "--rm", "--no-deps",
-         "acceptance-runner", "python", "-m", "event_pipeline.scale_acceptance",
-         "--scale", str(scale)],
-        capture_output=True, text=True, timeout={1002: 360, 10_000: 3660, 100_000: 21_660}[scale],
-    )
+    try:
+        result = subprocess.run(
+            [*compose, "--profile", "acceptance", "run", "--rm", "--no-deps",
+             "acceptance-runner", "python", "-m", "event_pipeline.scale_acceptance",
+             "--scale", str(scale)],
+            capture_output=True, text=True, timeout={1002: 360, 10_000: 3660, 100_000: 21_660}[scale],
+        )
+    finally:
+        stopped = subprocess.run(
+            [*compose, "--profile", "comparison", "stop", *control.COMPARISON_SERVICES],
+            capture_output=True, text=True, timeout=60,
+        )
+        if stopped.returncode:
+            raise ValueError("Dev acceptance comparison stop failed")
     if result.returncode:
         evidence = write_failure_evidence(run_id, scale, result.returncode, result.stderr)
         safe_detail = json.loads(evidence.read_text(encoding="utf-8"))["safe_detail"]
@@ -75,12 +92,6 @@ def execute(run_id: str, scale: int) -> dict:
         or report.get("unattributed_difference_count") != 0
     ):
         raise ValueError("Dev scale acceptance report mismatch")
-    restarted = subprocess.run(
-        [*compose, "up", "-d", "--wait", "--wait-timeout", "90", "dual-track-monitor"],
-        capture_output=True, text=True, timeout=120,
-    )
-    if restarted.returncode:
-        raise ValueError("Dev acceptance monitor restart failed")
     return report
 
 
