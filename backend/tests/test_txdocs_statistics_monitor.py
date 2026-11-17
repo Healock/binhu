@@ -4,7 +4,7 @@ import os
 import unittest
 from collections import Counter
 from datetime import date, datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-encryption-key")
@@ -376,6 +376,63 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("history_blocked_dates", source)
         self.assertIn("row_snapshot_version=0", source)
         self.assertIn("请先完成历史回算", source)
+
+    async def test_multi_day_overlay_returns_blocked_legacy_dates_without_aggregation(self):
+        class Cursor:
+            def __init__(self):
+                self.queries = []
+                self.query_index = 0
+
+            async def execute(self, query, params=None):
+                self.queries.append((query, params))
+
+            async def fetchall(self):
+                if self.query_index == 0:
+                    self.query_index += 1
+                    return [(date(2026, 11, 5),)]
+                raise AssertionError("legacy history must block later aggregation")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        class Connection:
+            def __init__(self):
+                self._cursor = Cursor()
+
+            def cursor(self):
+                return self._cursor
+
+        class Pool:
+            def __init__(self):
+                self.connection = Connection()
+                self.released = False
+
+            async def acquire(self):
+                return self.connection
+
+            def release(self, conn):
+                self.released = conn is self.connection
+
+        pool = Pool()
+        with (
+            patch.object(monitor, "monitoring_environment_allowed", return_value=True),
+            patch.object(monitor, "get_community_alias_lookup", new=AsyncMock(return_value={})),
+            patch("database.db_manager.get_pool", return_value=pool),
+        ):
+            result = await monitor.get_txdocs_business_overlay(
+                "2026-11-05", "2026-11-11", [next(iter(monitor.TASK_WORKFLOWS))], None,
+                configured_source_ids=[17],
+            )
+
+        self.assertFalse(result["available"])
+        self.assertFalse(result["history_complete"])
+        self.assertEqual(result["history_blocked_dates"], ["2026-11-05"])
+        self.assertIn("缺少任务级历史映射", result["message"])
+        self.assertEqual(len(pool.connection._cursor.queries), 1)
+        self.assertTrue(pool.released)
 
     def test_unable_to_verify_is_a_checked_bucket_dimension(self):
         buckets = monitor.build_monitor_business_buckets(

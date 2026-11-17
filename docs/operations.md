@@ -726,16 +726,7 @@ Dock、手机可以切回侧边栏、普通账号看不到用户管理和运维�
 
 多日在线汇总如果包含旧版外部监控快照（`row_snapshot_version=0`），接口会明确返回“请先完成历史回算”，
 不会继续把汇总桶当作逐任务历史来计算。旧版快照只保存分类数量，不能安全恢复“已完成后从后续扫描消失”或跨日结转。
-历史维护命令为：
-
-```
-python -m migrations.report_history_rebuild measure --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-python -m migrations.report_history_rebuild migrate --apply --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-python -m migrations.report_history_rebuild verify --start-date YYYY-MM-DD --end-date YYYY-MM-DD
-```
-
-`measure` 若发现旧版外部快照，必须保留阻塞证据，不能用估算数字代替。生产执行前备份 `daily_report`，
-并记录真实 MySQL、快照版本覆盖和重算后的数量恒等式。
+既有本地日报快照可按现有维护流程重建本地任务流水，但不能补回外部监控旧版快照缺少的任务身份。不得把本地日报回算解释为外部监控历史回算；旧版日期应保留不可逐任务核实的状态，不能用估算数字代替。
 
 如果需要回退本次计算，先停止后端，再把保留的 `_v010_` 日报表按明确清单换回；这会覆盖新版日报，
 属于高风险操作，必须重新确认后执行。
