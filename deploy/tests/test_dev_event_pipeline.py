@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from deploy.environments.event_pipeline.runtime import (
     configuration,
@@ -1579,7 +1580,21 @@ volumes:
         other = module.fixture("dev-20260916-monitor21", 0)
         self.assertEqual(first, replay)
         self.assertNotEqual(first["event_id"], other["event_id"])
+        self.assertEqual(first["schema_version"], 4)
+        self.assertEqual(
+            delivery_topic(first["event_type"], "events", first["schema_version"], "development"),
+            "dev.task.read-model.v4",
+        )
         self.assertEqual(validate_event(first), first)
+        envelope = first["encrypted_payload"]
+        decode = lambda value: base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        fixture_key = hashlib.sha256(module.FIXTURE_NAMESPACE.bytes + b"dev-20260916-monitor20").digest()
+        self.assertEqual(
+            AESGCM(fixture_key).decrypt(
+                decode(envelope["nonce"]), decode(envelope["ciphertext"]), decode(envelope["aad"]),
+            ),
+            b"{}",
+        )
         self.assertEqual(first["changed_fields"], ["task_state"])
         self.assertGreaterEqual(first["source_id"], 8_000_000_000_000_000_000)
         payload = json.dumps(first, ensure_ascii=False).lower()

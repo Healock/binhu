@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import json
 import os
 import re
@@ -15,6 +17,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
 ALLOWED_SCALES = frozenset({1002, 10_000, 100_000})
@@ -55,24 +59,49 @@ def validate_scale(value: Any) -> int:
 
 
 def fixture(run_id: str, index: int) -> dict[str, Any]:
-    """Return one stable, metadata-only event from the reserved Dev range."""
+    """Return one stable, schema-v4 metadata event from the reserved Dev range."""
     if not RUN_RE.fullmatch(run_id or ""):
         raise ValueError("Dev run identity required")
     if type(index) is not int or index < 0 or index >= max(ALLOWED_SCALES):
         raise ValueError("fixture index outside controlled range")
     source_id = SOURCE_BASE + index
+    event_id = str(uuid.uuid5(FIXTURE_NAMESPACE, f"{run_id}/event/{index}"))
+    command_id = str(uuid.uuid5(FIXTURE_NAMESPACE, f"{run_id}/command/{index}"))
+    task_id = f"t_fullchain:{source_id}"
+    revision = index + 1
+    nonce = hashlib.sha256(f"{run_id}/nonce/{index}".encode("ascii")).digest()[:12]
+    aad = json.dumps({
+        "command_id": command_id,
+        "contract": "binhu.task-snapshot.v2",
+        "environment": "development",
+        "event_id": event_id,
+        "revision": revision,
+        "task_id": task_id,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    key = hashlib.sha256(FIXTURE_NAMESPACE.bytes + run_id.encode("ascii")).digest()
+    ciphertext = AESGCM(key).encrypt(nonce, b"{}", aad)
+    encode = lambda value: base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
     return {
-        "schema_version": 1,
-        "event_id": str(uuid.uuid5(FIXTURE_NAMESPACE, f"{run_id}/event/{index}")),
+        "schema_version": 4,
+        "command_id": command_id,
+        "event_id": event_id,
         "event_type": "task.saved",
-        "task_id": f"t_fullchain:{source_id}",
+        "task_id": task_id,
         "source_id": source_id,
-        "revision": index + 1,
+        "revision": revision,
         "operation_id": str(uuid.uuid5(FIXTURE_NAMESPACE, f"{run_id}/operation/{index}")),
         "changed_fields": ["task_state"],
         "timestamp": "2026-09-16T00:00:00Z",
         "environment": "development",
         "run_id": run_id,
+        "encrypted_payload": {
+            "algorithm": "AES-256-GCM",
+            "key_version": "task-event-v2",
+            "nonce": encode(nonce),
+            "ciphertext": encode(ciphertext),
+            "aad": encode(aad),
+            "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),
+        },
     }
 
 
