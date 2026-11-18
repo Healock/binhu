@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  dailyDetailExportFailure,
   deriveWorkLogValues,
   leafWorkLogColumns,
 } from '../src/utils/workLog.ts'
@@ -45,6 +46,27 @@ test('工作日志分组表头可以展开为实际填写列', () => {
     columns.map(column => column.key),
     ['community', 'pending', 'resolved'],
   )
+})
+
+test('每日明细空走访数据错误指引用户先获取并确认数据', async () => {
+  const result = await dailyDetailExportFailure({
+    response: {
+      data: new Blob([
+        JSON.stringify({ detail: '来源平台返回空数据' }),
+      ], { type: 'application/json' }),
+    },
+  })
+  assert.equal(result.noVisitData, true)
+  assert.match(result.message, /数据上传中心 > 读取外部/)
+  assert.match(result.message, /获取并确认走访数据/)
+})
+
+test('每日明细其他错误继续显示后端详情', async () => {
+  const result = await dailyDetailExportFailure({
+    response: { data: { detail: '来源平台请求超时' } },
+  })
+  assert.equal(result.noVisitData, false)
+  assert.equal(result.message, '来源平台请求超时')
 })
 
 test('文件生成页面用独立 Panel 区分每日明细和工作日志', () => {
