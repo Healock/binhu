@@ -118,6 +118,19 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
             ("2026-11-11", "全链条", "completed-in-range", "2026-11-05", "2026-11-11"),
         )
 
+    async def test_completed_keys_skip_query_when_no_tasks_are_in_scope(self):
+        cursor = CompletedKeysCursor([])
+
+        result = await report_overview._find_completed_in_range_keys(
+            cursor,
+            "2026-11-05",
+            "2026-11-11",
+            [],
+        )
+
+        self.assertEqual(result, set())
+        self.assertIsNone(cursor.call)
+
     def test_previously_completed_task_is_not_counted_again(self):
         tasks = [
             ("全链条", "done-before-range", "completed", "2026-11-09", "activity", "社区甲", False),
