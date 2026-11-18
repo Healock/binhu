@@ -44,12 +44,17 @@ def aggregate_summary_task_facts(
             metrics["total"] += count
             if bool(fact.get("unable_to_verify")):
                 metrics["unable_to_verify"] += count
-            if state == "completed":
+            completed_in_range = fact.get("completed_in_range")
+            if completed_in_range is None:
+                completed_in_range = state == "completed"
+            if bool(completed_in_range):
                 metrics["completed"] += count
             else:
                 metrics["pending"] += count
                 metrics["checked" if state == "checked" else "unchecked"] += count
-            if bool(fact.get("carryover")) and state != "completed":
+            # A task unfinished when the range began remains in the expected
+            # workload even if it completes during the range.
+            if bool(fact.get("carryover")):
                 metrics["carryover"] += count
             if bool(fact.get("new")):
                 metrics["new"] += count

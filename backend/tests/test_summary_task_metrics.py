@@ -38,7 +38,7 @@ def test_shared_summary_metrics_cover_carryover_and_state_counts():
     assert checker_totals["社区甲"]["核查员乙"]["changed"] == 1
 
 
-def test_completed_carryover_is_not_counted_as_pending_carryover():
+def test_completed_carryover_remains_in_expected_workload():
     community_totals, _ = aggregate_summary_task_facts([
         {
             "community": "社区甲", "checker": "核查员甲",
@@ -49,5 +49,20 @@ def test_completed_carryover_is_not_counted_as_pending_carryover():
     ])
 
     assert community_totals["社区甲"]["total"] == 1
-    assert community_totals["社区甲"]["carryover"] == 0
+    assert community_totals["社区甲"]["carryover"] == 1
     assert community_totals["社区甲"]["completed"] == 1
+
+
+def test_completed_metric_can_represent_a_range_transition():
+    community_totals, _ = aggregate_summary_task_facts([
+        {
+            "community": "社区甲", "checker": "核查员甲",
+            "state": "completed", "completed_in_range": False,
+            "count": 1, "carryover": False, "new": False,
+            "changed": False, "unable_to_verify": False,
+        },
+    ])
+
+    assert community_totals["社区甲"]["total"] == 1
+    assert community_totals["社区甲"]["completed"] == 0
+    assert community_totals["社区甲"]["pending"] == 1

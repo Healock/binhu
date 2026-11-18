@@ -361,6 +361,27 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(communities["社区甲"]["new"], 2)
         self.assertEqual(inspectors["社区甲"]["虚构核查人"]["total"], 2)
 
+    def test_retained_completed_state_requires_a_completion_transition(self):
+        values = {
+            "截止时间": "2026-10-15",
+            "核查人": "虚构核查人",
+            "下发社区": "社区甲",
+            "核查结果": "在吴",
+        }
+
+        communities, _ = monitor.aggregate_retained_monitor_rows(
+            "疑似未注销模型三",
+            [(json.dumps(values, ensure_ascii=False), 1, (7, "疑似未注销模型三", "a" * 64))],
+            "2026-10-01",
+            "2026-10-31",
+            {"社区甲": "社区甲"},
+            None,
+            completed_task_keys=set(),
+        )
+
+        self.assertEqual(communities["社区甲"]["completed"], 0)
+        self.assertEqual(communities["社区甲"]["pending"], 1)
+
     def test_overlay_uses_latest_successful_row_per_task_not_current_sheet(self):
         source = inspect.getsource(monitor.get_txdocs_business_overlay)
         self.assertIn("latest_task_runs", source)

@@ -452,12 +452,17 @@ def aggregate_retained_monitor_rows(
     alias_lookup: dict[str, str],
     allowed_communities: set[str] | None,
     inspector: str | None = None,
+    *,
+    completed_task_keys: set[tuple[int, str, str]] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, dict[str, Any]]]]:
     """Adapt retained external rows to the shared online-summary algorithm."""
     facts: list[dict[str, Any]] = []
     inspector_filter = _normalize_checker_name(inspector)
     fallback_date = date.fromisoformat(end_date)
-    for values_json, row_count in row_values:
+    completed_keys = completed_task_keys or set()
+    for row in row_values:
+        values_json, row_count = row[:2]
+        task_key = row[2] if len(row) > 2 else None
         if isinstance(values_json, dict):
             values = values_json
         elif isinstance(values_json, bytes):
@@ -480,6 +485,17 @@ def aggregate_retained_monitor_rows(
                 continue
             amount = count * bucket_count
             dispatch_text = bucket.dispatch_date.isoformat()
+            completed_in_range = (
+                bucket.task_state == "completed"
+                if completed_task_keys is None
+                else bool(task_key and task_key in completed_keys)
+            )
+            if (
+                bucket.task_state == "completed"
+                and dispatch_text < start_date
+                and not completed_in_range
+            ):
+                continue
             facts.append({
                 "community": community,
                 "checker": checker,
@@ -488,6 +504,7 @@ def aggregate_retained_monitor_rows(
                 "carryover": bool(dispatch_text and dispatch_text < start_date),
                 "new": start_date <= dispatch_text <= end_date,
                 "changed": False,
+                "completed_in_range": completed_in_range,
                 "unable_to_verify": bucket.unable_to_verify,
             })
     return aggregate_summary_task_facts(facts, source="txdocs_readonly")
@@ -1859,7 +1876,8 @@ async def get_txdocs_business_overlay(
                         GROUP BY run_row.source_id, run_row.parser_type,
                                  run_row.business_key_hash
                     )
-                    SELECT run_row.parser_type, row_version.values_json,
+                    SELECT run_row.source_id, run_row.parser_type,
+                           run_row.business_key_hash, row_version.values_json,
                            run_row.row_count
                     FROM latest_task_runs latest
                     JOIN _txdocs_monitor_run_rows run_row
@@ -1934,13 +1952,44 @@ async def get_txdocs_business_overlay(
             assignee_metrics: dict[str, dict[str, dict[str, Any]]] = defaultdict(
                 lambda: defaultdict(empty_metrics)
             )
-            grouped_rows: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
-            for parser_type, values_json, row_count in retained_rows:
-                grouped_rows[str(parser_type)].append((values_json, row_count))
+            completion_source_clause = ""
+            completion_params: list[Any] = [start_date, end_date, *valid_types]
+            if source_ids is not None:
+                completion_source_clause = (
+                    " AND source_id IN (" + ", ".join(
+                        ["%s"] * len(source_ids)
+                    ) + ")"
+                )
+                completion_params.extend(source_ids)
+            await cur.execute(
+                """
+                SELECT DISTINCT source_id, parser_type, business_key_hash
+                FROM _txdocs_monitor_workload_ledger
+                WHERE observed_date BETWEEN %s AND %s
+                  AND to_state='completed'
+                  AND parser_type IN ("""
+                + type_marks
+                + ")"
+                + completion_source_clause,
+                tuple(completion_params),
+            )
+            completed_task_keys = {
+                (int(source_id), str(parser_type), str(business_key_hash))
+                for source_id, parser_type, business_key_hash
+                in await cur.fetchall()
+            }
+
+            grouped_rows: dict[str, list[tuple[Any, ...]]] = defaultdict(list)
+            for source_id, parser_type, business_key_hash, values_json, row_count in retained_rows:
+                grouped_rows[str(parser_type)].append((
+                    values_json, row_count,
+                    (int(source_id), str(parser_type), str(business_key_hash)),
+                ))
             for parser_type, rows_for_type in grouped_rows.items():
                 type_totals, type_assignees = aggregate_retained_monitor_rows(
                     parser_type, rows_for_type, start_date, end_date,
                     alias_lookup, allowed_communities, inspector,
+                    completed_task_keys=completed_task_keys,
                 )
                 for community, item in type_totals.items():
                     for key in (
