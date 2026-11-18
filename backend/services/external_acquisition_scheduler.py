@@ -33,6 +33,7 @@ def _code_summary_quality(aggregated: dict[str, dict[str, Any]]) -> dict[str, di
             "excluded_record_count": int(result.get("excluded_count") or 0),
             "unclassified_location_count": int(result.get("unclassified_count") or 0),
             "invalid_time_count": int(result.get("invalid_time_count") or 0),
+            "out_of_range_count": int(result.get("out_of_range_count") or 0),
         }
         for source, result in sorted(aggregated.items())
     }
@@ -57,14 +58,30 @@ def _date_param(params: dict[str, Any], key: str, fallback: date) -> date:
 
 
 async def _previous_business_date() -> date:
+    return await _business_date() - timedelta(days=1)
+
+
+async def _business_date() -> date:
     from database import db_manager
     from services.business_time import get_business_date
 
     pool = db_manager.get_pool("online_data")
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            current = await get_business_date(cur)
-    return current - timedelta(days=1)
+            return await get_business_date(cur)
+
+
+def _code_summary_range(params: dict[str, Any], business_date: date) -> tuple[date, date]:
+    """Resolve relative schedule dates while preserving legacy fixed ranges."""
+    if "days_ago" in params:
+        target = business_date - timedelta(days=int(params["days_ago"]))
+        return target, target
+    default_date = business_date - timedelta(days=1)
+    start_date = _date_param(params, "start_date", default_date)
+    end_date = _date_param(params, "end_date", start_date)
+    if start_date > end_date:
+        raise ValueError("开始日期不能晚于结束日期")
+    return start_date, end_date
 
 
 async def _fetch_code_summary_sources(start_date, end_date, progress_callback):
@@ -201,11 +218,8 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
             )
             from services.code_summary import aggregate_rows, count_fullchain_registrations, CodeSummaryError
 
-            business_date = await _previous_business_date()
-            start_date = _date_param(params, "start_date", business_date)
-            end_date = _date_param(params, "end_date", start_date)
-            if start_date > end_date:
-                raise ValueError("开始日期不能晚于结束日期")
+            business_date = await _business_date()
+            start_date, end_date = _code_summary_range(params, business_date)
             payload = DateRangeRequest(start_date=start_date, end_date=end_date)
             await ctx.update(phase="loading_directories", current=0, total=4, message="正在读取汇总目录")
             pool = db_manager.get_pool("online_data")
@@ -266,6 +280,7 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                         personnel_names=personnel, place_names=places,
                         manual_labels=labels,
                         new_registration_counts=registration_counts if source == "peace" else None,
+                        skip_out_of_range=True,
                     )
                 except CodeSummaryError as error:
                     return {
@@ -274,6 +289,19 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
                         "message": f"{source_label}来源数据校验未通过，自动提交已跳过，现有汇总保持不变",
                     }
                 aggregated[source] = aggregate
+            if any(
+                result["raw_count"] > 0 and result["in_range_raw_count"] == 0
+                for result in aggregated.values()
+            ):
+                quality = _code_summary_quality(aggregated)
+                return {
+                    "status": "failed",
+                    "auto_commit_status": "skipped",
+                    "error_code": "all_records_out_of_range",
+                    "safety_gate_code": "all_records_out_of_range",
+                    "message": "所选日期内没有可用来源记录，现有汇总保持不变",
+                    "quality": quality,
+                }
             quality = _code_summary_quality(aggregated)
             if _code_summary_has_blocking_quality(quality):
                 return {

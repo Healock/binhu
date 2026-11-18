@@ -394,6 +394,34 @@ def test_all_invalid_source_times_still_stop_the_batch():
         aggregate_rows("manager", [row], date(2026, 8, 18), date(2026, 8, 18))
 
 
+def test_scheduled_aggregation_skips_and_counts_out_of_range_rows():
+    in_range = {
+        "zhUserIdCard": "110101199001010015", "gjUserName": "管家甲",
+        "population": "流口已登记", "comparisonTime": "2026-08-18 08:00:00",
+        "updateDate": "2026-08-18 08:00:00", "id": "1",
+        "pcsname": "滨湖新城派出所",
+    }
+    out_of_range = {
+        **in_range,
+        "zhUserIdCard": "110101199001010023",
+        "comparisonTime": "2026-08-19 08:00:00",
+        "id": "2",
+    }
+
+    with pytest.raises(CodeSummaryError, match="超出请求日期范围"):
+        aggregate_rows("manager", [in_range, out_of_range], date(2026, 8, 18), date(2026, 8, 18))
+
+    result = aggregate_rows(
+        "manager", [in_range, out_of_range], date(2026, 8, 18), date(2026, 8, 18),
+        skip_out_of_range=True,
+    )
+
+    assert result["raw_count"] == 2
+    assert result["in_range_raw_count"] == 1
+    assert result["out_of_range_count"] == 1
+    assert result["valid_count"] == 1
+
+
 def test_code_summary_source_quality_count_is_safe_to_expose():
     row = {
         "zhUserIdCard": "110101199001010015", "gjUserName": "管家甲",

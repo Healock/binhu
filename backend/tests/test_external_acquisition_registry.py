@@ -10,6 +10,7 @@ from services.external_acquisition_registry import (
     source_definition,
     validate_timezone,
 )
+from services.external_acquisition_scheduler import _code_summary_quality, _code_summary_range
 
 
 def test_catalog_has_independent_default_disabled_sources():
@@ -50,3 +51,71 @@ def test_schedule_params_reject_credentials_and_unknown_business_fields():
         sanitize_source_params("visit_source", {"password": "secret"})
     with pytest.raises(ValueError):
         sanitize_source_params("visit_source", {"address": "不应保存"})
+
+
+@pytest.mark.parametrize("days_ago, expected", [(0, "2026-10-18"), (1, "2026-10-17"), (2, "2026-10-16")])
+def test_code_summary_schedule_supports_relative_business_dates(days_ago, expected):
+    start, end = _code_summary_range({"days_ago": days_ago}, datetime(2026, 10, 18).date())
+    assert start.isoformat() == expected
+    assert end == start
+
+
+def test_code_summary_relative_date_overrides_legacy_fixed_dates():
+    start, end = _code_summary_range(
+        {"days_ago": 0, "start_date": "2026-10-12", "end_date": "2026-10-13"},
+        datetime(2026, 10, 18).date(),
+    )
+    assert (start.isoformat(), end.isoformat()) == ("2026-10-18", "2026-10-18")
+
+
+def test_code_summary_default_target_remains_previous_business_date():
+    start, end = _code_summary_range({}, datetime(2026, 10, 18).date())
+    assert (start.isoformat(), end.isoformat()) == ("2026-10-17", "2026-10-17")
+
+
+def test_code_summary_keeps_legacy_fixed_date_params_when_no_offset_is_saved():
+    start, end = _code_summary_range(
+        {"start_date": "2026-10-12", "end_date": "2026-10-13"},
+        datetime(2026, 10, 18).date(),
+    )
+    assert (start.isoformat(), end.isoformat()) == ("2026-10-12", "2026-10-13")
+
+
+def test_code_summary_range_rejects_reversed_legacy_dates():
+    with pytest.raises(ValueError):
+        _code_summary_range(
+            {"start_date": "2026-10-13", "end_date": "2026-10-12"},
+            datetime(2026, 10, 18).date(),
+        )
+
+
+def test_schedule_quality_exposes_only_out_of_range_count():
+    quality = _code_summary_quality({
+        "manager": {
+            "raw_count": 3,
+            "valid_count": 1,
+            "out_of_range_count": 2,
+            "rows": [{"address": "private", "name": "private"}],
+        },
+    })
+    assert quality == {
+        "manager": {
+            "raw_count": 3,
+            "valid_count": 1,
+            "excluded_record_count": 0,
+            "unclassified_location_count": 0,
+            "invalid_time_count": 0,
+            "out_of_range_count": 2,
+        },
+    }
+
+
+@pytest.mark.parametrize("value", [-1, 31, True, "2"])
+def test_schedule_days_ago_is_bounded_integer_for_code_summary(value):
+    with pytest.raises(ValueError):
+        sanitize_source_params("code_summary", {"days_ago": value})
+
+
+def test_days_ago_is_not_accepted_for_other_sources():
+    with pytest.raises(ValueError):
+        sanitize_source_params("visit_source", {"days_ago": 1})

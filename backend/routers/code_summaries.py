@@ -285,6 +285,7 @@ async def _commit_source(
         result["excluded_count"]
         or result["unclassified_count"]
         or result.get("invalid_time_count", 0)
+        or result.get("out_of_range_count", 0)
     ) else "success"
     if manage_transaction:
         await conn.begin()
@@ -310,6 +311,7 @@ async def _commit_source(
                         "duplicate_count": result["duplicate_count"],
                         "unclassified_count": result["unclassified_count"],
                         "invalid_time_count": result.get("invalid_time_count", 0),
+                        "out_of_range_count": result.get("out_of_range_count", 0),
                     }, ensure_ascii=False),
                 ),
             )
@@ -411,7 +413,7 @@ async def fetch_code_summaries(
                                 ),
                             )
                             run_id, status = await _commit_source(work_conn, source=source, user_id=int(user["id"]), payload=payload, result=aggregated)
-                            results.append({"source": source, "run_id": run_id, "status": status, "raw_count": aggregated["raw_count"], "valid_count": aggregated["valid_count"], "excluded_count": aggregated["excluded_count"], "duplicate_count": aggregated["duplicate_count"], "unclassified_count": aggregated["unclassified_count"], "invalid_time_count": aggregated.get("invalid_time_count", 0)})
+                            results.append({"source": source, "run_id": run_id, "status": status, "raw_count": aggregated["raw_count"], "valid_count": aggregated["valid_count"], "excluded_count": aggregated["excluded_count"], "duplicate_count": aggregated["duplicate_count"], "unclassified_count": aggregated["unclassified_count"], "invalid_time_count": aggregated.get("invalid_time_count", 0), "out_of_range_count": aggregated.get("out_of_range_count", 0)})
                         except CodeSummaryError as exc:
                             run_id = await _insert_failed_run(work_conn, source=source, user_id=int(user["id"]), payload=payload, error=exc)
                             results.append({"source": source, "run_id": run_id, "status": "failed", "error_code": exc.code, "error_message": exc.message})
@@ -504,6 +506,7 @@ async def search_code_summaries(
         "finished_at": latest[11].isoformat() + "Z" if latest[11] else None,
         "created_at": latest[12].isoformat() + "Z" if latest[12] else None,
         "invalid_time_count": int(latest_summary.get("invalid_time_count") or 0),
+        "out_of_range_count": int(latest_summary.get("out_of_range_count") or 0),
     }
     return {
         "source": payload.source,

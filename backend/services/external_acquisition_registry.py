@@ -90,7 +90,7 @@ SOURCE_ALIASES = {
 
 _SAFE_PARAM_KEYS = {
     "start_date", "end_date", "business_date", "mode", "full_scan",
-    "source", "interval_minutes", "include_rating",
+    "source", "interval_minutes", "include_rating", "days_ago",
 }
 _SENSITIVE_PARAM_MARKERS = ("password", "token", "secret", "cookie", "authorization", "credential")
 
@@ -114,6 +114,11 @@ def sanitize_source_params(source_key: str, params: dict[str, Any] | None) -> di
             raise ValueError("调度参数不能包含凭据或会话字段")
         if key not in _SAFE_PARAM_KEYS:
             raise ValueError(f"不支持的来源参数：{key}")
+        if key == "days_ago":
+            if SOURCE_ALIASES.get(source_key, source_key) != "code_summary":
+                raise ValueError("days_ago 仅适用于平安码与管家码调度")
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 30:
+                raise ValueError("days_ago 必须是 0 到 30 之间的整数")
         if isinstance(value, (str, int, float, bool)) or value is None:
             clean[key] = value
         elif isinstance(value, list) and len(value) <= 100 and all(isinstance(item, (str, int)) for item in value):
