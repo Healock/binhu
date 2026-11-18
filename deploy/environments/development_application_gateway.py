@@ -53,7 +53,6 @@ OPERATION_FAILURE_CODES = {
     "dev_restore_mysql_unhealthy",
     "dev_restore_backend_unhealthy",
 }
-CONTROL_COMMIT = Path('/usr/local/libexec/binhu-dev-application/control-commit')
 
 
 def refuse(message: str = "fixed Dev application command required") -> None:
@@ -337,9 +336,6 @@ def prepare(run_id: str, commit: str, version: str, artifact_id: str, stream=Non
     if (not COMMIT_RE.fullmatch(commit) or not VERSION_RE.fullmatch(version)
             or not ARTIFACT_RE.fullmatch(artifact_id) or not RUN_RE.fullmatch(run_id)):
         refuse("immutable Dev application identity required")
-    if (CONTROL_COMMIT.is_symlink() or not CONTROL_COMMIT.is_file()
-            or CONTROL_COMMIT.read_text(encoding="ascii").strip() != commit):
-        refuse("candidate commit is not the independently installed main revision")
     _safe_root(BASE, create=True)
     _safe_root(BASE / "candidates", create=True)
     root = _run_root(run_id)

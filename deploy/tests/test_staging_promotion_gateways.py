@@ -195,9 +195,9 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway migrate *', installer)
         self.assertIn('/usr/local/libexec/binhu-staging-application-gateway reconcile *', installer)
         self.assertIn('staging_gateway_authorization_boundary_installed', installer)
-        self.assertIn('control-commit', installer)
+        self.assertIn('gateway-revision', installer)
         self.assertIn(
-            'if [[ "$installation_complete" -ne 1 && "$control_commit_replaced" -eq 1 ]]',
+            'if [[ "$installation_complete" -ne 1 && "$gateway_revision_replaced" -eq 1 ]]',
             installer,
         )
         self.assertIn(
@@ -551,6 +551,10 @@ class StagingDataGatewayTests(unittest.TestCase):
         self.assertIn('BINHU_STAGING_APP_SSH_KEY', install + application_flow)
         self.assertIn('BINHU_STAGING_DATA_SSH_KEY', install + data_flow)
         self.assertIn('bash ./deploy/environments/install-staging-promotion-gateways.sh', install)
+        self.assertIn('workflow_run:', install)
+        self.assertIn('workflows: [CI]', install)
+        self.assertIn('Run Staging gateway contract tests', install)
+        self.assertIn('github.event.workflow_run.conclusion == \'success\'', install)
         self.assertEqual(install.count('BINHU_STAGING_PORT'), 2)
         self.assertEqual(application_flow.count('BINHU_STAGING_PORT'), 1)
         self.assertEqual(data_flow.count('BINHU_STAGING_PORT'), 1)
@@ -562,6 +566,14 @@ class StagingDataGatewayTests(unittest.TestCase):
         self.assertNotIn('binhu-deploy@', install + application_flow + data_flow)
         self.assertIn('tar -C "$package"', install)
         self.assertNotIn('/tmp/staging-app.pub', install)
+
+    def test_staging_candidate_does_not_require_gateway_revision_match(self):
+        source = (ENVIRONMENTS / 'staging_application_gateway.py').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/promote-staging-application.yml').read_text(encoding='utf-8')
+        self.assertNotIn('CONTROL_COMMIT', source)
+        self.assertNotIn('candidate commit is not the independently installed main revision', source)
+        self.assertIn('actions: read', workflow)
+        self.assertIn('gh run list --workflow ci.yml --commit "$COMMIT"', workflow)
 
     def test_install_status_probe_has_bounded_retry_without_wrapping_mutations(self):
         install = (ROOT / '.github/workflows/install-staging-promotion-gateways.yml').read_text(encoding='utf-8')
