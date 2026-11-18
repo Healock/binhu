@@ -375,7 +375,14 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("history_complete", source)
         self.assertIn("history_blocked_dates", source)
         self.assertIn("row_snapshot_version=0", source)
-        self.assertIn("请先完成历史回算", source)
+        self.assertIn("无法精确恢复任务状态变化", source)
+
+    def test_changed_count_uses_one_latest_transition_per_task(self):
+        source = inspect.getsource(monitor.get_txdocs_business_overlay)
+        self.assertIn("_txdocs_monitor_workload_ledger", source)
+        self.assertIn("PARTITION BY ledger.source_id", source)
+        self.assertIn("ORDER BY ledger.observed_date DESC", source)
+        self.assertNotIn("SUM(run_community.changed_count)", source)
 
     async def test_multi_day_overlay_returns_blocked_legacy_dates_without_aggregation(self):
         class Cursor:
@@ -430,7 +437,7 @@ class TxDocsStatisticsMonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["available"])
         self.assertFalse(result["history_complete"])
         self.assertEqual(result["history_blocked_dates"], ["2026-11-05"])
-        self.assertIn("缺少任务级历史映射", result["message"])
+        self.assertIn("无法精确恢复任务状态变化", result["message"])
         self.assertEqual(len(pool.connection._cursor.queries), 1)
         self.assertTrue(pool.released)
 

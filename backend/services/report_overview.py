@@ -24,6 +24,7 @@ from services.report_members import (
     get_community_alias_lookup,
 )
 from services.parsers import get_parser
+from services.summary_task_metrics import aggregate_summary_task_facts
 from services.task_workflow import TASK_WORKFLOWS
 
 
@@ -327,6 +328,32 @@ def _filter_tasks_by_category(
         for task in tasks
         if _task_change_category(task, new_keys) == category
     ]
+
+
+def _aggregate_overview_task_metrics(
+    tasks: list[tuple[Any, ...]],
+    new_keys: set[tuple[str, str]],
+) -> dict[str, int]:
+    facts = []
+    for task in tasks:
+        category = _task_change_category(task, new_keys)
+        facts.append({
+            "community": task[5] if len(task) > 5 else "",
+            "checker": "",
+            "state": task[2],
+            "count": 1,
+            "carryover": category == "carryover",
+            "new": category == "new",
+            "changed": category == "changed",
+            "unable_to_verify": task[6] if len(task) > 6 else False,
+        })
+    communities, _ = aggregate_summary_task_facts(facts)
+    return {
+        key: sum(int(metrics[key]) for metrics in communities.values())
+        for key in (
+            "total", "carryover", "new", "changed", "pending", "completed",
+        )
+    }
 
 
 async def _resolve_parser_types(
@@ -736,11 +763,12 @@ async def get_online_overview(
     finally:
         pool.release(conn)
 
-    total_tasks = len(tasks)
-    carryover_tasks = len(_filter_tasks_by_category(tasks, new_keys, "carryover"))
-    new_tasks = len(_filter_tasks_by_category(tasks, new_keys, "new"))
-    changed_tasks = len(_filter_tasks_by_category(tasks, new_keys, "changed"))
-    completed_tasks = sum(1 for task in tasks if str(task[2]) == "completed")
+    metrics = _aggregate_overview_task_metrics(tasks, new_keys)
+    total_tasks = metrics["total"]
+    carryover_tasks = metrics["carryover"]
+    new_tasks = metrics["new"]
+    changed_tasks = metrics["changed"]
+    completed_tasks = metrics["completed"]
     result = {
         "exists": bool(runs),
         "parser_type": parser_type,
@@ -754,7 +782,7 @@ async def get_online_overview(
         "carryover_tasks": carryover_tasks,
         "new_tasks": new_tasks,
         "changed_tasks": changed_tasks,
-        "pending_tasks": total_tasks - completed_tasks,
+        "pending_tasks": metrics["pending"],
         "completed_tasks": completed_tasks,
         "completion_rate": _ratio(completed_tasks, total_tasks),
         "external_overlay": {"available": False},
