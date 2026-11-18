@@ -100,6 +100,7 @@ def test_code_summary_incomplete_quality_is_aggregate_only_and_survives_run_reda
             "excluded_record_count": 1,
             "unclassified_location_count": 0,
             "invalid_time_count": 0,
+            "out_of_range_count": 0,
         },
         "peace": {
             "raw_count": 12,
@@ -107,6 +108,7 @@ def test_code_summary_incomplete_quality_is_aggregate_only_and_survives_run_reda
             "excluded_record_count": 1,
             "unclassified_location_count": 1,
             "invalid_time_count": 0,
+            "out_of_range_count": 0,
         },
     }
     assert _safe_result({"quality": quality}) == {"quality": quality}
@@ -161,14 +163,14 @@ def test_code_summary_commits_when_only_locations_are_unclassified():
             return await runner(SimpleNamespace(run_id=42, update=AsyncMock())), False
 
         aggregates = {
-            "peace": {"raw_count": 45, "valid_count": 45, "excluded_count": 0,
+        "peace": {"raw_count": 45, "in_range_raw_count": 45, "valid_count": 45, "excluded_count": 0,
                       "unclassified_count": 44, "invalid_time_count": 0},
-            "manager": {"raw_count": 3, "valid_count": 3, "excluded_count": 0,
+        "manager": {"raw_count": 3, "in_range_raw_count": 3, "valid_count": 3, "excluded_count": 0,
                         "unclassified_count": 0, "invalid_time_count": 0},
         }
         pool = Pool()
         with (
-            patch("services.external_acquisition_scheduler._previous_business_date", new=AsyncMock(return_value=date(2026, 11, 15))),
+            patch("services.external_acquisition_scheduler._business_date", new=AsyncMock(return_value=date(2026, 11, 16))),
             patch("services.external_acquisition_scheduler._fetch_code_summary_sources", new=AsyncMock(return_value={
                 "peace": {"rows": []}, "manager": {"rows": []},
             })),
@@ -233,7 +235,7 @@ def test_code_summary_aggregation_error_is_classified_and_not_committed():
             return result, False
 
         with (
-            patch("services.external_acquisition_scheduler._previous_business_date", new=AsyncMock(return_value=date(2026, 11, 15))),
+            patch("services.external_acquisition_scheduler._business_date", new=AsyncMock(return_value=date(2026, 11, 16))),
             patch("services.external_acquisition_scheduler._fetch_code_summary_sources", new=AsyncMock(return_value={
                 "peace": {"rows": [{"private": "source row"}]}, "manager": {"rows": []},
             })),
