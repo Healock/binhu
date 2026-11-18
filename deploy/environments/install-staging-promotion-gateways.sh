@@ -3,13 +3,13 @@ set -euo pipefail
 umask 077
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo 'Run as root.' >&2; exit 1; }
-[[ $# -eq 3 && -f "$1" && -f "$2" && -f "$3" ]] || { echo 'Usage: install-staging-promotion-gateways.sh APP_KEY.pub DATA_KEY.pub CONTROL_COMMIT' >&2; exit 64; }
+[[ $# -eq 3 && -f "$1" && -f "$2" && -f "$3" ]] || { echo 'Usage: install-staging-promotion-gateways.sh APP_KEY.pub DATA_KEY.pub GATEWAY_REVISION' >&2; exit 64; }
 app_key="$(tr -d '\r\n' < "$1")"
 data_key="$(tr -d '\r\n' < "$2")"
-control_commit="$(tr -d '\r\n' < "$3")"
+gateway_revision="$(tr -d '\r\n' < "$3")"
 [[ "$app_key" =~ ^ssh-ed25519[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || { echo 'Application Ed25519 key required.' >&2; exit 64; }
 [[ "$data_key" =~ ^ssh-ed25519[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || { echo 'Data Ed25519 key required.' >&2; exit 64; }
-[[ "$control_commit" =~ ^[0-9a-f]{40}$ ]] || { echo 'Exact main commit required.' >&2; exit 64; }
+[[ "$gateway_revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'Exact gateway source revision required.' >&2; exit 64; }
 [[ -f deploy/__init__.py && -f deploy/environments/staging_application_gateway.py && -f deploy/environments/staging_data_gateway.py ]] || { echo 'Controlled source package required.' >&2; exit 64; }
 command -v useradd >/dev/null && command -v visudo >/dev/null && command -v openssl >/dev/null || { echo 'required tools missing' >&2; exit 1; }
 
@@ -19,9 +19,9 @@ install -d -o root -g root -m 0755 "$deploy_root"
 [[ -z "$(find deploy/environments -type l -print -quit)" ]] || { echo 'Controlled source package contains symlinks.' >&2; exit 64; }
 staged_environments="$(mktemp -d "$deploy_root/.environments.new.XXXXXX")"
 previous_environments=''
-control_commit_path="$libexec_root/control-commit"
-control_commit_backup=''
-control_commit_replaced=0
+gateway_revision_path="$libexec_root/gateway-revision"
+gateway_revision_backup=''
+gateway_revision_replaced=0
 deploy_init_path="$deploy_root/__init__.py"
 deploy_init_backup=''
 deploy_init_replaced=0
@@ -33,11 +33,11 @@ cleanup_installation() {
   elif [[ "$installation_complete" -ne 1 && -z "$previous_environments" ]]; then
     rm -rf "$deploy_root/environments"
   fi
-  if [[ "$installation_complete" -ne 1 && "$control_commit_replaced" -eq 1 ]]; then
-    if [[ -n "$control_commit_backup" && -f "$control_commit_backup" ]]; then
-      mv "$control_commit_backup" "$control_commit_path"
+  if [[ "$installation_complete" -ne 1 && "$gateway_revision_replaced" -eq 1 ]]; then
+    if [[ -n "$gateway_revision_backup" && -f "$gateway_revision_backup" ]]; then
+      mv "$gateway_revision_backup" "$gateway_revision_path"
     else
-      rm -f "$control_commit_path"
+      rm -f "$gateway_revision_path"
     fi
   fi
   if [[ "$installation_complete" -ne 1 && "$deploy_init_replaced" -eq 1 ]]; then
@@ -49,7 +49,7 @@ cleanup_installation() {
   fi
   [[ -z "$staged_environments" ]] || rm -rf "$staged_environments"
   [[ -z "$previous_environments" || ! -d "$previous_environments" ]] || rm -rf "$previous_environments"
-  [[ -z "$control_commit_backup" || ! -f "$control_commit_backup" ]] || rm -f "$control_commit_backup"
+  [[ -z "$gateway_revision_backup" || ! -f "$gateway_revision_backup" ]] || rm -f "$gateway_revision_backup"
   [[ -z "$deploy_init_backup" || ! -f "$deploy_init_backup" ]] || rm -f "$deploy_init_backup"
 }
 trap cleanup_installation EXIT
@@ -70,15 +70,15 @@ if [[ -d "$deploy_root/environments" ]]; then
 fi
 mv "$staged_environments" "$deploy_root/environments"
 staged_environments=''
-if [[ -f "$control_commit_path" ]]; then
-  control_commit_backup="$libexec_root/.control-commit.previous.$$"
-  cp -p "$control_commit_path" "$control_commit_backup"
+if [[ -f "$gateway_revision_path" ]]; then
+  gateway_revision_backup="$libexec_root/.gateway-revision.previous.$$"
+  cp -p "$gateway_revision_path" "$gateway_revision_backup"
 fi
-control_commit_candidate="$libexec_root/.control-commit.candidate.$$"
-printf '%s\n' "$control_commit" > "$control_commit_candidate"
-chmod 0444 "$control_commit_candidate"
-mv "$control_commit_candidate" "$control_commit_path"
-control_commit_replaced=1
+gateway_revision_candidate="$libexec_root/.gateway-revision.candidate.$$"
+printf '%s\n' "$gateway_revision" > "$gateway_revision_candidate"
+chmod 0444 "$gateway_revision_candidate"
+mv "$gateway_revision_candidate" "$gateway_revision_path"
+gateway_revision_replaced=1
 install -o root -g root -m 0755 deploy/environments/staging-application-root-launcher /usr/local/libexec/binhu-staging-application-gateway
 install -o root -g root -m 0755 deploy/environments/staging-data-root-launcher /usr/local/libexec/binhu-staging-data-gateway
 install -o root -g root -m 0755 deploy/environments/binhu-staging-application-gateway /usr/local/bin/binhu-staging-application-gateway
@@ -137,7 +137,7 @@ paths=(Path('/usr/local/bin/binhu-staging-application-gateway'),
 report={'schema':1,'event':'staging_gateway_authorization_boundary_installed',
         'installed_at':os.environ['INSTALL_STAMP'],
         'accounts':['binhu-staging-app-deploy','binhu-staging-data-deploy'],
-        'control_commit':Path('/usr/local/libexec/binhu-staging-promotion/control-commit').read_text().strip(),
+        'gateway_revision':Path('/usr/local/libexec/binhu-staging-promotion/gateway-revision').read_text().strip(),
         'sha256':{str(path):hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}}
 target=Path('/var/log/binhu-staging-gateways')/('installation-'+os.environ['INSTALL_STAMP']+'.json')
 with target.open('x',encoding='utf-8') as stream:json.dump(report,stream,sort_keys=True)

@@ -1,6 +1,10 @@
 name: Install Staging promotion gateways
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -12,18 +16,50 @@ concurrency:
 
 jobs:
   install:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     environment: staging
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-      - name: Verify immutable main revision
+          ref: main
+          fetch-depth: 0
+      - name: Verify tested gateway revision is current
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          paths=(.github/workflows/install-staging-promotion-gateways.yml deploy/__init__.py deploy/environments)
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git merge-base --is-ancestor "$TESTED_SHA" origin/main
+            if git diff --quiet "$TESTED_SHA^" "$TESTED_SHA" -- "${paths[@]}"; then
+              echo 'install=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! git diff --quiet "$TESTED_SHA" origin/main -- "${paths[@]}"; then
+              echo 'install=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "gateway_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo 'install=true' >> "$GITHUB_OUTPUT"
+      - name: Test Staging promotion gateway
+        if: steps.source.outputs.install == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Staging gateway contract tests
+        if: steps.source.outputs.install == 'true'
+        run: python -m unittest deploy.tests.test_staging_promotion_gateways
       - name: Configure SSH
+        if: steps.source.outputs.install == 'true'
         env:
           ADMIN_KEY: ${{ secrets.BINHU_STAGING_ADMIN_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.BINHU_STAGING_KNOWN_HOSTS }}
@@ -34,11 +70,13 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/staging-admin ~/.ssh/known_hosts
       - name: Install fixed gateways
+        if: steps.source.outputs.install == 'true'
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
           PORT: ${{ secrets.BINHU_STAGING_PORT }}
           APP_PUBLIC_KEY: ${{ secrets.BINHU_STAGING_APP_DEPLOY_PUBLIC_KEY }}
           DATA_PUBLIC_KEY: ${{ secrets.BINHU_STAGING_DATA_DEPLOY_PUBLIC_KEY }}
+          GATEWAY_REVISION: ${{ steps.source.outputs.gateway_revision }}
         run: |
           set -euo pipefail
           [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
@@ -48,13 +86,14 @@ jobs:
           cp -a deploy/environments "$package/deploy/environments"
           printf '%s\n' "$APP_PUBLIC_KEY" > "$package/staging-app.pub"
           printf '%s\n' "$DATA_PUBLIC_KEY" > "$package/staging-data.pub"
-          printf '%s\n' "$GITHUB_SHA" > "$package/staging-control-commit"
+          printf '%s\n' "$GATEWAY_REVISION" > "$package/staging-gateway-revision"
           tar -C "$package" -czf "$RUNNER_TEMP/staging-promotion-gateways.tar.gz" \
-            deploy staging-app.pub staging-data.pub staging-control-commit
+            deploy staging-app.pub staging-data.pub staging-gateway-revision
           cat "$RUNNER_TEMP/staging-promotion-gateways.tar.gz" | ssh -p "$PORT" -i ~/.ssh/staging-admin \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-staging-gateways.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; bash ./deploy/environments/install-staging-promotion-gateways.sh ./staging-app.pub ./staging-data.pub ./staging-control-commit'
+            "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-staging-gateways.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; bash ./deploy/environments/install-staging-promotion-gateways.sh ./staging-app.pub ./staging-data.pub ./staging-gateway-revision'
       - name: Verify fixed status and rejection boundaries
+        if: steps.source.outputs.install == 'true'
         env:
           HOST: ${{ secrets.BINHU_STAGING_HOST }}
           PORT: ${{ secrets.BINHU_STAGING_PORT }}

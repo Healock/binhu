@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: dev-application-promotion
@@ -51,6 +52,22 @@ jobs:
             restore-services) [[ "$RUN_ID" =~ ^dev-restore-[0-9a-f]{16}$ && -z "$ARTIFACT_ID" ]] ;;
             *) exit 64 ;;
           esac
+      - name: Require successful main CI for candidate
+        if: inputs.action == 'prepare'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          gh run list --workflow ci.yml --commit "$COMMIT" --json headSha,status,conclusion --limit 100 > "$RUNNER_TEMP/main-ci-runs.json"
+          python - "$RUNNER_TEMP/main-ci-runs.json" "$COMMIT" <<'PY'
+          import json, pathlib, sys
+          runs = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          commit = sys.argv[2]
+          if not any(run.get('headSha') == commit and run.get('status') == 'completed'
+                     and run.get('conclusion') == 'success' for run in runs):
+              raise SystemExit('candidate main CI has not completed successfully')
+          PY
       - name: Build exact artifact for prepare
         if: inputs.action == 'prepare'
         env:

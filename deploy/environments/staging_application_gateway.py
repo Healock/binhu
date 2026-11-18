@@ -34,7 +34,6 @@ VERSION_RE = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 ARTIFACT_RE = re.compile(r"[0-9a-f]{64}")
 IMAGE_RE = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHIVE_MEMBERS = {"artifact.json", "source.tar", "frontend.tar"}
-CONTROL_COMMIT = Path('/usr/local/libexec/binhu-staging-promotion/control-commit')
 
 
 def refuse(message: str = "fixed Staging application command required") -> None:
@@ -191,9 +190,6 @@ def prepare(run_id: str, commit: str, version: str, artifact_id: str,
     if (not COMMIT_RE.fullmatch(commit) or not VERSION_RE.fullmatch(version)
             or not ARTIFACT_RE.fullmatch(artifact_id) or not DEV_RUN_RE.fullmatch(dev_run_id)):
         refuse("immutable Dev candidate identity required")
-    if (CONTROL_COMMIT.is_symlink() or not CONTROL_COMMIT.is_file()
-            or CONTROL_COMMIT.read_text(encoding='ascii').strip() != commit):
-        refuse("candidate commit is not the independently installed main revision")
     accepted = _dev_acceptance(dev_run_id, {"artifact_id": artifact_id, "commit": commit,
         "version": version, "image_id": _dev_acceptance_report(dev_run_id)["image_id"]})
     _safe_root(BASE, create=True)

@@ -1,6 +1,10 @@
 name: Install Dev application gateway
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -12,18 +16,50 @@ concurrency:
 
 jobs:
   install:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     environment: development
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-      - name: Verify immutable main revision
+          ref: main
+          fetch-depth: 0
+      - name: Verify tested gateway revision is current
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          paths=(.github/workflows/install-dev-application-gateway.yml deploy/__init__.py deploy/environments)
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            [[ "$TESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+            git merge-base --is-ancestor "$TESTED_SHA" origin/main
+            if git diff --quiet "$TESTED_SHA^" "$TESTED_SHA" -- "${paths[@]}"; then
+              echo 'install=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! git diff --quiet "$TESTED_SHA" origin/main -- "${paths[@]}"; then
+              echo 'install=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "gateway_revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo 'install=true' >> "$GITHUB_OUTPUT"
+      - name: Test Dev application gateway
+        if: steps.source.outputs.install == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Dev gateway contract tests
+        if: steps.source.outputs.install == 'true'
+        run: python -m unittest deploy.tests.test_dev_application_gateway deploy.tests.test_dev_department_gateway
       - name: Configure admin SSH
+        if: steps.source.outputs.install == 'true'
         env:
           ADMIN_KEY: ${{ secrets.BINHU_DEV_APP_ADMIN_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS }}
@@ -34,10 +70,12 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/dev-app-admin ~/.ssh/known_hosts
       - name: Install fixed Dev application gateway
+        if: steps.source.outputs.install == 'true'
         env:
           HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
           PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}
           PUBLIC_KEY: ${{ secrets.BINHU_DEV_APP_DEPLOY_PUBLIC_KEY }}
+          GATEWAY_REVISION: ${{ steps.source.outputs.gateway_revision }}
         run: |
           set -euo pipefail
           [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
@@ -48,10 +86,11 @@ jobs:
           # Repository files may use CRLF; Unix shebangs and Python source on the target must use LF.
           find "$package/deploy" -type f -exec sed -i 's/\r$//' {} +
           printf '%s\n' "$PUBLIC_KEY" > "$package/dev-app-deploy.pub"
-          printf '%s\n' "$GITHUB_SHA" > "$package/dev-app-control-commit"
-          tar -C "$package" -czf "$RUNNER_TEMP/dev-app-gateway.tar.gz" deploy dev-app-deploy.pub dev-app-control-commit
-          cat "$RUNNER_TEMP/dev-app-gateway.tar.gz" | ssh -p "$PORT" -i ~/.ssh/dev-app-admin -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-dev-app-gateway.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; bash ./deploy/environments/install-dev-application-gateway.sh ./dev-app-deploy.pub ./dev-app-control-commit'
+          printf '%s\n' "$GATEWAY_REVISION" > "$package/dev-app-gateway-revision"
+          tar -C "$package" -czf "$RUNNER_TEMP/dev-app-gateway.tar.gz" deploy dev-app-deploy.pub dev-app-gateway-revision
+          cat "$RUNNER_TEMP/dev-app-gateway.tar.gz" | ssh -p "$PORT" -i ~/.ssh/dev-app-admin -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "root@$HOST" 'set -euo pipefail; d=$(mktemp -d /tmp/binhu-dev-app-gateway.XXXXXX); trap '\''rm -rf "$d"'\'' EXIT; tar -xzf - -C "$d"; cd "$d"; bash ./deploy/environments/install-dev-application-gateway.sh ./dev-app-deploy.pub ./dev-app-gateway-revision'
       - name: Verify status and boundary
+        if: steps.source.outputs.install == 'true'
         env:
           HOST: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_HOST }}
           PORT: ${{ secrets.BINHU_DEV_EVENT_PIPELINE_PORT }}

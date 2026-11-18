@@ -46,14 +46,11 @@ class DevApplicationGatewayTests(unittest.TestCase):
                                      ('artifact.json', 'source.tar', 'frontend.tar')})
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp).resolve() / 'state'
-            control = Path(tmp) / 'control-commit'
-            control.write_text(commit)
             def local_root(path, *, create=False):
                 if create:
                     path.mkdir(parents=True, exist_ok=True)
                 return path
             with (patch.object(gateway, 'BASE', base),
-                  patch.object(gateway, 'CONTROL_COMMIT', control),
                   patch.object(gateway, '_safe_root', side_effect=local_root),
                   patch.object(gateway, 'verify_artifact', return_value={
                       'artifact_id': artifact_id, 'commit': commit, 'version': '0.30.24'}),
@@ -274,12 +271,26 @@ class DevApplicationGatewayTests(unittest.TestCase):
         self.assertIn('ARTIFACT_ID_BOUND', workflow)
         self.assertIn('or auto to bind the bundle', workflow)
         self.assertNotIn('BINHU_STAGING', workflow)
+        self.assertIn('actions: read', workflow)
+        self.assertIn('gh run list --workflow ci.yml --commit "$COMMIT"', workflow)
+        self.assertIn("run.get('conclusion') == 'success'", workflow)
         install = (ROOT / '.github/workflows/install-dev-application-gateway.yml').read_text()
+        self.assertIn('workflow_run:', install)
+        self.assertIn('workflows: [CI]', install)
+        self.assertIn('github.event.workflow_run.conclusion == \'success\'', install)
+        self.assertIn('Run Dev gateway contract tests', install)
+        self.assertIn('paths=(.github/workflows/install-dev-application-gateway.yml deploy/__init__.py deploy/environments)', install)
         self.assertIn('BINHU_DEV_APP_ADMIN_SSH_KEY', install)
         self.assertIn('BINHU_DEV_APP_DEPLOY_PUBLIC_KEY', install)
         self.assertIn('binhu-dev-app-deploy', install)
         self.assertIn('find "$package/deploy" -type f -exec sed -i', install)
         self.assertIn("s/\\r$//", install)
+
+    def test_candidate_identity_is_not_bound_to_gateway_install_revision(self):
+        source = (ROOT / 'deploy/environments/development_application_gateway.py').read_text()
+        self.assertNotIn('CONTROL_COMMIT', source)
+        self.assertNotIn('candidate commit is not the independently installed main revision', source)
+        self.assertIn('actual["commit"] != manifest["commit"]', source)
 
     def test_reconcile_is_dev_only_and_preserves_volumes(self):
         wrapper = (ROOT / 'deploy/environments/binhu-dev-application-gateway').read_text()

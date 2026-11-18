@@ -47,8 +47,10 @@ integrity, database identity, login acceptance or 75-user capacity.
 ## Fixed Staging promotion gateways
 
 Staging application and sanitized data promotion use two separate SSH accounts,
-forced-command wrappers and sudo allowlists. Install them only through
-`install-staging-promotion-gateways.yml` after the exact main revision passes CI.
+forced-command wrappers and sudo allowlists. After a successful main-branch CI
+run changes Staging gateway code, `install-staging-promotion-gateways.yml`
+automatically runs its gateway tests and installs the current tested revision.
+Manual installation is limited to `main` and runs the same focused tests.
 The installer creates `binhu-staging-app-deploy` and `binhu-staging-data-deploy`;
 neither key is shared with Production, Development or the Staging event-pipeline.
 All three workflows require the fixed `BINHU_STAGING_HOST` and
@@ -95,9 +97,9 @@ outcome and bounded reason codes only. They never contain database credentials,
 passwords, source rows, names, phones, identity numbers, addresses, notes or
 driver output. A workflow failure and the corresponding private `*-alert-*.json`
 record are the alert channels for switch, rollback and validation failures.
-The installer retains `/usr/local/libexec/binhu-staging-promotion/control-commit`
-after a successful atomic replacement and restores the previous value only when
-installation fails. Snapshot `measure` and `export` allocate a fresh private
+The installer records `/usr/local/libexec/binhu-staging-promotion/gateway-revision`
+for audit and restores the previous value if installation fails. That installed
+gateway revision is independent of the application candidate. Snapshot `measure` and `export` allocate a fresh private
 `staging-<16hex>` evidence directory before resource and container preflight, so
 an early memory, disk or Production identity refusal is attributable to that
 attempt instead of being confused with an older failed snapshot. Early evidence
@@ -173,7 +175,9 @@ the full Dev acceptance and Staging data gates.
 
 ## Fixed Dev application promotion gateway
 
-The Dev application has a separate promotion boundary from the Dev event-pipeline gateway. Install `install-dev-application-gateway.sh` only from an exact `origin/main` revision. The forced account `binhu-dev-app-deploy` accepts only:
+The Dev application has a separate promotion boundary from the Dev event-pipeline gateway. After a successful main-branch CI run changes Dev gateway code, `install-dev-application-gateway.yml` automatically runs its focused tests and installs the current tested revision. Manual installation is limited to `main` and runs the same tests. The gateway records its installed source revision for audit, independently of the application candidate.
+
+Before `prepare`, the promotion workflow requires the selected commit to be the current `origin/main` tip and a successful `CI` run for that exact commit. It builds the artifact from that commit and binds its digest. The gateway verifies the transported artifact's commit, version and digest. Ordinary application commits do not require reinstalling the gateway. The forced account `binhu-dev-app-deploy` accepts only:
 
 ```text
 prepare <dev-update-run-id> <40-hex-main-commit> <version> <artifact-id>
@@ -182,7 +186,7 @@ apply <run-id> <artifact-id>
 accept <run-id> <artifact-id>
 ```
 
-`prepare` builds and verifies the Backend image on the authorized Dev host. `apply` uses the existing development backup, measure, health and rollback contract. `accept` rechecks the live Dev manifest and health before producing the real `dev-update-*` result consumed by the Staging application gateway. The gateway has no Production, Staging, Shadow, arbitrary command, or caller-selected path operation.
+`prepare` verifies the immutable application artifact and builds the Backend image on the authorized Dev host. `apply` uses the existing development backup, measure, health and rollback contract. `accept` rechecks the live Dev manifest and health before producing the real `dev-update-*` result consumed by the Staging application gateway. The gateway has no Production, Staging, Shadow, arbitrary command, or caller-selected path operation.
 
 The Dev application workflow reuses only the already-registered Dev event-pipeline host, port and known_hosts secrets because both gateways terminate on the same fixed Dev server. It still uses separate application admin/deploy key pairs and the separate `binhu-dev-app-deploy` account; no event-pipeline private key is reused.
 BINHU_DEV_EVENT_PIPELINE_HOST, BINHU_DEV_EVENT_PIPELINE_PORT and BINHU_DEV_EVENT_PIPELINE_KNOWN_HOSTS are used only to locate the fixed Dev host; the application gateway's admin and deploy private keys remain separate secrets.
