@@ -191,6 +191,7 @@ def aggregate_rows(
     place_names: set[str] | None = None,
     manual_labels: dict[str, str] | None = None,
     new_registration_counts: dict[date, int] | None = None,
+    skip_out_of_range: bool = False,
 ) -> dict[str, Any]:
     if kind not in SOURCE_META:
         raise CodeSummaryError("invalid_source", "不支持的码数据来源")
@@ -203,6 +204,8 @@ def aggregate_rows(
     candidates: dict[tuple[date, str], tuple[tuple, dict[str, Any]]] = {}
     valid_rows_by_date: defaultdict[date, int] = defaultdict(int)
     invalid_time_count = 0
+    out_of_range_count = 0
+    in_range_raw_count = 0
 
     for row in rows:
         if not isinstance(row, dict):
@@ -220,7 +223,11 @@ def aggregate_rows(
             continue
         business_date = business_time.date()
         if business_date < start_date or business_date > end_date:
-            raise CodeSummaryError("date_out_of_range", "来源记录超出请求日期范围")
+            if not skip_out_of_range:
+                raise CodeSummaryError("date_out_of_range", "来源记录超出请求日期范围")
+            out_of_range_count += 1
+            continue
+        in_range_raw_count += 1
         daily[business_date]["raw_count"] += 1
         identity = normalize_identity(row.get(meta["identity"]))
         if not valid_identity(identity):
@@ -302,6 +309,8 @@ def aggregate_rows(
         "rows": canonical,
         "source_hash": source_hash,
         "raw_count": len(rows),
+        "in_range_raw_count": in_range_raw_count,
+        "out_of_range_count": out_of_range_count,
         "valid_count": sum(item["total_people"] for item in canonical),
         "excluded_count": sum(item["excluded_identity_count"] for item in canonical),
         "duplicate_count": sum(item["duplicate_removed_count"] for item in canonical),
