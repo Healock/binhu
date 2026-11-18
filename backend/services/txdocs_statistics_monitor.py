@@ -23,6 +23,7 @@ from services.qmf_config import decrypt_secret
 from services.business_time import get_business_date
 from services.parsers import PARSER_REGISTRY, get_parser
 from services.task_workflow import TASK_WORKFLOWS
+from services.summary_task_metrics import aggregate_summary_task_facts
 from services.report_members import canonical_community, get_community_alias_lookup
 from services.watch_matching import parse_dispatch_time
 
@@ -451,25 +452,17 @@ def aggregate_retained_monitor_rows(
     alias_lookup: dict[str, str],
     allowed_communities: set[str] | None,
     inspector: str | None = None,
+    *,
+    completed_task_keys: set[tuple[int, str, str]] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, dict[str, Any]]]]:
-    """Aggregate persisted external task versions using report semantics."""
-    totals: dict[str, dict[str, Any]] = defaultdict(lambda: {
-        "total": 0, "carryover": 0, "new": 0,
-        "pending": 0, "unchecked": 0, "checked": 0,
-        "completed": 0, "unable_to_verify": 0, "changed": 0,
-        "sources": ["txdocs_readonly"],
-    })
-    by_checker: dict[str, dict[str, dict[str, Any]]] = defaultdict(
-        lambda: defaultdict(lambda: {
-            "total": 0, "carryover": 0, "new": 0,
-            "pending": 0, "unchecked": 0, "checked": 0,
-            "completed": 0, "unable_to_verify": 0, "changed": 0,
-            "sources": ["txdocs_readonly"],
-        })
-    )
+    """Adapt retained external rows to the shared online-summary algorithm."""
+    facts: list[dict[str, Any]] = []
     inspector_filter = _normalize_checker_name(inspector)
     fallback_date = date.fromisoformat(end_date)
-    for values_json, row_count in row_values:
+    completed_keys = completed_task_keys or set()
+    for row in row_values:
+        values_json, row_count = row[:2]
+        task_key = row[2] if len(row) > 2 else None
         if isinstance(values_json, dict):
             values = values_json
         elif isinstance(values_json, bytes):
@@ -492,27 +485,29 @@ def aggregate_retained_monitor_rows(
                 continue
             amount = count * bucket_count
             dispatch_text = bucket.dispatch_date.isoformat()
-            for metrics in (totals[community], by_checker[community][checker]):
-                metrics["total"] += amount
-                if bucket.unable_to_verify:
-                    metrics["unable_to_verify"] += amount
-                if bucket.task_state == "completed":
-                    metrics["completed"] += amount
-                else:
-                    metrics["pending"] += amount
-                    if bucket.task_state == "checked":
-                        metrics["checked"] += amount
-                    else:
-                        metrics["unchecked"] += amount
-                if dispatch_text and dispatch_text < start_date:
-                    if bucket.task_state != "completed":
-                        metrics["carryover"] += amount
-                elif start_date <= dispatch_text <= end_date:
-                    metrics["new"] += amount
-    return dict(totals), {
-        community: dict(checkers)
-        for community, checkers in by_checker.items()
-    }
+            completed_in_range = (
+                bucket.task_state == "completed"
+                if completed_task_keys is None
+                else bool(task_key and task_key in completed_keys)
+            )
+            if (
+                bucket.task_state == "completed"
+                and dispatch_text < start_date
+                and not completed_in_range
+            ):
+                continue
+            facts.append({
+                "community": community,
+                "checker": checker,
+                "state": bucket.task_state,
+                "count": amount,
+                "carryover": bool(dispatch_text and dispatch_text < start_date),
+                "new": start_date <= dispatch_text <= end_date,
+                "changed": False,
+                "completed_in_range": completed_in_range,
+                "unable_to_verify": bucket.unable_to_verify,
+            })
+    return aggregate_summary_task_facts(facts, source="txdocs_readonly")
 
 
 def monitoring_spreadsheet_ids(raw: str | None = None) -> tuple[int, ...]:
@@ -1757,6 +1752,8 @@ async def get_txdocs_business_overlay(
     """
     result = {
         "available": False,
+        "history_complete": True,
+        "history_blocked_dates": [],
         "total_tasks": 0,
         "carryover_tasks": 0,
         "new_tasks": 0,
@@ -1812,6 +1809,57 @@ async def get_txdocs_business_overlay(
                     if str(value or "").strip()
                 }
             )
+            # A multi-day report needs task identities to preserve a task
+            # that completed and disappeared from a later source snapshot.
+            # Legacy runs only stored aggregate buckets, so using them here
+            # would silently drop completed work or double-count carryover.
+            # Keep single-day reports compatible, but refuse an incomplete
+            # range overlay with an explicit diagnostic.
+            if start_date != end_date:
+                legacy_clause = ""
+                legacy_params: list[Any] = [start_date, end_date, *valid_types]
+                if source_ids is not None:
+                    legacy_clause = (
+                        " AND run.spreadsheet_id IN ("
+                        + ", ".join(["%s"] * len(source_ids))
+                        + ")"
+                    )
+                    legacy_params.extend(source_ids)
+                try:
+                    await cur.execute(
+                        """
+                        SELECT DISTINCT run.observed_date
+                        FROM _txdocs_monitor_runs AS run
+                        WHERE run.status='success'
+                          AND run.observed_date BETWEEN %s AND %s
+                          AND run.parser_type IN ("""
+                        + type_marks
+                        + ")"
+                        + legacy_clause
+                        + " AND run.row_snapshot_version=0 ORDER BY run.observed_date",
+                        tuple(legacy_params),
+                    )
+                    legacy_dates = [
+                        str(row[0])[:10] for row in await cur.fetchall()
+                    ]
+                except Exception:
+                    # Rolling deployments without the version column cannot
+                    # claim a complete multi-day history.
+                    return {
+                        **result,
+                        "history_complete": False,
+                        "message": "外部历史快照缺少任务级版本信息，无法安全计算区间汇总",
+                    }
+                if legacy_dates:
+                    return {
+                        **result,
+                        "history_complete": False,
+                        "history_blocked_dates": legacy_dates,
+                        "message": (
+                            "所选区间包含仅保存汇总桶的旧版外部快照，"
+                            "无法精确恢复任务状态变化"
+                        ),
+                    }
             try:
                 await cur.execute(
                     f"""
@@ -1828,7 +1876,8 @@ async def get_txdocs_business_overlay(
                         GROUP BY run_row.source_id, run_row.parser_type,
                                  run_row.business_key_hash
                     )
-                    SELECT run_row.parser_type, row_version.values_json,
+                    SELECT run_row.source_id, run_row.parser_type,
+                           run_row.business_key_hash, row_version.values_json,
                            run_row.row_count
                     FROM latest_task_runs latest
                     JOIN _txdocs_monitor_run_rows run_row
@@ -1903,13 +1952,44 @@ async def get_txdocs_business_overlay(
             assignee_metrics: dict[str, dict[str, dict[str, Any]]] = defaultdict(
                 lambda: defaultdict(empty_metrics)
             )
-            grouped_rows: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
-            for parser_type, values_json, row_count in retained_rows:
-                grouped_rows[str(parser_type)].append((values_json, row_count))
+            completion_source_clause = ""
+            completion_params: list[Any] = [start_date, end_date, *valid_types]
+            if source_ids is not None:
+                completion_source_clause = (
+                    " AND source_id IN (" + ", ".join(
+                        ["%s"] * len(source_ids)
+                    ) + ")"
+                )
+                completion_params.extend(source_ids)
+            await cur.execute(
+                """
+                SELECT DISTINCT source_id, parser_type, business_key_hash
+                FROM _txdocs_monitor_workload_ledger
+                WHERE observed_date BETWEEN %s AND %s
+                  AND to_state='completed'
+                  AND parser_type IN ("""
+                + type_marks
+                + ")"
+                + completion_source_clause,
+                tuple(completion_params),
+            )
+            completed_task_keys = {
+                (int(source_id), str(parser_type), str(business_key_hash))
+                for source_id, parser_type, business_key_hash
+                in await cur.fetchall()
+            }
+
+            grouped_rows: dict[str, list[tuple[Any, ...]]] = defaultdict(list)
+            for source_id, parser_type, business_key_hash, values_json, row_count in retained_rows:
+                grouped_rows[str(parser_type)].append((
+                    values_json, row_count,
+                    (int(source_id), str(parser_type), str(business_key_hash)),
+                ))
             for parser_type, rows_for_type in grouped_rows.items():
                 type_totals, type_assignees = aggregate_retained_monitor_rows(
                     parser_type, rows_for_type, start_date, end_date,
                     alias_lookup, allowed_communities, inspector,
+                    completed_task_keys=completed_task_keys,
                 )
                 for community, item in type_totals.items():
                     for key in (
@@ -1926,6 +2006,7 @@ async def get_txdocs_business_overlay(
                             assignee_metrics[community][checker][key] += item[key]
 
             inspector_filter = _normalize_checker_name(inspector)
+            legacy_facts: list[dict[str, Any]] = []
             for (
                 _parser_type, community, checker_name, dispatch_date,
                 task_state, unable_to_verify, row_count,
@@ -1936,45 +2017,84 @@ async def get_txdocs_business_overlay(
                 checker = _normalize_checker_name(checker_name)
                 if inspector_filter and checker != inspector_filter:
                     continue
-                count = int(row_count or 0)
+                count = max(0, int(row_count or 0))
                 dispatch_text = str(dispatch_date or "")[:10]
-                for item in (metrics[name], assignee_metrics[name][checker]):
-                    item["total"] += count
-                    if int(unable_to_verify or 0):
-                        item["unable_to_verify"] += count
-                    if str(task_state or "") == "completed":
-                        item["completed"] += count
-                    else:
-                        item["pending"] += count
-                        if str(task_state or "") == "checked":
-                            item["checked"] += count
-                        else:
-                            item["unchecked"] += count
-                    if dispatch_text and dispatch_text < start_date:
-                        if str(task_state or "") != "completed":
-                            item["carryover"] += count
-                    elif start_date <= dispatch_text <= end_date:
-                        item["new"] += count
+                legacy_facts.append({
+                    "community": name,
+                    "checker": checker,
+                    "state": str(task_state or "unchecked"),
+                    "count": count,
+                    "carryover": bool(dispatch_text and dispatch_text < start_date),
+                    "new": start_date <= dispatch_text <= end_date,
+                    "changed": False,
+                    "unable_to_verify": bool(unable_to_verify),
+                })
+            legacy_totals, legacy_assignees = aggregate_summary_task_facts(
+                legacy_facts, source="txdocs_readonly"
+            )
+            for community, item in legacy_totals.items():
+                for key in (
+                    "total", "carryover", "new", "pending", "unchecked",
+                    "checked", "completed", "unable_to_verify", "changed",
+                ):
+                    metrics[community][key] += item[key]
+            for community, checkers in legacy_assignees.items():
+                for checker, item in checkers.items():
+                    for key in (
+                        "total", "carryover", "new", "pending", "unchecked",
+                        "checked", "completed", "unable_to_verify", "changed",
+                    ):
+                        assignee_metrics[community][checker][key] += item[key]
 
+            inspector_filter = _normalize_checker_name(inspector)
+            workload_source_clause = ""
+            if source_ids is not None:
+                workload_source_clause = (
+                    " AND ledger.source_id IN ("
+                    + ", ".join(["%s"] * len(source_ids))
+                    + ")"
+                )
+            checker_filter = ""
+            checker_params: list[Any] = []
+            if inspector_filter:
+                checker_filter = " AND LOWER(TRIM(ledger.checker_name))=LOWER(TRIM(%s))"
+                checker_params.append(inspector_filter)
             await cur.execute(
                 f"""
-                SELECT run_community.community,
-                       COALESCE(SUM(run_community.changed_count),0)
-                FROM _txdocs_monitor_run_communities run_community
-                JOIN _txdocs_monitor_runs run ON run.id=run_community.run_id
-                WHERE run.status='success' AND run.is_baseline=0
-                  AND run.observed_date BETWEEN %s AND %s
-                  AND run.parser_type IN ({type_marks})
-                  {community_source_clause}
-                GROUP BY run_community.community
+                WITH ranked_transitions AS (
+                    SELECT ledger.community, ledger.checker_name,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ledger.source_id,
+                                            ledger.parser_type,
+                                            ledger.business_key_hash
+                               ORDER BY ledger.observed_date DESC,
+                                        ledger.run_id DESC
+                           ) AS task_rank
+                    FROM _txdocs_monitor_workload_ledger ledger
+                    WHERE ledger.observed_date BETWEEN %s AND %s
+                      AND ledger.parser_type IN ({type_marks})
+                      {workload_source_clause}
+                      {checker_filter}
+                )
+                SELECT community, checker_name, COUNT(*)
+                FROM ranked_transitions
+                WHERE task_rank=1
+                GROUP BY community, checker_name
                 """,
-                (start_date, end_date, *valid_types, *source_params),
+                (
+                    start_date, end_date, *valid_types, *source_params,
+                    *checker_params,
+                ),
             )
-            for community, changed in await cur.fetchall():
+            for community, _checker, changed in await cur.fetchall():
                 name = canonical_monitor_community(community, alias_lookup)
                 if allowed_communities is not None and name not in allowed_communities:
                     continue
+                assignee = _normalize_checker_name(_checker)
+                if inspector_filter and assignee != inspector_filter:
+                    continue
                 metrics[name]["changed"] += int(changed or 0)
+                assignee_metrics[name][assignee]["changed"] += int(changed or 0)
 
             await cur.execute(
                 f"""

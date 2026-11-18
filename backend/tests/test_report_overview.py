@@ -66,6 +66,24 @@ class CommunityAliasCursor:
 
 
 class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
+    def test_native_overview_uses_shared_metric_aggregation(self):
+        metrics = report_overview._aggregate_overview_task_metrics(
+            [
+                ("全链条", "carry", "unchecked", "2026-11-04", "carryover", "社区甲", False),
+                ("全链条", "done", "completed", "2026-11-09", "activity", "社区甲", False),
+            ],
+            {("全链条", "done")},
+        )
+
+        self.assertEqual(metrics, {
+            "total": 2,
+            "carryover": 1,
+            "new": 1,
+            "changed": 0,
+            "pending": 1,
+            "completed": 1,
+        })
+
     async def test_community_list_scope_expands_configured_aliases(self):
         cursor = CommunityAliasCursor([("长板社区",), ("长板村",)])
 
