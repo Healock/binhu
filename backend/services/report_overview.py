@@ -300,6 +300,61 @@ async def _find_new_activity_keys(
     return new_keys
 
 
+async def _find_completed_in_range_keys(
+    cur,
+    start_date: str,
+    end_date: str,
+    tasks: list[tuple[Any, ...]],
+) -> set[tuple[str, str]]:
+    """Find tasks that transitioned into completed during the selected range."""
+    keys_by_type: dict[str, set[str]] = defaultdict(set)
+    for parser_type, row_key, *_ in tasks:
+        keys_by_type[str(parser_type)].add(str(row_key))
+
+    completed_keys: set[tuple[str, str]] = set()
+    for parser_type, row_keys in keys_by_type.items():
+        for row_key_chunk in _chunks(row_keys):
+            placeholders = ", ".join(["%s"] * len(row_key_chunk))
+            await cur.execute(
+                f"""
+                WITH valid_runs AS (
+                    SELECT run.report_date, run.parser_type
+                    FROM _daily_task_ledger_runs AS run
+                    JOIN information_schema.TABLES AS current_table
+                      ON current_table.TABLE_SCHEMA=DATABASE()
+                     AND current_table.TABLE_NAME=run.snapshot_table
+                ), state_history AS (
+                    SELECT ledger.parser_type, ledger.row_key, ledger.report_date,
+                           ledger.task_state,
+                           LAG(ledger.task_state) OVER (
+                               PARTITION BY ledger.parser_type, ledger.row_key
+                               ORDER BY ledger.report_date, ledger.updated_at
+                           ) AS previous_state
+                    FROM _daily_task_ledger AS ledger
+                    JOIN valid_runs
+                      ON valid_runs.report_date=ledger.report_date
+                     AND valid_runs.parser_type=ledger.parser_type
+                    WHERE ledger.report_date<=%s
+                      AND ledger.parser_type=%s
+                      AND ledger.row_key IN ({placeholders})
+                      AND ledger.included=1
+                )
+                SELECT DISTINCT parser_type, row_key
+                FROM state_history
+                WHERE report_date BETWEEN %s AND %s
+                  AND task_state='completed'
+                  AND previous_state IS NOT NULL
+                  AND previous_state<>'completed'
+                """,
+                (end_date, parser_type, *row_key_chunk, start_date, end_date),
+            )
+            completed_keys.update(
+                (str(found_type), str(row_key))
+                for found_type, row_key in await cur.fetchall()
+            )
+    return completed_keys
+
+
 def _task_change_category(
     task: tuple[Any, ...],
     new_keys: set[tuple[str, str]],
@@ -316,12 +371,23 @@ def _filter_tasks_by_category(
     tasks: list[tuple[Any, ...]],
     new_keys: set[tuple[str, str]],
     category: str,
+    completed_keys: set[tuple[str, str]] | None = None,
 ) -> list[tuple[Any, ...]]:
     if category not in OVERVIEW_CATEGORIES:
         raise ValueError("不支持的数据概览分类")
     if category == "completed":
+        if completed_keys is not None:
+            return [
+                task for task in tasks
+                if (str(task[0]), str(task[1])) in completed_keys
+            ]
         return [task for task in tasks if str(task[2]) == "completed"]
     if category == "pending":
+        if completed_keys is not None:
+            return [
+                task for task in tasks
+                if (str(task[0]), str(task[1])) not in completed_keys
+            ]
         return [task for task in tasks if str(task[2]) != "completed"]
     return [
         task
@@ -333,6 +399,7 @@ def _filter_tasks_by_category(
 def _aggregate_overview_task_metrics(
     tasks: list[tuple[Any, ...]],
     new_keys: set[tuple[str, str]],
+    completed_keys: set[tuple[str, str]],
 ) -> dict[str, int]:
     facts = []
     for task in tasks:
@@ -341,6 +408,7 @@ def _aggregate_overview_task_metrics(
             "community": task[5] if len(task) > 5 else "",
             "checker": "",
             "state": task[2],
+            "completed_in_range": (str(task[0]), str(task[1])) in completed_keys,
             "count": 1,
             "carryover": category == "carryover",
             "new": category == "new",
@@ -675,7 +743,16 @@ async def get_online_overview_details(
                 inspector,
             )
             new_keys = await _find_new_activity_keys(cur, tasks, runs)
-            filtered = _filter_tasks_by_category(tasks, new_keys, category)
+            completed_keys = (
+                await _find_completed_in_range_keys(
+                    cur, start_date, end_date, tasks
+                )
+                if category in {'completed', 'pending'}
+                else None
+            )
+            filtered = _filter_tasks_by_category(
+                tasks, new_keys, category, completed_keys
+            )
             filtered.sort(
                 key=lambda task: (str(task[3]), str(task[0]), str(task[1])),
                 reverse=True,
@@ -760,10 +837,15 @@ async def get_online_overview(
                     communities, inspector,
                 )
                 new_keys = await _find_new_activity_keys(cur, tasks, runs)
+                completed_keys = await _find_completed_in_range_keys(
+                    cur, start_date, end_date, tasks
+                )
+            else:
+                completed_keys = set()
     finally:
         pool.release(conn)
 
-    metrics = _aggregate_overview_task_metrics(tasks, new_keys)
+    metrics = _aggregate_overview_task_metrics(tasks, new_keys, completed_keys)
     total_tasks = metrics["total"]
     carryover_tasks = metrics["carryover"]
     new_tasks = metrics["new"]

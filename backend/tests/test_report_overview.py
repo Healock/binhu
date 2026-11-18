@@ -42,6 +42,18 @@ class NewKeyCursor:
         return list(self.rows)
 
 
+class CompletedKeysCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.call = None
+
+    async def execute(self, sql, params=None):
+        self.call = (" ".join(sql.split()), params)
+
+    async def fetchall(self):
+        return list(self.rows)
+
+
 class EffectiveTaskCursor:
     def __init__(self):
         self.call = None
@@ -73,6 +85,7 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
                 ("全链条", "done", "completed", "2026-11-09", "activity", "社区甲", False),
             ],
             {("全链条", "done")},
+            {("全链条", "done")},
         )
 
         self.assertEqual(metrics, {
@@ -83,6 +96,68 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
             "pending": 1,
             "completed": 1,
         })
+
+    async def test_completed_keys_are_state_transitions_inside_the_range(self):
+        cursor = CompletedKeysCursor([("全链条", "completed-in-range")])
+
+        result = await report_overview._find_completed_in_range_keys(
+            cursor,
+            "2026-11-05",
+            "2026-11-11",
+            [("全链条", "completed-in-range", "completed", "2026-11-09", "activity")],
+        )
+
+        self.assertEqual(result, {("全链条", "completed-in-range")})
+        sql, params = cursor.call
+        self.assertIn("LAG(ledger.task_state)", sql)
+        self.assertIn("previous_state<>'completed'", sql)
+        self.assertIn("report_date BETWEEN %s AND %s", sql)
+        self.assertIn("ledger.row_key IN (%s)", sql)
+        self.assertEqual(
+            params,
+            ("2026-11-11", "全链条", "completed-in-range", "2026-11-05", "2026-11-11"),
+        )
+
+    async def test_completed_keys_skip_query_when_no_tasks_are_in_scope(self):
+        cursor = CompletedKeysCursor([])
+
+        result = await report_overview._find_completed_in_range_keys(
+            cursor,
+            "2026-11-05",
+            "2026-11-11",
+            [],
+        )
+
+        self.assertEqual(result, set())
+        self.assertIsNone(cursor.call)
+
+    def test_previously_completed_task_is_not_counted_again(self):
+        tasks = [
+            ("全链条", "done-before-range", "completed", "2026-11-09", "activity", "社区甲", False),
+            ("全链条", "done-in-range", "completed", "2026-11-09", "activity", "社区甲", False),
+        ]
+        completed_keys = {("全链条", "done-in-range")}
+        metrics = report_overview._aggregate_overview_task_metrics(
+            tasks,
+            set(),
+            completed_keys,
+        )
+
+        self.assertEqual(metrics["total"], 2)
+        self.assertEqual(metrics["completed"], 1)
+        self.assertEqual(metrics["pending"], 1)
+        self.assertEqual(
+            [task[1] for task in report_overview._filter_tasks_by_category(
+                tasks, set(), "completed", completed_keys
+            )],
+            ["done-in-range"],
+        )
+        self.assertEqual(
+            [task[1] for task in report_overview._filter_tasks_by_category(
+                tasks, set(), "pending", completed_keys
+            )],
+            ["done-before-range"],
+        )
 
     async def test_community_list_scope_expands_configured_aliases(self):
         cursor = CommunityAliasCursor([("长板社区",), ("长板村",)])
@@ -265,6 +340,11 @@ class OnlineOverviewTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(
                     return_value={("全链条", "new-task")}
                 ),
+            ),
+            patch.object(
+                report_overview,
+                "_find_completed_in_range_keys",
+                new=AsyncMock(return_value={("全链条", "new-task")}),
             ),
         ):
             result = await report_overview.get_online_overview(
