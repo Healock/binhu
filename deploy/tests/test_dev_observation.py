@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from deploy.environments.event_pipeline import control
 from deploy.environments.event_pipeline import observation_control as observation
 
 
@@ -143,12 +144,17 @@ dev-20260919-dualtrack-monitor40-flink dev.task.events.v1 1 200 200 0 - - -
             completed = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
             with patch.object(observation, "STATE", state), \
                  patch.object(observation, "evidence_root", return_value=evidence), \
+                 patch.object(observation, "_comparison_action") as comparison_action, \
+                 patch.object(control, "measure", return_value={
+                     "environment": "development", "run_id": RUN_ID,
+                 }), \
                  patch.object(observation.subprocess, "run", return_value=completed) as runner:
                 result = observation.start(RUN_ID, OBSERVATION_ID)
             self.assertEqual(result["status"], "starting")
             self.assertEqual(result["samples_required"], 13)
             command = runner.call_args.args[0]
             self.assertEqual(command[0], "systemd-run")
+            comparison_action.assert_called_once_with("up")
             self.assertIn("--property=NoNewPrivileges=true", command)
             self.assertEqual(command[-3:], ["run", RUN_ID, OBSERVATION_ID])
 

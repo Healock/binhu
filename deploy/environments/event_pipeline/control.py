@@ -25,8 +25,11 @@ PAUSE_EVIDENCE_ROOT = ROOT / "pause-evidence"
 PAUSE_ID_RE = re.compile(r"^dev-pause-[0-9]{8}-[A-Za-z0-9][A-Za-z0-9_-]{3,31}$")
 PIPELINE_WORKER_SERVICES = (
     "relay", "bridge", "business-bridge", "backend-outbox-relay",
-    "python-metadata-worker", "dual-track-monitor",
 )
+COMPARISON_SERVICES = ("python-metadata-worker", "dual-track-monitor")
+RETIRED_CONTAINER_NAMES = {
+    service: f"{PROJECT}-{service}-1" for service in COMPARISON_SERVICES
+}
 PIPELINE_DATA_SERVICES = ("dev-derived-mysql", "dev-derived-redis")
 FLINK_SERVICES = ("jobmanager", "taskmanager")
 EVENTBUS_SERVICES = ("schema-registry", "kafka-1", "kafka-2", "kafka-3")
@@ -114,6 +117,8 @@ _SAFE_CONTROL_FAILURES = frozenset(
         "Dev pause requires one running Flink job",
         "Dev pause found conflicting Flink jobs",
         "Dev pause service stop failed",
+        "Dev comparison container identity mismatch",
+        "Dev comparison container stop failed",
         "Dev pause savepoint failed",
         "Dev pause job did not stop",
         "Dev pause runtime state mismatch",
@@ -222,7 +227,7 @@ def evidence_initializer_command(run_id: str) -> list[str]:
     )
     return [
         "docker", "compose", "-f", (ROOT / "compose.json").as_posix(),
-        "run", "--rm", "--no-deps", "--user", "0:0", "dual-track-monitor",
+        "--profile", "acceptance", "run", "--rm", "--no-deps", "--user", "0:0", "acceptance-runner",
         "python", "-c", script,
     ]
 
@@ -283,7 +288,7 @@ def _run_checked(command: list[str], *, timeout: int = 120) -> subprocess.Comple
 def _compose_action(compose_file: Path, action: str, services: tuple[str, ...], *, timeout: int = 180) -> None:
     """Run a fixed Compose action without accepting arbitrary service names."""
     allowed = {
-        str(ROOT / "compose.json"): set(PIPELINE_WORKER_SERVICES + PIPELINE_DATA_SERVICES),
+        str(ROOT / "compose.json"): set(PIPELINE_WORKER_SERVICES + COMPARISON_SERVICES + PIPELINE_DATA_SERVICES),
         str(FLINK_COMPOSE): set(FLINK_SERVICES),
         str(EVENTBUS_COMPOSE): set(EVENTBUS_SERVICES),
     }
@@ -291,7 +296,10 @@ def _compose_action(compose_file: Path, action: str, services: tuple[str, ...], 
         raise ValueError("Dev pause service stop failed")
     if not services or any(service not in allowed[str(compose_file)] for service in services):
         raise ValueError("Dev pause service stop failed")
-    command = ["docker", "compose", "-f", str(compose_file), action]
+    command = ["docker", "compose", "-f", str(compose_file)]
+    if set(services) & set(COMPARISON_SERVICES):
+        command += ["--profile", "comparison"]
+    command.append(action)
     if action == "up":
         command += ["-d"]
     else:
@@ -300,6 +308,50 @@ def _compose_action(compose_file: Path, action: str, services: tuple[str, ...], 
     result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         raise ValueError("Dev pause service stop failed")
+
+
+def _stop_retired_comparison_containers() -> list[str]:
+    """Stop only the known Dev comparison containers, preserving volumes/evidence."""
+    stopped = []
+    for service, name in RETIRED_CONTAINER_NAMES.items():
+        result = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"name=^{name}$"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode:
+            raise ValueError("Dev resource inspection failed")
+        container_ids = result.stdout.split()
+        if not container_ids:
+            continue
+        if len(container_ids) != 1:
+            raise ValueError("Dev comparison container identity mismatch")
+        inspected = subprocess.run(
+            ["docker", "inspect", container_ids[0]],
+            capture_output=True, text=True, timeout=30,
+        )
+        if inspected.returncode:
+            raise ValueError("Dev resource inspection failed")
+        try:
+            item = json.loads(inspected.stdout)[0]
+        except (ValueError, IndexError, TypeError):
+            raise ValueError("Dev comparison container identity mismatch") from None
+        labels = item.get("Config", {}).get("Labels", {})
+        if (
+            str(item.get("Name", "")).lstrip("/") != name
+            or labels.get("com.docker.compose.project") != PROJECT
+            or labels.get("com.docker.compose.service") != service
+            or labels.get("binhu.environment") != "development"
+        ):
+            raise ValueError("Dev comparison container identity mismatch")
+        if item.get("State", {}).get("Running"):
+            stopped_result = subprocess.run(
+                ["docker", "stop", container_ids[0]],
+                capture_output=True, text=True, timeout=60,
+            )
+            if stopped_result.returncode:
+                raise ValueError("Dev comparison container stop failed")
+            stopped.append(service)
+    return stopped
 
 
 def _write_private_json(path: Path, payload: dict) -> None:
@@ -490,7 +542,8 @@ def pause(run_id: str, pause_id: str) -> dict:
 
         phase = "worker_stop"
         workers_stopped = True
-        _compose_action(ROOT / "compose.json", "stop", PIPELINE_WORKER_SERVICES)
+        _compose_action(ROOT / "compose.json", "stop",
+                        PIPELINE_WORKER_SERVICES + COMPARISON_SERVICES)
 
         savepoint = None
         if job_id:
@@ -516,6 +569,7 @@ def pause(run_id: str, pause_id: str) -> dict:
             "recovery_mode": recovery_mode,
             "stopped_services": {
                 "pipeline_workers": list(PIPELINE_WORKER_SERVICES),
+                "comparison_services": list(COMPARISON_SERVICES),
                 "pipeline_data": list(PIPELINE_DATA_SERVICES),
                 "flink": list(FLINK_SERVICES), "eventbus": list(EVENTBUS_SERVICES),
             },
@@ -916,6 +970,7 @@ def apply():
     if report.get("run_id"):
         _prepare_evidence_directory(report["run_id"])
     try:
+        retired_comparison = _stop_retired_comparison_containers()
         _compose_action(EVENTBUS_COMPOSE, "up", EVENTBUS_SERVICES, timeout=420)
         _wait_dev_kafka_ready()
     except Exception:
@@ -981,7 +1036,8 @@ def apply():
     if migration.returncode:
         raise ValueError("Dev delivery index migration failed")
     flink = _submit_and_verify_flink(manifest, evidence)
-    return {**report, "startup_requested": True, "flink": flink, "acceptance": "pending"}
+    return {**report, "startup_requested": True, "retired_comparison_services": retired_comparison,
+            "flink": flink, "acceptance": "pending"}
 
 
 if __name__ == "__main__":

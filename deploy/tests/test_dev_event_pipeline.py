@@ -211,17 +211,55 @@ class FlinkStateContractTests(unittest.TestCase):
         self.assertEqual(
             set(control.PIPELINE_WORKER_SERVICES),
             {"relay", "bridge", "business-bridge", "backend-outbox-relay",
-             "python-metadata-worker", "dual-track-monitor"},
+             },
         )
+        self.assertEqual(set(control.COMPARISON_SERVICES),
+                         {"python-metadata-worker", "dual-track-monitor"})
         with patch.object(control.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
             control._compose_action(
                 control.FLINK_COMPOSE, "stop", ("taskmanager", "jobmanager"),
             )
-        self.assertIn("taskmanager", run.call_args.args[0])
+            control._compose_action(
+                control.ROOT / "compose.json", "stop", control.COMPARISON_SERVICES,
+            )
+        self.assertIn("taskmanager", run.call_args_list[0].args[0])
+        self.assertIn("--profile", run.call_args_list[1].args[0])
+        self.assertIn("comparison", run.call_args_list[1].args[0])
+        self.assertIn("python-metadata-worker", run.call_args_list[1].args[0])
         with self.assertRaisesRegex(ValueError, "Dev pause service stop failed"):
             control._compose_action(control.FLINK_COMPOSE, "stop", ("backend",))
         with self.assertRaisesRegex(ValueError, "Dev pause service stop failed"):
             control._compose_action(Path("/etc/anything.yml"), "stop", ("mysql",))
+
+    def test_retirement_stops_only_identity_verified_dev_comparison_containers(self):
+        ids = iter(("python-id", "monitor-id"))
+        def run(command, **_kwargs):
+            if command[1] == "ps":
+                return SimpleNamespace(returncode=0, stdout=next(ids) + "\n", stderr="")
+            if command[1] == "inspect":
+                service = (
+                    "python-metadata-worker" if command[2] == "python-id"
+                    else "dual-track-monitor"
+                )
+                item = {
+                    "Name": "/" + control.RETIRED_CONTAINER_NAMES[service],
+                    "Config": {"Labels": {
+                        "com.docker.compose.project": control.PROJECT,
+                        "com.docker.compose.service": service,
+                        "binhu.environment": "development",
+                    }},
+                    "State": {"Running": True},
+                }
+                return SimpleNamespace(returncode=0, stdout=json.dumps([item]), stderr="")
+            return SimpleNamespace(returncode=0, stdout=command[2] + "\n", stderr="")
+
+        with patch.object(control.subprocess, "run", side_effect=run) as command:
+            stopped = control._stop_retired_comparison_containers()
+        self.assertEqual(stopped, list(control.COMPARISON_SERVICES))
+        self.assertEqual(
+            [call.args[0][0:2] for call in command.call_args_list if call.args[0][0] == "docker"],
+            [["docker", "ps"], ["docker", "inspect"], ["docker", "stop"]] * 2,
+        )
 
     def test_dev_measure_accepts_only_manifest_pinned_mount_drift(self):
         expected = {
@@ -919,6 +957,7 @@ volumes:
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(control, "ROOT", Path(tmp)), \
                 patch.object(control, "measure", return_value={}), \
+                patch.object(control, "_stop_retired_comparison_containers", return_value=[]), \
                 patch.object(control, "_compose_action") as compose_action, \
                 patch.object(control, "_wait_dev_kafka_ready"), \
                 patch.object(control.time, "sleep"), \
@@ -951,6 +990,7 @@ volumes:
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(control, "ROOT", Path(tmp)), \
                 patch.object(control, "measure", return_value={}), \
+                patch.object(control, "_stop_retired_comparison_containers", return_value=[]), \
                 patch.object(control, "_compose_action"), \
                 patch.object(control, "_wait_dev_kafka_ready"), \
                 patch.object(control.time, "sleep"), \
@@ -971,12 +1011,12 @@ volumes:
 
     def test_evidence_initializer_targets_only_current_run_directory(self):
         command = control.evidence_initializer_command("dev-20260916-dualtrack-monitor18")
-        self.assertEqual(command[:8], [
+        self.assertEqual(command[:10], [
             "docker", "compose", "-f", "/srv/binhu-environments/development-pipeline/compose.json",
-            "run", "--rm", "--no-deps", "--user",
+            "--profile", "acceptance", "run", "--rm", "--no-deps", "--user",
         ])
-        self.assertEqual(command[8], "0:0")
-        self.assertEqual(command[9], "dual-track-monitor")
+        self.assertEqual(command[10], "0:0")
+        self.assertEqual(command[11], "acceptance-runner")
         self.assertIn("dev-20260916-dualtrack-monitor18", " ".join(command))
         self.assertIn("10001", " ".join(command))
         self.assertNotIn("rm -rf", " ".join(command))
@@ -1022,6 +1062,7 @@ volumes:
                 return SimpleNamespace(returncode=0, stdout="started", stderr="")
 
             with patch.object(control, "ROOT", root), patch.object(control, "measure", return_value={}), \
+                    patch.object(control, "_stop_retired_comparison_containers", return_value=[]), \
                     patch.object(control, "_compose_action"), \
                     patch.object(control, "_wait_dev_kafka_ready"), \
                     patch.object(control.subprocess, "run", side_effect=run), \
@@ -1512,6 +1553,7 @@ volumes:
     def test_compose_includes_isolated_python_metadata_worker(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
         service = spec["services"]["python-metadata-worker"]
+        self.assertEqual(service["profiles"], ["comparison"])
         self.assertEqual(service["networks"], ["internal"])
         self.assertEqual(service["command"][-1], "python-metadata-worker")
         self.assertEqual(service["labels"]["binhu.environment"], "development")
@@ -1534,6 +1576,7 @@ volumes:
     def test_compose_includes_read_only_resident_dual_track_monitor(self):
         spec = compose({name: "sha256:" + "a" * 64 for name in ("mysql", "redis", "worker", "flink")})
         service = spec["services"]["dual-track-monitor"]
+        self.assertEqual(service["profiles"], ["comparison"])
         self.assertEqual(service["command"], ["python", "-m", "event_pipeline.runtime", "dual-track-monitor"])
         self.assertTrue(service["read_only"])
         self.assertIn("evidence:/var/lib/binhu-dev-event-pipeline/evidence", service["volumes"])
@@ -1673,12 +1716,12 @@ assert validate_scale(1002) == 1002
 
     def test_acceptance_controller_targets_only_fixed_dev_services(self):
         source = Path(event_prepare.__file__).with_name("acceptance_control.py").read_text(encoding="utf-8")
-        self.assertIn('"stop", "dual-track-monitor"', source)
         self.assertIn('"acceptance-runner", "python", "-m", "event_pipeline.scale_acceptance"', source)
         self.assertIn(
-            '"up", "-d", "--wait", "--wait-timeout", "90", "dual-track-monitor"',
+            '"--profile", "comparison", "up", "-d", "python-metadata-worker", "dual-track-monitor"',
             source,
         )
+        self.assertIn('"--profile", "comparison", "stop", *control.COMPARISON_SERVICES', source)
         for forbidden in ("down", "volume rm", "system prune", "production", "staging", "shadow"):
             self.assertNotIn(forbidden, source.lower())
         self.assertIn("acceptance-failure-", source)

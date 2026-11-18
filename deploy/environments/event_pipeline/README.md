@@ -225,9 +225,15 @@ Redis `binhu:events`。它使用单独的 `backend-relay.env`、`backend` 内部
 Production、Staging、Shadow 或任何外部平台。服务器部署时只新增该服务，不重建
 Kafka、Flink、Schema Registry 或既有数据卷。
 
-### Resident dual-track monitor
+### Synthetic dual-track comparison profile
 
-`dual-track-monitor` 是 Dev 项目内的只读常驻服务。它连接独立的
+`python-metadata-worker` 与 `dual-track-monitor` 不属于常规 Dev 运行服务，
+Compose 将它们放在 `comparison` profile 中。普通 `apply` 不启动它们；升级时
+固定控制器会核验旧容器的项目、服务和 Development 标签后停止它们，不删除容器、
+数据库、evidence 或 checkpoint 卷。只有显式执行 synthetic scale acceptance 时
+才临时启动这组对照服务，验收结束后立即停止。
+
+`dual-track-monitor` 是 Dev 项目内的只读对照服务。它连接独立的
 `Dev_EventPipeline` 派生库，按当前 `DEV_RUN_ID` 比较
 `dev_task_metadata_python`、`dev_task_metadata` 和 Python 事件账本，不连接
 Backend、Production、Staging 或 Kafka/Flink 控制面，也不写业务表。每轮检查在
@@ -290,7 +296,7 @@ checkpoint/savepoint 卷保持不变，也不使用 `allowNonRestoredState`。
 10 万条规模验收要求 TaskManager 使用受控的 2 GiB 容器上限和 1792 MiB Flink
 process memory；JobManager 保持 768 MiB。两者都使用 `on-failure:3`，使 Dev 组件
 遭遇瞬时进程故障时可以有限恢复，但不能无限重启。Python metadata worker 使用
-256 MiB 上限。固定 Compose 修补器只接受从历史的 TaskManager
+256 MiB 上限仅用于显式 synthetic comparison profile。固定 Compose 修补器只接受从历史的 TaskManager
 `768 MiB + 640 MiB process memory + 无 restart policy` 精确迁移到这组配置，其他
 内存值、restart policy、网络、卷、镜像或路径变化一律拒绝。checkpoint/savepoint、
 Kafka、Redis 和派生 MySQL 数据卷均不因该资源修补删除。
@@ -337,13 +343,12 @@ relay 状态机模块一并只读挂载，不能混用旧 worker 镜像内的过
 入队、比较或证据写入失败时只输出异常类型和固定阶段，完整业务值不进入日志；
 controller 另写不可覆盖的私密失败证据。
 
-为避免两条消费者尚在收敛时常驻 monitor 把短暂先后顺序误报成最终差异，受控
-controller 先停止当前 Dev `dual-track-monitor`，
+为避免两条消费者尚在收敛时 monitor 把短暂先后顺序误报成最终差异，受控
+controller 临时启动 comparison profile 后先停止 `dual-track-monitor`，
 由 runner 投递并有界等待 Kafka 台账、Python 投影、Flink 投影和 revision sink
 全部达到目标，再逐字段核对 revision、event count、changed field count 和各事件
-分类计数。零差异时写入不可覆盖的脱敏证据并使用 `docker compose up --wait`
-恢复 monitor，只有新鲜健康心跳出现后 controller 才返回成功；超时或任何差异时写入
-`paused` 状态、保留证据并保持 monitor 停止，禁止继续下一级规模。
+分类计数。controller 返回前停止 Python worker 和 monitor；超时或任何差异时写入
+`paused` 状态并保留证据，禁止继续下一级规模。
 
 Dev relay 当前固定使用 2 个并发 worker、4 条派生库连接和一个共享的幂等 Kafka
 producer。每个 worker 使用独立的 delivery store，并继续通过 `FOR UPDATE SKIP LOCKED`、
@@ -352,10 +357,10 @@ lease token 和完成栅栏领取与完成事件；并发度和连接数是代�
 Production、Staging 或 Shadow。正常发布日志按每个 worker 每 1000 条输出一次安全计数，
 不记录 event ID、载荷或业务正文。
 
-1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。monitor40 三档
-全部通过后，核心持续运行门禁使用独立的固定 6 小时观察：每 30 分钟记录 monitor、
-Python worker、relay、Redis、MySQL、Kafka、Flink、磁盘和日志轮换，共 13 个采样点；
-开始时额外执行一次元数据双轨对账和 Schema Registry 合同核对。部署账号只接受
+1002、10000 或 100000 条通过只代表对应累计规模的一次双轨子验收。常规 Dev 不运行
+Python worker；只有显式启动 6 小时观察时，控制器才临时启用 comparison profile，
+结束或失败都会停止它。该观察仍是双轨对照，不代表纯 Flink-only 生产负载验收。
+部署账号只接受
 `observe-start <run_id> <observation_id>`、
 `observe-status <run_id> <observation_id>`、`status`、
 `pause <run_id> <pause_id>` 和 `resume <run_id> <pause_id>`。GitHub 的
@@ -364,7 +369,7 @@ Python worker、relay、Redis、MySQL、Kafka、Flink、磁盘和日志轮换，
 Actions 手动运行时，`gateway-status` 不需要运行编号；`pause` 需要当前运行编号和新建
 的唯一 pause ID；`resume` 必须原样使用暂停成功时的同一对编号。
 
-6 小时内要求无未归因差异、容器重启计数不增加且无 OOM、Redis 驱逐和 OOM 计数不增加、MySQL
+原 6 小时流程要求无未归因差异、容器重启计数不增加且无 OOM、Redis 驱逐和 OOM 计数不增加、MySQL
 无当前锁等待或新增死锁、Kafka lag 最终连续三个采样为 0、Flink checkpoint 持续推进，
 并且内存、连接数和磁盘没有持续增长趋势。日报刷新和业务清理尚未迁入当前元数据派生域，
 Dev Backend 又明确关闭相应调度器，因此记录为“当前域不适用”，不能通过 event-pipeline
