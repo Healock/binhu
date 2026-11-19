@@ -115,10 +115,11 @@ def sanitize_source_params(source_key: str, params: dict[str, Any] | None) -> di
         if key not in _SAFE_PARAM_KEYS:
             raise ValueError(f"不支持的来源参数：{key}")
         if key == "days_ago":
-            if SOURCE_ALIASES.get(source_key, source_key) != "code_summary":
-                raise ValueError("days_ago 仅适用于平安码与管家码调度")
-            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 30:
-                raise ValueError("days_ago 必须是 0 到 30 之间的整数")
+            canonical_key = SOURCE_ALIASES.get(source_key, source_key)
+            if canonical_key not in {"code_summary", "visit_source"}:
+                raise ValueError("days_ago 仅适用于走访与平安码/管家码调度")
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 31:
+                raise ValueError("days_ago 必须是 0 到 31 之间的整数")
         if isinstance(value, (str, int, float, bool)) or value is None:
             clean[key] = value
         elif isinstance(value, list) and len(value) <= 100 and all(isinstance(item, (str, int)) for item in value):

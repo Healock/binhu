@@ -10,7 +10,11 @@ from services.external_acquisition_registry import (
     source_definition,
     validate_timezone,
 )
-from services.external_acquisition_scheduler import _code_summary_quality, _code_summary_range
+from services.external_acquisition_scheduler import (
+    _code_summary_quality,
+    _code_summary_range,
+    _scheduled_date_range,
+)
 
 
 def test_catalog_has_independent_default_disabled_sources():
@@ -53,11 +57,31 @@ def test_schedule_params_reject_credentials_and_unknown_business_fields():
         sanitize_source_params("visit_source", {"address": "不应保存"})
 
 
-@pytest.mark.parametrize("days_ago, expected", [(0, "2026-10-18"), (1, "2026-10-17"), (2, "2026-10-16")])
-def test_code_summary_schedule_supports_relative_business_dates(days_ago, expected):
+@pytest.mark.parametrize(
+    "days_ago, expected",
+    [
+        (0, ("2026-10-18", "2026-10-18")),
+        (1, ("2026-10-17", "2026-10-17")),
+        (2, ("2026-10-16", "2026-10-17")),
+    ],
+)
+def test_code_summary_schedule_supports_relative_business_date_windows(days_ago, expected):
     start, end = _code_summary_range({"days_ago": days_ago}, datetime(2026, 10, 18).date())
-    assert start.isoformat() == expected
-    assert end == start
+    assert (start.isoformat(), end.isoformat()) == expected
+
+
+@pytest.mark.parametrize(
+    "days_ago, expected",
+    [
+        (0, ("2026-10-18", "2026-10-18")),
+        (1, ("2026-10-17", "2026-10-17")),
+        (2, ("2026-10-16", "2026-10-17")),
+        (7, ("2026-10-11", "2026-10-17")),
+    ],
+)
+def test_visit_schedule_supports_relative_business_date_windows(days_ago, expected):
+    start, end = _scheduled_date_range({"days_ago": days_ago}, datetime(2026, 10, 18).date())
+    assert (start.isoformat(), end.isoformat()) == expected
 
 
 def test_code_summary_relative_date_overrides_legacy_fixed_dates():
@@ -110,12 +134,21 @@ def test_schedule_quality_exposes_only_out_of_range_count():
     }
 
 
-@pytest.mark.parametrize("value", [-1, 31, True, "2"])
-def test_schedule_days_ago_is_bounded_integer_for_code_summary(value):
+@pytest.mark.parametrize("value", [-1, 32, True, "2"])
+@pytest.mark.parametrize("source_key", ["code_summary", "visit_source"])
+def test_schedule_days_ago_is_bounded_integer_for_window_sources(source_key, value):
     with pytest.raises(ValueError):
-        sanitize_source_params("code_summary", {"days_ago": value})
+        sanitize_source_params(source_key, {"days_ago": value})
 
 
 def test_days_ago_is_not_accepted_for_other_sources():
     with pytest.raises(ValueError):
-        sanitize_source_params("visit_source", {"days_ago": 1})
+        sanitize_source_params("venue_cloud", {"days_ago": 1})
+
+
+def test_visit_schedule_accepts_days_ago_and_preserves_legacy_date_parameters():
+    assert sanitize_source_params("visit_source", {"days_ago": 2}) == {"days_ago": 2}
+    assert sanitize_source_params("visit_source", {
+        "start_date": "2026-10-12",
+        "end_date": "2026-10-13",
+    }) == {"start_date": "2026-10-12", "end_date": "2026-10-13"}

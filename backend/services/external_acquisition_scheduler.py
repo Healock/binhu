@@ -22,6 +22,7 @@ from services.external_acquisition_registry import (
 )
 
 _tasks: set[asyncio.Task] = set()
+CERTIFICATE_WAIT_TIMEOUT_SECONDS = 30 * 60
 
 
 def _code_summary_quality(aggregated: dict[str, dict[str, Any]]) -> dict[str, dict[str, int]]:
@@ -57,10 +58,6 @@ def _date_param(params: dict[str, Any], key: str, fallback: date) -> date:
         raise ValueError(f"{key} 必须是 YYYY-MM-DD") from exc
 
 
-async def _previous_business_date() -> date:
-    return await _business_date() - timedelta(days=1)
-
-
 async def _business_date() -> date:
     from database import db_manager
     from services.business_time import get_business_date
@@ -71,17 +68,23 @@ async def _business_date() -> date:
             return await get_business_date(cur)
 
 
-def _code_summary_range(params: dict[str, Any], business_date: date) -> tuple[date, date]:
-    """Resolve relative schedule dates while preserving legacy fixed ranges."""
+def _scheduled_date_range(params: dict[str, Any], business_date: date) -> tuple[date, date]:
+    """Resolve a rolling full-day window while preserving legacy fixed ranges."""
     if "days_ago" in params:
-        target = business_date - timedelta(days=int(params["days_ago"]))
-        return target, target
+        days_ago = int(params["days_ago"])
+        if days_ago == 0:
+            return business_date, business_date
+        return business_date - timedelta(days=days_ago), business_date - timedelta(days=1)
     default_date = business_date - timedelta(days=1)
     start_date = _date_param(params, "start_date", default_date)
     end_date = _date_param(params, "end_date", start_date)
     if start_date > end_date:
         raise ValueError("开始日期不能晚于结束日期")
     return start_date, end_date
+
+
+def _code_summary_range(params: dict[str, Any], business_date: date) -> tuple[date, date]:
+    return _scheduled_date_range(params, business_date)
 
 
 async def _fetch_code_summary_sources(start_date, end_date, progress_callback):
@@ -99,10 +102,16 @@ async def _fetch_code_summary_sources(start_date, end_date, progress_callback):
 async def _wait_certificate(run_id: int, ctx) -> dict[str, Any]:
     from services.registry_certificate_jobs import get_certificate_source_run
 
-    for _ in range(720):
+    deadline = time.monotonic() + CERTIFICATE_WAIT_TIMEOUT_SECONDS
+    current = None
+    while time.monotonic() < deadline:
         current = await get_certificate_source_run(run_id)
         if not current:
-            return {"status": "failed", "safety_gate_code": "certificate_run_missing"}
+            return {
+                "status": "failed", "auto_commit_status": "skipped",
+                "safety_gate_code": "certificate_run_missing",
+                "certificate_run_id": run_id,
+            }
         await ctx.update(
             phase=str(current.get("phase") or "reading"),
             current=int(current.get("current_page") or 0),
@@ -112,9 +121,21 @@ async def _wait_certificate(run_id: int, ctx) -> dict[str, Any]:
         if current.get("status") not in {"pending", "running"}:
             if current.get("status") == "completed":
                 return {"status": "success", "auto_commit_status": "committed", "certificate_run_id": run_id}
-            return {"status": "failed", "auto_commit_status": "skipped", "safety_gate_code": current.get("error_code") or "certificate_source_failed"}
+            return {
+                "status": "failed", "auto_commit_status": "skipped",
+                "safety_gate_code": current.get("error_code") or "certificate_source_failed",
+                "certificate_run_id": run_id,
+                "current_page": current.get("current_page"),
+                "total_pages": current.get("total_pages"),
+            }
         await asyncio.sleep(1)
-    return {"status": "failed", "auto_commit_status": "skipped", "safety_gate_code": "certificate_timeout"}
+    return {
+        "status": "failed", "auto_commit_status": "skipped",
+        "safety_gate_code": "certificate_timeout",
+        "certificate_run_id": run_id,
+        "current_page": current.get("current_page") if current else None,
+        "total_pages": current.get("total_pages") if current else None,
+    }
 
 
 async def run_registered_source(source_key: str, requested_by: int | None, params: dict[str, Any],
@@ -162,11 +183,8 @@ async def run_registered_source(source_key: str, requested_by: int | None, param
             from services.visit_source import VisitSourceError, commit_rows, fetch_rows, preview_diff
             from database import db_manager
 
-            business_date = await _previous_business_date()
-            start_date = _date_param(params, "start_date", business_date)
-            end_date = _date_param(params, "end_date", start_date)
-            if start_date > end_date:
-                raise ValueError("开始日期不能晚于结束日期")
+            business_date = await _business_date()
+            start_date, end_date = _scheduled_date_range(params, business_date)
             try:
                 detail, rating = await asyncio.gather(
                     fetch_rows("detail", start_date, end_date),
