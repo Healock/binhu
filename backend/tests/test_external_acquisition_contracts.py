@@ -19,6 +19,7 @@ from services.external_acquisition_scheduler import (
     _code_summary_has_blocking_quality,
     _code_summary_quality,
     _fetch_code_summary_sources,
+    _wait_certificate,
     run_registered_source,
 )
 
@@ -55,6 +56,39 @@ def test_retry_only_accepts_failed_or_interrupted_runs():
             with pytest.raises(HTTPException) as caught:
                 await external_acquisition.retry_external_run(18, object(), {"id": 2, "permissions": ["visit.source.manage"]})
             assert caught.value.status_code == 409
+
+    asyncio.run(scenario())
+
+
+def test_certificate_wait_allows_source_runs_longer_than_twelve_minutes():
+    async def scenario():
+        from services import external_acquisition_scheduler
+
+        clock = iter(range(2000))
+        calls = 0
+
+        async def certificate_run(_run_id):
+            nonlocal calls
+            calls += 1
+            status = "completed" if calls > 840 else "running"
+            return {
+                "status": status,
+                "phase": "reading" if status == "running" else "finished",
+                "current_page": min(calls, 92),
+                "total_pages": 92,
+            }
+
+        context = SimpleNamespace(update=AsyncMock())
+        with (
+            patch.object(external_acquisition_scheduler.time, "monotonic", side_effect=lambda: next(clock)),
+            patch("services.registry_certificate_jobs.get_certificate_source_run", new=AsyncMock(side_effect=certificate_run)),
+            patch.object(external_acquisition_scheduler.asyncio, "sleep", new=AsyncMock()),
+        ):
+            result = await _wait_certificate(26, context)
+
+        assert result["status"] == "success"
+        assert result["certificate_run_id"] == 26
+        assert calls == 841
 
     asyncio.run(scenario())
 
