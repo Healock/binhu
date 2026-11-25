@@ -5,7 +5,7 @@ WORKDIR /app
 # Keep the local deployment mirror. Hosted CI builds can use the upstream indexes.
 ARG USE_CHINA_MIRRORS=1
 RUN if [ "$USE_CHINA_MIRRORS" = 1 ]; then \
-    sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
+    sed -i -E 's@https?://(deb\.debian\.org|security\.debian\.org)/@https://mirrors.aliyun.com/@g' \
       /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
     fi
 
