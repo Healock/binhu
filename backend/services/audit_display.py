@@ -110,6 +110,7 @@ ACTION_LABELS: dict[str, str] = {
     "visit_rating.import": "导入星级评定",
     "visit_source.preview": "预览走访与星级来源数据",
     "visit_source.confirm": "确认走访与星级来源数据",
+    "code_summary.import": "导入平安码明细文件",
     "code_summary.fetch": "获取平安码与管家码数据",
     "code_summary.location_classify": "维护码数据位置分类",
     "code_summary.location_recompute": "重新计算码数据位置汇总",

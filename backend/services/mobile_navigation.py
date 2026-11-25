@@ -76,6 +76,7 @@ ITEM_PERMISSIONS: dict[str, str] = {
 ITEM_PERMISSION_ALTERNATIVES: dict[str, tuple[str, ...]] = {
     "data_upload": (
         "visit.import",
+        "visit.source.manage",
         "police.dispatch.manage",
         "workflow.ticket.handle",
         "workflow.ticket.manage",
