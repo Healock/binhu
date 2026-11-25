@@ -4,7 +4,8 @@ import { UploadOutlined } from '@ant-design/icons'
 import type { RcFile } from 'antd/es/upload/interface'
 import {
   getVisitImportIssues,
-  importPeaceCode,
+  importCodeSummary,
+  type CodeSummarySource,
   uploadStarRating,
   uploadVisitDetail,
   type VisitImportResult,
@@ -129,16 +130,21 @@ export function VisitWorkbookImports() {
   </>
 }
 
-export function PeaceCodeWorkbookImport() {
+export function CodeSummaryWorkbookImport({ source }: { source: CodeSummarySource }) {
+  const isPeace = source === 'peace'
+  const title = isPeace ? '平安码' : '管家码'
+  const format = isPeace
+    ? '可直接上传窗口登记原始导出 XLSX。自制表首行填写身份证号、比对时间、采集位置、人员类型和机构名称。'
+    : '上传明细 XLSX，首行填写住户身份证号、比对时间、管家姓名、人员类型和派出所名称。'
   return <WorkbookImport
-    title="平安码"
-    description="请选择明细 XLSX。首张工作表的首行应有身份证号（文本格式）、比对时间、采集位置、人员类型和机构名称。导入后，文件所含日期使用新汇总，请上传这些日期的完整明细。"
-    importFile={importPeaceCode}
+    title={title}
+    description={`${format} 证件号码请使用文本格式，并上传所含日期的完整明细。`}
+    importFile={file => importCodeSummary(source, file)}
     renderResult={result => <Alert
       showIcon
       type={result.status === 'warning' ? 'warning' : 'success'}
-      message={result.unclassified_count ? '平安码已导入，部分地点待分类' : '平安码已导入'}
-      description={`批次 ${result.run_id} · ${result.start_date} 至 ${result.end_date}，共 ${result.days} 个有数据的日期 · 原始 ${result.raw_count} 条 · 去重后 ${result.valid_count} 条 · 重复 ${result.duplicate_count} 条 · 地点待分类 ${result.unclassified_count} 条`}
+      message={result.unclassified_count ? `${title}已导入，部分地点待分类` : `${title}已导入`}
+      description={`批次 ${result.run_id} · ${result.start_date} 至 ${result.end_date}，共 ${result.days} 个有数据的日期 · 原始 ${result.raw_count} 条 · 去重后 ${result.valid_count} 条 · 重复 ${result.duplicate_count} 条${isPeace ? ` · 地点待分类 ${result.unclassified_count} 条` : ''}`}
     />}
   />
 }

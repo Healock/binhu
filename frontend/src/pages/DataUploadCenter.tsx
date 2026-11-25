@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import PoliceDispatchPanel from '../components/PoliceDispatchPanel'
 import PropertyAnnotationImport from '../components/PropertyAnnotationImport'
 import AnalysisImportPanel from '../components/AnalysisImportPanel'
-import { PeaceCodeWorkbookImport, VisitWorkbookImports } from '../components/WorkbookImports'
+import { CodeSummaryWorkbookImport, VisitWorkbookImports } from '../components/WorkbookImports'
 import ExternalAcquisitionWorkbench from '../components/ExternalAcquisitionWorkbench'
 import RegistryManagement from './RegistryManagement'
 import TxDocsMonitorSettings from './TxDocsMonitorSettings'
@@ -19,7 +19,7 @@ export default function DataUploadCenter() {
   const canManageCertificates = Boolean(user?.permissions.includes('registry.import.manage'))
   const canManageProperties = Boolean(user?.permissions.includes('registry.property.manage'))
   const canImportVisits = Boolean(user?.permissions.includes('visit.import'))
-  const canImportPeaceCode = Boolean(user?.permissions.includes('visit.source.manage'))
+  const canImportCodeSummaries = Boolean(user?.permissions.includes('visit.source.manage'))
   const canManageAnalysis = Boolean(user?.permissions.includes('online.task.manage'))
   const canManageExternal = Boolean(user?.permissions.some(permission => ['sync.trigger', 'qmf.registration.execute', 'visit.source.manage', 'venue.manage'].includes(permission)))
   const canManageTxDocs = user?.role === 'super_admin' || user?.permission_groups?.some(group => group.code === 'super_admin') || user?.permission_group?.code === 'super_admin'
@@ -42,7 +42,10 @@ export default function DataUploadCenter() {
     {!activePanel && activeTab === 'files' && <div className="grid gap-4">
       <PoliceDispatchPanel enabled={canManagePoliceDispatch} />
       {canImportVisits && <VisitWorkbookImports />}
-      {canImportPeaceCode && <PeaceCodeWorkbookImport />}
+      {canImportCodeSummaries && <>
+        <CodeSummaryWorkbookImport source="peace" />
+        <CodeSummaryWorkbookImport source="manager" />
+      </>}
       {canManageAnalysis && <Panel title="结构化研判结果" description="导入平台导出的待研判工作簿，服务端会逐行核对任务状态与版本。"><Button onClick={() => setSearchParams({ tab: 'files', panel: 'analysis' })}>导入研判结果</Button></Panel>}
       {canManageCertificates && <Panel title="房屋档案导入" description="户号表预览、告知书关联确认和问题核查使用档案导入权限。"><Button type="primary" onClick={() => setSearchParams({ tab: 'files', panel: 'registry' })}>打开房屋档案导入</Button></Panel>}
       {canManageProperties && <Panel title="小区标注工作簿" description="导入标注建议后逐项确认；地址和社区原值不会被工作簿修改。"><PropertyAnnotationImport onChanged={async () => undefined} /></Panel>}

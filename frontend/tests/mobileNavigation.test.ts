@@ -542,15 +542,16 @@ test('历史手机 Dock 配置中的汇总入口会被清理', () => {
   ))), false)
 })
 
-test('数据上传中心按权限提供走访和平安码汇总文件导入', () => {
+test('数据上传中心按权限提供走访、平安码和管家码文件导入', () => {
   const source = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /canImportVisits && <VisitWorkbookImports/)
-  assert.match(source, /canImportPeaceCode && <PeaceCodeWorkbookImport/)
+  assert.match(source, /canImportCodeSummaries = Boolean\(user\?\.permissions\.includes\('visit\.source\.manage'\)\)/)
+  assert.match(source, /canImportCodeSummaries && <>\s*<CodeSummaryWorkbookImport source="peace" \/>\s*<CodeSummaryWorkbookImport source="manager" \/>/)
   const panel = readFileSync(new URL('../src/components/WorkbookImports.tsx', import.meta.url), 'utf8')
   assert.match(panel, /importFile=\{uploadVisitDetail\}/)
   assert.match(panel, /importFile=\{uploadStarRating\}/)
-  assert.match(panel, /importFile=\{importPeaceCode\}/)
+  assert.match(panel, /importFile=\{file => importCodeSummary\(source, file\)\}/)
   assert.match(source, /PoliceDispatchPanel/)
   assert.doesNotMatch(source, /照片调取批次/)
 })

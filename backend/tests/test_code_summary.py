@@ -18,7 +18,7 @@ from routers.code_summaries import (
     _insert_failed_run,
     _json_value,
     _total,
-    import_peace_code,
+    import_code_summary,
     router,
 )
 from services.code_summary import (
@@ -27,7 +27,7 @@ from services.code_summary import (
     count_fullchain_registrations,
 )
 from services.code_summary import CodeSummaryError
-from services.peace_code_workbook import read_peace_code_workbook
+from services.code_summary_workbook import read_code_summary_workbook
 
 
 class FakeCursor:
@@ -474,7 +474,7 @@ def test_routes_use_separate_view_and_fetch_permissions():
         for route in router.routes
     }
     assert "require_visit_source_manage" in dependencies["/api/code-summaries/fetch"]
-    assert "require_visit_source_manage" in dependencies["/api/code-summaries/imports/peace"]
+    assert "require_visit_source_manage" in dependencies["/api/code-summaries/imports/{source}"]
     assert "require_visit_summary_view" in dependencies["/api/code-summaries/search"]
     assert "require_visit_summary_view" in dependencies["/api/code-summaries/locations/search"]
     assert "require_code_summary_manage" in dependencies["/api/code-summaries/locations/classifications"]
@@ -516,9 +516,10 @@ async def test_failed_source_run_is_committed_without_snapshot():
 PEACE_HEADERS = ["身份证号", "比对时间", "采集位置", "人员类型", "机构名称"]
 
 
-def peace_workbook(rows, headers=PEACE_HEADERS):
+def code_workbook(rows, headers=PEACE_HEADERS):
     book = Workbook()
-    book.active.append(headers)
+    if headers is not None:
+        book.active.append(headers)
     for row in rows:
         book.active.append(row)
     stream = BytesIO()
@@ -528,17 +529,17 @@ def peace_workbook(rows, headers=PEACE_HEADERS):
 
 @pytest.mark.parametrize("case", [
     (b"invalid xlsx", "invalid_workbook"),
-    (peace_workbook([]), "empty_workbook"),
-    (peace_workbook([], ["身份证号"]), "missing_header"),
-    (peace_workbook([], [*PEACE_HEADERS, "idCard"]), "duplicate_header"),
-    (peace_workbook([[0, datetime(2026, 8, 18, 9), "合成地点", "", "合成机构"]]), "invalid_identity"),
-    (peace_workbook([["000000200001010013", "2026-08-18", "合成地点", "", "合成机构"]]), "invalid_time"),
-    (peace_workbook([["000000200001010013", "=NOW()", "合成地点", "", "合成机构"]]), "formula_cell"),
+    (code_workbook([]), "empty_workbook"),
+    (code_workbook([], ["身份证号"]), "missing_header"),
+    (code_workbook([], [*PEACE_HEADERS, "idCard"]), "duplicate_header"),
+    (code_workbook([[0, datetime(2026, 8, 18, 9), "合成地点", "", "合成机构"]]), "invalid_identity"),
+    (code_workbook([["000000200001010013", "2026-08-18", "合成地点", "", "合成机构"]]), "invalid_time"),
+    (code_workbook([["000000200001010013", "=NOW()", "合成地点", "", "合成机构"]]), "formula_cell"),
 ], ids=lambda case: case[1])
 def test_peace_workbook_rejects_invalid_input(case):
     content, error_code = case
     with pytest.raises(CodeSummaryError) as exc:
-        read_peace_code_workbook(content)
+        read_code_summary_workbook("peace", content)
     assert exc.value.code == error_code
 
 
@@ -566,15 +567,15 @@ async def test_peace_file_import_appends_only_covered_days_and_audits_counts(mon
     ]
     request = Request({"type": "http", "headers": []})
     user = {"id": 1}
-    bad_file = UploadFile(BytesIO(peace_workbook([[*rows[0][:-1], "其他单位"]])), filename="synthetic.xlsx")
+    bad_file = UploadFile(BytesIO(code_workbook([[*rows[0][:-1], "其他单位"]])), filename="synthetic.xlsx")
     with pytest.raises(HTTPException) as exc:
-        await import_peace_code(bad_file, request, user, conn)
+        await import_code_summary("peace", bad_file, request, user, conn)
     assert exc.value.status_code == 400
     assert conn.commit_count == 0
     assert not conn.snapshots
 
-    file = UploadFile(BytesIO(peace_workbook(rows)), filename="synthetic.xlsx")
-    result = await import_peace_code(file, request, user, conn)
+    file = UploadFile(BytesIO(code_workbook(rows)), filename="synthetic.xlsx")
+    result = await import_code_summary("peace", file, request, user, conn)
     assert result == {
         "run_id": 1, "status": "success", "start_date": "2026-08-18", "end_date": "2026-08-20",
         "days": 2, "raw_count": 3, "valid_count": 2, "duplicate_count": 1, "unclassified_count": 0,
@@ -583,5 +584,92 @@ async def test_peace_file_import_appends_only_covered_days_and_audits_counts(mon
     assert conn.versions["peace", absent_date] == 3
     assert [snapshot[1] for snapshot in conn.snapshots] == [date(2026, 8, 18), date(2026, 8, 20)]
     assert any(sql.startswith("INSERT INTO _admin_audit_log") for sql in conn.executed_sql)
+    assert conn.begin_count == conn.commit_count == 1
+    assert file.file.closed
+
+
+def test_peace_window_export_accepts_original_headers():
+    from config import settings
+
+    headers = [
+        "姓名", "身份证", "手机号", "居住地址", "出租屋编号", "暂住地址",
+        "采集窗口", "所属单位", "采集时间", "登记情况", "更新时间", "服务处所",
+        "是否自主申报", "数据来源", "核查结果", "备注", "核查时间",
+    ]
+    station = settings.VISIT_SOURCE_POLICE_NAME
+    row = [
+        "合成姓名", "000000200001010013", "合成联系方式", "合成居住地址", None, None,
+        "滨湖所接警大厅", station, "2026-08-18 09:00:00", "流口未登记", "2026-08-18 10:00:00",
+        None, None, "微信", "未核查", None, None,
+    ]
+    assert read_code_summary_workbook("peace", code_workbook([row], headers)) == [{
+        "idCard": row[1], "location": "滨湖所接警大厅", "jgmc": station,
+        "comparisonTime": datetime(2026, 8, 18, 9), "population": "流口未登记",
+        "updateDate": datetime(2026, 8, 18, 10),
+    }]
+
+
+def test_peace_window_export_includes_first_row_and_only_import_fields():
+    from config import settings
+
+    station = settings.VISIT_SOURCE_POLICE_NAME
+    raw_row = [
+        "合成姓名", "000000200001010013", "合成联系方式", "合成居住地址", "", "",
+        "滨湖所接警大厅", station, "2026-08-18 09:00:00", "流口未登记",
+        "", "", "合成标志", "微信", "未核查", "",
+    ]
+    second = [*raw_row]
+    second[2] = "合成联系方式二"
+    second[8] = "2026-08-18 10:00:00"
+    content = code_workbook([raw_row, second], headers=None)
+    rows = read_code_summary_workbook("peace", content)
+    assert len(rows) == 2
+    assert rows[0] == {
+        "idCard": raw_row[1], "location": "滨湖所接警大厅", "jgmc": station,
+        "comparisonTime": datetime(2026, 8, 18, 9), "population": "流口未登记",
+    }
+    day = date(2026, 8, 18)
+    result = aggregate_rows("peace", rows, day, day)
+    assert result["rows"][0]["dispatch_hall_scan_count"] == 1
+    assert result["duplicate_count"] == 1
+    assert result["location_counts"][0]["display_name"] == "滨湖所接警大厅"
+
+    with pytest.raises(CodeSummaryError, match="第 1 行的比对时间"):
+        read_code_summary_workbook("peace", code_workbook([[*raw_row[:8], "坏时间", *raw_row[9:]]], headers=None))
+    with pytest.raises(CodeSummaryError) as exc:
+        read_code_summary_workbook("manager", content)
+    assert exc.value.code == "missing_header"
+    shifted_row = ["前置列", *second]
+    with pytest.raises(CodeSummaryError) as exc:
+        read_code_summary_workbook("peace", code_workbook([raw_row, shifted_row], headers=None))
+    assert exc.value.code == "invalid_export_layout"
+
+
+@pytest.mark.asyncio
+async def test_manager_file_import_uses_manager_aggregation_and_preserves_peace_versions():
+    from config import settings
+
+    station = settings.VISIT_SOURCE_POLICE_NAME
+    headers = ["住户身份证号", "比对时间", "管家姓名", "人员类型", "派出所名称"]
+    rows = [
+        ["000000200001010013", "2026-08-18 09:00:00", "合成管家甲", "流口已登记", station],
+        ["000000200001010013", "2026-08-18 10:00:00", "合成管家乙", "流口未登记", station],
+        ["000000200001010021", "2026-08-18 11:00:00", "合成管家乙", "流口已登记", station],
+    ]
+    conn = FakeConnection()
+    day = date(2026, 8, 18)
+    conn.versions["peace", day] = 3
+    conn.fullchain_query_error = True
+    request = Request({"type": "http", "headers": []})
+    file = UploadFile(BytesIO(code_workbook(rows, headers)), filename="synthetic.xlsx")
+    result = await import_code_summary("manager", file, request, {"id": 1}, conn)
+    assert result["raw_count"] == 3
+    assert result["valid_count"] == 2
+    assert result["duplicate_count"] == 1
+    assert conn.versions == {("peace", day): 3, ("manager", day): 1}
+    snapshot, = conn.snapshots
+    assert snapshot[0] == "manager"
+    assert snapshot[11:14] == (1, 1, 0)  # Active accounts, instructions, new registrations.
+    assert conn.run_params[5] == "file:xlsx"
     assert conn.begin_count == conn.commit_count == 1
     assert file.file.closed
