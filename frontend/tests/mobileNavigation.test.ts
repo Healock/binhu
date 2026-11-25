@@ -542,11 +542,15 @@ test('历史手机 Dock 配置中的汇总入口会被清理', () => {
   ))), false)
 })
 
-test('数据上传中心移除手动走访和星级上传入口', () => {
+test('数据上传中心按权限提供走访和平安码汇总文件导入', () => {
   const source = readFileSync(new URL('../src/pages/DataUploadCenter.tsx', import.meta.url), 'utf8')
 
-  assert.doesNotMatch(source, /上传走访明细/)
-  assert.doesNotMatch(source, /上传星级评定/)
+  assert.match(source, /canImportVisits && <VisitWorkbookImports/)
+  assert.match(source, /canImportPeaceCode && <PeaceCodeWorkbookImport/)
+  const panel = readFileSync(new URL('../src/components/WorkbookImports.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /importFile=\{uploadVisitDetail\}/)
+  assert.match(panel, /importFile=\{uploadStarRating\}/)
+  assert.match(panel, /importFile=\{importPeaceCode\}/)
   assert.match(source, /PoliceDispatchPanel/)
   assert.doesNotMatch(source, /照片调取批次/)
 })

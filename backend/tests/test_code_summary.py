@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, datetime
+from io import BytesIO
 
 import pytest
+from fastapi import HTTPException, Request, UploadFile
+from openpyxl import Workbook
 from pydantic import ValidationError
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
@@ -15,6 +18,7 @@ from routers.code_summaries import (
     _insert_failed_run,
     _json_value,
     _total,
+    import_peace_code,
     router,
 )
 from services.code_summary import (
@@ -23,6 +27,7 @@ from services.code_summary import (
     count_fullchain_registrations,
 )
 from services.code_summary import CodeSummaryError
+from services.peace_code_workbook import read_peace_code_workbook
 
 
 class FakeCursor:
@@ -41,7 +46,10 @@ class FakeCursor:
     async def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.connection.executed_sql.append(normalized)
-        if normalized.startswith("INSERT INTO _code_summary_runs"):
+        if normalized.startswith("SELECT GET_LOCK"):
+            self.result = (1,)
+        elif normalized.startswith("INSERT INTO _code_summary_runs"):
+            self.connection.run_params = params
             self.connection.next_run_id += 1
             self.lastrowid = self.connection.next_run_id
         elif normalized.startswith("SELECT `创建时间` FROM t_fullchain"):
@@ -466,6 +474,7 @@ def test_routes_use_separate_view_and_fetch_permissions():
         for route in router.routes
     }
     assert "require_visit_source_manage" in dependencies["/api/code-summaries/fetch"]
+    assert "require_visit_source_manage" in dependencies["/api/code-summaries/imports/peace"]
     assert "require_visit_summary_view" in dependencies["/api/code-summaries/search"]
     assert "require_visit_summary_view" in dependencies["/api/code-summaries/locations/search"]
     assert "require_code_summary_manage" in dependencies["/api/code-summaries/locations/classifications"]
@@ -502,3 +511,77 @@ async def test_failed_source_run_is_committed_without_snapshot():
     assert run_id == 1
     assert connection.commit_count == 1
     assert connection.snapshots == []
+
+
+PEACE_HEADERS = ["身份证号", "比对时间", "采集位置", "人员类型", "机构名称"]
+
+
+def peace_workbook(rows, headers=PEACE_HEADERS):
+    book = Workbook()
+    book.active.append(headers)
+    for row in rows:
+        book.active.append(row)
+    stream = BytesIO()
+    book.save(stream)
+    return stream.getvalue()
+
+
+@pytest.mark.parametrize("case", [
+    (b"invalid xlsx", "invalid_workbook"),
+    (peace_workbook([]), "empty_workbook"),
+    (peace_workbook([], ["身份证号"]), "missing_header"),
+    (peace_workbook([], [*PEACE_HEADERS, "idCard"]), "duplicate_header"),
+    (peace_workbook([[0, datetime(2026, 8, 18, 9), "合成地点", "", "合成机构"]]), "invalid_identity"),
+    (peace_workbook([["000000200001010013", "2026-08-18", "合成地点", "", "合成机构"]]), "invalid_time"),
+    (peace_workbook([["000000200001010013", "=NOW()", "合成地点", "", "合成机构"]]), "formula_cell"),
+], ids=lambda case: case[1])
+def test_peace_workbook_rejects_invalid_input(case):
+    content, error_code = case
+    with pytest.raises(CodeSummaryError) as exc:
+        read_peace_code_workbook(content)
+    assert exc.value.code == error_code
+
+
+@pytest.mark.asyncio
+async def test_peace_file_import_appends_only_covered_days_and_audits_counts(monkeypatch):
+    from config import settings
+    from routers import code_summaries
+
+    async def directories(conn):
+        return set(), {"合成测试场所"}
+
+    async def labels(conn, source):
+        return {}
+
+    monkeypatch.setattr(code_summaries, "_directories", directories)
+    monkeypatch.setattr(code_summaries, "_manual_location_labels", labels)
+    conn = FakeConnection()
+    absent_date = date(2026, 8, 19)
+    conn.versions["peace", absent_date] = 3
+    station = settings.VISIT_SOURCE_POLICE_NAME
+    rows = [
+        ["000000200001010013", datetime(2026, 8, 18, 9), "合成测试场所", "", station],
+        ["000000200001010013", "2026-08-18 10:00:00", "合成测试场所", "流口未登记", station],
+        ["000000200001010021", datetime(2026, 8, 20, 9), "合成测试场所", "", station],
+    ]
+    request = Request({"type": "http", "headers": []})
+    user = {"id": 1}
+    bad_file = UploadFile(BytesIO(peace_workbook([[*rows[0][:-1], "其他单位"]])), filename="synthetic.xlsx")
+    with pytest.raises(HTTPException) as exc:
+        await import_peace_code(bad_file, request, user, conn)
+    assert exc.value.status_code == 400
+    assert conn.commit_count == 0
+    assert not conn.snapshots
+
+    file = UploadFile(BytesIO(peace_workbook(rows)), filename="synthetic.xlsx")
+    result = await import_peace_code(file, request, user, conn)
+    assert result == {
+        "run_id": 1, "status": "success", "start_date": "2026-08-18", "end_date": "2026-08-20",
+        "days": 2, "raw_count": 3, "valid_count": 2, "duplicate_count": 1, "unclassified_count": 0,
+    }
+    assert conn.run_params[5] == "file:xlsx"
+    assert conn.versions["peace", absent_date] == 3
+    assert [snapshot[1] for snapshot in conn.snapshots] == [date(2026, 8, 18), date(2026, 8, 20)]
+    assert any(sql.startswith("INSERT INTO _admin_audit_log") for sql in conn.executed_sql)
+    assert conn.begin_count == conn.commit_count == 1
+    assert file.file.closed

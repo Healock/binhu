@@ -150,7 +150,7 @@ export default function TxDocsMonitorSettings() {
         description="仅用于外部腾讯表的只读监控与汇总，不导入平台任务、不回写或删除腾讯数据。一个只读连接可以配置多个业务表和子表。"
         actions={<Button onClick={() => navigate('/summary')}>返回在线数据汇总</Button>}
       />
-      {!config?.environment_allowed && !loading && (
+      {!loading && config?.environment_allowed === false && (
         <Alert
           type="warning"
           showIcon

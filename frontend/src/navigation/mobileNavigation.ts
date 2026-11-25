@@ -99,7 +99,7 @@ export const NAVIGATION_GROUPS: NavigationGroupDefinition[] = [
         anyPermissions: [
           'police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage',
           'registry.import.manage', 'registry.property.manage',
-          'online.task.manage', 'sync.trigger', 'qmf.registration.execute', 'visit.source.manage', 'venue.manage',
+          'online.task.manage', 'sync.trigger', 'qmf.registration.execute', 'visit.import', 'visit.source.manage', 'venue.manage',
         ],
         roles: ['super_admin', 'admin'],
         moduleId: 'community_police',

@@ -159,7 +159,7 @@ function App() {
                 <Route path="/visit-summary" element={<DesktopSummaryRoute><VisitSummary /></DesktopSummaryRoute>} />
                 <Route path="/code-summary" element={<DesktopSummaryRoute><CodeSummary /></DesktopSummaryRoute>} />
               </Route>
-              <Route element={<ProtectedRoute requireModule="community_police" requireAnyPermission={['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage', 'registry.import.manage', 'registry.property.manage', 'online.task.manage', 'sync.trigger', 'qmf.registration.execute', 'visit.source.manage', 'venue.manage']} />}>
+              <Route element={<ProtectedRoute requireModule="community_police" requireAnyPermission={['police.dispatch.manage', 'workflow.ticket.handle', 'workflow.ticket.manage', 'registry.import.manage', 'registry.property.manage', 'online.task.manage', 'sync.trigger', 'qmf.registration.execute', 'visit.import', 'visit.source.manage', 'venue.manage']} />}>
                 <Route path="/data-upload" element={<DataUploadCenter />} />
               </Route>
               <Route element={<ProtectedRoute requireModule="community_police" requirePermission="police.dispatch.manage" />}>

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from aiomysql import IntegrityError
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, model_validator
 
 from database import get_db
@@ -21,6 +23,7 @@ from services.code_summary import (
     fetch_sources,
     normalize_label,
 )
+from services.peace_code_workbook import MAX_FILE_BYTES, read_peace_code_workbook
 from services.permissions import CODE_SUMMARY_MANAGE, VISIT_SOURCE_MANAGE, VISIT_SUMMARY_VIEW
 from services.external_acquisition_jobs import create_job
 from database import db_manager
@@ -280,6 +283,7 @@ async def _commit_source(
     payload: DateRangeRequest,
     result: dict,
     manage_transaction: bool = True,
+    source_endpoint: str | None = None,
 ) -> tuple[int, str]:
     status = "warning" if (
         result["excluded_count"]
@@ -299,7 +303,7 @@ async def _commit_source(
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,UTC_TIMESTAMP())",
                 (
                     source, status, user_id, payload.start_date, payload.end_date,
-                    SOURCE_META[source]["endpoint"], result["raw_count"],
+                    source_endpoint or SOURCE_META[source]["endpoint"], result["raw_count"],
                     result["valid_count"], result["excluded_count"],
                     result["duplicate_count"], result["unclassified_count"],
                     result["source_hash"], CLASSIFIER_VERSION,
@@ -358,6 +362,84 @@ async def _commit_source(
         if manage_transaction:
             await conn.rollback()
         raise
+
+
+@router.post("/imports/peace")
+async def import_peace_code(
+    file: UploadFile,
+    request: Request,
+    user: dict = Depends(require_permission(VISIT_SOURCE_MANAGE)),
+    conn=Depends(get_db),
+):
+    try:
+        if not (file.filename or "").lower().endswith(".xlsx"):
+            raise HTTPException(400, "只支持 .xlsx 文件")
+        content = await file.read(MAX_FILE_BYTES + 1)
+    finally:
+        await file.close()
+    if not content:
+        raise HTTPException(400, "上传文件为空")
+    if len(content) > MAX_FILE_BYTES:
+        raise HTTPException(413, "XLSX 文件不能超过 20MB")
+
+    try:
+        rows = await asyncio.to_thread(read_peace_code_workbook, content)
+        business_dates = {row["comparisonTime"].date() for row in rows}
+        start_date, end_date = min(business_dates), max(business_dates)
+        if (end_date - start_date).days + 1 > MAX_RANGE_DAYS:
+            raise CodeSummaryError("range_too_large", "平安码文件最多跨 31 天，请按日期拆分")
+        payload = DateRangeRequest(start_date=start_date, end_date=end_date)
+    except CodeSummaryError as exc:
+        raise HTTPException(400, exc.message) from None
+
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT GET_LOCK(%s, 0)", (FETCH_LOCK,))
+        lock_row = await cur.fetchone()
+    if not lock_row or lock_row[0] != 1:
+        raise HTTPException(409, "当前已有平安码或管家码数据在处理，请稍后重试")
+    try:
+        personnel, places = await _directories(conn)
+        labels = await _manual_location_labels(conn, "peace")
+        counts = await count_fullchain_registrations(conn, start_date, end_date)
+        result = await asyncio.to_thread(
+            aggregate_rows, "peace", rows, start_date, end_date,
+            personnel_names=personnel, place_names=places, manual_labels=labels,
+            new_registration_counts=counts,
+        )
+        result["rows"] = [item for item in result["rows"] if item["raw_count"]]
+        await conn.begin()
+        try:
+            run_id, status = await _commit_source(
+                conn, source="peace", user_id=int(user["id"]), payload=payload,
+                result=result, manage_transaction=False, source_endpoint="file:xlsx",
+            )
+            summary = {
+                "run_id": run_id, "status": status,
+                "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
+                "days": len(result["rows"]), "raw_count": result["raw_count"],
+                "valid_count": result["valid_count"], "duplicate_count": result["duplicate_count"],
+                "unclassified_count": result["unclassified_count"],
+            }
+            await record_admin_audit(
+                user, "code_summary.import", target_type="code_summary", target_name=str(run_id),
+                detail=summary, conn=conn, **request_audit_fields(request),
+            )
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        return summary
+    except CodeSummaryError as exc:
+        status_code = 503 if exc.code == "fullchain_query_failed" else 400
+        raise HTTPException(status_code, exc.message) from None
+    except IntegrityError as exc:
+        if exc.args and exc.args[0] == 1062:
+            raise HTTPException(409, "日汇总正在被其他任务更新，请稍后重试") from None
+        raise
+    finally:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT RELEASE_LOCK(%s)", (FETCH_LOCK,))
+            await cur.fetchone()
 
 
 @router.post("/fetch", status_code=202)
