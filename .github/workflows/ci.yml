@@ -119,6 +119,8 @@ jobs:
           artifact_id="$(sha256sum hotfix-candidate/source.tar.gz | awk '{print $1}')"
           image_tag="binhu-hotfix-candidate:$commit"
           docker build --pull=false \
+            --build-arg USE_CHINA_MIRRORS=0 \
+            --build-arg BINHU_PYPI_INDEX_URL=https://pypi.org/simple/ \
             --label "binhu.artifact.id=$artifact_id" \
             --label "org.opencontainers.image.revision=$commit" \
             --label "org.opencontainers.image.version=$version" \
