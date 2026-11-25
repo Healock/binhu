@@ -3746,7 +3746,7 @@ export async function getVisitSummary(
   return data
 }
 
-export async function importPeaceCode(file: File): Promise<{
+export async function importCodeSummary(source: CodeSummarySource, file: File): Promise<{
   run_id: number
   status: 'success' | 'warning'
   start_date: string
@@ -3759,7 +3759,7 @@ export async function importPeaceCode(file: File): Promise<{
 }> {
   const formData = new FormData()
   formData.append('file', file)
-  const { data } = await api.post('/code-summaries/imports/peace', formData, { timeout: 300_000 })
+  const { data } = await api.post(`/code-summaries/imports/${source}`, formData, { timeout: 300_000 })
   return data
 }
 
