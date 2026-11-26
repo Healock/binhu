@@ -1622,9 +1622,10 @@ volumes:
         spec = importlib.util.spec_from_file_location("scale_acceptance", module_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        first = module.fixture("dev-20260916-monitor20", 0)
-        replay = module.fixture("dev-20260916-monitor20", 0)
-        other = module.fixture("dev-20260916-monitor21", 0)
+        fixture_key = hashlib.sha256(b"binhu/task-event/aes-gcm/v1\0" + b"synthetic-dev-key-material-for-tests").digest()
+        first = module.fixture("dev-20260916-monitor20", 0, fixture_key)
+        replay = module.fixture("dev-20260916-monitor20", 0, fixture_key)
+        other = module.fixture("dev-20260916-monitor21", 0, fixture_key)
         self.assertEqual(first, replay)
         self.assertNotEqual(first["event_id"], other["event_id"])
         self.assertEqual(first["schema_version"], 4)
@@ -1635,7 +1636,6 @@ volumes:
         self.assertEqual(validate_event(first), first)
         envelope = first["encrypted_payload"]
         decode = lambda value: base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-        fixture_key = hashlib.sha256(module.FIXTURE_NAMESPACE.bytes + b"dev-20260916-monitor20").digest()
         self.assertEqual(
             AESGCM(fixture_key).decrypt(
                 decode(envelope["nonce"]), decode(envelope["ciphertext"]), decode(envelope["aad"]),
