@@ -2369,6 +2369,28 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         relay._claim.assert_awaited_once()
         relay._finish_batch.assert_awaited_once_with([row[0]], [])
 
+    async def test_backend_outbox_claims_recover_leases_and_due_retries_during_backfill(self):
+        pool = MagicMock()
+        connection = pool.acquire.return_value.__aenter__.return_value
+        connection.begin = AsyncMock()
+        connection.commit = AsyncMock()
+        connection.cursor = MagicMock()
+        cursor = connection.cursor.return_value.__aenter__.return_value
+        cursor.fetchall.side_effect = [[("expired",)], [("retry",)], [("pending",)]]
+        relay = BackendOutboxRelay(pool, AsyncMock(), {"BACKEND_REDIS_STREAM_KEY": "binhu:events"})
+
+        self.assertEqual(await relay._claim(), [("expired",), ("retry",), ("pending",)])
+        recover, retry, pending, lease = cursor.execute.await_args_list
+        self.assertIn("idx_domain_event_lease", recover.args[0])
+        self.assertIn("idx_domain_event_pending", retry.args[0])
+        self.assertIn("idx_domain_event_pending", pending.args[0])
+        self.assertTrue(all("FOR UPDATE SKIP LOCKED" in call.args[0] for call in (recover, retry, pending)))
+        self.assertEqual(recover.args[1], (10,))
+        self.assertEqual(retry.args[1], ("retry", 10))
+        self.assertEqual(pending.args[1], ("pending", 98))
+        self.assertEqual(lease.args[1][-3:], ("expired", "retry", "pending"))
+        connection.commit.assert_awaited_once()
+
     async def test_backend_outbox_relay_batches_success_and_retries_after_redis_ack(self):
         pool = MagicMock()
         connection = pool.acquire.return_value.__aenter__.return_value
