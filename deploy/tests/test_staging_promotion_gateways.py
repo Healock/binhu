@@ -265,6 +265,48 @@ class StagingTaskReadModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "staging_task_redis_capacity_contract_invalid"):
             read_model._redis_capacity_compose(compose)
 
+    def test_backfill_recovers_only_the_current_bridge_with_an_existing_cursor(self):
+        run = "STG-20261126-04"
+        project = "binhu-staging-event-pipeline-stg-20261126-04"
+        name = project + "-business-bridge-1"
+        cid = "a" * 64
+        image = "sha256:" + "b" * 64
+        identity = [
+            cid, "/" + name, image,
+            {"binhu.environment": "staging", "binhu.run_id": run,
+             "com.docker.compose.project": project, "com.docker.compose.service": "business-bridge"},
+            ["python", "-m", "event_pipeline.runtime", "business-bridge"],
+            "exited", False, {project + "_internal": {}, "binhu-staging-pipeline-backend": {}},
+        ]
+        running = [*identity[:5], "running", *identity[6:]]
+        with (patch.object(read_model.staging_backend_network, "verify"),
+              patch.object(read_model.time, "sleep"),
+              patch.object(read_model, "_run") as docker):
+            docker.side_effect = [json.dumps(identity), "1", cid, json.dumps(running)]
+            self.assertTrue(read_model._restore_business_bridge("backend", run, image))
+            commands = [args.args[0] for args in docker.call_args_list]
+            self.assertEqual(commands[0][-1], name)
+            self.assertEqual(commands[1][-1], run + "-business-bridge")
+            self.assertEqual(commands[2], ["docker", "start", cid])
+            self.assertEqual(commands[3][-1], cid)
+
+            docker.reset_mock(side_effect=True)
+            docker.side_effect = [json.dumps(identity), "0"]
+            with self.assertRaisesRegex(ValueError, "staging_task_business_bridge_cursor_missing"):
+                read_model._restore_business_bridge("backend", run, image)
+            self.assertEqual(docker.call_count, 2)
+
+            docker.reset_mock(side_effect=True)
+            docker.side_effect = [json.dumps(running), "1"]
+            self.assertFalse(read_model._restore_business_bridge("backend", run, image))
+            self.assertEqual(docker.call_count, 2)
+
+            docker.reset_mock(side_effect=True)
+            docker.side_effect = [json.dumps(identity)]
+            with self.assertRaisesRegex(ValueError, "staging_task_business_bridge_identity_mismatch"):
+                read_model._restore_business_bridge("backend", run, "sha256:" + "c" * 64)
+            docker.assert_called_once()
+
     def test_switch_refuses_configuration_from_a_different_candidate(self):
         candidate = {"artifact_id": "a" * 64, "commit": "b" * 40, "image_id": "sha256:" + "c" * 64}
         with tempfile.TemporaryDirectory() as directory:

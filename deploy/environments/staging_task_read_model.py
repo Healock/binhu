@@ -32,7 +32,7 @@ def _run(args: list[str], timeout: int = 120) -> str:
     return result.stdout
 
 
-def _verify_pipeline(run_id: str, application: dict, values: dict[str, str]) -> None:
+def _verify_pipeline(run_id: str, application: dict, values: dict[str, str]) -> str:
     current = PIPELINE_STATE / "current.json"
     if PIPELINE_STATE.is_symlink() or current.is_symlink() or not current.is_file():
         raise ValueError("staging_task_pipeline_candidate_missing")
@@ -58,6 +58,55 @@ def _verify_pipeline(run_id: str, application: dict, values: dict[str, str]) -> 
                                        sink.get("TASK_EVENT_ENCRYPTION_KEY", "").encode("utf-8"))):
         raise ValueError("staging_task_pipeline_sink_identity_mismatch")
     staging_control.measure(run_id)
+    return runtime["images"]["worker"]
+
+
+def _restore_business_bridge(backend: str, run_id: str, worker_image: str) -> bool:
+    """Resume the current bridge without recreating its consumer group."""
+    staging_backend_network.verify()
+    project = staging_control.project_for(run_id)
+    service = "business-bridge"
+    name = f"{project}-{service}-1"
+    expected_networks = {staging_control.network_for(run_id), staging_backend_network.NETWORK}
+
+    def inspect_bridge(container: str) -> tuple[str, str]:
+        # Select only identity fields. The container environment holds credentials.
+        template = (
+            '[{{json .Id}},{{json .Name}},{{json .Image}},{{json .Config.Labels}},'
+            '{{json .Config.Cmd}},{{json .State.Status}},{{json .State.OOMKilled}},'
+            '{{json .NetworkSettings.Networks}}]'
+        )
+        cid, actual_name, image, labels, command, status, oom, networks = json.loads(
+            _run(["docker", "inspect", "--type", "container", "--format", template, container])
+        )
+        if (not re.fullmatch(r"[0-9a-f]{64}", cid) or actual_name != "/" + name
+                or image != worker_image or not staging_control._staging_backend_connector(name, labels)
+                or command != ["python", "-m", "event_pipeline.runtime", service]
+                or set(networks or {}) != expected_networks or oom is not False):
+            raise ValueError("staging_task_business_bridge_identity_mismatch")
+        return cid, status
+
+    cid, status = inspect_bridge(name)
+    if status not in {"running", "exited"}:
+        raise ValueError("staging_task_business_bridge_unavailable")
+    # Starting with a missing group would create it at `$` and skip events
+    # already published by the relay, including a partially completed backfill.
+    probe = (
+        "import sys; from config import settings; from redis import Redis; "
+        "assert settings.APP_ENVIRONMENT == 'staging'; "
+        "client = Redis.from_url(settings.REDIS_URL, decode_responses=True, "
+        "socket_connect_timeout=3, socket_timeout=5); "
+        "print(sum(group['name'] == sys.argv[1] for group in client.xinfo_groups('binhu:events')))"
+    )
+    if _run(["docker", "exec", backend, "python", "-c", probe, f"{run_id}-{service}"], timeout=10).strip() != "1":
+        raise ValueError("staging_task_business_bridge_cursor_missing")
+    if status == "running":
+        return False
+    _run(["docker", "start", cid], timeout=30)
+    time.sleep(6)
+    if inspect_bridge(cid) != (cid, "running"):
+        raise ValueError("staging_task_business_bridge_restart_failed")
+    return True
 
 
 def _backend_id(root: Path, image_id: str) -> str:
@@ -257,7 +306,7 @@ def run(application: dict, run_id: str, action: str) -> dict:
                 _configure(root, manifest, env_text, run_id, False, evidence)
             return {"environment": "staging", "run_id": run_id, "read_model_enabled": False}
 
-        _verify_pipeline(run_id, application, values)
+        worker_image = _verify_pipeline(run_id, application, values)
         if action == "backfill":
             if enabled:
                 raise ValueError("staging_task_read_model_already_enabled")
@@ -267,6 +316,8 @@ def run(application: dict, run_id: str, action: str) -> dict:
             if selected != run_id:
                 _configure(root, manifest, env_text, run_id, False, evidence)
                 container = _backend_id(root, application["image_id"])
+            restored = _restore_business_bridge(container, run_id, worker_image)
+            write_json(evidence / "business-bridge.json", {"cursor_verified": True, "restarted": restored})
             report = _read_model_command(container, run_id, "migrations.task_read_model_backfill", "apply")
             return {"environment": "staging", "run_id": run_id, "read_model_enabled": False,
                     **{key: int(report[key]) for key in ("total", "emitted", "already_emitted")}}
