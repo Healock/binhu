@@ -21,7 +21,7 @@ from .artifact import verify_artifact, write_json
 from .image import verify_image
 from .runtime import root_for
 from .update import health, measure_staging, reconcile_staging, apply_staging, read_configuration
-from . import staging_migration
+from . import staging_migration, staging_task_read_model
 
 
 BASE = Path("/var/lib/binhu-staging-application")
@@ -457,6 +457,18 @@ def migrate(run_id: str, artifact_id: str, phase: str) -> dict:
     return operation(run_id, artifact_id)
 
 
+def task_read_model(application_run: str, artifact_id: str, pipeline_run: str, phase: str) -> dict:
+    _, application = _read_manifest(application_run)
+    if application["artifact_id"] != artifact_id or application["state"] != "accepted":
+        refuse("accepted Staging application required for task read model")
+    if phase != "deactivate":
+        _dev_acceptance(application["dev_acceptance_run_id"], application)
+    report = staging_task_read_model.run(application, pipeline_run, phase)
+    _audit("task-read-model", run_id=application_run, outcome="passed",
+           details={"phase": phase, **report})
+    return report
+
+
 def main() -> None:
     if os.name != "posix" or os.geteuid() != 0:
         raise SystemExit("root execution required")
@@ -481,6 +493,8 @@ def main() -> None:
                 result = accept(sys.argv[2], sys.argv[3], sys.argv[4])
             elif len(sys.argv) == 5 and sys.argv[1] == "migrate":
                 result = migrate(sys.argv[2], sys.argv[3], sys.argv[4])
+            elif len(sys.argv) == 6 and action == "task-read-model":
+                result = task_read_model(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
             else:
                 refuse()
             if action == "status":

@@ -1,13 +1,15 @@
 import io
 import json
+import sys
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from deploy.environments import staging_application_gateway as application
 from deploy.environments import staging_data_gateway as data
+from deploy.environments import staging_task_read_model as read_model
 from deploy.environments.staging_data import switch_control
 from deploy.environments.staging_data.codec import SnapshotError
 
@@ -223,7 +225,7 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/promote-staging-application.yml').read_text(encoding='utf-8')
         self.assertIn('def reconcile(run_id: str, artifact_id: str)', source)
         self.assertIn('measure|reconcile|apply', wrapper)
-        self.assertIn('options: [prepare, reconcile, measure, apply, accept, migrate]', workflow)
+        self.assertIn('options: [prepare, reconcile, measure, apply, accept, migrate, task-read-model]', workflow)
 
     def test_reconcile_preflight_failure_writes_redacted_diagnostic(self):
         source = (ENVIRONMENTS / 'staging_application_gateway.py').read_text(encoding='utf-8')
@@ -231,6 +233,43 @@ class StagingApplicationGatewayTests(unittest.TestCase):
         self.assertIn("'error_type': type(exc).__name__", source)
         self.assertIn("'evidence_preserved': True", source)
         self.assertIn('only\npermits Staging', source)
+
+
+class StagingTaskReadModelTests(unittest.TestCase):
+    def setUp(self):
+        lock = Mock(LOCK_EX=1, LOCK_NB=2)
+        override = patch.dict(sys.modules, {"fcntl": lock})
+        override.start()
+        self.addCleanup(override.stop)
+
+    def test_switch_refuses_configuration_from_a_different_candidate(self):
+        candidate = {"artifact_id": "a" * 64, "commit": "b" * 40, "image_id": "sha256:" + "c" * 64}
+        with tempfile.TemporaryDirectory() as directory:
+            with (patch.object(read_model, "root_for", return_value=Path(directory)),
+                  patch.object(read_model, "read_configuration", return_value=(
+                      {"environment": "staging", "artifact_id": "unrelated"},
+                      {"name": "binhu-staging"}, "APP_ENVIRONMENT=staging\n",
+                  )), patch.object(read_model, "_run") as docker):
+                with self.assertRaisesRegex(ValueError, "staging_task_application_candidate_mismatch"):
+                    read_model.run(candidate, "STG-20261126-01", "activate")
+                docker.assert_not_called()
+
+    def test_activate_keeps_current_backend_when_reconciliation_is_incomplete(self):
+        apply_run = "STG-20261126-01"
+        candidate = {"artifact_id": "a" * 64, "commit": "b" * 40, "image_id": "sha256:" + "c" * 64}
+        manifest = {"environment": "staging", "artifact_id": candidate["artifact_id"],
+                    "commit": candidate["commit"], "images": {"backend": candidate["image_id"]}}
+        env = f"APP_ENVIRONMENT=staging\nTASK_READ_MODEL_RUN_ID={apply_run}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            with (patch.object(read_model, "root_for", return_value=Path(directory)),
+                  patch.object(read_model, "read_configuration", return_value=(manifest, {"name": "binhu-staging"}, env)),
+                  patch.object(read_model, "_backend_id", return_value="d" * 64),
+                  patch.object(read_model, "_verify_pipeline"),
+                  patch.object(read_model, "_read_model_command", return_value={"ready": False}),
+                  patch.object(read_model, "_configure") as switch):
+                with self.assertRaisesRegex(ValueError, "staging_task_read_model_not_ready"):
+                    read_model.run(candidate, apply_run, "activate")
+                switch.assert_not_called()
 
 
 class StagingDataGatewayTests(unittest.TestCase):

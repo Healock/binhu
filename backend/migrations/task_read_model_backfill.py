@@ -77,7 +77,7 @@ async def apply() -> dict:
     conn = await _connect(autocommit=False)
     emitted = skipped = 0
     try:
-        async with conn.cursor(aiomysql.DictCursor) as cur:
+        async with conn.cursor() as cur:
             for parser_type, parser in PARSER_REGISTRY.items():
                 if parser_type == "default":
                     continue
@@ -89,16 +89,16 @@ async def apply() -> dict:
                     await cur.execute(
                         "SELECT id,physical_row,revision,values_json FROM _online_source_rows "
                         "WHERE parser_type=%s AND archived_at IS NULL "
-                        "AND source_kind IN (%s,%s,%s) AND id>%s ORDER BY id LIMIT %s",
+                        "AND source_kind IN (%s,%s,%s) AND id>%s ORDER BY id LIMIT %s FOR UPDATE",
                         (parser_type, *SOURCE_TYPES, last_source_id, BATCH_SIZE),
                     )
                     rows = await cur.fetchall()
                     if not rows:
                         break
-                    for row in rows:
-                        source_id = int(row["id"])
-                        physical_row = int(row["physical_row"])
-                        revision = int(row["revision"])
+                    for source_id, physical_row, revision, values_json in rows:
+                        source_id = int(source_id)
+                        physical_row = int(physical_row)
+                        revision = int(revision)
                         task_id = stable_task_id(parser.table_name, physical_row)
                         command_id, operation_id, event_id = event_ids(
                             environment, run_id, parser_type, source_id, revision,
@@ -114,9 +114,8 @@ async def apply() -> dict:
                             await enqueue_current_task_view_state_snapshot(
                                 cur, source_id=source_id, snapshot={},
                             )
-                            await conn.commit()
                             continue
-                        snapshot = row["values_json"]
+                        snapshot = values_json
                         if isinstance(snapshot, str):
                             snapshot = json.loads(snapshot)
                         if not isinstance(snapshot, dict) or not snapshot:
@@ -150,7 +149,7 @@ async def apply() -> dict:
                         )
                         emitted += 1
                     await conn.commit()
-                    last_source_id = int(rows[-1]["id"])
+                    last_source_id = int(rows[-1][0])
     except BaseException:
         await conn.rollback()
         raise

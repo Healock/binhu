@@ -21,6 +21,10 @@ case "${parts[0]:-}" in
     [[ ${#parts[@]} -eq 4 ]] || exit 64
     [[ "${parts[1]}" =~ ^staging-app-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{64}$ && "${parts[3]}" =~ ^dev-update-[0-9a-f]{16}$ ]] || exit 64
     exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway accept "${parts[1]}" "${parts[2]}" "${parts[3]}" ;;
+  task-read-model)
+    [[ ${#parts[@]} -eq 5 ]] || exit 64
+    [[ "${parts[1]}" =~ ^staging-app-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{64}$ && "${parts[3]}" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "${parts[4]}" =~ ^(backfill|measure|activate|deactivate)$ ]] || exit 64
+    exec /usr/bin/sudo -n /usr/local/libexec/binhu-staging-application-gateway task-read-model "${parts[1]}" "${parts[2]}" "${parts[3]}" "${parts[4]}" ;;
   migrate)
     [[ ${#parts[@]} -eq 4 ]] || exit 64
     [[ "${parts[1]}" =~ ^staging-migrate-[0-9a-f]{16}$ && "${parts[2]}" =~ ^[0-9a-f]{64}$ && "${parts[3]}" =~ ^(measure|apply|verify)$ ]] || exit 64
