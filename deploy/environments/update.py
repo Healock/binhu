@@ -7,6 +7,7 @@ import gzip
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -45,6 +46,20 @@ def add_disabled_external_flags(previous_env_text):
     added_disabled_flags = [key for key in DISABLED_EXTERNAL_FLAGS if key not in env_values]
     env_text = previous_env_text + ''.join(f'{key}=false\n' for key in added_disabled_flags)
     return env_text, added_disabled_flags
+
+
+def ensure_staging_task_event_key(env_text):
+    values = parse_environment(env_text)
+    if values.get('APP_ENVIRONMENT') != 'staging':
+        raise ValueError('environment_identity_mismatch')
+    key = values.get('TASK_EVENT_ENCRYPTION_KEY', '')
+    if key:
+        if len(key.encode('utf-8')) < 32:
+            raise ValueError('staging_task_event_key_invalid')
+        return env_text, False
+    assignment = 'TASK_EVENT_ENCRYPTION_KEY=' + secrets.token_urlsafe(48)
+    lines = [line for line in env_text.splitlines() if line != 'TASK_EVENT_ENCRYPTION_KEY=']
+    return '\n'.join([*lines, assignment]) + '\n', True
 
 
 def candidate_configuration(environment, root, manifest, compose, env_text, image):
@@ -665,6 +680,7 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
                             })
     if not verify_database_identity(environment)['all_markers_present']:
         raise ValueError('environment_database_identity_incomplete')
+    env_text, task_event_key_provisioned = ensure_staging_task_event_key(env_text)
     evidence.mkdir(mode=0o700)
     previous = evidence / 'previous'
     previous.mkdir(mode=0o700)
@@ -700,6 +716,7 @@ def reconcile_staging(artifact, image_directory, expected_id, evidence):
             'rebound_manifest_hashes': rebound['hashes'],
             'rebound_images': rebound['images'],
             'added_disabled_flags': added_disabled_flags,
+            'task_event_key_provisioned': task_event_key_provisioned,
             'containers_or_volumes_changed': False,
             'database_identity_verified': True,
         })
