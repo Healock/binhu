@@ -4,6 +4,8 @@
 
 Dev/Staging 的指令核查验收须使用同一候选源码与加密事件合同。启动新 Backend 前先备份目标环境数据库，依次执行 `migrations.task_command_read_model` 和 `migrations.task_view_state_revisions` 的 `measure → migrate --apply → verify`；启用在线汇总时还须执行 `migrations.online_summary_fact_outbox`。这些命令不能用启动建表代替。Dev 只使用可追踪、可清理的合成数据；通过后才推进 Staging，不修改 Production。
 
+旧 Staging 缺少任务事件密钥时，先运行现有应用 `reconcile`。它在通过环境身份验证后向受保护的 `backend.env` 补一把独立密钥，并同步配置摘要。随后通过应用发布让 Backend 读取同一密钥，再准备事件管道。现有有效密钥会继续使用，证据只记录是否补齐。
+
 Staging 固定迁移入口必须绑定已完成 Staging `measure` 且仍与 Dev 验收身份一致的候选 artifact。它在 Staging 内部网络用该候选的不可变 Backend 镜像运行上述两个固定迁移模块；数据库连接身份取自已校验的 Staging 配置。`apply` 前会重测并比较摘要，再备份八库。不得用当前运行中的旧 Backend 调 `init_db()` 代替候选迁移；迁移完成并 `verify` 后，再用新的 Staging run ID 执行应用 `prepare → measure → apply → accept`。
 
 `migrations.task_read_model_backfill` 按来源 ID 每页最多 250 条读取，再写命令与 Outbox；不能在同一游标执行写入后继续读取旧结果集。回填仅发出加密事件，不直接填充 Redis；`task_read_model_activation measure` 用于对账，`verify` 会修改 Redis readiness 标记，应按写操作执行。

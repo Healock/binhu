@@ -40,6 +40,21 @@ class EnvironmentUpdateTests(unittest.TestCase):
         for key in update.DISABLED_EXTERNAL_FLAGS:
             self.assertEqual(parse_environment(repaired)[key], 'false')
 
+    def test_staging_task_event_key_is_provisioned_once(self):
+        for original in ('APP_ENVIRONMENT=staging\n',
+                         'APP_ENVIRONMENT=staging\nTASK_EVENT_ENCRYPTION_KEY=\n'):
+            with self.subTest(original=original):
+                repaired, generated = update.ensure_staging_task_event_key(original)
+                self.assertTrue(generated)
+                self.assertGreaterEqual(len(parse_environment(repaired)['TASK_EVENT_ENCRYPTION_KEY']), 32)
+                self.assertEqual(update.ensure_staging_task_event_key(repaired), (repaired, False))
+
+    def test_staging_task_event_key_does_not_replace_invalid_existing_key(self):
+        with self.assertRaisesRegex(ValueError, 'staging_task_event_key_invalid'):
+            update.ensure_staging_task_event_key('APP_ENVIRONMENT=staging\nTASK_EVENT_ENCRYPTION_KEY=invalid\n')
+        with self.assertRaisesRegex(ValueError, 'environment_identity_mismatch'):
+            update.ensure_staging_task_event_key('APP_ENVIRONMENT=production\n')
+
     def test_image_digest_reference_accepts_qualified_compose_reference(self):
         digest = 'sha256:' + 'a' * 64
         self.assertEqual(update.image_digest_reference('binhu-backend@' + digest), digest)
