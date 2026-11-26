@@ -307,6 +307,45 @@ class StagingTaskReadModelTests(unittest.TestCase):
                 read_model._restore_business_bridge("backend", run, "sha256:" + "c" * 64)
             docker.assert_called_once()
 
+    def test_backfill_retries_mysql_locks_and_preserves_only_fixed_evidence(self):
+        run = "STG-20261126-04"
+        payload = {"environment": "staging", "run_id": run, "total": 500,
+                   "emitted": 250, "already_emitted": 250}
+        lock_error = Mock(returncode=1, stderr="pymysql.err.OperationalError: (1205, 'private message')\n")
+        success = Mock(returncode=0, stdout=json.dumps(payload))
+        with (tempfile.TemporaryDirectory() as directory,
+              patch.object(read_model.subprocess, "run", side_effect=[lock_error, success]) as execute,
+              patch.object(read_model.time, "sleep") as sleep):
+            evidence = Path(directory)
+            self.assertEqual(read_model._backfill("backend", run, evidence), payload)
+            self.assertEqual(execute.call_count, 2)
+            self.assertEqual(execute.call_args_list[0].args, execute.call_args_list[1].args)
+            sleep.assert_called_once_with(2)
+            self.assertEqual(json.loads((evidence / "backfill-attempt-02.json").read_text()),
+                             {"lock_errors": [1205], "result": "completed"})
+
+            evidence /= "unexpected"
+            evidence.mkdir()
+            execute.reset_mock(side_effect=True)
+            sleep.reset_mock()
+            execute.return_value = Mock(returncode=1, stderr="ValueError: private data (1205, 'message')")
+            with self.assertRaisesRegex(ValueError, "staging_task_backfill_command_failed"):
+                read_model._backfill("backend", run, evidence)
+            execute.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual(json.loads((evidence / "backfill-attempt-01.json").read_text()),
+                             {"lock_errors": [], "result": "failed"})
+
+            evidence = evidence.parent / "exhausted"
+            evidence.mkdir()
+            execute.reset_mock()
+            execute.return_value = Mock(returncode=1, stderr="pymysql.err.OperationalError: (1213, 'deadlock')\n")
+            with self.assertRaisesRegex(ValueError, "staging_task_backfill_lock_retry_exhausted"):
+                read_model._backfill("backend", run, evidence)
+            self.assertEqual(execute.call_count, 4)
+            self.assertEqual(json.loads((evidence / "backfill-attempt-04.json").read_text()),
+                             {"lock_errors": [1213, 1213, 1213, 1213], "result": "lock_retry_exhausted"})
+
     def test_switch_refuses_configuration_from_a_different_candidate(self):
         candidate = {"artifact_id": "a" * 64, "commit": "b" * 40, "image_id": "sha256:" + "c" * 64}
         with tempfile.TemporaryDirectory() as directory:

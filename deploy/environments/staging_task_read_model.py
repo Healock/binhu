@@ -23,6 +23,9 @@ PIPELINE_STATE = Path("/var/lib/binhu-staging-event-pipeline")
 ACTIONS = frozenset({"backfill", "measure", "activate", "deactivate"})
 REDIS_CAPACITY_MIB = 3072
 REDIS_CONTAINER_LIMIT_MIB = 6144
+BACKFILL_TIMEOUT_SECONDS = 3600
+BACKFILL_LOCK_RETRY_DELAYS = (2, 5, 10)
+_MYSQL_LOCK_ERROR = re.compile(r"(?:aiomysql|pymysql)\.err\.OperationalError: \((1205|1213), .+\)")
 
 
 def _run(args: list[str], timeout: int = 120) -> str:
@@ -126,12 +129,46 @@ def _backend_id(root: Path, image_id: str) -> str:
 
 
 def _read_model_command(container: str, run_id: str, module: str, action: str) -> dict:
-    timeout = 3600 if action == "apply" else 600
     result = json.loads(_run(["docker", "exec", "-e", f"TASK_READ_MODEL_RUN_ID={run_id}",
-                             container, "python", "-B", "-m", module, action], timeout=timeout))
+                             container, "python", "-B", "-m", module, action], timeout=600))
     if result.get("environment") != "staging" or result.get("run_id") != run_id:
         raise ValueError("staging_task_read_model_result_mismatch")
     return result
+
+
+def _backfill(container: str, run_id: str, evidence: Path) -> dict:
+    command = ["docker", "exec", "-e", f"TASK_READ_MODEL_RUN_ID={run_id}", container,
+               "python", "-B", "-m", "migrations.task_read_model_backfill", "apply"]
+    deadline = time.monotonic() + BACKFILL_TIMEOUT_SECONDS
+    retries = []
+    for attempt in range(1 + len(BACKFILL_LOCK_RETRY_DELAYS)):
+        report = evidence / f"backfill-attempt-{attempt + 1:02d}.json"
+        try:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=max(1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            write_json(report, {"lock_errors": retries, "result": "timeout"})
+            raise ValueError("staging_task_backfill_timeout") from None
+        if result.returncode == 0:
+            payload = json.loads(result.stdout)
+            if payload.get("environment") != "staging" or payload.get("run_id") != run_id:
+                raise ValueError("staging_task_read_model_result_mismatch")
+            write_json(report, {"lock_errors": retries, "result": "completed"})
+            return payload
+        lines = result.stderr.rstrip().splitlines()
+        error = _MYSQL_LOCK_ERROR.fullmatch(lines[-1]) if lines else None
+        if not error:
+            write_json(report, {"lock_errors": retries, "result": "failed"})
+            raise ValueError("staging_task_backfill_command_failed")
+        retries.append(int(error[1]))
+        if (attempt == len(BACKFILL_LOCK_RETRY_DELAYS)
+                or time.monotonic() + BACKFILL_LOCK_RETRY_DELAYS[attempt] >= deadline):
+            write_json(report, {"lock_errors": retries, "result": "lock_retry_exhausted"})
+            raise ValueError("staging_task_backfill_lock_retry_exhausted")
+        # The migration rolls back the failed batch. Its committed batches are
+        # keyed by run, task, and revision, so the same command safely resumes.
+        write_json(report, {"lock_errors": retries, "result": "retrying"})
+        time.sleep(BACKFILL_LOCK_RETRY_DELAYS[attempt])
 
 
 def _evidence(application: dict, run_id: str, action: str) -> Path:
@@ -318,7 +355,7 @@ def run(application: dict, run_id: str, action: str) -> dict:
                 container = _backend_id(root, application["image_id"])
             restored = _restore_business_bridge(container, run_id, worker_image)
             write_json(evidence / "business-bridge.json", {"cursor_verified": True, "restarted": restored})
-            report = _read_model_command(container, run_id, "migrations.task_read_model_backfill", "apply")
+            report = _backfill(container, run_id, evidence)
             return {"environment": "staging", "run_id": run_id, "read_model_enabled": False,
                     **{key: int(report[key]) for key in ("total", "emitted", "already_emitted")}}
         if selected != run_id:
