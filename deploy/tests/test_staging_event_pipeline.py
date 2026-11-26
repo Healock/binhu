@@ -537,6 +537,40 @@ class StagingArchitectureSwitchTests(unittest.TestCase):
                     "binhu-staging-event-pipeline-stg-20260920-01", timeout=180,
                 )
 
+    def test_internal_network_recovery_accepts_only_matching_candidate_members(self):
+        spec = staging_compose.compose(images(), RUN_ID)
+        name = staging_compose.network_for(RUN_ID)
+        container_id = "a" * 64
+        service = "staging-derived-mysql"
+        member = f"{spec['name']}-{service}-1"
+        labels = spec["services"][service]["labels"]
+        network = {"Name": name, "Driver": "bridge", "Internal": True, "Labels": labels,
+                   "Containers": {container_id: {"Name": member}}}
+        container = {"Id": container_id, "Name": "/" + member,
+                     "Image": spec["services"][service]["image"], "Config": {"Labels": {
+                         **labels, "com.docker.compose.project": spec["name"],
+                         "com.docker.compose.service": service,
+                     }}}
+        with patch.object(staging_control, "_docker_json", side_effect=[[network], [container]]):
+            self.assertEqual(staging_control._ensure_internal_network(RUN_ID, spec), network)
+        for identity, mismatched in (
+            ("image", {**container, "Image": images()["worker"]}),
+            ("run", {**container, "Config": {"Labels": {
+                **container["Config"]["Labels"], "binhu.run_id": "STG-20260920-02",
+            }}}),
+        ):
+            with self.subTest(identity=identity), patch.object(
+                staging_control, "_docker_json", side_effect=[[network], [mismatched]],
+            ):
+                with self.assertRaisesRegex(ValueError, "staging_internal_network_member_identity_mismatch"):
+                    staging_control._ensure_internal_network(RUN_ID, spec)
+
+        network["Containers"][container_id]["Name"] = f"{spec['name']}-backend-outbox-relay-1"
+        with patch.object(staging_control, "_docker_json", return_value=[network]) as inspect:
+            with self.assertRaisesRegex(ValueError, "staging_internal_network_member_identity_mismatch"):
+                staging_control._ensure_internal_network(RUN_ID, spec)
+            inspect.assert_called_once_with(["docker", "network", "inspect", name])
+
     def test_service_health_wait_returns_aggregate_status(self):
         with patch.object(staging_control, "_docker_json", return_value=[{
             "State": {"Status": "running", "Health": {"Status": "healthy"}},

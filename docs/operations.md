@@ -16,6 +16,8 @@ Dev 和 Staging 的 Backend Outbox 投递器在 Redis 逐条确认后按领取�
 
 指令核查删除与归档在同一权威事务内写主任务与各附属状态的删除事件。事件使用命令已经加锁校验的来源身份及完成删除后的任务版本，因此物理移除当前来源后仍可清理 Redis 详情与附属状态索引。
 
+Staging 事件管道首次启动时，派生 MySQL 最多等待 420 秒达到健康状态。若启动中途失败，重新执行同一候选的 `apply` 会复用通过身份校验的内部网络和服务。每个已连接成员必须属于本次 Staging 运行，且服务名、Compose 项目和镜像摘要都与候选一致，发现其他成员就停止。
+
 Staging 应用更新和回滚使用最多 240 秒的健康探测窗口，以覆盖存量数据库的启动时间。探测仍需核对 Bootstrap 的环境、版本和 API 入口，并确认健康接口返回 200。超过窗口仍未就绪时保留失败证据。
 
 Production 的 `Deploy Production` 在应用切换前，使用本次已接受的 Staging backend 镜像和 Production Compose 配置执行 `migrations.task_command_read_model`。该步骤在八库备份完成后先核对运行环境和数据库身份，再执行 `measure → measure（apply 前复测并比较摘要）→ migrate --apply → verify`，范围固定为 `OnlineData` 与 `PlatformData`。目标身份不符、测量发生变化或验证未通过时，发布在替换应用文件和重启服务前停止；若后续应用启动失败，程序可回滚，已添加的兼容 schema 保留。候选包含 `migrations.task_view_state_revisions` 时，同一入口在 `OnlineData` 按相同的测量、复测、迁移和校验顺序准备 `_task_view_state_revisions`，并分别记录两项迁移证据。数据库准备完成后，Kafka/Flink 链路部署、历史回填和 Redis 对账仍须各自验证，最后才切换 Backend 读路径。
