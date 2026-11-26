@@ -265,6 +265,31 @@ class EnvironmentUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'environment_configuration_invalid'):
             parse_environment('APP_ENVIRONMENT=development\nAPP_ENVIRONMENT=production\n')
 
+    def test_reuses_verified_release_and_rejects_changed_static_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / 'artifact'
+            artifact.mkdir()
+            frontend = root / 'frontend'
+            frontend.mkdir()
+            (frontend / 'index.html').write_text('original', encoding='utf-8')
+            with tarfile.open(artifact / 'frontend.tar', 'w') as archive:
+                archive.add(frontend / 'index.html', arcname='index.html')
+            hashes = tree_hashes(frontend)
+            artifact_id = 'a' * 64
+            with self.assertRaisesRegex(ValueError, 'environment_static_content_mismatch'):
+                update.prepare_release_static(root, artifact, artifact_id, {})
+            release = root / 'releases' / artifact_id
+            self.assertFalse(release.exists())
+            update.prepare_release_static(root, artifact, artifact_id, hashes)
+            with patch.object(update.tarfile, 'open', side_effect=AssertionError('unexpected unpack')):
+                update.prepare_release_static(root, artifact, artifact_id, hashes)
+            index = release / 'static' / 'index.html'
+            index.write_text('changed', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'environment_static_content_mismatch'):
+                update.prepare_release_static(root, artifact, artifact_id, hashes)
+            self.assertEqual(index.read_text(encoding='utf-8'), 'changed')
+
     def test_application_update_and_failures_keep_database_and_rollback_boundaries(self):
         for environment, failure in itertools.product(
                 ('development', 'staging'), ('none', 'backup', 'health')):

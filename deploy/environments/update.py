@@ -11,6 +11,7 @@ import secrets
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -367,6 +368,31 @@ def startup_failure_diagnostic(environment, root):
     return report
 
 
+def prepare_release_static(root, artifact, artifact_id, expected_hashes):
+    releases = root / 'releases'
+    release = releases / artifact_id
+    static = release / 'static'
+    if any(path.is_symlink() for path in (releases, release, static)):
+        raise ValueError('environment_release_path_invalid')
+    releases.mkdir(exist_ok=True)
+    if release.exists():
+        if not static.is_dir():
+            raise ValueError('environment_release_path_invalid')
+        if tree_hashes(static) != expected_hashes:
+            raise ValueError('environment_static_content_mismatch')
+        return
+
+    with tempfile.TemporaryDirectory(prefix='.prepare-', dir=releases) as directory:
+        candidate = Path(directory) / artifact_id
+        candidate_static = candidate / 'static'
+        candidate_static.mkdir(parents=True)
+        with tarfile.open(Path(artifact) / 'frontend.tar') as archive:
+            archive.extractall(candidate_static, filter='data')
+        if tree_hashes(candidate_static) != expected_hashes:
+            raise ValueError('environment_static_content_mismatch')
+        candidate.rename(release)
+
+
 def apply_environment(environment, artifact, image_directory, expected_id, evidence):
     import fcntl
     from .database_identity import run as verify_database_identity
@@ -408,18 +434,7 @@ def apply_environment(environment, artifact, image_directory, expected_id, evide
             write_json(evidence / 'previous-files.json', tree_hashes(previous))
             backup_databases(environment, root, manifest, evidence)
             phase = 'candidate_prepare'
-            releases = root / 'releases'
-            if releases.is_symlink():
-                raise ValueError('environment_release_path_invalid')
-            releases.mkdir(exist_ok=True)
-            release = releases / expected_id
-            release.mkdir()
-            static = release / 'static'
-            static.mkdir()
-            with tarfile.open(Path(artifact) / 'frontend.tar') as archive:
-                archive.extractall(static, filter='data')
-            if tree_hashes(static) != artifact_manifest['frontend_files']:
-                raise ValueError('environment_static_content_mismatch')
+            prepare_release_static(root, artifact, expected_id, artifact_manifest['frontend_files'])
             prepared = evidence / 'candidate'
             prepared.mkdir()
             write_json(prepared / 'compose.json', candidate)
