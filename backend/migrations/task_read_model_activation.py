@@ -138,13 +138,13 @@ async def _check_generation() -> tuple[dict, redis.Redis, str]:
                                 domain=domain, state=state_update["state"],
                                 removed=state_update["removed"],
                             ))
-                            for index_key in expected_keys:
-                                expected_task_indexes.setdefault(index_key, set()).add(task_id)
+                            for state_index in expected_keys:
+                                expected_task_indexes.setdefault(state_index, set()).add(task_id)
                             actual_keys = set(await client.smembers(keys[1]))
                             if actual_keys != expected_keys:
                                 parser_state_index_mismatches += 1
-                            for index_key in expected_keys:
-                                if not await client.sismember(index_key, task_id):
+                            for state_index in expected_keys:
+                                if not await client.sismember(state_index, task_id):
                                     parser_state_index_mismatches += 1
                             canonical = canonical_tasks.get(task_id)
                             if canonical:
