@@ -166,6 +166,51 @@ def test_task_command_checks_revision_before_authorizing_and_mutating():
     )
 
 
+@pytest.mark.parametrize("action,persisted_source", [
+    ("delete", None),
+    ("archive", ("全链条", 17, 5, "archived")),
+])
+@pytest.mark.asyncio
+async def test_task_removal_emits_view_tombstones_at_command_revision(
+    monkeypatch, action, persisted_source,
+):
+    from config import settings
+    from services import domain_events
+    from services.task_view_state import TASK_VIEW_STATE_DOMAINS
+
+    monkeypatch.setattr(settings, "APP_ENVIRONMENT", "staging")
+    monkeypatch.setattr(settings, "MYSQL_ONLINE_DATA_DB", "Staging_OnlineData")
+    monkeypatch.setattr(settings, "TASK_READ_MODEL_RUN_ID", "STG-20261127-01")
+    event = AsyncMock()
+    monkeypatch.setattr(domain_events, "enqueue_task_view_state_event", event)
+    cursor = AsyncMock()
+    cursor.fetchone.side_effect = [
+        ("全链条", 17, 4, None, {}), persisted_source,
+        *((7, "") for _ in TASK_VIEW_STATE_DOMAINS),
+    ]
+    spec = TaskCommandSpec(
+        actor_id=1, environment="staging", parser_type="全链条", task_id="t_fullchain:17",
+        source_id=7, action=action, event_type=f"online.task.{action}d",
+        expected_revision=4, audiences=("authenticated",),
+    )
+    outcome = TaskMutationResult(5, {}, ("task_state",))
+    with patch("services.task_commands._append_command_and_outbox", new=AsyncMock()) as append:
+        result = await execute_task_command(
+            cursor, spec=spec, authorize=AsyncMock(return_value=TaskAuthorizationResult("fixture")),
+            mutate=AsyncMock(return_value=outcome),
+        )
+    assert result == outcome
+    assert append.await_args.kwargs["revision"] == 5
+    assert sum("FROM _online_source_rows" in call.args[0] for call in cursor.execute.await_args_list) == 2
+    assert {call.kwargs["domain"] for call in event.await_args_list} == TASK_VIEW_STATE_DOMAINS
+    for item in event.await_args_list:
+        assert item.args == (cursor,)
+        assert item.kwargs["outbox_table"] == "Staging_OnlineData._domain_event_outbox"
+        assert item.kwargs["source_id"] == 7 and item.kwargs["task_id"] == "t_fullchain:17"
+        assert item.kwargs["domain_revision"] == 8 and item.kwargs["task_revision"] == 5
+        assert item.kwargs["removed"] is True and item.kwargs["state"] == {}
+
+
 def test_task_command_revision_conflict_never_runs_mutation():
     class Cursor:
         async def execute(self, _query, _params):
