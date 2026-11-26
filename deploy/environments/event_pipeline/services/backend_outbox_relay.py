@@ -1,4 +1,4 @@
-"""Dev-only relay from the Backend transactional outbox to the Dev Redis stream."""
+"""Relay an isolated Backend transactional outbox to its Dev or Staging Redis stream."""
 from __future__ import annotations
 
 import json
@@ -111,16 +111,31 @@ class BackendOutboxRelay:
                 await conn.rollback()
                 raise
 
-    async def _finish(self, event_id, status, attempts, error_code="", available_at=None):
+    async def _finish_batch(self, published: list[str], retries: list[tuple[str, str, datetime]]) -> None:
         async with self.pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    f"UPDATE `{OUTBOX}` SET status=%s,attempt_count=%s,locked_by=NULL,locked_until=NULL,"
-                    "last_error_code=%s,last_error_summary='',available_at=COALESCE(%s,available_at),"
-                    "published_at=CASE WHEN %s='published' THEN UTC_TIMESTAMP() ELSE published_at END "
-                    "WHERE event_id=%s AND locked_by=%s",
-                    (status, attempts, error_code[:100], available_at, status, event_id, self.worker_id))
-            await conn.commit()
+            await conn.begin()
+            try:
+                async with conn.cursor() as cur:
+                    if published:
+                        marks = ",".join(["%s"] * len(published))
+                        await cur.execute(
+                            f"UPDATE `{OUTBOX}` SET status='published',attempt_count=attempt_count+1,"
+                            "locked_by=NULL,locked_until=NULL,last_error_code='',last_error_summary='',"
+                            "published_at=UTC_TIMESTAMP() WHERE status='publishing' "
+                            f"AND locked_by=%s AND event_id IN ({marks})",
+                            (self.worker_id, *published),
+                        )
+                    for event_id, error_code, available_at in retries:
+                        await cur.execute(
+                            f"UPDATE `{OUTBOX}` SET status='retry',attempt_count=attempt_count+1,"
+                            "locked_by=NULL,locked_until=NULL,last_error_code=%s,last_error_summary='',"
+                            "available_at=%s WHERE status='publishing' AND locked_by=%s AND event_id=%s",
+                            (error_code[:100], available_at, self.worker_id, event_id),
+                        )
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
 
     async def _maybe_cleanup_transport_rows(self):
         import time
@@ -156,9 +171,11 @@ class BackendOutboxRelay:
         if not rows:
             await self._maybe_cleanup_transport_rows()
             return "idle"
+        published = []
+        retries = []
         for row in rows:
             event_id = str(row[0])
-            attempts = int(row[15] or 0) + 1
+            attempts = int(row[9 if len(row) == 17 else 15] or 0) + 1
             try:
                 event = _decode(row)
                 payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
@@ -166,10 +183,13 @@ class BackendOutboxRelay:
                     raise ValueError("event payload exceeds size limit")
                 await self.redis.xadd(self.stream, {"event": payload, "event_id": event_id},
                                        maxlen=1_000_000, approximate=True)
-                await self._finish(event_id, "published", attempts)
             except Exception as exc:
                 delay = min(300, 2 ** min(attempts, 8))
-                await self._finish(event_id, "retry", attempts, type(exc).__name__,
-                                   datetime.utcnow() + timedelta(seconds=delay))
+                retries.append((event_id, type(exc).__name__, datetime.utcnow() + timedelta(seconds=delay)))
+            else:
+                published.append(event_id)
+        # Redis ACKs precede the MySQL commit. If the commit fails, the lease
+        # expires and a later worker may republish with the same event ID.
+        await self._finish_batch(published, retries)
         await self._maybe_cleanup_transport_rows()
         return "published"
