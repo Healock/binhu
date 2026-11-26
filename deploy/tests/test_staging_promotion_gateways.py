@@ -346,6 +346,49 @@ class StagingTaskReadModelTests(unittest.TestCase):
             self.assertEqual(json.loads((evidence / "backfill-attempt-04.json").read_text()),
                              {"lock_errors": [1213, 1213, 1213, 1213], "result": "lock_retry_exhausted"})
 
+    def test_backfill_restores_original_relays_on_interrupted_write(self):
+        run_a, run_b = "STG-20261126-01", "STG-20261126-04"
+        relay_a, relay_b = "a" * 64, "b" * 64
+        with (tempfile.TemporaryDirectory() as directory,
+              patch.object(read_model.time, "sleep"),
+              patch.object(read_model, "_run", return_value="running") as docker):
+            evidence = Path(directory)
+            with self.assertRaisesRegex(ValueError, "synthetic_backfill_failed"):
+                with read_model._quiesce_backfill_relays({run_a: relay_a, run_b: relay_b}, evidence):
+                    raise ValueError("synthetic_backfill_failed")
+            self.assertEqual([call.args[0] for call in docker.call_args_list], [
+                ["docker", "stop", "--time", "15", relay_a],
+                ["docker", "stop", "--time", "15", relay_b],
+                ["docker", "start", relay_b], ["docker", "start", relay_a],
+                ["docker", "inspect", "--type", "container", "--format", "{{.State.Status}}", relay_a],
+                ["docker", "inspect", "--type", "container", "--format", "{{.State.Status}}", relay_b],
+            ])
+            self.assertEqual(json.loads((evidence / "backfill-relays-after.json").read_text()),
+                             {"restarted": [run_a, run_b], "failed": []})
+
+    def test_backfill_scopes_relays_to_the_same_snapshot_database(self):
+        database = "Staging_sexample_OnlineData"
+        worker_image = "sha256:" + "d" * 64
+        current, old, other = "STG-20261126-04", "STG-20261126-03", "STG-20261125-01"
+        ids = ("a" * 64, "b" * 64, "c" * 64)
+        records = []
+        for cid, run, db in zip(ids, (current, old, other), (database, database, "Staging_other_OnlineData")):
+            project = "binhu-staging-event-pipeline-" + run.lower()
+            records.append(json.dumps([
+                cid, f"/{project}-backend-outbox-relay-1", worker_image,
+                {"binhu.environment": "staging", "binhu.run_id": run,
+                 "com.docker.compose.project": project, "com.docker.compose.service": "backend-outbox-relay"},
+                ["python", "-m", "event_pipeline.runtime", "backend-outbox-relay"],
+                ["APP_ENVIRONMENT=staging", f"STAGING_RUN_ID={run}",
+                 f"BACKEND_MYSQL_DATABASE={db}", "BACKEND_MYSQL_HOST=environment-mysql",
+                 "BACKEND_MYSQL_USER=environment_app", "BACKEND_MYSQL_PASSWORD=" + "x" * 48,
+                 "BACKEND_REDIS_URL=redis://:render-only@environment-redis:6379/0"],
+                "running", {"binhu-staging-pipeline-backend": {}},
+            ]))
+        with patch.object(read_model, "_run", side_effect=["\n".join(ids), *records]):
+            self.assertEqual(read_model._active_backfill_relays(current, worker_image, database),
+                             {current: ids[0], old: ids[1]})
+
     def test_switch_refuses_configuration_from_a_different_candidate(self):
         candidate = {"artifact_id": "a" * 64, "commit": "b" * 40, "image_id": "sha256:" + "c" * 64}
         with tempfile.TemporaryDirectory() as directory:

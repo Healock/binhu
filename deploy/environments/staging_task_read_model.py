@@ -1,16 +1,19 @@
 """Prepare and switch the Staging application to a verified task projection."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import copy
 import hmac
 import json
 from pathlib import Path
 import re
+import signal
 import subprocess
 import time
 
 from .artifact import file_hash, write_json
 from .event_pipeline import staging_backend_network, staging_control
+from .event_pipeline.runtime import backend_relay_configuration
 from .runtime import root_for
 from .update import (
     EVIDENCE_ROOT, backup_databases, check_resources, parse_environment, read_configuration,
@@ -134,6 +137,100 @@ def _read_model_command(container: str, run_id: str, module: str, action: str) -
     if result.get("environment") != "staging" or result.get("run_id") != run_id:
         raise ValueError("staging_task_read_model_result_mismatch")
     return result
+
+
+def _active_backfill_relays(run_id: str, worker_image: str, database: str) -> dict[str, str]:
+    if not re.fullmatch(r"Staging_[A-Za-z0-9_]+", database):
+        raise ValueError("staging_task_backfill_database_invalid")
+    service = "backend-outbox-relay"
+    ids = _run(["docker", "ps", "-q", "--no-trunc", "--filter", "label=binhu.environment=staging",
+                "--filter", f"label=com.docker.compose.service={service}"]).split()
+    if not ids or any(not re.fullmatch(r"[0-9a-f]{64}", cid) for cid in ids):
+        raise ValueError("staging_task_backfill_relays_missing")
+    template = (
+        '[{{json .Id}},{{json .Name}},{{json .Image}},{{json .Config.Labels}},'
+        '{{json .Config.Cmd}},{{json .Config.Env}},{{json .State.Status}},'
+        '{{json .NetworkSettings.Networks}}]'
+    )
+    matches = {}
+    for cid in ids:
+        # Inspect private runtime values in memory. Never persist inspect output.
+        actual_id, name, image, labels, command, env, status, networks = json.loads(
+            _run(["docker", "inspect", "--type", "container", "--format", template, cid])
+        )
+        relay_run = labels.get("binhu.run_id", "")
+        if (actual_id != cid or not RUN_RE.fullmatch(relay_run)
+                or name != f"/{staging_control.project_for(relay_run)}-{service}-1"
+                or not staging_control._staging_backend_connector(name[1:], labels)
+                or command != ["python", "-m", "event_pipeline.runtime", service]
+                or set(networks or {}) != {staging_backend_network.NETWORK}
+                or status != "running"):
+            raise ValueError("staging_task_backfill_relay_identity_mismatch")
+        try:
+            values = backend_relay_configuration(dict(value.split("=", 1) for value in env))
+        except ValueError:
+            raise ValueError("staging_task_backfill_relay_identity_mismatch") from None
+        if (values["APP_ENVIRONMENT"] != "staging" or values["RUN_ID"] != relay_run
+                or values["BACKEND_REDIS_STREAM_KEY"] != "binhu:events"):
+            raise ValueError("staging_task_backfill_relay_identity_mismatch")
+        if values["BACKEND_MYSQL_DATABASE"] != database:
+            continue
+        if relay_run in matches or (relay_run == run_id and image != worker_image):
+            raise ValueError("staging_task_backfill_relay_identity_mismatch")
+        matches[relay_run] = cid
+    if run_id not in matches:
+        raise ValueError("staging_task_backfill_current_relay_missing")
+    return matches
+
+
+@contextmanager
+def _quiesce_backfill_relays(relays: dict[str, str], evidence: Path):
+    affected = []
+    write_json(evidence / "backfill-relays-before.json", {"runs": sorted(relays)})
+
+    def interrupted(_signum, _frame):
+        raise ValueError("staging_task_backfill_interrupted")
+
+    # On connection loss or a normal cancellation, unwind through the restore
+    # step instead of leaving the publishers deliberately stopped.
+    signals = [signal.SIGTERM, signal.SIGINT]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+    handlers = {signum: signal.signal(signum, interrupted) for signum in signals}
+    try:
+        for relay_run, cid in sorted(relays.items()):
+            affected.append((relay_run, cid))
+            _run(["docker", "stop", "--time", "15", cid], timeout=25)
+        yield
+    finally:
+        restored, failed = [], []
+        for signum in handlers:
+            signal.signal(signum, signal.SIG_IGN)
+        try:
+            for relay_run, cid in reversed(affected):
+                try:
+                    _run(["docker", "start", cid], timeout=30)
+                except (ValueError, subprocess.TimeoutExpired):
+                    failed.append(relay_run)
+            if affected:
+                time.sleep(6)
+            for relay_run, cid in affected:
+                if relay_run in failed:
+                    continue
+                try:
+                    status = _run(["docker", "inspect", "--type", "container", "--format",
+                                   "{{.State.Status}}", cid], timeout=10).strip()
+                    if status != "running":
+                        raise ValueError("staging_task_backfill_relay_not_running")
+                    restored.append(relay_run)
+                except (ValueError, subprocess.TimeoutExpired):
+                    failed.append(relay_run)
+            write_json(evidence / "backfill-relays-after.json", {"restarted": restored, "failed": failed})
+            if failed:
+                raise ValueError("staging_task_backfill_relay_restore_failed")
+        finally:
+            for signum, handler in handlers.items():
+                signal.signal(signum, handler)
 
 
 def _backfill(container: str, run_id: str, evidence: Path) -> dict:
@@ -355,7 +452,9 @@ def run(application: dict, run_id: str, action: str) -> dict:
                 container = _backend_id(root, application["image_id"])
             restored = _restore_business_bridge(container, run_id, worker_image)
             write_json(evidence / "business-bridge.json", {"cursor_verified": True, "restarted": restored})
-            report = _backfill(container, run_id, evidence)
+            relays = _active_backfill_relays(run_id, worker_image, manifest["databases"]["OnlineData"])
+            with _quiesce_backfill_relays(relays, evidence):
+                report = _backfill(container, run_id, evidence)
             return {"environment": "staging", "run_id": run_id, "read_model_enabled": False,
                     **{key: int(report[key]) for key in ("total", "emitted", "already_emitted")}}
         if selected != run_id:
