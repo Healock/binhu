@@ -12,6 +12,8 @@ Staging 固定迁移入口必须绑定已完成 Staging `measure` 且仍与 Dev 
 
 Staging 的读路径使用现有 `Promote immutable Staging application` 工作流的 `task-read-model` 操作。先验收同一提交的应用制品和事件管道，再依次执行 `backfill`（备份当前 Staging 数据库、设置管道运行号、发出存量快照）、`measure`（只读对账）和 `activate`（对账和 checkpoint 均通过后开启 Redis 读取）。使用同一应用、制品和管道运行编号。切换异常恢复之前的应用配置，`deactivate` 可显式关闭读路径。Staging 的应用健康验收与指令核查读写、503 和恢复验收分别记录。 首次回填支持从原有 96 MiB 或 512 MiB 配置升级。主机有至少 8 GiB 可用内存时，将 Staging 应用 Redis 上限调整为 3 GiB，容器上限为 6 GiB，以容纳回填事件和两代任务索引。仅重建 Staging Redis 容器并继续使用原有 AOF 卷，核对 Redis 实际容量及应用健康，重接已有管道访问网络。配置副本和回滚结果保存在私有回填证据；恢复失败须先处理 Staging Redis，再重试回填。
 
+Dev 和 Staging 的 Backend Outbox 投递器在 Redis 逐条确认后按领取批次提交成功状态，失败项各自记录重试时间。若状态事务提交失败，租约过期后可按原事件 ID 重投。回填结束后分别核对 MySQL 待投递量、Redis Stream 消费位置、Kafka lag 和投影对账结果。Kafka lag 为零表示消费组已读完当前投递到 Kafka 的事件。
+
 Staging 应用更新和回滚使用最多 240 秒的健康探测窗口，以覆盖存量数据库的启动时间。探测仍需核对 Bootstrap 的环境、版本和 API 入口，并确认健康接口返回 200。超过窗口仍未就绪时保留失败证据。
 
 Production 的 `Deploy Production` 在应用切换前，使用本次已接受的 Staging backend 镜像和 Production Compose 配置执行 `migrations.task_command_read_model`。该步骤在八库备份完成后先核对运行环境和数据库身份，再执行 `measure → measure（apply 前复测并比较摘要）→ migrate --apply → verify`，范围固定为 `OnlineData` 与 `PlatformData`。目标身份不符、测量发生变化或验证未通过时，发布在替换应用文件和重启服务前停止；若后续应用启动失败，程序可回滚，已添加的兼容 schema 保留。候选包含 `migrations.task_view_state_revisions` 时，同一入口在 `OnlineData` 按相同的测量、复测、迁移和校验顺序准备 `_task_view_state_revisions`，并分别记录两项迁移证据。数据库准备完成后，Kafka/Flink 链路部署、历史回填和 Redis 对账仍须各自验证，最后才切换 Backend 读路径。

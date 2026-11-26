@@ -11,7 +11,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from deploy.environments.event_pipeline.runtime import (
@@ -2337,12 +2337,37 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
                "online_task", "全链条:synthetic-row", 2, '["authenticated"]', "pending", 0,
                None, None, None, "", "", None, None)
         relay._claim = AsyncMock(return_value=[row])
-        relay._finish = AsyncMock()
+        relay._finish_batch = AsyncMock()
         self.assertEqual(await relay.run_once(), "published")
         payload = json.loads(redis.xadd.call_args.args[1]["event"])
         self.assertEqual(payload["aggregate_revision"], 2)
         self.assertNotIn("detail", payload)
         relay._claim.assert_awaited_once()
+        relay._finish_batch.assert_awaited_once_with([row[0]], [])
+
+    async def test_backend_outbox_relay_batches_success_and_retries_after_redis_ack(self):
+        pool = MagicMock()
+        connection = pool.acquire.return_value.__aenter__.return_value
+        connection.begin = AsyncMock()
+        connection.commit = AsyncMock()
+        connection.rollback = AsyncMock()
+        connection.cursor = MagicMock()
+        cursor = connection.cursor.return_value.__aenter__.return_value
+        relay = BackendOutboxRelay(pool, AsyncMock(), {"BACKEND_REDIS_STREAM_KEY": "binhu:events"})
+        row = ("event-one", 1, "online", "online.task.changed", "online_task", "synthetic", 2,
+               '["authenticated"]', "pending", 0, None, None, None, "", "", None, None)
+        relay._claim = AsyncMock(return_value=[row, ("event-two", *row[1:]), ("event-three", *row[1:])])
+        relay.redis.xadd.side_effect = ["1-0", TimeoutError(), "2-0"]
+
+        self.assertEqual(await relay.run_once(), "published")
+        connection.commit.assert_awaited_once()
+        self.assertEqual(cursor.execute.await_count, 2)
+        successful_write, retry_write = cursor.execute.await_args_list
+        self.assertEqual(successful_write.args[1], (relay.worker_id, "event-one", "event-three"))
+        self.assertEqual(retry_write.args[1][0], "TimeoutError")
+        self.assertEqual(retry_write.args[1][-2:], (relay.worker_id, "event-two"))
+        self.assertIn("locked_by=%s", successful_write.args[0])
+        self.assertIn("locked_by=%s", retry_write.args[0])
 
     async def test_ack_then_failed_commit_does_not_mark_transport_retry(self):
         delivery = Delivery("event", b"{}", b"key", "lease", 1, "events")
