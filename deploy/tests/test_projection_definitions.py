@@ -3,6 +3,7 @@ import unittest
 from deploy.environments.event_pipeline.projection_definitions import (
     PROJECTIONS,
     projection_names,
+    projection_schema_statements,
     staging_schema_sql,
 )
 from deploy.environments.event_pipeline.flink_sql import render
@@ -24,9 +25,13 @@ class ProjectionDefinitionTests(unittest.TestCase):
         }
         sql = render(environment)
         schema = staging_schema_sql()
+        dev_migration = projection_schema_statements(if_not_exists=True)
+        self.assertEqual(len(dev_migration), len(PROJECTIONS))
         for name in projection_names():
             self.assertIn(f"INSERT INTO {name}", sql)
             self.assertIn(f"CREATE TABLE {name}", sql)
+        self.assertEqual({statement.split()[5] for statement in dev_migration},
+                         {item.name for item in PROJECTIONS})
         self.assertEqual(len(PROJECTIONS), 11)
         self.assertIn("CREATE TABLE dev_online_source_projection_python LIKE", schema)
 

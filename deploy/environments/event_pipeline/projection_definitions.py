@@ -184,17 +184,24 @@ def flink_sql(config: dict[str, str]) -> str:
     return "\n".join(blocks)
 
 
-def staging_schema_sql() -> str:
-    blocks: list[str] = []
+def projection_schema_statements(*, if_not_exists: bool = False, include_python: bool = False) -> list[str]:
+    create = "CREATE TABLE IF NOT EXISTS" if if_not_exists else "CREATE TABLE"
+    statements = []
     for item in PROJECTIONS:
         columns = ", ".join(f"{column} NOT NULL" for column in item.columns)
         primary = ", ".join(item.primary_key)
-        blocks.append(
-            f"CREATE TABLE {item.name} (\n {columns},\n PRIMARY KEY ({primary})\n)"
-            " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;\n"
-            f"CREATE TABLE {item.name}_python LIKE {item.name};"
+        statements.append(
+            f"{create} {item.name} (\n {columns},\n PRIMARY KEY ({primary})\n)"
+            " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
         )
-    return "\n".join(blocks)
+        if include_python:
+            statements.append(f"{create} {item.name}_python LIKE {item.name}")
+    return statements
 
 
-__all__ = ["BASE_PROJECTION_NAMES", "PROJECTIONS", "flink_sql", "projection_names", "staging_schema_sql"]
+def staging_schema_sql() -> str:
+    return ";\n".join(projection_schema_statements(include_python=True)) + ";"
+
+
+__all__ = ["BASE_PROJECTION_NAMES", "PROJECTIONS", "flink_sql", "projection_names",
+           "projection_schema_statements", "staging_schema_sql"]
