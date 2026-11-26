@@ -64,6 +64,23 @@ class EnvironmentUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'environment_image_reference_invalid'):
             image_digest_reference('binhu-backend:latest')
 
+    def test_staging_health_wait_accepts_startup_after_old_probe_limit(self):
+        healthy = {'environment': 'staging', 'version': '0.32.7', 'health': True}
+        probes = [ConnectionRefusedError()] * 48 + [healthy]
+        with patch.object(update, 'health', side_effect=probes) as probe, \
+                patch.object(update.time, 'monotonic', side_effect=range(0, 98, 2)), \
+                patch.object(update.time, 'sleep'):
+            self.assertEqual(update.wait_healthy('staging', '0.32.7'), healthy)
+        self.assertEqual(probe.call_count, 49)
+
+    def test_staging_health_wait_rejects_identity_mismatch_when_deadline_expires(self):
+        with patch.object(update, 'health', side_effect=ValueError('environment_bootstrap_mismatch')), \
+                patch.object(update.time, 'monotonic', side_effect=[0, 240]), \
+                patch.object(update.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(ValueError, 'environment_candidate_health_failed'):
+                update.wait_healthy('staging', '0.32.7')
+        sleep.assert_not_called()
+
     def test_container_baseline_marks_preexisting_restart_loop_as_unstable(self):
         container_id = 'd' * 64
         snapshots = [
@@ -334,6 +351,8 @@ class EnvironmentUpdateTests(unittest.TestCase):
                         side_effect=ValueError('unhealthy') if failure == 'health' else None,
                         return_value={'health': True}))
                     stack.enter_context(patch.object(update.time, 'sleep'))
+                    stack.enter_context(patch.object(update.time, 'monotonic',
+                                                     side_effect=itertools.count(step=2)))
                     if failure == 'none':
                         result = update.apply_environment(
                             environment, artifact, root / 'image', image['artifact_id'], evidence)

@@ -253,13 +253,16 @@ def health(environment, version):
 
 
 def wait_healthy(environment, version):
-    for attempt in range(45):
+    # Staging can take longer to initialize the populated database during replay.
+    deadline = time.monotonic() + (240 if environment == 'staging' else 90)
+    while True:
         try:
             return health(environment, version)
         except (OSError, ValueError):
-            if attempt < 44:
-                time.sleep(2)
-    raise ValueError('environment_candidate_health_failed')
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('environment_candidate_health_failed') from None
+            time.sleep(min(2, remaining))
 
 
 def replace_file(source, destination):
