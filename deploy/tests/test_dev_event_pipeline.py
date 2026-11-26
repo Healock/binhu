@@ -398,6 +398,7 @@ class FlinkStateContractTests(unittest.TestCase):
         self.assertIn("groupToken(parser, md5(key.toString()))", sink)
         self.assertIn("case \"t_police_stats\"", sink)
         self.assertIn("case \"t_suzhou_police\"", sink)
+        self.assertIn('case "t_suspect_missing_registration"', sink)
 
     def test_view_state_sink_maintains_hmac_task_and_canonical_group_indexes(self):
         sink = (Path(__file__).parents[1] / "environments" / "event_pipeline" / "TaskReadModelRedisSink.java").read_text(encoding="utf-8")
@@ -471,7 +472,7 @@ class BusinessBridgeTests(unittest.TestCase):
             "contract": "binhu.task-view-state.v1", "domain": "task_graph",
             "domain_revision": 4, "environment": "development",
             "event_id": event_id, "run_id": "dev-view-state-test",
-            "task_id": "t_fullchain:17", "task_revision": 9,
+            "task_id": "t_suspect_missing_registration:17", "task_revision": 9,
         }, sort_keys=True, separators=(",", ":")).encode()
         sealed = b"ciphertext"
         envelope = {
@@ -484,8 +485,8 @@ class BusinessBridgeTests(unittest.TestCase):
         source = {
             "schema_version": 5, "event_id": event_id,
             "event_type": "online.task.view_state_changed", "domain": "online",
-            "aggregate_type": "task_view_state", "aggregate_id": "t_fullchain:17",
-            "task_id": "t_fullchain:17", "source_id": 17,
+            "aggregate_type": "task_view_state", "aggregate_id": "t_suspect_missing_registration:17",
+            "task_id": "t_suspect_missing_registration:17", "source_id": 17,
             "operation_id": operation_id, "aggregate_revision": 4,
             "occurred_at": "2026-11-05T00:00:00Z",
             "view_state": {"domain": "task_graph", "task_revision": 9, "removed": False},

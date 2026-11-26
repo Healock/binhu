@@ -99,7 +99,7 @@ def task_view_state_keys(
     if match is None or match.group(1) not in {
         "t_fullchain", "t_rental_check", "t_police_stats", "t_suspect_unrevoked",
         "t_suspect_return", "t_delivery_industry", "t_group_rental",
-        "t_suzhou_police", "t_traffic_police",
+        "t_suzhou_police", "t_traffic_police", "t_suspect_missing_registration",
     }:
         raise TaskCommandContractError("invalid task view state identity")
     if domain not in TASK_VIEW_STATE_DOMAINS:

@@ -168,7 +168,7 @@ def test_task_command_checks_revision_before_authorizing_and_mutating():
 
 @pytest.mark.parametrize("action,persisted_source", [
     ("delete", None),
-    ("archive", ("全链条", 17, 5, "archived")),
+    ("archive", ("疑似漏登记", 17, 5, "archived")),
 ])
 @pytest.mark.asyncio
 async def test_task_removal_emits_view_tombstones_at_command_revision(
@@ -185,11 +185,11 @@ async def test_task_removal_emits_view_tombstones_at_command_revision(
     monkeypatch.setattr(domain_events, "enqueue_task_view_state_event", event)
     cursor = AsyncMock()
     cursor.fetchone.side_effect = [
-        ("全链条", 17, 4, None, {}), persisted_source,
+        ("疑似漏登记", 17, 4, None, {}), persisted_source,
         *((7, "") for _ in TASK_VIEW_STATE_DOMAINS),
     ]
     spec = TaskCommandSpec(
-        actor_id=1, environment="staging", parser_type="全链条", task_id="t_fullchain:17",
+        actor_id=1, environment="staging", parser_type="疑似漏登记", task_id="t_suspect_missing_registration:17",
         source_id=7, action=action, event_type=f"online.task.{action}d",
         expected_revision=4, audiences=("authenticated",),
     )
@@ -206,7 +206,7 @@ async def test_task_removal_emits_view_tombstones_at_command_revision(
     for item in event.await_args_list:
         assert item.args == (cursor,)
         assert item.kwargs["outbox_table"] == "Staging_OnlineData._domain_event_outbox"
-        assert item.kwargs["source_id"] == 7 and item.kwargs["task_id"] == "t_fullchain:17"
+        assert item.kwargs["source_id"] == 7 and item.kwargs["task_id"] == "t_suspect_missing_registration:17"
         assert item.kwargs["domain_revision"] == 8 and item.kwargs["task_revision"] == 5
         assert item.kwargs["removed"] is True and item.kwargs["state"] == {}
 

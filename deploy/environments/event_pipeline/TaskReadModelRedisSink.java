@@ -31,7 +31,7 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
     private static final Set<String> SOURCE_TABLES = Set.of(
         "t_fullchain", "t_rental_check", "t_police_stats", "t_suspect_unrevoked",
         "t_suspect_return", "t_delivery_industry", "t_group_rental",
-        "t_suzhou_police", "t_traffic_police");
+        "t_suzhou_police", "t_traffic_police", "t_suspect_missing_registration");
     private static final Set<String> VIEW_DOMAINS = Set.of(
         "address_match", "watch", "qmf", "residence", "registration", "review", "task_graph");
     private static final Map<String, Set<String>> STATE_ENUMS = Map.of(
@@ -580,6 +580,9 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
                 fields = List.of("身份证号", "联系号码", "下发日期");
             }
             case "t_traffic_police" -> { parser = "交通涉警"; fields = List.of("身份证号", "联系号码", "下发日期"); }
+            case "t_suspect_missing_registration" -> {
+                parser = "疑似漏登记"; fields = List.of("身份证号", "下发日期");
+            }
             default -> throw new IllegalArgumentException("legacy task parser unavailable");
         }
         StringBuilder key = new StringBuilder();
