@@ -276,7 +276,7 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
         "read_only": True,
         "tmpfs": ["/tmp:rw,noexec,nosuid,size=8m"],
         "command": [
-            "/opt/flink/bin/flink", "run", "-m", "jobmanager:8081",
+            "/opt/flink/bin/flink", "run", "-d", "-m", "jobmanager:8081",
             "-c", "PipelineJob", "/opt/flink/usrlib/pipeline-job.jar", run_id,
         ],
         "depends_on": {

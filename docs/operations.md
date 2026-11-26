@@ -8,7 +8,7 @@ Staging 固定迁移入口必须绑定已完成 Staging `measure` 且仍与 Dev 
 
 `migrations.task_read_model_backfill` 按来源 ID 每页最多 250 条读取，再写命令与 Outbox；不能在同一游标执行写入后继续读取旧结果集。回填仅发出加密事件，不直接填充 Redis；`task_read_model_activation measure` 用于对账，`verify` 会修改 Redis readiness 标记，应按写操作执行。
 
-Production 的 `Deploy Production` 在应用切换前，使用本次已接受的 Staging backend 镜像和 Production Compose 配置执行 `migrations.task_command_read_model`。该步骤在八库备份完成后先核对运行环境和数据库身份，再执行 `measure → measure（apply 前复测并比较摘要）→ migrate --apply → verify`，范围固定为 `OnlineData` 与 `PlatformData`。目标身份不符、测量发生变化或验证未通过时，发布在替换应用文件和重启服务前停止；若后续应用启动失败，程序可回滚，已添加的兼容 schema 保留。此流程不迁移 `_task_view_state_revisions`，因为 Production 当前未启用指令核查 Redis 读模型。
+Production 的 `Deploy Production` 在应用切换前，使用本次已接受的 Staging backend 镜像和 Production Compose 配置执行 `migrations.task_command_read_model`。该步骤在八库备份完成后先核对运行环境和数据库身份，再执行 `measure → measure（apply 前复测并比较摘要）→ migrate --apply → verify`，范围固定为 `OnlineData` 与 `PlatformData`。目标身份不符、测量发生变化或验证未通过时，发布在替换应用文件和重启服务前停止；若后续应用启动失败，程序可回滚，已添加的兼容 schema 保留。候选包含 `migrations.task_view_state_revisions` 时，同一入口在 `OnlineData` 按相同的测量、复测、迁移和校验顺序准备 `_task_view_state_revisions`，并分别记录两项迁移证据。数据库准备完成后，Kafka/Flink 链路部署、历史回填和 Redis 对账仍须各自验证，最后才切换 Backend 读路径。
 
 Dev 沿用固定 worker 镜像时，运行时 dispatcher、业务桥、Outbox relay、事件合同和汇总合同必须由候选只读挂载并纳入 manifest 哈希。只替换 Flink JAR 或看到容器启动不代表新业务链路生效。实际验收须绑定合成任务的 command/event ID、Kafka offset、Flink checkpoint、Redis revision 和 API 读回结果，并覆盖删除、重复、乱序、故障 503 与恢复对账。
 

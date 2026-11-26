@@ -37,8 +37,9 @@ consumer group 与 sink；未登记、身份冲突或合同不完整时必须拒
 `binhu-production-task-read-model-v4` 转发到 Production Kafka，再由 Flink 写入现有 Backend Redis。
 Production 不启动第二个 MySQL Outbox relay，不带派生 MySQL/Redis；Kafka 使用单 broker，
 事件保留 7 天，全部容器内存硬限额合计不超过 5 GiB。Compose 会等待 JobManager REST 就绪后
-通过一次性 Flink CLI 服务提交固定 `PipelineJob`。接入发布入口时还必须检查提交服务退出状态并
-核验实际 JobGraph；当前 Production 发布入口尚未接入此模型。
+通过一次性 Flink CLI 服务以 detached 模式提交固定 `PipelineJob`，提交完成后作业继续由 Flink 运行。
+接入发布入口时必须检查提交服务退出状态，并另外核验作业处于 `RUNNING`、JobGraph 包含 Redis sink
+以及 checkpoint 成功；当前 Production 发布入口尚未接入此模型。
 单 broker 不具备节点级高可用，
 必须在 Staging 验证和资源核算通过后再按维护流程部署。
 
