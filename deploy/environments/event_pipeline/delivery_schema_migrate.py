@@ -1,4 +1,4 @@
-"""Idempotently add Dev delivery claim indexes to an existing database."""
+"""Idempotently prepare delivery indexes and retained Dev projection schemas."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +7,37 @@ import os
 import aiomysql
 
 
+async def prepare_dev_projections(cur) -> None:
+    from .projection_definitions import PROJECTIONS, projection_schema_statements
+
+    await cur.execute("SELECT DATABASE(),environment,database_name FROM _pipeline_identity WHERE id=1")
+    if await cur.fetchone() != ("Dev_EventPipeline", "development", "Dev_EventPipeline"):
+        raise ValueError("dev_projection_database_identity_mismatch")
+    for statement in projection_schema_statements(if_not_exists=True):
+        await cur.execute(statement)
+    for item in PROJECTIONS:
+        columns = tuple(column.partition(" ")[0] for column in item.columns)
+        await cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=DATABASE() AND table_name=%s ORDER BY ordinal_position",
+            (item.name,),
+        )
+        if tuple(row[0] for row in await cur.fetchall()) != columns:
+            raise ValueError("dev_projection_columns_mismatch")
+        await cur.execute(
+            "SELECT column_name FROM information_schema.statistics "
+            "WHERE table_schema=DATABASE() AND table_name=%s AND index_name='PRIMARY' ORDER BY seq_in_index",
+            (item.name,),
+        )
+        if tuple(row[0] for row in await cur.fetchall()) != item.primary_key:
+            raise ValueError("dev_projection_primary_key_mismatch")
+
+
 async def main() -> None:
+    development = os.environ.get("APP_ENVIRONMENT") == "development"
+    if development and (os.environ.get("MYSQL_HOST"), os.environ.get("MYSQL_DATABASE"),
+                        os.environ.get("MYSQL_USER")) != ("dev-derived-mysql", "Dev_EventPipeline", "dev_pipeline"):
+        raise ValueError("dev_projection_database_identity_mismatch")
     conn = await aiomysql.connect(
         host=os.environ["MYSQL_HOST"], port=int(os.environ.get("MYSQL_PORT", "3306")),
         user=os.environ["MYSQL_USER"], password=os.environ["MYSQL_PASSWORD"],
@@ -15,6 +45,9 @@ async def main() -> None:
     )
     try:
         async with conn.cursor() as cur:
+            if development:
+                await cur.execute("SET SESSION lock_wait_timeout=5")
+                await prepare_dev_projections(cur)
             await cur.execute(
                 "SELECT index_name FROM information_schema.statistics "
                 "WHERE table_schema=DATABASE() AND table_name='_kafka_event_delivery'"

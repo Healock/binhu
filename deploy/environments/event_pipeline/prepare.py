@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 
+from .projection_definitions import projection_schema_statements
 from .runtime import backend_relay_configuration, configuration
 from .services.kafka_delivery_store import SCHEMA_SQL
 from .flink_sql import render
@@ -21,6 +22,7 @@ PROJECT = "binhu-development-pipeline"
 # hashes instead of accidentally importing an older copy from that image.
 WORKER_CANDIDATE_MODULES = {
     "runtime.py": "runtime.py",
+    "projection_definitions.py": "projection_definitions.py",
     "identity.py": "identity.py",
     "domain_pipeline.py": "domain_pipeline.py",
     "schema_registry.py": "schema_registry.py",
@@ -35,12 +37,12 @@ WORKER_CANDIDATE_MODULES = {
     "online_summary_fact_relay.py": "services/online_summary_fact_relay.py",
 }
 COMMON_WORKER_MODULES = frozenset(WORKER_CANDIDATE_MODULES) - {
-    "business_bridge.py", "backend_outbox_relay.py",
+    "business_bridge.py", "backend_outbox_relay.py", "projection_definitions.py",
     "online_summary_event.py", "online_summary_fact_relay.py",
 }
 WORKER_SERVICE_MODULES = {
     name: COMMON_WORKER_MODULES | extra for name, extra in {
-        "relay": set(), "bridge": set(), "python-metadata-worker": set(),
+        "relay": {"projection_definitions.py"}, "bridge": set(), "python-metadata-worker": set(),
         "dual-track-monitor": set(), "acceptance-runner": set(),
         "business-bridge": {"business_bridge.py", "online_summary_event.py"},
         "backend-outbox-relay": {"backend_outbox_relay.py", "online_summary_fact_relay.py"},
@@ -448,6 +450,7 @@ CREATE TABLE dev_task_metadata_python_events (
  INDEX python_event_task (run_id,task_id,source_id,revision)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 """
+    sql += ";\n".join(projection_schema_statements()) + ";\n"
     services_root = Path(__file__).with_name("services")
     files = {
         "compose.json": json.dumps(spec, indent=2), "init.sql": sql,
