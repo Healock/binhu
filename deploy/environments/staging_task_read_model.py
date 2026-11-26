@@ -1,6 +1,7 @@
 """Prepare and switch the Staging application to a verified task projection."""
 from __future__ import annotations
 
+import copy
 import hmac
 import json
 from pathlib import Path
@@ -9,10 +10,10 @@ import subprocess
 import time
 
 from .artifact import file_hash, write_json
-from .event_pipeline import staging_control
+from .event_pipeline import staging_backend_network, staging_control
 from .runtime import root_for
 from .update import (
-    EVIDENCE_ROOT, backup_databases, parse_environment, read_configuration,
+    EVIDENCE_ROOT, backup_databases, check_resources, parse_environment, read_configuration,
     replace_file, wait_healthy,
 )
 
@@ -20,6 +21,8 @@ from .update import (
 RUN_RE = re.compile(r"STG-[0-9]{8}-[0-9]{2}")
 PIPELINE_STATE = Path("/var/lib/binhu-staging-event-pipeline")
 ACTIONS = frozenset({"backfill", "measure", "activate", "deactivate"})
+REDIS_CAPACITY_MIB = 512
+REDIS_CONTAINER_LIMIT_MIB = 1024
 
 
 def _run(args: list[str], timeout: int = 120) -> str:
@@ -91,6 +94,101 @@ def _evidence(application: dict, run_id: str, action: str) -> Path:
     return evidence
 
 
+def _redis_capacity_compose(compose: dict) -> dict | None:
+    redis = compose.get("services", {}).get("redis", {})
+    command = redis.get("command")
+    if (redis.get("labels", {}).get("binhu.environment") != "staging"
+            or redis.get("volumes") != ["redis:/data"] or redis.get("networks") != ["internal"]
+            or compose.get("volumes", {}).get("redis", {}).get("name") != "binhu-staging_redis"
+            or not isinstance(command, list) or not command or command[0] != "redis-server"
+            or command.count("--maxmemory") != 1
+            or command.count("--maxmemory-policy") != 1
+            or command.count("--appendonly") != 1
+            or command[command.index("--appendonly") + 1:][:1] != ["yes"]
+            or command[command.index("--maxmemory-policy") + 1:][:1] != ["noeviction"]):
+        raise ValueError("staging_task_redis_capacity_contract_invalid")
+    index = command.index("--maxmemory") + 1
+    current = (command[index:index + 1], redis.get("mem_limit"))
+    target = ([f"{REDIS_CAPACITY_MIB}mb"], f"{REDIS_CONTAINER_LIMIT_MIB}m")
+    if current == target:
+        return None
+    if current != (["96mb"], "192m"):
+        raise ValueError("staging_task_redis_capacity_unreviewed")
+    candidate = copy.deepcopy(compose)
+    updated = candidate["services"]["redis"]
+    updated["command"][index] = target[0][0]
+    updated["mem_limit"] = target[1]
+    return candidate
+
+
+def _verify_redis_capacity(backend: str, expected_mib: int) -> None:
+    probe = (
+        "import json; from config import settings; from redis import Redis; "
+        "assert settings.APP_ENVIRONMENT == 'staging'; "
+        "client = Redis.from_url(settings.REDIS_URL, socket_connect_timeout=3, socket_timeout=5); "
+        "memory = client.info('memory'); "
+        "print(json.dumps([memory['maxmemory'], memory['maxmemory_policy']]))"
+    )
+    for attempt in range(12):
+        try:
+            state = json.loads(_run(["docker", "exec", backend, "python", "-c", probe], timeout=10))
+            if state == [expected_mib * 1024 ** 2, "noeviction"]:
+                return
+        except (ValueError, subprocess.TimeoutExpired):
+            pass
+        if attempt < 11:
+            time.sleep(2)
+    raise ValueError("staging_task_redis_capacity_unverified")
+
+
+def _prepare_redis_capacity(root: Path, manifest: dict, compose: dict,
+                            evidence: Path, backend: str) -> dict:
+    candidate = _redis_capacity_compose(compose)
+    if candidate is None:
+        _verify_redis_capacity(backend, REDIS_CAPACITY_MIB)
+        return manifest
+    check_resources(root)
+    staging_backend_network.verify()
+    old_compose = evidence / "previous-compose.json"
+    old_manifest = evidence / "previous-redis-manifest.json"
+    old_compose.write_bytes((root / "compose.json").read_bytes())
+    old_manifest.write_bytes((root / "manifest.json").read_bytes())
+    new_compose = evidence / "redis-compose.json"
+    new_manifest = evidence / "redis-manifest.json"
+    write_json(new_compose, candidate)
+    updated = copy.deepcopy(manifest)
+    updated["hashes"]["compose.json"] = file_hash(new_compose)
+    write_json(new_manifest, updated)
+    docker = ["docker", "compose", "--project-directory", str(root)]
+    _run([*docker, "-f", str(new_compose), "config", "--quiet"])
+
+    def recreate_redis(capacity_mib: int) -> None:
+        _run([*docker, "-f", str(root / "compose.json"), "up", "-d", "--no-deps", "redis"])
+        _verify_redis_capacity(backend, capacity_mib)
+        wait_healthy("staging", manifest["version"])
+        staging_backend_network.apply()
+
+    try:
+        replace_file(new_compose, root / "compose.json")
+        replace_file(new_manifest, root / "manifest.json")
+        recreate_redis(REDIS_CAPACITY_MIB)
+    except Exception:
+        try:
+            replace_file(old_compose, root / "compose.json")
+            replace_file(old_manifest, root / "manifest.json")
+            recreate_redis(96)
+        except Exception:
+            write_json(evidence / "redis-capacity.json", {"rollback": "failed"})
+            raise ValueError("staging_task_redis_capacity_restore_failed") from None
+        write_json(evidence / "redis-capacity.json", {"rollback": "healthy"})
+        raise ValueError("staging_task_redis_capacity_failed") from None
+    write_json(evidence / "redis-capacity.json", {
+        "redis_capacity_mib": REDIS_CAPACITY_MIB,
+        "container_limit_mib": REDIS_CONTAINER_LIMIT_MIB,
+    })
+    return updated
+
+
 def _configure(root: Path, manifest: dict, env_text: str, run_id: str,
                enabled: bool, evidence: Path) -> None:
     values = parse_environment(env_text)
@@ -159,6 +257,7 @@ def run(application: dict, run_id: str, action: str) -> dict:
                 raise ValueError("staging_task_read_model_already_enabled")
             evidence = _evidence(application, run_id, action)
             backup_databases("staging", root, manifest, evidence)
+            manifest = _prepare_redis_capacity(root, manifest, compose, evidence, container)
             if selected != run_id:
                 _configure(root, manifest, env_text, run_id, False, evidence)
                 container = _backend_id(root, application["image_id"])
