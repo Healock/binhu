@@ -99,7 +99,7 @@ def task_view_state_keys(
     if match is None or match.group(1) not in {
         "t_fullchain", "t_rental_check", "t_police_stats", "t_suspect_unrevoked",
         "t_suspect_return", "t_delivery_industry", "t_group_rental",
-        "t_suzhou_police", "t_traffic_police",
+        "t_suzhou_police", "t_traffic_police", "t_suspect_missing_registration",
     }:
         raise TaskCommandContractError("invalid task view state identity")
     if domain not in TASK_VIEW_STATE_DOMAINS:
@@ -206,15 +206,12 @@ async def enqueue_source_task_view_state(
 ) -> str | None:
     """Allocate a domain revision and append its encrypted event in this DB transaction."""
     from config import settings
-    from services.domain_events import enqueue_task_view_state_event
 
     if type(source_id) is not int or source_id < 1 or domain not in TASK_VIEW_STATE_DOMAINS:
         raise TaskCommandContractError("invalid task view state source")
     if settings.APP_ENVIRONMENT not in {"development", "staging", "production"}:
         raise TaskCommandContractError("task view state pipeline is not enabled here")
-    online_db = str(settings.MYSQL_ONLINE_DATA_DB or "")
-    if not re.fullmatch(r"[A-Za-z0-9_]+", online_db):
-        raise TaskCommandContractError("task view state database identity invalid")
+    online_db = _online_database()
     online = f"`{online_db}`."
     await cur.execute(
         f"SELECT parser_type,physical_row,revision,row_hash,archived_at,row_key "
@@ -252,6 +249,30 @@ async def enqueue_source_task_view_state(
             }
             for item in await cur.fetchall()
         ]
+    return await _append_task_view_state(
+        cur, online_db=online_db, source_id=source_id, task_id=task_id,
+        task_revision=int(source[2]), domain=domain, state=state,
+        removed=removed, operation_id=operation_id,
+    )
+
+
+def _online_database() -> str:
+    from config import settings
+
+    database = str(settings.MYSQL_ONLINE_DATA_DB or "")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", database):
+        raise TaskCommandContractError("task view state database identity invalid")
+    return database
+
+
+async def _append_task_view_state(
+    cur, *, online_db: str, source_id: int, task_id: str, task_revision: int,
+    domain: str, state: dict[str, Any], removed: bool, operation_id: str | None,
+) -> str | None:
+    from config import settings
+    from services.domain_events import enqueue_task_view_state_event
+
+    online = f"`{online_db}`."
     await cur.execute(
         f"INSERT IGNORE INTO {online}`_task_view_state_revisions` "
         "(source_id,domain,domain_revision,task_revision) VALUES (%s,%s,0,0)",
@@ -263,7 +284,6 @@ async def enqueue_source_task_view_state(
         (source_id, domain),
     )
     previous = await cur.fetchone()
-    task_revision = int(source[2])
     fingerprint = hmac.new(
         _key(),
         canonical_json({
@@ -290,6 +310,22 @@ async def enqueue_source_task_view_state(
         operation_id=operation_id,
         outbox_table=f"{online_db}._domain_event_outbox",
     )
+
+
+async def enqueue_task_view_state_tombstones(
+    cur, *, source_id: int, task_id: str, task_revision: int,
+    operation_id: str | None,
+) -> None:
+    """Append removals using the identity locked and verified by the task command."""
+    if not task_view_state_events_enabled():
+        return
+    online_db = _online_database()
+    for domain in sorted(TASK_VIEW_STATE_DOMAINS):
+        await _append_task_view_state(
+            cur, online_db=online_db, source_id=source_id, task_id=task_id,
+            task_revision=task_revision, domain=domain, state={}, removed=True,
+            operation_id=operation_id,
+        )
 
 
 async def enqueue_online_task_graph_view_state(
@@ -352,7 +388,7 @@ async def enqueue_online_task_graph_view_state(
 
 
 async def enqueue_current_task_view_state_snapshot(
-    cur, *, source_id: int, snapshot: dict[str, Any], removed: bool = False,
+    cur, *, source_id: int, snapshot: dict[str, Any],
 ) -> None:
     """Append all current domain states alongside a task command event."""
     from config import settings
@@ -380,14 +416,6 @@ async def enqueue_current_task_view_state_snapshot(
     parser_type, physical_row, revision = str(source[0]), int(source[1]), int(source[2])
     row_key = str(source[5] or "")
     task_id = f"{get_parser(parser_type).table_name}:{physical_row}"
-    if removed:
-        for domain in TASK_VIEW_STATE_DOMAINS:
-            await enqueue_source_task_view_state(
-                cur, source_id=source_id, domain=domain, state={},
-                removed=True, include_archived=True,
-            )
-        return
-
     states: dict[str, dict[str, Any]] = {
         "address_match": {"status": "unmatched", "candidate": None, "candidates": []},
         "watch": {"status": "none", "first_dispatch_at": "", "watch_marks": []},

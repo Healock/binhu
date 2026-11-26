@@ -190,6 +190,8 @@ async def execute_task_command(
         ):
             raise TaskCommandContractError("task creation mutation was not persisted")
     elif spec.action in {"delete", "archive"}:
+        if task_id != spec.task_id or source_id != spec.source_id:
+            raise TaskCommandContractError("task archival mutation changed source identity")
         if persisted_source and (
             str(persisted_source[0] or "") != spec.parser_type
             or int(persisted_source[2] or 0) != outcome.revision
@@ -220,14 +222,20 @@ async def execute_task_command(
         operation_id=outcome.operation_id,
         authorization=authorization,
     )
-    from services.task_view_state import enqueue_current_task_view_state_snapshot
-
-    await enqueue_current_task_view_state_snapshot(
-        cur,
-        source_id=source_id,
-        snapshot=outcome.snapshot,
-        removed=spec.action in {"delete", "archive"},
+    from services.task_view_state import (
+        enqueue_current_task_view_state_snapshot,
+        enqueue_task_view_state_tombstones,
     )
+
+    if spec.action in {"delete", "archive"}:
+        await enqueue_task_view_state_tombstones(
+            cur, source_id=source_id, task_id=task_id, task_revision=outcome.revision,
+            operation_id=outcome.operation_id,
+        )
+    else:
+        await enqueue_current_task_view_state_snapshot(
+            cur, source_id=source_id, snapshot=outcome.snapshot,
+        )
     return outcome
 
 def normalize_action(value: str) -> str:

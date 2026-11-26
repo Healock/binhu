@@ -102,6 +102,7 @@ SOURCE_TABLE_NAMES = frozenset(
         "t_group_rental",
         "t_suzhou_police",
         "t_traffic_police",
+        "t_suspect_missing_registration",
     }
 )
 

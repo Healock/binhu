@@ -24,6 +24,7 @@ PARSER_TABLES = {
     "疑似未注销模型三": "t_suspect_unrevoked", "疑似返苏": "t_suspect_return",
     "寄递业": "t_delivery_industry", "群租房核查": "t_group_rental",
     "苏州涉警": "t_suzhou_police", "交通涉警": "t_traffic_police",
+    "疑似漏登记": "t_suspect_missing_registration",
 }
 EVENT_TYPES = {"online.task.changed": "task.saved", "online.task.created": "task.created",
                "online.task.deleted": "task.deleted",
