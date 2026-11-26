@@ -48,6 +48,7 @@ SAFE_FAILURE_CODES = frozenset({
     "staging_kafka_quorum_timeout", "staging_network_address_pool_exhausted",
     "staging_network_attachment_failed", "staging_network_conflict",
     "staging_network_firewall_failed", "staging_network_missing",
+    "staging_internal_network_identity_mismatch", "staging_internal_network_member_identity_mismatch",
     "staging_port_conflict", "staging_resource_exhausted",
     "staging_resource_limit_unsupported", "staging_service_health_timeout",
     "staging_service_missing", "staging_snapshot_id", "staging_volume_conflict",
@@ -58,7 +59,7 @@ SAFE_EXCEPTION_TYPES = frozenset({
     "TimeoutExpired", "CalledProcessError", "OSError", "KeyError", "TypeError",
 })
 KAFKA_QUORUM_TIMEOUT_SECONDS = 180
-DERIVED_MYSQL_HEALTH_TIMEOUT_SECONDS = 240
+DERIVED_MYSQL_HEALTH_TIMEOUT_SECONDS = 420
 
 
 def _failure_diagnostic(action: str, error: Exception) -> dict[str, str]:
@@ -256,8 +257,8 @@ def _backend_network(run_id: str) -> dict:
     return network
 
 
-def _ensure_internal_network(run_id: str) -> dict:
-    """Create the per-run internal network when Compose cannot bootstrap it."""
+def _ensure_internal_network(run_id: str, spec: dict) -> dict:
+    """Create the internal network or verify containers from a partial apply."""
     name = network_for(run_id)
     try:
         network = _docker_json(["docker", "network", "inspect", name])[0]
@@ -276,9 +277,30 @@ def _ensure_internal_network(run_id: str) -> dict:
             or network.get("Internal") is not True
             or labels.get("binhu.environment") != "staging"
             or labels.get("binhu.run_id") != run_id
-            or labels.get("binhu.production_data") != "false"
-            or containers):
-        raise ValueError("Staging internal network identity mismatch")
+            or labels.get("binhu.production_data") != "false"):
+        raise ValueError("staging_internal_network_identity_mismatch")
+
+    project = project_for(run_id)
+    allowed = {
+        _container(project, service): (service, definition["image"])
+        for service, definition in spec["services"].items()
+        if "internal" in definition.get("networks", ())
+    }
+    for container_id, endpoint in containers.items():
+        member_name = endpoint.get("Name")
+        if member_name not in allowed or not re.fullmatch(r"[0-9a-f]{64}", container_id):
+            raise ValueError("staging_internal_network_member_identity_mismatch")
+        service, image = allowed[member_name]
+        container = _docker_json(["docker", "inspect", container_id])[0]
+        member_labels = (container.get("Config") or {}).get("Labels") or {}
+        if (container.get("Id") != container_id or container.get("Name") != "/" + member_name
+                or container.get("Image") != image
+                or member_labels.get("binhu.environment") != "staging"
+                or member_labels.get("binhu.run_id") != run_id
+                or member_labels.get("binhu.production_data") != "false"
+                or member_labels.get("com.docker.compose.project") != project
+                or member_labels.get("com.docker.compose.service") != service):
+            raise ValueError("staging_internal_network_member_identity_mismatch")
     return network
 
 
@@ -579,14 +601,14 @@ def _flink(root: Path, manifest: dict, evidence: Path) -> dict[str, Any]:
 
 def apply(run_id: str) -> dict[str, Any]:
     report = measure(run_id)
-    root, manifest, _ = _load(run_id)
+    root, manifest, spec = _load(run_id)
     evidence_root = root / "evidence"
     evidence_root.mkdir(mode=0o700, exist_ok=True)
     evidence = Path(tempfile.mkdtemp(prefix="apply-", dir=evidence_root))
     started = time.monotonic()
     phase = "compose_brokers"
     try:
-        _ensure_internal_network(run_id)
+        _ensure_internal_network(run_id, spec)
         _compose(root, "up", "-d", *BROKERS)
         phase = "wait_for_kafka_quorum"
         quorum = _wait_for_kafka_quorum(manifest["project"], evidence=evidence)

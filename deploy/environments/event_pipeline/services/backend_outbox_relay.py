@@ -9,6 +9,13 @@ from typing import Any
 OUTBOX = "_domain_event_outbox"
 LEASE_SECONDS = 120
 BATCH_SIZE = 100
+RECOVERY_BATCH_SIZE = 10
+CLAIM_COLUMNS = (
+    "event_id,schema_version,domain,event_type,aggregate_type,aggregate_id,"
+    "aggregate_revision,command_id,task_id,source_id,operation_id,changed_fields_json,payload_envelope_json,"
+    "audiences_json,status,attempt_count,available_at,locked_by,"
+    "locked_until,last_error_code,last_error_summary,occurred_at,published_at"
+)
 TRANSPORT_RETENTION_DAYS = 30
 TRANSPORT_CLEANUP_BATCH_SIZE = 200
 TRANSPORT_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
@@ -81,23 +88,24 @@ class BackendOutboxRelay:
             await conn.begin()
             try:
                 async with conn.cursor() as cur:
+                    # Reserve a bounded share for recovery so a long backfill
+                    # cannot starve expired leases or due retries. Each query
+                    # follows its index order and locks only its selected rows.
                     await cur.execute(
-                        f"SELECT event_id,schema_version,domain,event_type,aggregate_type,aggregate_id,"
-                        f"aggregate_revision,command_id,task_id,source_id,operation_id,changed_fields_json,payload_envelope_json,"
-                        f"audiences_json,status,attempt_count,available_at,locked_by,"
-                        f"locked_until,last_error_code,last_error_summary,occurred_at,published_at FROM `{OUTBOX}` "
-                        "WHERE status IN ('pending','retry') AND available_at<=UTC_TIMESTAMP() "
-                        "ORDER BY occurred_at,event_id LIMIT %s FOR UPDATE SKIP LOCKED", (BATCH_SIZE,))
-                    rows = await cur.fetchall()
-                    if not rows:
+                        f"SELECT {CLAIM_COLUMNS} FROM `{OUTBOX}` FORCE INDEX (idx_domain_event_lease) "
+                        "WHERE status='publishing' AND locked_until<UTC_TIMESTAMP() "
+                        "ORDER BY locked_until,status,event_id LIMIT %s FOR UPDATE SKIP LOCKED",
+                        (RECOVERY_BATCH_SIZE,),
+                    )
+                    rows = list(await cur.fetchall())
+                    for status, limit in (("retry", RECOVERY_BATCH_SIZE), ("pending", None)):
                         await cur.execute(
-                            f"SELECT event_id,schema_version,domain,event_type,aggregate_type,aggregate_id,"
-                            f"aggregate_revision,command_id,task_id,source_id,operation_id,changed_fields_json,payload_envelope_json,"
-                            f"audiences_json,status,attempt_count,available_at,locked_by,"
-                            f"locked_until,last_error_code,last_error_summary,occurred_at,published_at FROM `{OUTBOX}` "
-                            "WHERE status='publishing' AND locked_until<UTC_TIMESTAMP() "
-                            "ORDER BY occurred_at,event_id LIMIT %s FOR UPDATE SKIP LOCKED", (BATCH_SIZE,))
-                        rows = await cur.fetchall()
+                            f"SELECT {CLAIM_COLUMNS} FROM `{OUTBOX}` FORCE INDEX (idx_domain_event_pending) "
+                            "WHERE status=%s AND available_at<=UTC_TIMESTAMP() "
+                            "ORDER BY available_at,occurred_at,event_id LIMIT %s FOR UPDATE SKIP LOCKED",
+                            (status, limit if limit is not None else BATCH_SIZE - len(rows)),
+                        )
+                        rows.extend(await cur.fetchall())
                     if rows:
                         ids = [row[0] for row in rows]
                         marks = ",".join(["%s"] * len(ids))
