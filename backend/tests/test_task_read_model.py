@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+from unittest.mock import AsyncMock
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-application-key")
@@ -26,6 +27,7 @@ from services.task_read_model import (
     read_task_read_model_scan,
     read_task_read_model_scan_records,
     read_task_snapshot,
+    require_task_read_model_ready,
     search_token,
     task_read_model_keys,
 )
@@ -154,6 +156,24 @@ def test_unmigrated_mobile_read_paths_fail_closed_when_read_model_is_enabled(mon
         mobile_tasks._require_legacy_read_model_disabled()
     assert error.value.status_code == 503
     assert error.value.detail == {"error": "projection_pending"}
+
+
+@pytest.mark.asyncio
+async def test_read_model_expires_when_flink_stops_checkpointing():
+    _, _, prefix = task_read_model_keys("development", RUN_ID, TASK_ID)
+    redis_client = AsyncMock()
+    redis_client.mget.side_effect = [
+        [f"ready:{RUN_ID}", RUN_ID],
+        [f"ready:{RUN_ID}", None],
+        [f"ready:{RUN_ID}", "dev-old-run"],
+        [f"ready:{RUN_ID}", RUN_ID],
+    ]
+    await require_task_read_model_ready(redis_client, "development", RUN_ID)
+    for _ in range(2):
+        with pytest.raises(TaskCommandContractError, match="task read model is not ready"):
+            await require_task_read_model_ready(redis_client, "development", RUN_ID)
+    await require_task_read_model_ready(redis_client, "development", RUN_ID)
+    redis_client.mget.assert_awaited_with(f"{prefix}:state", f"{prefix}:flink-checkpoint")
 
 
 def test_read_model_requires_bound_encrypted_snapshot_and_registered_identity():

@@ -197,13 +197,15 @@ async def _check_generation() -> tuple[dict, redis.Redis, str]:
             if indexed_groups != expected_group_indexes.get(normalized_key, set()):
                 state_index_mismatches += 1
                 mismatches += 1
+        checkpoint_live = await client.get(f"{prefix}:flink-checkpoint") == run_id
         result = {
             "environment": environment,
             "run_id": run_id,
             "parsers": summaries,
             "mismatch_count": mismatches,
             "state_index_mismatch_count": state_index_mismatches,
-            "ready": mismatches == 0,
+            "flink_checkpoint_live": checkpoint_live,
+            "ready": mismatches == 0 and checkpoint_live,
         }
         return result, client, prefix
     except BaseException:

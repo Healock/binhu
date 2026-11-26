@@ -116,6 +116,7 @@ async def test_measure_compares_mysql_sources_with_redis_task_index(monkeypatch)
     mysql.cursor.return_value.__aenter__.return_value = cursor
     store = MagicMock()
     store.ping = AsyncMock()
+    store.get = AsyncMock(return_value=run_id)
     store.zrange = AsyncMock(return_value=[])
     store.aclose = AsyncMock()
     store.pipeline.return_value.execute = AsyncMock(return_value=[{}])
@@ -135,6 +136,7 @@ async def test_measure_compares_mysql_sources_with_redis_task_index(monkeypatch)
     report = await activation.run("measure")
 
     assert report["ready"] is False
+    assert report["flink_checkpoint_live"] is True
     assert report["parsers"] == [{
         "parser_type": "synthetic",
         "mysql_active_sources": 1,
