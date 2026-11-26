@@ -16,13 +16,13 @@ from .identity import topic_for, summary_topic_for
 # The deployed registry is Apicurio 2.x. Its Confluent-compatible API is
 # explicitly namespaced; 8081 belongs to neither this service nor this API.
 BASE = "http://schema-registry:8080/apis/ccompat/v7"
-SUBJECT = "dev.task.read-model.v4-value"
 
 
 def subject_for(environment: str, domain_id: str = "instruction_audit") -> str:
-    spec = domain_spec(domain_id)
-    topic = spec.topic(environment, "events")
-    return topic + "-value"
+    return domain_spec(domain_id).schema_subject(environment)
+
+
+SUBJECT = subject_for("development")
 
 
 def summary_subject_for(environment: str) -> str:

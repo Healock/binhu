@@ -91,7 +91,7 @@ def test_production_schema_registry_contract_is_task_only_and_environment_scoped
     assert contracts["instruction_audit"]["properties"]["run_id"]["pattern"] == (
         "^PRD-[A-Za-z0-9_-]{1,48}$"
     )
-    assert schema_registry.subject_for("production") == "production.task.read-model.v4-value"
+    assert schema_registry.subject_for("production") == "production.task.read-model.v4-value-v2"
     with pytest.raises(ValueError, match="unsupported schema subject"):
         schema_registry.request(
             "/subjects/production.online-summary.facts.v1-value/versions",
@@ -110,7 +110,7 @@ def test_production_schema_registry_contract_is_task_only_and_environment_scoped
     result = schema_registry.verify("production")
     assert result["verified"] is True
     assert set(result["subjects"]) == {"task"}
-    assert observed == ["production.task.read-model.v4-value"]
+    assert observed == ["production.task.read-model.v4-value-v2"]
 
 
 def test_production_bridge_uses_stable_consumer_group():
@@ -133,6 +133,8 @@ def test_production_compose_reuses_backend_redis_without_derived_datastores():
     assert spec["networks"]["backend"] == {"name": "binhu_default", "external": True}
     assert services["production-bridge"]["networks"] == ["internal", "backend"]
     assert services["production-bridge"]["env_file"] == ["bridge.env"]
+    for worker in ("production-bridge", "register-production-schema"):
+        assert services[worker]["volumes"] == ["./code:/opt/dev-pipeline/event_pipeline:ro"]
     assert services["taskmanager"]["networks"] == ["internal", "backend"]
     assert services["taskmanager"]["env_file"] == ["runtime.env"]
     assert services["jobmanager"]["networks"] == ["internal"]

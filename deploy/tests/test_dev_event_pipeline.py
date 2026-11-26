@@ -1446,6 +1446,29 @@ volumes:
         with self.assertRaises(ValueError):
             schema_registry.NoRedirect().redirect_request(None, None, 302, None, None, "https://external.invalid")
 
+    def test_task_schema_expansion_uses_new_subject_with_full_compatibility(self):
+        for environment, topic in (
+            ("development", "dev.task.read-model.v4"),
+            ("staging", "staging.task.read-model.v4"),
+            ("production", "production.task.read-model.v4"),
+        ):
+            with self.subTest(environment=environment):
+                subject = topic + "-value-v2"
+                pattern = schema_registry.schema(environment)["properties"]["task_id"]["pattern"]
+                self.assertRegex("t_fullchain:1", pattern)
+                self.assertRegex("t_suspect_missing_registration:1", pattern)
+                self.assertNotRegex("t_unregistered_task:1", pattern)
+                with patch.object(schema_registry, "request") as request, patch.object(
+                    schema_registry, "verify",
+                ):
+                    schema_registry.apply(environment)
+                request.assert_any_call(
+                    f"/config/{subject}", "PUT", {"compatibility": "FULL_TRANSITIVE"}, subject=subject,
+                )
+                self.assertNotIn(topic + "-value", {
+                    item.kwargs["subject"] for item in request.call_args_list
+                })
+
     def test_summary_topic_creation_is_fixed_and_replicated(self):
         from deploy.environments.event_pipeline.control import _ensure_summary_topics
         calls = []

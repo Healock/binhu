@@ -106,6 +106,9 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
         raise ValueError("Production task topic registry mismatch")
 
     common = _common(run_id)
+    # The immutable worker image supplies dependencies. Mount the accepted
+    # candidate modules so transport and schemas run the same code as Staging.
+    worker_code_mount = "./code:/opt/dev-pipeline/event_pipeline:ro"
     flink_properties = "\n".join([
         "jobmanager.rpc.address: jobmanager",
         "jobmanager.memory.process.size: 640m",
@@ -177,6 +180,7 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
             "image": images["worker"],
             "networks": ["internal", "backend"],
             "env_file": ["bridge.env"],
+            "volumes": [worker_code_mount],
             "mem_limit": "192m", "memswap_limit": "256m", "cpus": 0.25,
             "read_only": True,
             "tmpfs": ["/tmp:rw,noexec,nosuid,size=16m"],
@@ -210,6 +214,7 @@ def compose(images: dict[str, str], run_id: str) -> dict[str, Any]:
         **_common(run_id),
         "image": images["worker"], "profiles": ["bootstrap"],
         "networks": ["internal"],
+        "volumes": [worker_code_mount],
         "mem_limit": "128m", "memswap_limit": "192m", "cpus": 0.2,
         "read_only": True,
         "tmpfs": ["/tmp:rw,noexec,nosuid,size=8m"],

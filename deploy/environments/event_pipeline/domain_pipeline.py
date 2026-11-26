@@ -56,12 +56,19 @@ class DomainPipelineSpec:
     redis_read_model_identity: str | None = None
     readiness: tuple[str, ...] = ()
     schema_result_key: str | None = None
+    schema_subject_version: int = 1
 
     def topic(self, environment: str, role: str) -> str:
         matches = [item for item in self.topics if item.role == role]
         if len(matches) != 1:
             raise ValueError(f"domain topic role is not unique: {self.domain_id}:{role}")
         return matches[0].name(environment)
+
+    def schema_subject(self, environment: str) -> str:
+        subject = self.topic(environment, "events") + "-value"
+        if self.schema_subject_version == 1:
+            return subject
+        return f"{subject}-v{self.schema_subject_version}"
 
 
 TASK_READ_MODEL = DomainPipelineSpec(
@@ -109,6 +116,9 @@ TASK_READ_MODEL = DomainPipelineSpec(
     redis_read_model_identity="backend",
     readiness=("kafka", "flink_job", "consumer_groups", "redis_identity", "read_model_watermark"),
     schema_result_key="task",
+    # The expanded task identity pattern is rejected by FULL_TRANSITIVE
+    # against the original subject. Version the schema independently of Kafka.
+    schema_subject_version=2,
 )
 
 ONLINE_SUMMARY_FACTS = DomainPipelineSpec(
@@ -150,6 +160,8 @@ def validate_registry(specs: Iterable[DomainPipelineSpec] = DOMAIN_PIPELINES) ->
         if not spec.schema_result_key or spec.schema_result_key in seen_schema_result_keys:
             raise ValueError("domain schema result keys must be unique and complete")
         seen_schema_result_keys.add(spec.schema_result_key)
+        if type(spec.schema_subject_version) is not int or spec.schema_subject_version < 1:
+            raise ValueError("domain schema subject version must be a positive integer")
         duplicate_roles = len({topic.role for topic in spec.topics}) != len(spec.topics)
         if duplicate_roles:
             raise ValueError(f"domain topic roles must be unique: {spec.domain_id}")
