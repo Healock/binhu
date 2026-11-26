@@ -25,7 +25,7 @@ EXPECTED_SINKS = BASE_PROJECTION_NAMES | frozenset(_DEFAULT_PLAN.flink_sinks)
 EXPECTED_SOURCES = frozenset(_DEFAULT_PLAN.flink_sources)
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
 DEV_TASK_READ_MODEL_RUN_RE = re.compile(r"^dev-[0-9]{8}-(?:taskreadmodel|prdprep)[0-9]{2}$")
-DEV_STALE_JOB_STATES = frozenset({"RUNNING", "RESTARTING"})
+DEV_STALE_JOB_STATES = frozenset({"RUNNING", "RESTARTING", "CANCELLING"})
 REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
 # Flink may accept the JAR before the JobGraph has finished planning and
 # reached RUNNING.  A reset connection is therefore reconciled for the full

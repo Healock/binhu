@@ -850,6 +850,18 @@ def _build_candidate_flink_jar(source: Path) -> dict[str, str]:
     }
 
 
+def _migrate_delivery_index(evidence: Path) -> None:
+    migration = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
+                                "run", "--rm", "--no-deps", "relay", "python", "-m",
+                                "event_pipeline.delivery_schema_migrate"],
+                               capture_output=True, text=True, timeout=90)
+    migration_path = evidence / "delivery-index-migration.log"
+    migration_path.write_text(migration.stdout + "\n" + migration.stderr)
+    migration_path.chmod(0o600)
+    if migration.returncode:
+        raise ValueError("Dev delivery index migration failed")
+
+
 def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     """Submit the current Dev JobGraph and fence its run identity."""
     identity = _validate_flink_sql(manifest)
@@ -869,12 +881,14 @@ def _submit_and_verify_flink(manifest: dict, evidence: Path) -> dict:
     stale_path.chmod(0o600)
     for item in stale:
         jid = str(item.get("jid", ""))
-        if jid:
+        if jid and item.get("state") != "CANCELLING":
             client.cancel(jid)
     if stale:
         flink_submission.wait_for_stale_clear(client, manifest["run_id"])
     if len(current) not in (0, 1):
         raise ValueError("Dev Flink current run has an incomplete job set")
+    # Drain the old JDBC job before opening the migration connection.
+    _migrate_delivery_index(evidence)
     if len(current) == 0:
         slot_readiness = flink_submission.wait_for_taskmanager_slots(client)
         readiness_path = evidence / "flink-taskmanager-readiness.json"
@@ -1026,15 +1040,6 @@ def apply():
     topics_path = evidence / "online-summary-topics.json"
     topics_path.write_text(json.dumps({"environment": "development", "topics": summary_topics}, indent=2) + "\n")
     topics_path.chmod(0o600)
-    migration = subprocess.run(["docker", "compose", "-f", str(ROOT / "compose.json"),
-                                "run", "--rm", "--no-deps", "relay", "python", "-m",
-                                "event_pipeline.delivery_schema_migrate"],
-                               capture_output=True, text=True, timeout=90)
-    migration_path = evidence / "delivery-index-migration.log"
-    migration_path.write_text(migration.stdout + "\n" + migration.stderr)
-    migration_path.chmod(0o600)
-    if migration.returncode:
-        raise ValueError("Dev delivery index migration failed")
     flink = _submit_and_verify_flink(manifest, evidence)
     return {**report, "startup_requested": True, "retired_comparison_services": retired_comparison,
             "flink": flink, "acceptance": "pending"}
