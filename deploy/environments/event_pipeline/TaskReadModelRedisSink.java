@@ -15,14 +15,16 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.types.Row;
 import redis.clients.jedis.JedisPooled;
 
 /** Writes encrypted task snapshots and HMAC-only indexes to isolated Redis. */
-public final class TaskReadModelRedisSink extends RichSinkFunction<Row> {
+public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implements CheckpointListener {
     private static final long serialVersionUID = 1L;
+    private static final long CHECKPOINT_LEASE_SECONDS = 45;
     private static final Set<String> CHANGED_FIELDS = Set.of(
         "address", "community", "inspector", "check_result", "task_state",
         "small_community", "person_tags", "task_graph", "online_summary");
@@ -487,6 +489,12 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> {
         if ("revision_conflict".equals(result)) {
             throw new IllegalStateException("task view-state revision conflict");
         }
+    }
+
+    @Override
+    public void notifyCheckpointComplete(long checkpointId) {
+        String key = "binhu:task-rm:v4:" + environment + ":" + runId + ":flink-checkpoint";
+        redis.setex(key, CHECKPOINT_LEASE_SECONDS, runId);
     }
 
     @Override

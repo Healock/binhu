@@ -1231,10 +1231,10 @@ async def task_read_model_watermark(redis_client, environment: str, run_id: str)
 
 
 async def require_task_read_model_ready(redis_client, environment: str, run_id: str) -> None:
-    """Fail closed unless this exact environment/run completed read-model verify."""
+    """Require both reconciliation and a recent Flink checkpoint for this run."""
     _task_key, _indexes_key, prefix = task_read_model_keys(environment, run_id, "t_fullchain:1")
-    state = await redis_client.get(f"{prefix}:state")
-    if state != f"ready:{run_id}":
+    state, checkpoint_run = await redis_client.mget(f"{prefix}:state", f"{prefix}:flink-checkpoint")
+    if state != f"ready:{run_id}" or checkpoint_run != run_id:
         raise TaskCommandContractError("task read model is not ready")
 
 
