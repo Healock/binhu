@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime
 from io import BytesIO
 from itertools import chain
@@ -29,10 +30,10 @@ PEACE_HEADERS = {
     "id": ("id",),
 }
 MANAGER_HEADERS = {
-    "zhUserIdCard": ("zhUserIdCard", "住户身份证号", "住户证件号码", "身份证号", "证件号码"),
-    "comparisonTime": ("comparisonTime", "比对时间"),
-    "gjUserName": ("gjUserName", "管家姓名", "管家名称"),
-    "population": ("population", "人员类型"),
+    "zhUserIdCard": ("zhUserIdCard", "住户身份证号", "住户证件号码", "住户身份证", "身份证号", "证件号码"),
+    "comparisonTime": ("comparisonTime", "比对时间", "采集时间"),
+    "gjUserName": ("gjUserName", "管家姓名", "管家名称", "采集管家"),
+    "population": ("population", "人员类型", "登记情况"),
     "pcsname": ("pcsname", "派出所名称", "所属派出所"),
     "jgmc": ("jgmc", "机构名称"),
     "updateDate": ("updateDate", "更新日期时间"),
@@ -41,14 +42,19 @@ MANAGER_HEADERS = {
 }
 SOURCE_LABELS = {"peace": "平安码", "manager": "管家码"}
 SOURCE_HEADERS = {"peace": PEACE_HEADERS, "manager": MANAGER_HEADERS}
-RECOMMENDED_HEADERS = {
-    "peace": "身份证号、比对时间、采集位置、人员类型及机构名称",
-    "manager": "住户身份证号、比对时间、管家姓名、人员类型及派出所名称",
+WORKBOOK_FORMAT_HINTS = {
+    "peace": (
+        "未识别到窗口登记数据。请上传带表头或保留原列顺序的无表头窗口登记原始 XLSX。"
+        "如使用自制表，请在首张工作表的第一个非空行填写身份证号、比对时间、采集位置、人员类型及机构名称。"
+    ),
+    "manager": (
+        "未识别到管家码登记数据。请上传管家码登记原始 XLSX，保留首行表头。"
+        "如使用自制表，请在首张工作表首行填写住户身份证号、比对时间、管家姓名、人员类型及派出所名称。"
+    ),
 }
-# For exports without a header, column G is the collection point, while
-# D is the residential address and N is the scan channel.
+# In the original window export, column G is the collection point and D
+# is the residential address. The scan channel and trailing columns are optional.
 PEACE_EXPORT_COLUMNS = {"idCard": 1, "location": 6, "jgmc": 7, "comparisonTime": 8, "population": 9}
-PEACE_EXPORT_WIDTH = 16
 
 
 def _read_time(value: object, row_number: int, label: str) -> datetime:
@@ -64,28 +70,36 @@ def _read_time(value: object, row_number: int, label: str) -> datetime:
         raise CodeSummaryError("invalid_time", f"第 {row_number} 行的{label}无效，请使用本地日期和时间") from None
 
 
-def _has_window_export_layout(cells) -> bool:
-    if not cells or any(cell.value not in (None, "") for cell in cells[PEACE_EXPORT_WIDTH:]):
-        return False
-    station, channel = cells[7].value, cells[13].value
-    return (
-        isinstance(station, str) and station.strip().endswith("派出所")
-        and isinstance(channel, str) and channel.strip().startswith(("微信", "支付宝"))
-    )
+def _has_window_station(cells) -> bool:
+    station = cells[PEACE_EXPORT_COLUMNS["jgmc"]].value
+    return isinstance(station, str) and station.strip().endswith("派出所")
 
 
-def _is_peace_window_export(cells) -> bool:
-    if not _has_window_export_layout(cells):
+def _is_peace_window_export(cells, row_number: int) -> bool:
+    if not cells or not _has_window_station(cells):
         return False
     identity = cells[PEACE_EXPORT_COLUMNS["idCard"]].value
-    return isinstance(identity, str) and re.fullmatch(r"[0-9]{17}[0-9Xx]", identity.strip()) is not None
+    if isinstance(identity, str) and re.fullmatch(r"[0-9]{17}[0-9X]", normalize_identity(identity)):
+        return True
+    # Station and collection time can identify the layout even when the
+    # first identity is invalid. The row will still be validated on import.
+    try:
+        _read_time(cells[PEACE_EXPORT_COLUMNS["comparisonTime"]].value, row_number, "采集时间")
+    except CodeSummaryError:
+        return False
+    return True
+
+
+def _header_key(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    return re.sub(r"[\s\u200b\ufeff]+", "", text)
 
 
 def _header_positions(source: str, header) -> dict[str, int]:
     aliases = {alias: field for field, names in SOURCE_HEADERS[source].items() for alias in names}
     positions = {}
     for index, cell in enumerate(header):
-        field = aliases.get(str(cell.value or "").strip())
+        field = aliases.get(_header_key(cell.value))
         if field is None:
             continue
         if field in positions:
@@ -93,39 +107,48 @@ def _header_positions(source: str, header) -> dict[str, int]:
         positions[field] = index
     meta = SOURCE_META[source]
     if not set(meta["required"]).issubset(positions) or not set(meta["station_fields"]).intersection(positions):
-        raise CodeSummaryError(
-            "missing_header", f"请在第一个工作表的首行填写{RECOMMENDED_HEADERS[source]}"
-        )
+        raise CodeSummaryError("missing_header", WORKBOOK_FORMAT_HINTS[source])
     return positions
 
 
 def _read_rows(source: str, sheet) -> list[dict]:
-    rows = sheet.iter_rows(max_col=100)
-    first_row = next(rows, ())
-    window_export = source == "peace" and _is_peace_window_export(first_row)
-    if window_export:
-        positions = PEACE_EXPORT_COLUMNS
-        data_rows = chain((first_row,), rows)
-        first_row_number = 1
-    else:
+    rows = enumerate(sheet.iter_rows(max_col=100), start=1)
+    first_row_number, first_row = next(rows, (1, ()))
+    while source == "peace" and first_row and all(cell.value in (None, "") for cell in first_row):
+        if first_row_number > MAX_ROWS:
+            raise CodeSummaryError("too_many_rows", "每份工作簿最多 10 万行，请按日期拆分")
+        first_row_number, first_row = next(rows, (first_row_number, ()))
+    try:
         positions = _header_positions(source, first_row)
+        window_export = False
         data_rows = rows
-        first_row_number = 2
+    except CodeSummaryError as error:
+        if (
+            error.code != "missing_header" or source != "peace"
+            or not _is_peace_window_export(first_row, first_row_number)
+        ):
+            raise
+        positions = PEACE_EXPORT_COLUMNS
+        window_export = True
+        data_rows = chain(((first_row_number, first_row),), rows)
 
     meta = SOURCE_META[source]
     result = []
-    for row_number, cells in enumerate(data_rows, start=first_row_number):
-        if row_number - first_row_number >= MAX_ROWS:
+    last_allowed_row = MAX_ROWS if window_export else MAX_ROWS + 1
+    for row_number, cells in data_rows:
+        if row_number > last_allowed_row:
             raise CodeSummaryError("too_many_rows", "每份工作簿最多 10 万行，请按日期拆分")
         if window_export:
             if all(cell.value in (None, "") for cell in cells):
                 continue
-            if not _has_window_export_layout(cells):
-                raise CodeSummaryError("invalid_export_layout", f"第 {row_number} 行不符合窗口登记原始导出的列顺序")
         elif all(cells[index].value in (None, "") for index in positions.values()):
             continue
         if any(cells[index].data_type == "f" for index in positions.values()):
             raise CodeSummaryError("formula_cell", f"第 {row_number} 行包含公式，请粘贴为值后重试")
+        if window_export and not _has_window_station(cells):
+            raise CodeSummaryError(
+                "invalid_export_layout", f"第 {row_number} 行的 H 列不是派出所名称，请检查窗口登记原始列顺序"
+            )
         row = {field: cells[index].value for field, index in positions.items()}
         identity = row[meta["identity"]]
         if not isinstance(identity, str) or not valid_identity(normalize_identity(identity)):

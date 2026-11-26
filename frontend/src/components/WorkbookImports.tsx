@@ -134,8 +134,8 @@ export function CodeSummaryWorkbookImport({ source }: { source: CodeSummarySourc
   const isPeace = source === 'peace'
   const title = isPeace ? '平安码' : '管家码'
   const format = isPeace
-    ? '可直接上传窗口登记原始导出 XLSX。自制表首行填写身份证号、比对时间、采集位置、人员类型和机构名称。'
-    : '上传明细 XLSX，首行填写住户身份证号、比对时间、管家姓名、人员类型和派出所名称。'
+    ? '可直接上传窗口登记原始 XLSX。无表头时请保留原列顺序。自制表在第一个非空行填写身份证号、比对时间、采集位置、人员类型和机构名称。'
+    : '可直接上传带原始表头的管家码登记 XLSX。自制表首行填写住户身份证号、比对时间、管家姓名、人员类型和派出所名称。'
   return <WorkbookImport
     title={title}
     description={`${format} 证件号码请使用文本格式，并上传所含日期的完整明细。`}

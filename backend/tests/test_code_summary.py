@@ -588,7 +588,8 @@ async def test_peace_file_import_appends_only_covered_days_and_audits_counts(mon
     assert file.file.closed
 
 
-def test_peace_window_export_accepts_original_headers():
+@pytest.mark.parametrize("with_blank_row", [False, True])
+def test_peace_window_export_accepts_original_headers(with_blank_row):
     from config import settings
 
     headers = [
@@ -602,21 +603,28 @@ def test_peace_window_export_accepts_original_headers():
         "滨湖所接警大厅", station, "2026-08-18 09:00:00", "流口未登记", "2026-08-18 10:00:00",
         None, None, "微信", "未核查", None, None,
     ]
-    assert read_code_summary_workbook("peace", code_workbook([row], headers)) == [{
+    if with_blank_row:
+        headers[1] = "\ufeff 身份证\u3000"
+        headers[6] = "采集\n窗口"
+        content = code_workbook([[None], headers, row], headers=None)
+    else:
+        content = code_workbook([row], headers)
+    assert read_code_summary_workbook("peace", content) == [{
         "idCard": row[1], "location": "滨湖所接警大厅", "jgmc": station,
         "comparisonTime": datetime(2026, 8, 18, 9), "population": "流口未登记",
         "updateDate": datetime(2026, 8, 18, 10),
     }]
 
 
-def test_peace_window_export_includes_first_row_and_only_import_fields():
+@pytest.mark.parametrize("source_channel", ["微信", "", "合成渠道"])
+def test_peace_window_export_includes_first_row_and_only_import_fields(source_channel):
     from config import settings
 
     station = settings.VISIT_SOURCE_POLICE_NAME
     raw_row = [
         "合成姓名", "000000200001010013", "合成联系方式", "合成居住地址", "", "",
         "滨湖所接警大厅", station, "2026-08-18 09:00:00", "流口未登记",
-        "", "", "合成标志", "微信", "未核查", "",
+        "", "", "合成标志", source_channel, "未核查", "合成备注", "2026-08-18 12:00:00",
     ]
     second = [*raw_row]
     second[2] = "合成联系方式二"
@@ -636,6 +644,9 @@ def test_peace_window_export_includes_first_row_and_only_import_fields():
 
     with pytest.raises(CodeSummaryError, match="第 1 行的比对时间"):
         read_code_summary_workbook("peace", code_workbook([[*raw_row[:8], "坏时间", *raw_row[9:]]], headers=None))
+    with pytest.raises(CodeSummaryError, match="第 2 行的身份证号无效"):
+        bad_identity = [raw_row[0], "不完整证件", *raw_row[2:]]
+        read_code_summary_workbook("peace", code_workbook([[None], bad_identity], headers=None))
     with pytest.raises(CodeSummaryError) as exc:
         read_code_summary_workbook("manager", content)
     assert exc.value.code == "missing_header"
@@ -645,8 +656,9 @@ def test_peace_window_export_includes_first_row_and_only_import_fields():
     assert exc.value.code == "invalid_export_layout"
 
 
+@pytest.mark.parametrize("original_export", [False, True], ids=["custom-headers", "original-export"])
 @pytest.mark.asyncio
-async def test_manager_file_import_uses_manager_aggregation_and_preserves_peace_versions():
+async def test_manager_file_import_uses_manager_aggregation_and_preserves_peace_versions(original_export):
     from config import settings
 
     station = settings.VISIT_SOURCE_POLICE_NAME
@@ -656,6 +668,19 @@ async def test_manager_file_import_uses_manager_aggregation_and_preserves_peace_
         ["000000200001010013", "2026-08-18 10:00:00", "合成管家乙", "流口未登记", station],
         ["000000200001010021", "2026-08-18 11:00:00", "合成管家乙", "流口已登记", station],
     ]
+    if original_export:
+        headers = [
+            "住户姓名", "住户联系方式", "住户身份证", "地址", "住户类型", "采集管家", "采集时间",
+            "注册单位", "所属派出所", "登记情况", "更新时间", "出租屋编号", "服务处所", "是否自主申报",
+        ]
+        rows = [
+            ["合成姓名", None, identity, "合成地址", "合成住户类型", manager, collected_at,
+             "合成注册单位", station, status, "2026-08-18 12:00:00", None, None, "否"]
+            for identity, collected_at, manager, status, station in rows
+        ]
+        with pytest.raises(CodeSummaryError) as exc:
+            read_code_summary_workbook("peace", code_workbook(rows, headers))
+        assert exc.value.code == "missing_header"
     conn = FakeConnection()
     day = date(2026, 8, 18)
     conn.versions["peace", day] = 3
