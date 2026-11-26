@@ -55,7 +55,7 @@ def validate_scale(value: Any) -> int:
     return value
 
 
-def fixture(run_id: str, index: int) -> dict[str, Any]:
+def fixture(run_id: str, index: int, encryption_key: bytes) -> dict[str, Any]:
     """Return one stable, schema-v4 metadata event from the reserved Dev range."""
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -77,8 +77,7 @@ def fixture(run_id: str, index: int) -> dict[str, Any]:
         "revision": revision,
         "task_id": task_id,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    key = hashlib.sha256(FIXTURE_NAMESPACE.bytes + run_id.encode("ascii")).digest()
-    ciphertext = AESGCM(key).encrypt(nonce, b"{}", aad)
+    ciphertext = AESGCM(encryption_key).encrypt(nonce, b"{}", aad)
     encode = lambda value: base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
     return {
         "schema_version": 4,
@@ -130,7 +129,7 @@ async def _pool(config: Mapping[str, str]):
         raise
 
 
-async def enqueue(pool, run_id: str, scale: int) -> int:
+async def enqueue(pool, run_id: str, scale: int, encryption_key: bytes) -> int:
     """Idempotently enqueue the cumulative controlled fixture set."""
     from .services.kafka_delivery_store import enqueue_delivery
 
@@ -142,7 +141,7 @@ async def enqueue(pool, run_id: str, scale: int) -> int:
                 await conn.begin()
                 async with conn.cursor() as cur:
                     for index in range(start, min(start + 250, scale)):
-                        await enqueue_delivery(cur, fixture(run_id, index), run_id=run_id)
+                        await enqueue_delivery(cur, fixture(run_id, index, encryption_key), run_id=run_id)
                         inserted += 1
                 await conn.commit()
             except BaseException:
@@ -272,10 +271,15 @@ async def run(scale: int) -> dict[str, Any]:
         config = configuration()
         if config["APP_ENVIRONMENT"] != "development":
             raise ValueError("Dev acceptance identity required")
+        secret = config["TASK_EVENT_ENCRYPTION_KEY"].encode("utf-8")
+        if len(secret) < 32:
+            raise ValueError("Dev task event key unavailable")
+        # The real Flink sink uses this same key derivation for task snapshots.
+        encryption_key = hashlib.sha256(b"binhu/task-event/aes-gcm/v1\0" + secret).digest()
         stage = "database_connect"
         pool = await _pool(config)
         stage = "enqueue"
-        await enqueue(pool, config["DEV_RUN_ID"], scale)
+        await enqueue(pool, config["DEV_RUN_ID"], scale, encryption_key)
         deadline = asyncio.get_running_loop().time() + TIMEOUTS[scale]
         while True:
             stage = "compare"
