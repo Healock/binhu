@@ -242,6 +242,26 @@ class StagingTaskReadModelTests(unittest.TestCase):
         override.start()
         self.addCleanup(override.stop)
 
+    def test_backfill_capacity_plan_changes_only_staging_redis_memory(self):
+        compose = {
+            "services": {"redis": {"labels": {"binhu.environment": "staging"},
+                                   "networks": ["internal"], "volumes": ["redis:/data"],
+                                   "mem_limit": "192m", "command": ["redis-server", "--maxmemory", "96mb",
+                                   "--maxmemory-policy", "noeviction", "--appendonly", "yes"]},
+                         "backend": {"image": "application"}},
+            "volumes": {"redis": {"name": "binhu-staging_redis"}},
+        }
+        candidate = read_model._redis_capacity_compose(compose)
+        self.assertEqual(candidate["services"]["redis"]["mem_limit"], "1024m")
+        self.assertEqual(candidate["services"]["redis"]["command"][2], "512mb")
+        self.assertEqual(candidate["services"]["backend"], compose["services"]["backend"])
+        self.assertEqual(candidate["volumes"], compose["volumes"])
+        self.assertEqual(compose["services"]["redis"]["command"][2], "96mb")
+        self.assertIsNone(read_model._redis_capacity_compose(candidate))
+        compose["volumes"]["redis"]["name"] = "foreign"
+        with self.assertRaisesRegex(ValueError, "staging_task_redis_capacity_contract_invalid"):
+            read_model._redis_capacity_compose(compose)
+
     def test_switch_refuses_configuration_from_a_different_candidate(self):
         candidate = {"artifact_id": "a" * 64, "commit": "b" * 40, "image_id": "sha256:" + "c" * 64}
         with tempfile.TemporaryDirectory() as directory:
