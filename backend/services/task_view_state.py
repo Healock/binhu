@@ -267,6 +267,7 @@ async def enqueue_source_task_view_state(
     fingerprint = hmac.new(
         _key(),
         canonical_json({
+            "run_id": settings.TASK_READ_MODEL_RUN_ID,
             "domain": domain, "task_revision": task_revision,
             "removed": removed, "state": state,
         }),
@@ -464,11 +465,11 @@ async def enqueue_current_task_view_state_snapshot(
             (parser_type, row_key),
         )
         row = await cur.fetchone()
-        qmf_state = str(row[0] or "not_scanned") if row else "not_scanned"
         if row:
-            from datetime import datetime, timedelta
+            from datetime import datetime
             from services.qmf_status import normalize_qmf_status_result
 
+            qmf_state = str(row[0] or "not_scanned")
             last_scanned = row[6]
             stale = (
                 normalize_qmf_status_result(row[1])
@@ -482,14 +483,15 @@ async def enqueue_current_task_view_state_snapshot(
                 qmf_state = "error"
             elif stale:
                 qmf_state = "stale"
-        states["qmf"] = ({
-            "state": qmf_state, "status": qmf_state,
-            "platform_result": str(row[1] or "") if row else "",
-            "result": str(row[2] or ""), "checked_at": str(row[3] or ""),
-            "origin": str(row[4] or "") if row else "",
-            "error_code": str(row[5] or "") if row else "",
-            "last_scanned_at": str(row[6] or "") if row else "",
-        })
+            states["qmf"] = {
+                "state": qmf_state, "status": qmf_state,
+                "platform_result": str(row[1] or ""),
+                "result": str(row[2] or ""), "checked_at": str(row[3] or ""),
+                "origin": str(row[4] or ""), "error_code": str(row[5] or ""),
+                "last_scanned_at": str(last_scanned or ""),
+            }
+        else:
+            states["qmf"] = {"state": "not_scanned", "status": "not_scanned"}
 
     if parser_type in TASK_WORKFLOWS:
         await cur.execute(

@@ -72,6 +72,8 @@ async def measure() -> dict:
 
 
 async def apply() -> dict:
+    from services.task_view_state import enqueue_current_task_view_state_snapshot
+
     baseline = await measure()
     environment, run_id = identity()
     conn = await _connect(autocommit=False)
@@ -108,12 +110,8 @@ async def apply() -> dict:
                             (command_id, event_id),
                         )
                         if await cur.fetchone():
+                            # The task and its view states committed together for this run.
                             skipped += 1
-                            from services.task_view_state import enqueue_current_task_view_state_snapshot
-
-                            await enqueue_current_task_view_state_snapshot(
-                                cur, source_id=source_id, snapshot={},
-                            )
                             continue
                         snapshot = values_json
                         if isinstance(snapshot, str):
@@ -142,8 +140,6 @@ async def apply() -> dict:
                             changed_fields=changed, encrypted_payload=envelope,
                             event_id=event_id,
                         )
-                        from services.task_view_state import enqueue_current_task_view_state_snapshot
-
                         await enqueue_current_task_view_state_snapshot(
                             cur, source_id=source_id, snapshot=snapshot,
                         )

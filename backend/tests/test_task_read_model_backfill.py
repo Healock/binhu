@@ -15,12 +15,12 @@ from services import task_view_state
 class Cursor:
     def __init__(self, count):
         self.rows = [
-            {"id": i, "physical_row": i, "revision": 1,
-             "values_json": {"result": "synthetic"}}
+            (i, i, 1, {"result": "synthetic"})
             for i in range(1, count + 1)
         ]
         self.result = []
         self.page_sizes = []
+        self.committed_commands = set()
 
     async def __aenter__(self):
         return self
@@ -33,8 +33,10 @@ class Cursor:
         if sql.startswith("SELECT id,physical_row"):
             assert "AND id>%s ORDER BY id LIMIT %s" in sql
             last, limit = args[-2:]
-            self.result = [row for row in self.rows if row["id"] > last][:limit]
+            self.result = [row for row in self.rows if row[0] > last][:limit]
             self.page_sizes.append(len(self.result))
+        elif sql.startswith("SELECT 1 FROM _task_command_records") and args[0] in self.committed_commands:
+            self.result = [(1,)]
 
     async def fetchall(self):
         rows, self.result = self.result, []
@@ -79,6 +81,7 @@ async def test_backfill_emits_all_pages_despite_interleaved_cursor_writes(monkey
     async def append(cur, **kwargs):
         await cur.execute("INSERT command")
         commands.append(kwargs["source_id"])
+        cur.committed_commands.add(kwargs["command_id"])
         return {"encrypted": True}
 
     async def enqueue(cur, **kwargs):
@@ -107,6 +110,11 @@ async def test_backfill_emits_all_pages_despite_interleaved_cursor_writes(monkey
     assert cursor.page_sizes == [250, 250, 1, 0]
     assert conn.closed
     assert conn.rollbacks == 0
+
+    retry = await backfill.apply()
+    assert retry["emitted"] == 0
+    assert retry["already_emitted"] == 501
+    assert len(commands) == len(events) == len(states) == 501
 
 
 @pytest.mark.asyncio

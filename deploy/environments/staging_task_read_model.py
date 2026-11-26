@@ -21,8 +21,8 @@ from .update import (
 RUN_RE = re.compile(r"STG-[0-9]{8}-[0-9]{2}")
 PIPELINE_STATE = Path("/var/lib/binhu-staging-event-pipeline")
 ACTIONS = frozenset({"backfill", "measure", "activate", "deactivate"})
-REDIS_CAPACITY_MIB = 512
-REDIS_CONTAINER_LIMIT_MIB = 1024
+REDIS_CAPACITY_MIB = 3072
+REDIS_CONTAINER_LIMIT_MIB = 6144
 
 
 def _run(args: list[str], timeout: int = 120) -> str:
@@ -77,8 +77,9 @@ def _backend_id(root: Path, image_id: str) -> str:
 
 
 def _read_model_command(container: str, run_id: str, module: str, action: str) -> dict:
+    timeout = 3600 if action == "apply" else 600
     result = json.loads(_run(["docker", "exec", "-e", f"TASK_READ_MODEL_RUN_ID={run_id}",
-                             container, "python", "-B", "-m", module, action], timeout=600))
+                             container, "python", "-B", "-m", module, action], timeout=timeout))
     if result.get("environment") != "staging" or result.get("run_id") != run_id:
         raise ValueError("staging_task_read_model_result_mismatch")
     return result
@@ -112,7 +113,7 @@ def _redis_capacity_compose(compose: dict) -> dict | None:
     target = ([f"{REDIS_CAPACITY_MIB}mb"], f"{REDIS_CONTAINER_LIMIT_MIB}m")
     if current == target:
         return None
-    if current != (["96mb"], "192m"):
+    if current not in ((["96mb"], "192m"), (["512mb"], "1024m")):
         raise ValueError("staging_task_redis_capacity_unreviewed")
     candidate = copy.deepcopy(compose)
     updated = candidate["services"]["redis"]
@@ -148,6 +149,11 @@ def _prepare_redis_capacity(root: Path, manifest: dict, compose: dict,
         _verify_redis_capacity(backend, REDIS_CAPACITY_MIB)
         return manifest
     check_resources(root)
+    memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+    if int(memory["MemAvailable"].split()[0]) < (REDIS_CONTAINER_LIMIT_MIB + 2048) * 1024:
+        raise ValueError("staging_task_redis_host_reserve_insufficient")
+    previous_command = compose["services"]["redis"]["command"]
+    previous_mib = int(previous_command[previous_command.index("--maxmemory") + 1].removesuffix("mb"))
     staging_backend_network.verify()
     old_compose = evidence / "previous-compose.json"
     old_manifest = evidence / "previous-redis-manifest.json"
@@ -176,7 +182,7 @@ def _prepare_redis_capacity(root: Path, manifest: dict, compose: dict,
         try:
             replace_file(old_compose, root / "compose.json")
             replace_file(old_manifest, root / "manifest.json")
-            recreate_redis(96)
+            recreate_redis(previous_mib)
         except Exception:
             write_json(evidence / "redis-capacity.json", {"rollback": "failed"})
             raise ValueError("staging_task_redis_capacity_restore_failed") from None

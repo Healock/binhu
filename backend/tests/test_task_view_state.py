@@ -1,5 +1,6 @@
 import os
 import uuid
+from unittest.mock import AsyncMock
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-application-key")
@@ -7,6 +8,7 @@ os.environ.setdefault("TASK_EVENT_ENCRYPTION_KEY", "test-only-task-event-key-not
 
 import pytest
 
+from services import task_view_state
 from services.task_commands import TaskCommandContractError
 from services.task_view_state import (
     apply_task_view_state_update,
@@ -175,3 +177,63 @@ async def test_bulk_task_view_state_read_rejects_uninitialized_domains():
             Redis(), environment="development", run_id="dev-task-view-test",
             tasks=[{"task_id": "t_fullchain:17", "revision": 9}],
         )
+
+
+@pytest.mark.asyncio
+async def test_model_three_without_scan_still_emits_all_view_states(monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "MYSQL_ONLINE_DATA_DB", "Staging_OnlineData")
+    monkeypatch.setattr(settings, "MYSQL_REGISTRY_DB", "Staging_RegistryData")
+    monkeypatch.setattr(task_view_state, "task_view_state_events_enabled", lambda: True)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(task_view_state, "enqueue_source_task_view_state", enqueue)
+    monkeypatch.setattr(task_view_state, "enqueue_online_task_graph_view_state", AsyncMock())
+    cursor = AsyncMock()
+    cursor.fetchone.side_effect = [
+        ("疑似未注销模型三", 17, 1, "hash", None, "synthetic"),
+        None,  # address match
+        None,  # QMF scan
+        None,  # Residence status
+        None,  # Registration link
+    ]
+    cursor.fetchall.return_value = []
+
+    await task_view_state.enqueue_current_task_view_state_snapshot(
+        cursor, source_id=1, snapshot={"核查结果": ""},
+    )
+
+    states = {call.kwargs["domain"]: call.kwargs["state"] for call in enqueue.await_args_list}
+    assert set(states) == set(task_view_state.TASK_VIEW_STATE_DOMAINS)
+    assert states["qmf"] == {"state": "not_scanned", "status": "not_scanned"}
+
+
+@pytest.mark.asyncio
+async def test_same_view_state_is_emitted_once_for_each_run(monkeypatch):
+    from config import settings
+    from services import domain_events
+
+    monkeypatch.setattr(settings, "APP_ENVIRONMENT", "staging")
+    monkeypatch.setattr(settings, "MYSQL_ONLINE_DATA_DB", "Staging_OnlineData")
+    monkeypatch.setattr(settings, "TASK_EVENT_ENCRYPTION_KEY", "synthetic-event-key-for-tests-123456")
+    enqueue = AsyncMock(return_value="event")
+    monkeypatch.setattr(domain_events, "enqueue_task_view_state_event", enqueue)
+    cursor = AsyncMock()
+    source = ("疑似未注销模型三", 17, 1, "hash", None, "synthetic")
+    previous = (0, "")
+    state = {"status": "not_scanned"}
+
+    for run_id in ("STG-20261126-03", "STG-20261126-04"):
+        monkeypatch.setattr(settings, "TASK_READ_MODEL_RUN_ID", run_id)
+        cursor.fetchone.side_effect = [source, previous]
+        assert await task_view_state.enqueue_source_task_view_state(
+            cursor, source_id=1, domain="qmf", state=state,
+        ) == "event"
+        revision, _, fingerprint, *_ = cursor.execute.await_args.args[1]
+        previous = (revision, fingerprint)
+        cursor.fetchone.side_effect = [source, previous]
+        assert await task_view_state.enqueue_source_task_view_state(
+            cursor, source_id=1, domain="qmf", state=state,
+        ) is None
+
+    assert [c.kwargs["domain_revision"] for c in enqueue.await_args_list] == [1, 2]
