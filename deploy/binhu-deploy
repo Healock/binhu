@@ -735,39 +735,70 @@ PY
 timing_database_backup=$(( $(date +%s) - database_backup_started ))
 log "database backup scope ${backup_scope} completed in ${timing_database_backup}s"
 
-run_task_command_read_model_migration() {
-  local phase="$1"
-  local command="$2"
-  shift
-  shift
-  local output="$release_dir/task-command-read-model-${phase}.json"
-  local error_output="$release_dir/task-command-read-model-${phase}.stderr"
-  local container_name="binhu-task-command-migration-${release_id}-${phase}"
+run_task_read_model_migration_phase() {
+  local module="$1" phase="$2" command="$3"
+  shift 3
+  local evidence_prefix="${module//_/-}"
+  local output="$release_dir/${evidence_prefix}-${phase}.json"
+  local error_output="$release_dir/${evidence_prefix}-${phase}.stderr"
+  local container_name="binhu-${evidence_prefix}-${release_id}-${phase}"
   "${candidate_compose[@]}" run --rm --no-deps --no-TTY --name "$container_name" \
-    backend python -m migrations.task_command_read_model "$@" \
-    >"$output" 2>"$error_output" || fail "task_command_read_model_${phase}_failed"
+    backend python -m "migrations.${module}" "$@" \
+    >"$output" 2>"$error_output" || fail "${module}_${phase}_failed"
   chmod 0600 "$output" "$error_output"
-  python3 - "$output" "$phase" "$command" <<'PY'
+  python3 - "$output" "$module" "$phase" "$command" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-phase = sys.argv[2]
-command = sys.argv[3]
-expected_apply = command == "migrate"
-expected_databases = {"OnlineData", "PlatformData"}
-databases = payload.get("databases")
-if (payload.get("command") != command
-        or payload.get("apply") is not expected_apply
-        or not isinstance(databases, list)
-        or {item.get("database") for item in databases if isinstance(item, dict)} != expected_databases
-        or len(databases) != len(expected_databases)
-        or any(not isinstance(item, dict) for item in databases)):
-    raise SystemExit("task_command_read_model_migration_evidence_invalid")
+filename, module, phase, command = sys.argv[1:]
+payload = json.loads(Path(filename).read_text(encoding="utf-8"))
+if payload.get("command") != command or payload.get("apply") is not (command == "migrate"):
+    raise SystemExit(f"{module}_migration_evidence_invalid")
+if module == "task_command_read_model":
+    databases = payload.get("databases")
+    valid_target = (isinstance(databases, list) and len(databases) == 2
+                    and all(isinstance(item, dict) for item in databases)
+                    and {item.get("database") for item in databases} == {"OnlineData", "PlatformData"})
+elif module == "task_view_state_revisions":
+    valid_target = payload.get("database") == "OnlineData"
+else:
+    valid_target = False
+if not valid_target:
+    raise SystemExit(f"{module}_migration_evidence_invalid")
 if phase in {"migrate", "verify"} and payload.get("consistent") is not True:
-    raise SystemExit("task_command_read_model_schema_inconsistent")
+    raise SystemExit(f"{module}_schema_inconsistent")
 PY
+}
+
+run_task_read_model_migration() {
+  local module="$1"
+  local evidence_prefix="${module//_/-}"
+  run_task_read_model_migration_phase "$module" measure measure measure
+  run_task_read_model_migration_phase "$module" pre_apply measure measure
+  local measured_hash
+  measured_hash="$(python3 - "$release_dir" "$evidence_prefix" "$module" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root, evidence_prefix, module = sys.argv[1:]
+def measurement_digest(phase):
+    path = Path(root) / f"{evidence_prefix}-{phase}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+measured = measurement_digest("measure")
+if measured != measurement_digest("pre_apply"):
+    raise SystemExit(f"{module}_measurement_changed")
+print(measured)
+PY
+)" || fail "${module}_measurement_changed"
+  run_task_read_model_migration_phase "$module" migrate migrate migrate --apply
+  run_task_read_model_migration_phase "$module" verify verify verify
+  log "${module} migration verified (measurement ${measured_hash})"
 }
 
 run_task_command_read_model_migration_if_required() {
@@ -805,35 +836,10 @@ PY
     || fail "task_command_read_model_target_identity_failed"
   chmod 0600 "$target_identity" "$release_dir/task-command-read-model-target.stderr"
 
-  run_task_command_read_model_migration measure measure measure
-  local measured_hash current_hash
-  measured_hash="$(python3 - "$release_dir/task-command-read-model-measure.json" <<'PY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-print(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
-PY
-)"
-  run_task_command_read_model_migration pre_apply measure measure
-  current_hash="$(python3 - "$release_dir/task-command-read-model-pre_apply.json" <<'PY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-print(hashlib.sha256(canonical.encode("utf-8")).hexdigest())
-PY
-)"
-  [[ "$current_hash" == "$measured_hash" ]] || fail "task_command_read_model_measurement_changed"
-  run_task_command_read_model_migration migrate migrate migrate --apply
-  run_task_command_read_model_migration verify verify verify
-  log "task command read model migration verified (measurement ${measured_hash})"
+  run_task_read_model_migration task_command_read_model
+  if [[ -f "$candidate_source/backend/migrations/task_view_state_revisions.py" ]]; then
+    run_task_read_model_migration task_view_state_revisions
+  fi
 }
 
 run_task_command_read_model_migration_if_required

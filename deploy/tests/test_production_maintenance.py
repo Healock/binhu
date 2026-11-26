@@ -64,19 +64,17 @@ class ProductionMaintenanceContractTests(unittest.TestCase):
         self.assertIn("--project-directory \"$candidate_source\"", deployer)
         self.assertIn("--env-file \"$project_dir/.env\"", deployer)
         self.assertIn("-f \"$candidate_source/docker-compose.yml\"", deployer)
-        self.assertIn('backend python -m migrations.task_command_read_model "$@"', deployer)
-        self.assertIn("run_task_command_read_model_migration measure measure", deployer)
-        self.assertIn("run_task_command_read_model_migration pre_apply measure", deployer)
-        self.assertIn(
-            "run_task_command_read_model_migration migrate migrate migrate --apply",
-            deployer,
-        )
-        self.assertIn("run_task_command_read_model_migration verify verify", deployer)
+        self.assertIn('backend python -m "migrations.${module}" "$@"', deployer)
+        command_migration = deployer.index("run_task_read_model_migration task_command_read_model")
+        state_migration = deployer.index("run_task_read_model_migration task_view_state_revisions")
+        self.assertLess(command_migration, state_migration)
+        self.assertLess(state_migration, migration_call)
+        self.assertIn('valid_target = payload.get("database") == "OnlineData"', deployer)
         self.assertIn('settings.APP_ENVIRONMENT == "production"', deployer)
         self.assertIn('settings.MYSQL_ONLINE_DATA_DB == "OnlineData"', deployer)
         self.assertIn('settings.MYSQL_PLATFORM_DB == "PlatformData"', deployer)
-        self.assertIn('"task_command_read_model_measurement_changed"', deployer)
-        self.assertIn('"task_command_read_model_schema_inconsistent"', deployer)
+        self.assertIn('raise SystemExit(f"{module}_measurement_changed")', deployer)
+        self.assertIn('raise SystemExit(f"{module}_schema_inconsistent")', deployer)
 
     def test_gateway_has_no_date_or_arbitrary_command_escape(self) -> None:
         gateway = (ROOT / "deploy/binhu-deploy-gateway").read_text(encoding="utf-8")

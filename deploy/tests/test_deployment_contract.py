@@ -189,10 +189,10 @@ class DeploymentContractTests(unittest.TestCase):
             script,
         )
         for invocation in (
-            "run_task_command_read_model_migration measure measure measure",
-            "run_task_command_read_model_migration pre_apply measure measure",
-            "run_task_command_read_model_migration migrate migrate migrate --apply",
-            "run_task_command_read_model_migration verify verify verify",
+            'run_task_read_model_migration_phase "$module" measure measure measure',
+            'run_task_read_model_migration_phase "$module" pre_apply measure measure',
+            'run_task_read_model_migration_phase "$module" migrate migrate migrate --apply',
+            'run_task_read_model_migration_phase "$module" verify verify verify',
         ):
             self.assertIn(invocation, script)
         self.assertIn("sync or backup task is active", script)

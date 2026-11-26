@@ -138,7 +138,7 @@ def test_production_compose_reuses_backend_redis_without_derived_datastores():
     assert services["jobmanager"]["networks"] == ["internal"]
     submitter = services["submit-production-flink-job"]
     assert submitter["command"] == [
-        "/opt/flink/bin/flink", "run", "-m", "jobmanager:8081",
+        "/opt/flink/bin/flink", "run", "-d", "-m", "jobmanager:8081",
         "-c", "PipelineJob", "/opt/flink/usrlib/pipeline-job.jar", RUN_ID,
     ]
     assert submitter["depends_on"]["jobmanager"]["condition"] == "service_healthy"
