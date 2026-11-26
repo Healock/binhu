@@ -208,7 +208,7 @@ def _validate_no_cross_environment(spec: dict) -> None:
 def _staging_backend_connector(name: str, labels: dict[str, Any]) -> bool:
     match = re.fullmatch(
         r"binhu-staging-event-pipeline-stg-(\d{8}-\d{2})-"
-        r"(business-bridge|backend-outbox-relay)-1",
+        r"(business-bridge|backend-outbox-relay|taskmanager)-1",
         name,
     )
     if match is None:
@@ -235,7 +235,7 @@ def _backend_network(run_id: str) -> dict:
     required = {"binhu-staging-environment-mysql-1", "binhu-staging-redis-1"}
     connector_name = re.compile(
         r"binhu-staging-event-pipeline-stg-[0-9]{8}-[0-9]{2}-"
-        r"(?:business-bridge|backend-outbox-relay)-1"
+        r"(?:business-bridge|backend-outbox-relay|taskmanager)-1"
     )
     allowed = required | {name for name in names if connector_name.fullmatch(name)}
     if not required <= names or not names <= allowed:

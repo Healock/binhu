@@ -7,7 +7,7 @@ on:
         description: Fixed gateway action
         required: true
         type: choice
-        options: [prepare, reconcile, measure, apply, accept, migrate]
+        options: [prepare, reconcile, measure, apply, accept, migrate, task-read-model]
       run_id:
         description: staging-app plus 16 lowercase hex characters
         required: true
@@ -29,6 +29,16 @@ on:
         required: false
         type: choice
         options: [measure, apply, verify]
+        default: measure
+      pipeline_run_id:
+        description: Applied Staging event pipeline run, used by task-read-model
+        required: false
+        type: string
+      read_model_phase:
+        description: Fixed Staging task read-model action
+        required: false
+        type: choice
+        options: [backfill, measure, activate, deactivate]
         default: measure
 
 permissions:
@@ -55,10 +65,13 @@ jobs:
           ARTIFACT_ID: ${{ inputs.artifact_id }}
           DEV_RUN: ${{ inputs.dev_acceptance_run_id }}
           MIGRATION_PHASE: ${{ inputs.migration_phase }}
+          PIPELINE_RUN: ${{ inputs.pipeline_run_id }}
+          READ_MODEL_PHASE: ${{ inputs.read_model_phase }}
         run: |
           set -euo pipefail
           case "$ACTION" in
             prepare) [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ && "$COMMIT" =~ ^[0-9a-f]{40}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]]; git fetch --no-tags origin main; test "$COMMIT" = "$(git rev-parse origin/main)" ;;
+            task-read-model) [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$PIPELINE_RUN" =~ ^STG-[0-9]{8}-[0-9]{2}$ && "$READ_MODEL_PHASE" =~ ^(backfill|measure|activate|deactivate)$ ]] ;;
             reconcile|measure|apply) [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ ]] ;;
             accept) [[ "$RUN_ID" =~ ^staging-app-[0-9a-f]{16}$ && "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$DEV_RUN" =~ ^dev-update-[0-9a-f]{16}$ ]] ;;
             migrate) [[ "$ARTIFACT_ID" =~ ^[0-9a-f]{64}$ && "$RUN_ID" =~ ^staging-migrate-[0-9a-f]{16}$ && "$MIGRATION_PHASE" =~ ^(measure|apply|verify)$ ]] ;;
@@ -115,15 +128,18 @@ jobs:
           ARTIFACT_ID: ${{ inputs.artifact_id }}
           DEV_RUN: ${{ inputs.dev_acceptance_run_id }}
           MIGRATION_PHASE: ${{ inputs.migration_phase }}
+          PIPELINE_RUN: ${{ inputs.pipeline_run_id }}
+          READ_MODEL_PHASE: ${{ inputs.read_model_phase }}
         run: |
           set -euo pipefail
           [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 ))
-          ssh_command=(ssh -p "$PORT" -i ~/.ssh/staging-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "binhu-staging-app-deploy@$HOST")
+          ssh_command=(ssh -p "$PORT" -i ~/.ssh/staging-app -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "binhu-staging-app-deploy@$HOST")
           case "$ACTION" in
             prepare)
               version="$(git show "${COMMIT}:VERSION" | tr -d '\r\n')"
               cat "$RUNNER_TEMP/artifact.tar.gz" | "${ssh_command[@]}" "prepare $RUN_ID $COMMIT $version $ARTIFACT_ID $DEV_RUN" ;;
             reconcile|measure|apply) "${ssh_command[@]}" "$ACTION $RUN_ID $ARTIFACT_ID" ;;
             accept) "${ssh_command[@]}" "accept $RUN_ID $ARTIFACT_ID $DEV_RUN" ;;
+            task-read-model) "${ssh_command[@]}" "task-read-model $RUN_ID $ARTIFACT_ID $PIPELINE_RUN $READ_MODEL_PHASE" ;;
             migrate) "${ssh_command[@]}" "migrate $RUN_ID $ARTIFACT_ID $MIGRATION_PHASE" ;;
           esac
