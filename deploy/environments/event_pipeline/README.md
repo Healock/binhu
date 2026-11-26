@@ -45,7 +45,8 @@ Production 不启动第二个 MySQL Outbox relay，不带派生 MySQL/Redis；Ka
 
 生产候选提供独立运行环境文件：bridge 仅有 Kafka/Redis 传输凭据，不持有任务解密密钥；
 Schema Registry 初始化容器只持有 Production 环境与运行编号；只有 Flink TaskManager 需要
-任务事件密钥与 Backend Redis 凭据。Kafka topics 和 Schema Registry 合同使用显式 bootstrap
+任务事件密钥与 Backend Redis 凭据。bridge 和 schema 初始化容器都以只读方式挂载候选
+`code/` 中经过校验的事件管道模块，沿用 Staging 的 worker 镜像依赖和候选代码分离方式。Kafka topics 和 Schema Registry 合同使用显式 bootstrap
 profile 初始化。部署前仍需把候选绑定到已通过 Staging 的相同不可变镜像和 JAR，并使用现有
 Production 部署/维护入口；该 Compose 模型本身尚未真实服务器验证或启用读路径。
 
@@ -183,7 +184,9 @@ revision 栅栏负责重放安全。桥断开时业务保存仍可成功，恢�
 投递台账、Schema Registry 接受合同、Flink 更新派生 revision、Redis/派生库
 读回一致，以及桥/relay 重启后的重复事件不产生第二个业务结果。
 
-Schema Registry 使用固定内部服务与 `dev.task.read-model.v4-value` subject。
+Schema Registry 使用固定内部服务。指令核查为新增的「疑似漏登记」任务标识使用
+`dev.task.read-model.v4-value-v2` subject，Staging 和 Production 使用同样的后缀。
+新旧 subject 各自保留 `FULL_TRANSITIVE`，Kafka topic、consumer group 和事件版本沿用原合同。
 已部署的实现为 Apicurio 2.x，兼容 API 固定在
 `http://schema-registry:8080/apis/ccompat/v7`，不能使用 Confluent 默认的 8081。
 长期实例必须使用 KafkaSQL 镜像，日志 topic 为 `dev.registry.storage.v1`，
