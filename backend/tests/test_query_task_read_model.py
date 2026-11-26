@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import types
+from unittest.mock import AsyncMock
 
 os.environ.setdefault("MYSQL_PASSWORD", "test-password")
 os.environ.setdefault("ENCRYPTION_KEY", "test-application-key")
@@ -63,8 +64,12 @@ class _Redis:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("environment", "run_id"), [
+    ("development", "dev-query-test"),
+    ("production", "PRD-query-test"),
+])
 async def test_management_query_pushes_allowlisted_filters_and_community_scope_to_redis(
-    monkeypatch,
+    monkeypatch, environment, run_id,
 ):
     parser = get_parser("全链条")
     def make_row(source_id, name, result):
@@ -94,8 +99,8 @@ async def test_management_query_pushes_allowlisted_filters_and_community_scope_t
     rows_by_id[f"{parser.table_name}:18"]["values"]["身份证号"] = "17"
     captured = {}
 
-    monkeypatch.setattr(query.settings, "APP_ENVIRONMENT", "development")
-    monkeypatch.setattr(query.settings, "TASK_READ_MODEL_RUN_ID", "dev-query-test")
+    monkeypatch.setattr(query.settings, "APP_ENVIRONMENT", environment)
+    monkeypatch.setattr(query.settings, "TASK_READ_MODEL_RUN_ID", run_id)
     monkeypatch.setattr(
         query.settings, "TASK_EVENT_ENCRYPTION_KEY", "x" * 32,
     )
@@ -109,6 +114,7 @@ async def test_management_query_pushes_allowlisted_filters_and_community_scope_t
         _client, _environment, _run_id, parser_type, filters,
         communities, search, offset, limit,
     ):
+        assert (_environment, _run_id) == (environment, run_id)
         captured.update({
             "parser_type": parser_type,
             "filters": filters, "communities": communities, "search": search,
@@ -203,6 +209,48 @@ async def test_management_query_pushes_allowlisted_filters_and_community_scope_t
     assert result["data"][0]["__source_count"] == 2
     assert result["data"][0]["__conflict"] is True
     assert result["data"][0]["__source_id"] == 17
+
+
+@pytest.mark.asyncio
+async def test_staging_delete_archives_in_the_configured_database(monkeypatch):
+    parser = get_parser("全链条")
+    values = {"身份证号": "STG-SYNTHETIC", "电话号码": "00000000000",
+              "下发日期": "2026-11-26", "社区": "合成社区"}
+    source = {"physical_row": 17, "revision": 2, "values": values}
+    writes = []
+
+    class Cursor(_Cursor):
+        rowcount = 1
+
+        async def execute(self, sql, params=None):
+            writes.append((sql, params))
+
+    conn = _Connection()
+    conn.cursor = Cursor
+    conn.begin, conn.commit, conn.rollback = AsyncMock(), AsyncMock(), AsyncMock()
+
+    async def run_command(cursor, *, spec, authorize, mutate):
+        await authorize(cursor, source)
+        result = await mutate(cursor, source)
+        assert spec.event_type == "online.task.deleted"
+        assert result.revision == 3
+
+    monkeypatch.setattr(query.settings, "APP_ENVIRONMENT", "staging")
+    monkeypatch.setattr(query.settings, "MYSQL_ARCHIVE_DB", "Staging_fixture_OnlineDataArchive")
+    monkeypatch.setattr(query, "local_data_source_enabled", lambda: True)
+    monkeypatch.setattr(query, "can_manage_rows", lambda _user: True)
+    monkeypatch.setattr(query, "_load_source_row", AsyncMock(return_value=source))
+    monkeypatch.setattr(query, "rebuild_projection_rows", AsyncMock())
+    monkeypatch.setattr(query, "record_admin_audit", AsyncMock())
+    monkeypatch.setattr(query, "request_audit_fields", lambda _request: {})
+    monkeypatch.setattr(query.TaskCommandService, "execute", run_command)
+
+    await query.delete_source_row("全链条", 31, None, 2, {"id": 8}, conn)
+
+    assert writes[0][0].startswith("INSERT INTO `Staging_fixture_OnlineDataArchive`.`t_fullchain_archive`")
+    assert writes[0][1] == (17,)
+    conn.commit.assert_awaited_once()
+    conn.rollback.assert_not_awaited()
 
 
 @pytest.mark.asyncio
