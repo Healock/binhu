@@ -381,6 +381,8 @@ class FlinkStateContractTests(unittest.TestCase):
         self.assertIn('"task.archived"', sink)
         self.assertIn('"t_suspect_unrevoked"', sink)
         self.assertIn('timestamp.matches(', sink)
+        self.assertIn("changedFieldsValue instanceof String[]", sink)
+        self.assertIn("!changedFields.add(value)", sink)
         self.assertNotIn("statementSet.addInsertSql(command);\n                    }\n                    table.executeSql(command)", source)
         self.assertIn("schema_version=4 OR schema_version=5 OR schema_version=6", source)
         self.assertIn("schemaVersion == 5", sink)

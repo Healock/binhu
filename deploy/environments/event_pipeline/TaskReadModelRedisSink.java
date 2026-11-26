@@ -300,12 +300,13 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> {
             || !uuid(eventId) || !uuid(commandId) || !uuid(operationId)) {
             throw new IllegalArgumentException("task read-model event contract invalid");
         }
-        if (!(changedFieldsValue instanceof List<?> changedFieldsList) || changedFieldsList.isEmpty()) {
+        // Flink Table ARRAY<STRING> is carried as String[] in an external Row.
+        if (!(changedFieldsValue instanceof String[] changedFieldsArray) || changedFieldsArray.length == 0) {
             throw new IllegalArgumentException("task read-model changed fields missing");
         }
         Set<String> changedFields = new HashSet<>();
-        for (Object value : changedFieldsList) {
-            if (!(value instanceof String) || !CHANGED_FIELDS.contains(value) || !changedFields.add((String) value)) {
+        for (String value : changedFieldsArray) {
+            if (value == null || !CHANGED_FIELDS.contains(value) || !changedFields.add(value)) {
                 throw new IllegalArgumentException("task read-model changed fields invalid");
             }
         }

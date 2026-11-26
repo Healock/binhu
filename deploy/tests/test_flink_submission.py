@@ -457,14 +457,15 @@ CREATE TABLE dev_online_source_projection (
         stale_monitor = job("dev-20260915-dualtrack-monitor")
         stale_task_run = job("dev-20261107-taskreadmodel14")
         restarting_task_run = job("dev-20261107-taskreadmodel13", state="RESTARTING")
+        rollout_trial = job("dev-20261126-prdprep01", state="RESTARTING")
         other_dev_job = job("dev-20260915-metadata08")
         active, stale = flink_submission.partition_active_jobs(
-            [current, stale_monitor, stale_task_run, restarting_task_run, other_dev_job], RUN_ID
+            [current, stale_monitor, stale_task_run, restarting_task_run, rollout_trial, other_dev_job], RUN_ID
         )
         self.assertEqual([item["jid"] for item in active], [current["jid"]])
         self.assertEqual(
-            [item["jid"] for item in stale],
-            [stale_monitor["jid"], stale_task_run["jid"], restarting_task_run["jid"]],
+            [item["name"] for item in stale],
+            [item["name"] for item in (stale_monitor, stale_task_run, restarting_task_run, rollout_trial)],
         )
 
         finished = job("dev-20260915-dualtrack-monitor")
