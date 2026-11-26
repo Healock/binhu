@@ -252,12 +252,15 @@ class StagingTaskReadModelTests(unittest.TestCase):
             "volumes": {"redis": {"name": "binhu-staging_redis"}},
         }
         candidate = read_model._redis_capacity_compose(compose)
-        self.assertEqual(candidate["services"]["redis"]["mem_limit"], "1024m")
-        self.assertEqual(candidate["services"]["redis"]["command"][2], "512mb")
+        self.assertEqual(candidate["services"]["redis"]["mem_limit"], "6144m")
+        self.assertEqual(candidate["services"]["redis"]["command"][2], "3072mb")
         self.assertEqual(candidate["services"]["backend"], compose["services"]["backend"])
         self.assertEqual(candidate["volumes"], compose["volumes"])
         self.assertEqual(compose["services"]["redis"]["command"][2], "96mb")
         self.assertIsNone(read_model._redis_capacity_compose(candidate))
+        compose["services"]["redis"].update(mem_limit="1024m")
+        compose["services"]["redis"]["command"][2] = "512mb"
+        self.assertEqual(read_model._redis_capacity_compose(compose), candidate)
         compose["volumes"]["redis"]["name"] = "foreign"
         with self.assertRaisesRegex(ValueError, "staging_task_redis_capacity_contract_invalid"):
             read_model._redis_capacity_compose(compose)
