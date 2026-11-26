@@ -2221,7 +2221,7 @@ async def _legacy_query(
     table = parser.table_name
     columns = parser.COLUMNS
     if source == "archive":
-        table = f"OnlineDataArchive.{table}_archive"
+        table = f"{quote_identifier(settings.MYSQL_ARCHIVE_DB)}.{quote_identifier(table + '_archive')}"
     column_map = await get_database_column_map(conn, table, parser)
 
     def database_column(column: str) -> str:
@@ -2647,7 +2647,7 @@ async def _task_read_model_query(
     sort_by: str | None, sort_order: str, filters: str | None,
     grid_filters: str | None, user: dict, conn,
 ) -> dict:
-    if settings.APP_ENVIRONMENT not in {"development", "staging"}:
+    if settings.APP_ENVIRONMENT not in {"development", "staging", "production"}:
         raise HTTPException(503, {"error": "projection_unavailable"})
     run_id = str(settings.TASK_READ_MODEL_RUN_ID or "").strip()
     secret = str(settings.TASK_EVENT_ENCRYPTION_KEY or "")
@@ -3561,9 +3561,13 @@ async def delete_source_row(
                     physical_row = int(current_source["physical_row"])
                     row_key = parser.make_row_key(current_source["values"])
                     archive_columns = ["_row_key", *parser.COLUMNS]
-                    quoted = ", ".join(f"`{column}`" for column in archive_columns)
+                    quoted = ", ".join(quote_identifier(column) for column in archive_columns)
+                    archive_table = (
+                        f"{quote_identifier(settings.MYSQL_ARCHIVE_DB)}."
+                        f"{quote_identifier(parser.table_name + '_archive')}"
+                    )
                     await command_cur.execute(
-                        f"INSERT INTO OnlineDataArchive.`{parser.table_name}_archive` ({quoted}) "
+                        f"INSERT INTO {archive_table} ({quoted}) "
                         f"SELECT {quoted} FROM `{parser.table_name}` WHERE id=%s",
                         (physical_row,),
                     )
