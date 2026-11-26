@@ -504,11 +504,13 @@ CREATE TABLE dev_online_source_projection (
             def overview(self):
                 self.calls += 1
                 if self.calls == 1:
-                    return [job("dev-20260915-dualtrack-monitor")]
+                    return [job("dev-20260915-dualtrack-monitor", state="CANCELLING")]
                 return []
 
+        client = Client()
         with patch.object(flink_submission.time, "sleep"):
-            flink_submission.wait_for_stale_clear(Client(), RUN_ID, timeout=2)
+            flink_submission.wait_for_stale_clear(client, RUN_ID, timeout=2)
+        self.assertEqual(client.calls, 2)
         with self.assertRaisesRegex(ValueError, "exactly one"):
             duplicate = job()
             flink_submission.validate_runtime([duplicate, duplicate], [f"{RUN_ID}-flink"], RUN_ID)
