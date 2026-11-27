@@ -409,6 +409,7 @@ savepoint 恢复；`recovery_mode=kafka_offsets` 时不传 savepoint，沿用同
 事件管道验收状态改成通过；恢复后仍须遵守原有验收流程。
 
 暂停和恢复按当前候选的 `pipeline.sql` 校验完整 JobGraph。需要重新提交时，现有入口从该运行的候选包提取 JAR，核对摘要后用于恢复。
+若 Flink 已取消作业但暂停命令未确认，只能用原运行号和暂停编号继续。入口须核对原作业确实已取消、没有活动作业，以及同一暂停目录下存在唯一可用的 savepoint 元数据。
 
 ### Workflow environment contract
 All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.

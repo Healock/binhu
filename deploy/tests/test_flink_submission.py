@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from deploy.environments.event_pipeline import flink_sql, flink_submission
@@ -477,6 +478,13 @@ CREATE TABLE dev_online_source_projection (
         finished_task_run = job("dev-20261107-taskreadmodel12", state="FINISHED")
         _, stale = flink_submission.partition_active_jobs([finished_task_run], RUN_ID)
         self.assertEqual(stale, [])
+
+        canceled_current = job(RUN_ID, state="CANCELED")
+        active, stale = flink_submission.partition_active_jobs([canceled_current, current], RUN_ID)
+        self.assertEqual(active, [current])
+        self.assertEqual(stale, [])
+        client = SimpleNamespace(overview=lambda: [canceled_current])
+        flink_submission.wait_for_job_absent(client, RUN_ID)
 
     def test_runtime_requires_one_matching_job_with_both_sinks_and_group(self):
         report = flink_submission.validate_runtime(

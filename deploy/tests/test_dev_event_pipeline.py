@@ -149,6 +149,48 @@ class FlinkStateContractTests(unittest.TestCase):
             saved = json.loads((root / pause_id / "pause.json").read_text(encoding="utf-8"))
             self.assertEqual(saved["recovery_mode"], "kafka_offsets")
 
+    def test_retry_pause_uses_same_canceled_job_and_retained_savepoint(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        pause_id = "dev-pause-20261114-memory03"
+        job_id = "a" * 32
+        location = control.flink_submission.savepoint_target(run_id, pause_id) + "/savepoint-abc123"
+        client = Mock()
+        client.overview.return_value = [{"jid": job_id, "name": run_id, "state": "CANCELED"}]
+        identity = {"environment": "development", "project": control.PROJECT,
+                    "run_id": run_id, "pause_id": pause_id}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pause-evidence"
+            evidence = root / pause_id
+            evidence.mkdir(parents=True)
+            started = {**identity, "phase": "savepoint", "job_id": job_id}
+            failed = {**identity, "phase": "job_stop"}
+            (evidence / "started.json").write_text(json.dumps(started), encoding="utf-8")
+            (evidence / "pause-failure.json").write_text(json.dumps(failed), encoding="utf-8")
+            metadata = SimpleNamespace(stdout=location.removeprefix("file://") + "/_metadata\n")
+            with patch.object(control, "PAUSE_EVIDENCE_ROOT", root), \
+                 patch.object(control, "measure", return_value={"run_id": run_id}), \
+                 patch.object(control, "_manifest", return_value={"run_id": run_id}), \
+                 patch.object(control.checkpoint, "measure", return_value={"ownership_verified": True}), \
+                 patch.object(control, "_active_flink_job", return_value=(client, None)), \
+                 patch.object(control, "_run_checked", return_value=metadata), \
+                 patch.object(control, "_compose_action") as compose_action, \
+                 patch.object(control, "_verify_retained_volumes"):
+                client.overview.return_value[0]["jid"] = "b" * 32
+                with self.assertRaisesRegex(ValueError, "Dev pause runtime state mismatch"):
+                    control.pause(run_id, pause_id)
+                compose_action.assert_not_called()
+                client.overview.return_value[0]["jid"] = job_id
+                result = control.pause(run_id, pause_id)
+                self.assertEqual(control._load_pause_evidence(pause_id, run_id)[1], result)
+
+            self.assertEqual(result["recovery_mode"], "savepoint")
+            self.assertEqual(result["savepoint"]["location"], location)
+            self.assertEqual(result["job_id"], job_id)
+            self.assertEqual(compose_action.call_count, 4)
+            self.assertEqual(json.loads((evidence / "pause-failure.json").read_text()), failed)
+            client.trigger_savepoint.assert_not_called()
+            client.cancel.assert_not_called()
+
     def test_dev_resume_without_savepoint_reuses_kafka_offsets(self):
         run_id = "dev-20261114-taskreadmodel10"
         pause_id = "dev-pause-20261114-memory04"

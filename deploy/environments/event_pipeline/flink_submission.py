@@ -25,6 +25,7 @@ EXPECTED_SINKS = BASE_PROJECTION_NAMES | frozenset(_DEFAULT_PLAN.flink_sinks)
 EXPECTED_SOURCES = frozenset(_DEFAULT_PLAN.flink_sources)
 DUAL_TRACK_PREFIX_RE = re.compile(r"dev-[0-9]{8}-dualtrack-monitor(?:[A-Za-z0-9_-]*)")
 DEV_TASK_READ_MODEL_RUN_RE = re.compile(r"^dev-[0-9]{8}-(?:taskreadmodel|prdprep)[0-9]{2}$")
+TERMINAL_JOB_STATES = frozenset({"CANCELED", "FAILED", "FINISHED"})
 DEV_STALE_JOB_STATES = frozenset({"RUNNING", "RESTARTING", "CANCELLING"})
 REST_TRANSIENT_CODES = frozenset({"flink_rest_transport_failed", "flink_rest_timeout"})
 # Flink may accept the JAR before the JobGraph has finished planning and
@@ -266,7 +267,8 @@ def partition_active_jobs(jobs: Iterable[dict[str, Any]], expected_run_id: str) 
     for item in jobs:
         name = str(item.get("name", ""))
         if name == expected_run_id:
-            current.append(item)
+            if item.get("state") not in TERMINAL_JOB_STATES:
+                current.append(item)
         elif environment == "development" and item.get("state") in DEV_STALE_JOB_STATES and (
             DUAL_TRACK_PREFIX_RE.search(name) or DEV_TASK_READ_MODEL_RUN_RE.fullmatch(name)
         ):

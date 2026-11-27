@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
@@ -387,9 +387,8 @@ def _manifest() -> dict:
 def _active_flink_job(run_id: str, manifest: dict) -> tuple[flink_submission.FlinkRest, str | None]:
     client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
     overview = flink_submission.wait_for_rest(client)
-    terminal_states = {"CANCELED", "FAILED", "FINISHED"}
-    current = [job for job in overview if job.get("name") == run_id]
-    active_current = [job for job in current if job.get("state") not in terminal_states]
+    terminal_states = flink_submission.TERMINAL_JOB_STATES
+    active_current, _ = flink_submission.partition_active_jobs(overview, run_id)
     other_active = [
         job for job in overview
         if job.get("state") not in terminal_states
@@ -399,7 +398,7 @@ def _active_flink_job(run_id: str, manifest: dict) -> tuple[flink_submission.Fli
         raise ValueError("Dev pause found conflicting Flink jobs")
     if not active_current:
         return client, None
-    if len(current) != 1 or active_current[0].get("state") != "RUNNING":
+    if active_current[0].get("state") != "RUNNING":
         raise ValueError("Dev pause requires one running Flink job")
     job_id = str(active_current[0].get("jid", ""))
     if not job_id:
@@ -513,6 +512,50 @@ def _pause_evidence_directory(pause_id: str) -> Path:
     return path
 
 
+def _recover_canceled_pause(client: flink_submission.FlinkRest, run_id: str, pause_id: str,
+                            evidence: Path) -> tuple[str, dict]:
+    """Finish the same pause after cancellation succeeded but confirmation failed."""
+    if (evidence.is_symlink() or not evidence.is_dir()
+            or (evidence / "pause.json").exists() or (evidence / "pause.json").is_symlink()):
+        raise ValueError("Dev pause evidence already exists")
+    records = []
+    for name in ("started.json", "pause-failure.json"):
+        path = evidence / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("Dev pause evidence identity mismatch")
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise ValueError("Dev pause evidence identity mismatch") from None
+        if (not isinstance(record, dict) or record.get("environment") != "development"
+                or record.get("project") != PROJECT or record.get("run_id") != run_id
+                or record.get("pause_id") != pause_id):
+            raise ValueError("Dev pause evidence identity mismatch")
+        records.append(record)
+    started, failed = records
+    job_id = started.get("job_id")
+    if (started.get("phase") != "savepoint" or failed.get("phase") != "job_stop"
+            or not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id)):
+        raise ValueError("Dev pause evidence identity mismatch")
+    jobs = client.overview()
+    if (any(job.get("state") not in flink_submission.TERMINAL_JOB_STATES for job in jobs)
+            or not any(job.get("jid") == job_id and job.get("name") == run_id
+                       and job.get("state") == "CANCELED" for job in jobs)):
+        raise ValueError("Dev pause runtime state mismatch")
+    target = flink_submission.savepoint_target(run_id, pause_id)
+    directory = urlsplit(target).path
+    metadata = _run_checked([
+        "docker", "exec", FLINK_JOBMANAGER, "find", directory, "-mindepth", "2",
+        "-maxdepth", "2", "-type", "f", "-name", "_metadata", "-size", "+0c",
+    ]).stdout.splitlines()
+    if len(metadata) != 1:
+        raise ValueError("Dev pause evidence identity mismatch")
+    location = flink_submission.validate_savepoint_location(
+        run_id, pause_id, "file://" + str(PurePosixPath(metadata[0]).parent),
+    )
+    return job_id, {"status": "COMPLETED", "location": location}
+
+
 def pause(run_id: str, pause_id: str) -> dict:
     """Save Flink state, stop only Dev event-pipeline services, and retain volumes."""
     if environment_for_run_id(run_id) != "development":
@@ -524,7 +567,12 @@ def pause(run_id: str, pause_id: str) -> dict:
     manifest = _manifest()
     if manifest.get("run_id") != run_id:
         raise ValueError("current Dev run is not active")
-    evidence = _pause_evidence_directory(pause_id)
+    evidence = PAUSE_EVIDENCE_ROOT / pause_id
+    if PAUSE_EVIDENCE_ROOT.is_symlink():
+        raise ValueError("Dev pause evidence identity mismatch")
+    recovering = evidence.exists() or evidence.is_symlink()
+    if not recovering:
+        evidence = _pause_evidence_directory(pause_id)
     phase = "preflight"
     workers_stopped = False
     try:
@@ -532,23 +580,28 @@ def pause(run_id: str, pause_id: str) -> dict:
         if not checkpoint_report.get("ownership_verified"):
             raise ValueError("Dev pause runtime state mismatch")
         client, job_id = _active_flink_job(run_id, manifest)
+        savepoint = None
+        if recovering:
+            if job_id is not None:
+                raise ValueError("Dev pause runtime state mismatch")
+            job_id, savepoint = _recover_canceled_pause(client, run_id, pause_id, evidence)
+        else:
+            _write_private_json(evidence / "started.json", {
+                "environment": "development", "project": PROJECT,
+                "run_id": run_id, "pause_id": pause_id,
+                "phase": "savepoint" if job_id else "no_active_job",
+                "job_id": job_id,
+            })
         recovery_mode = "savepoint" if job_id else "kafka_offsets"
-        location = flink_submission.savepoint_target(run_id, pause_id) if job_id else None
-        _write_private_json(evidence / "started.json", {
-            "environment": "development", "project": PROJECT,
-            "run_id": run_id, "pause_id": pause_id,
-            "phase": "savepoint" if job_id else "no_active_job",
-            "job_id": job_id,
-        })
 
         phase = "worker_stop"
         workers_stopped = True
         _compose_action(ROOT / "compose.json", "stop",
                         PIPELINE_WORKER_SERVICES + COMPARISON_SERVICES)
 
-        savepoint = None
-        if job_id:
+        if job_id and savepoint is None:
             phase = "savepoint"
+            location = flink_submission.savepoint_target(run_id, pause_id)
             trigger_id = client.trigger_savepoint(job_id, location)
             savepoint = flink_submission.wait_for_savepoint(client, job_id, trigger_id, location)
 
@@ -586,7 +639,8 @@ def pause(run_id: str, pause_id: str) -> dict:
                 restarted = True
             except Exception:
                 restarted = False
-        _write_private_json(evidence / "pause-failure.json", {
+        filename = f"pause-retry-failure-{time.time_ns()}.json" if recovering else "pause-failure.json"
+        _write_private_json(evidence / filename, {
             "environment": "development", "project": PROJECT,
             "run_id": run_id, "pause_id": pause_id,
             "phase": phase, "error_code": safe_control_failure_detail(error),
