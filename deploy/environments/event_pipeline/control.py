@@ -384,7 +384,7 @@ def _manifest() -> dict:
     return value
 
 
-def _active_flink_job(run_id: str) -> tuple[flink_submission.FlinkRest, str | None]:
+def _active_flink_job(run_id: str, manifest: dict) -> tuple[flink_submission.FlinkRest, str | None]:
     client = flink_submission.FlinkRest(FLINK_JOBMANAGER)
     overview = flink_submission.wait_for_rest(client)
     terminal_states = {"CANCELED", "FAILED", "FINISHED"}
@@ -406,7 +406,8 @@ def _active_flink_job(run_id: str) -> tuple[flink_submission.FlinkRest, str | No
         raise ValueError("Dev pause requires one running Flink job")
     details = client.details(job_id)
     try:
-        flink_submission.validate_job_graph(details, run_id, flink_submission.EXPECTED_SINKS)
+        identity = _validate_flink_sql(manifest)
+        flink_submission.validate_job_graph(details, run_id, identity["sinks"])
     except ValueError as exc:
         raise ValueError("Dev pause runtime state mismatch") from exc
     return client, job_id
@@ -530,7 +531,7 @@ def pause(run_id: str, pause_id: str) -> dict:
         checkpoint_report = checkpoint.measure()
         if not checkpoint_report.get("ownership_verified"):
             raise ValueError("Dev pause runtime state mismatch")
-        client, job_id = _active_flink_job(run_id)
+        client, job_id = _active_flink_job(run_id, manifest)
         recovery_mode = "savepoint" if job_id else "kafka_offsets"
         location = flink_submission.savepoint_target(run_id, pause_id) if job_id else None
         _write_private_json(evidence / "started.json", {
@@ -600,7 +601,7 @@ def pause(run_id: str, pause_id: str) -> dict:
         raise
 
 
-def resume(run_id: str, pause_id: str) -> dict:
+def resume(run_id: str, pause_id: str, candidate_jar: Path) -> dict:
     """Restart retained Dev resources using the recorded savepoint or Kafka offsets."""
     if environment_for_run_id(run_id) != "development":
         raise ValueError("Dev resume requires a paused run")
@@ -620,7 +621,7 @@ def resume(run_id: str, pause_id: str) -> dict:
         if measured.get("run_id") != run_id:
             raise ValueError("Dev resume runtime validation failed")
         _validate_flink_compose()
-        _validate_flink_sql(manifest)
+        identity = _validate_flink_sql(manifest)
         kafka_compose.measure()
         _verify_checkpoint_volume_exists()
         phase = "eventbus_start"
@@ -646,7 +647,8 @@ def resume(run_id: str, pause_id: str) -> dict:
         if other_active or len(current) > 1:
             raise ValueError("Dev resume runtime validation failed")
         if not current:
-            jar_id = client.upload_jar("/opt/flink/usrlib/dev-pipeline-job.jar")
+            _copy_flink_jar(candidate_jar)
+            jar_id = client.upload_jar(FLINK_CANDIDATE_JAR)
             if expected_location:
                 submitted_job_id = client.run_jar(
                     jar_id, run_id, savepoint_path=expected_location,
@@ -654,9 +656,8 @@ def resume(run_id: str, pause_id: str) -> dict:
             else:
                 submitted_job_id = client.run_jar(jar_id, run_id)
         verified = flink_submission.wait_for_runtime(
-            client, run_id, lambda: _consumer_groups(
-                DomainPipelineOrchestrator("development", run_id).plan().consumer_groups
-            ), expected_sinks=flink_submission.EXPECTED_SINKS,
+            client, run_id, lambda: _consumer_groups(identity["consumer_groups"]),
+            expected_sinks=identity["sinks"],
         )
         result = {
             "environment": "development", "project": PROJECT,
@@ -835,19 +836,25 @@ def _build_candidate_flink_jar(source: Path) -> dict[str, str]:
     if source.is_symlink() or not source.is_file() or source.name != "PipelineJob.java":
         raise ValueError("current Dev PipelineJob.java is missing")
     jar_source = source.parents[3] / "pipeline-job.jar"
-    if jar_source.is_symlink() or not jar_source.is_file():
-        raise ValueError("current Dev PipelineJob compilation failed")
-    _run_checked(["docker", "cp", str(jar_source), f"{FLINK_JOBMANAGER}:{FLINK_CANDIDATE_JAR}"])
-    digest = _run_checked([
-        "docker", "exec", FLINK_JOBMANAGER, "sha256sum", FLINK_CANDIDATE_JAR
-    ]).stdout.split(maxsplit=1)[0]
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError("current Dev PipelineJob compilation failed")
+    digest = _copy_flink_jar(jar_source)
     return {
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "jar_sha256": digest,
         "container_path": FLINK_CANDIDATE_JAR,
     }
+
+
+def _copy_flink_jar(jar_source: Path) -> str:
+    if jar_source.is_symlink() or not jar_source.is_file():
+        raise ValueError("current Dev PipelineJob compilation failed")
+    expected = hashlib.sha256(jar_source.read_bytes()).hexdigest()
+    _run_checked(["docker", "cp", str(jar_source), f"{FLINK_JOBMANAGER}:{FLINK_CANDIDATE_JAR}"])
+    digest = _run_checked([
+        "docker", "exec", FLINK_JOBMANAGER, "sha256sum", FLINK_CANDIDATE_JAR
+    ]).stdout.split(maxsplit=1)[0]
+    if digest != expected:
+        raise ValueError("current Dev PipelineJob compilation failed")
+    return digest
 
 
 def _migrate_delivery_index(evidence: Path) -> None:
@@ -1050,8 +1057,11 @@ if __name__ == "__main__":
     parser.add_argument("mode", choices=("measure", "apply", "pause", "resume"))
     parser.add_argument("run_id", nargs="?")
     parser.add_argument("pause_id", nargs="?")
+    parser.add_argument("--candidate-jar", type=Path)
     args = parser.parse_args()
     try:
+        if (args.mode == "resume") != (args.candidate_jar is not None):
+            raise ValueError("Dev resume requires the candidate Flink artifact")
         if args.mode in {"measure", "apply"} and (args.run_id or args.pause_id):
             raise ValueError("invalid Dev control arguments")
         if args.mode in {"pause", "resume"} and (not args.run_id or not args.pause_id):
@@ -1063,7 +1073,7 @@ if __name__ == "__main__":
         elif args.mode == "pause":
             result = pause(args.run_id, args.pause_id)
         else:
-            result = resume(args.run_id, args.pause_id)
+            result = resume(args.run_id, args.pause_id, args.candidate_jar)
         print(json.dumps(result, sort_keys=True))
     except Exception as error:
         print(json.dumps({
