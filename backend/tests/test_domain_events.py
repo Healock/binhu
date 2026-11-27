@@ -89,6 +89,7 @@ async def test_v6_task_tombstone_keeps_command_identity_without_payload():
 @pytest.mark.asyncio
 async def test_task_backfill_origin_survives_outbox_decoding(monkeypatch):
     from config import settings
+    from migrations.task_read_model_backfill import event_ids
     from services.task_commands import encrypt_task_snapshot
 
     class Cursor:
@@ -98,7 +99,7 @@ async def test_task_backfill_origin_survives_outbox_decoding(monkeypatch):
     monkeypatch.setattr(settings, "TASK_EVENT_ENCRYPTION_KEY", "a" * 32)
     cur = Cursor()
     run_id = "STG-20261127-03"
-    command_id, event_id, operation_id = (str(uuid.uuid4()) for _ in range(3))
+    command_id, operation_id, event_id = event_ids("staging", run_id, "全链条", 3, 9)
     task_id = "t_fullchain:3"
     envelope = encrypt_task_snapshot(
         {"synthetic": "task"}, environment="staging", task_id=task_id, revision=9,
