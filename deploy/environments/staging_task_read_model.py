@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import copy
 import hmac
 import json
+import math
 from pathlib import Path
 import re
 import signal
@@ -26,7 +27,8 @@ PIPELINE_STATE = Path("/var/lib/binhu-staging-event-pipeline")
 ACTIONS = frozenset({"backfill", "measure", "activate", "deactivate"})
 REDIS_CAPACITY_MIB = 3072
 REDIS_CONTAINER_LIMIT_MIB = 6144
-BACKFILL_TIMEOUT_SECONDS = 3600
+BACKFILL_TIMEOUT_SECONDS = 4 * 60 * 60
+BACKFILL_TERMINATE_GRACE_SECONDS = 15
 BACKFILL_LOCK_RETRY_DELAYS = (2, 5, 10)
 _MYSQL_LOCK_ERROR = re.compile(r"(?:aiomysql|pymysql)\.err\.OperationalError: \((1205|1213), .+\)")
 
@@ -234,18 +236,28 @@ def _quiesce_backfill_relays(relays: dict[str, str], evidence: Path):
 
 
 def _backfill(container: str, run_id: str, evidence: Path) -> dict:
-    command = ["docker", "exec", "-e", f"TASK_READ_MODEL_RUN_ID={run_id}", container,
-               "python", "-B", "-m", "migrations.task_read_model_backfill", "apply"]
     deadline = time.monotonic() + BACKFILL_TIMEOUT_SECONDS
     retries = []
     for attempt in range(1 + len(BACKFILL_LOCK_RETRY_DELAYS)):
         report = evidence / f"backfill-attempt-{attempt + 1:02d}.json"
+        remaining = max(1, math.ceil(deadline - time.monotonic()))
+        # Time out the migration in the container before timing out the Docker client.
+        # Killing only the CLI does not guarantee the running migration has stopped.
+        command = ["docker", "exec", "-e", f"TASK_READ_MODEL_RUN_ID={run_id}", container,
+                   "timeout", "--kill-after", str(BACKFILL_TERMINATE_GRACE_SECONDS), str(remaining),
+                   "python", "-B", "-m", "migrations.task_read_model_backfill", "apply"]
         try:
             result = subprocess.run(command, capture_output=True, text=True,
-                                    timeout=max(1, deadline - time.monotonic()))
+                                    timeout=remaining + BACKFILL_TERMINATE_GRACE_SECONDS + 15)
         except subprocess.TimeoutExpired:
+            write_json(report, {"lock_errors": retries, "result": "transport_timeout"})
+            raise ValueError("staging_task_backfill_transport_timeout") from None
+        if result.returncode == 124:
             write_json(report, {"lock_errors": retries, "result": "timeout"})
-            raise ValueError("staging_task_backfill_timeout") from None
+            raise ValueError("staging_task_backfill_timeout")
+        if result.returncode == 137:
+            write_json(report, {"lock_errors": retries, "result": "killed"})
+            raise ValueError("staging_task_backfill_process_killed")
         if result.returncode == 0:
             payload = json.loads(result.stdout)
             if payload.get("environment") != "staging" or payload.get("run_id") != run_id:

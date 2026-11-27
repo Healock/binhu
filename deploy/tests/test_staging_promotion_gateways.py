@@ -319,7 +319,10 @@ class StagingTaskReadModelTests(unittest.TestCase):
             evidence = Path(directory)
             self.assertEqual(read_model._backfill("backend", run, evidence), payload)
             self.assertEqual(execute.call_count, 2)
-            self.assertEqual(execute.call_args_list[0].args, execute.call_args_list[1].args)
+            first, second = (call.args[0] for call in execute.call_args_list)
+            self.assertEqual(first[:8], second[:8])
+            self.assertEqual(first[9:], second[9:])
+            self.assertLessEqual(int(second[8]), int(first[8]))
             sleep.assert_called_once_with(2)
             self.assertEqual(json.loads((evidence / "backfill-attempt-02.json").read_text()),
                              {"lock_errors": [1205], "result": "completed"})
@@ -345,6 +348,21 @@ class StagingTaskReadModelTests(unittest.TestCase):
             self.assertEqual(execute.call_count, 4)
             self.assertEqual(json.loads((evidence / "backfill-attempt-04.json").read_text()),
                              {"lock_errors": [1213, 1213, 1213, 1213], "result": "lock_retry_exhausted"})
+
+    def test_backfill_process_is_bounded_inside_the_backend_container(self):
+        run = "STG-20261127-03"
+        with (tempfile.TemporaryDirectory() as directory,
+              patch.object(read_model, "BACKFILL_TIMEOUT_SECONDS", 42),
+              patch.object(read_model.time, "monotonic", return_value=100),
+              patch.object(read_model.subprocess, "run", return_value=Mock(returncode=124)) as execute):
+            evidence = Path(directory)
+            with self.assertRaisesRegex(ValueError, "staging_task_backfill_timeout"):
+                read_model._backfill("backend", run, evidence)
+            command = execute.call_args.args[0]
+            self.assertEqual(command[4:10], ["backend", "timeout", "--kill-after", "15", "42", "python"])
+            self.assertEqual(execute.call_args.kwargs["timeout"], 72)
+            self.assertEqual(json.loads((evidence / "backfill-attempt-01.json").read_text()),
+                             {"lock_errors": [], "result": "timeout"})
 
     def test_backfill_restores_original_relays_on_interrupted_write(self):
         run_a, run_b = "STG-20261126-01", "STG-20261126-04"
