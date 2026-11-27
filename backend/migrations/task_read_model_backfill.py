@@ -138,7 +138,7 @@ async def apply() -> dict:
                             command_id=command_id,
                             task_id=task_id, source_id=source_id, operation_id=operation_id,
                             changed_fields=changed, encrypted_payload=envelope,
-                            event_id=event_id,
+                            event_id=event_id, backfill_run_id=run_id,
                         )
                         await enqueue_current_task_view_state_snapshot(
                             cur, source_id=source_id, snapshot=snapshot,

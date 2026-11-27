@@ -235,6 +235,7 @@ async def enqueue_event(
     encrypted_payload: dict[str, str] | None = None,
     event_id: str | None = None,
     occurred_at: datetime | None = None,
+    backfill_run_id: str | None = None,
 ) -> str:
     """Insert an outbox event in the caller's active transaction."""
     event_id = event_id or str(uuid.uuid4())
@@ -288,6 +289,17 @@ async def enqueue_event(
         )
     audiences_json = json.dumps(_safe_audiences(audiences), ensure_ascii=False, separators=(",", ":"))
     changed_fields_json = json.dumps(safe_changed_fields, separators=(",", ":"))
+    if backfill_run_id is not None:
+        from services.task_read_model import task_read_model_keys
+
+        if event_type != "online.task.created" or not has_task_identity or encrypted_payload is None:
+            raise ValueError("task backfill event identity invalid")
+        aad = encrypted_payload["aad"]
+        environment = json.loads(base64.urlsafe_b64decode(aad + "=" * (-len(aad) % 4)))["environment"]
+        task_read_model_keys(environment, backfill_run_id, task_id)
+        # Keep routing metadata through Outbox and Redis Stream transport.
+        # The bridge consumes this field before validating the Kafka envelope.
+        encrypted_payload = {**encrypted_payload, "backfill_run_id": backfill_run_id}
     payload_json = json.dumps(encrypted_payload, separators=(",", ":")) if encrypted_payload else None
     await cur.execute(
         f"""

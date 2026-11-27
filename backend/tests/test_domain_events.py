@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 import re
 import uuid
@@ -83,6 +84,38 @@ async def test_v6_task_tombstone_keeps_command_identity_without_payload():
     assert cur.params[1] == 6
     assert cur.params[7] == command_id
     assert cur.params[12] is None
+
+
+@pytest.mark.asyncio
+async def test_task_backfill_origin_survives_outbox_decoding(monkeypatch):
+    from config import settings
+    from services.task_commands import encrypt_task_snapshot
+
+    class Cursor:
+        async def execute(self, query, params):
+            self.params = params
+
+    monkeypatch.setattr(settings, "TASK_EVENT_ENCRYPTION_KEY", "a" * 32)
+    cur = Cursor()
+    run_id = "STG-20261127-03"
+    command_id, event_id, operation_id = (str(uuid.uuid4()) for _ in range(3))
+    task_id = "t_fullchain:3"
+    envelope = encrypt_task_snapshot(
+        {"synthetic": "task"}, environment="staging", task_id=task_id, revision=9,
+        event_id=event_id, command_id=command_id, row_group_token="a" * 64,
+    )
+    await enqueue_event(
+        cur, domain="online", event_type="online.task.created",
+        aggregate_type="online_task", aggregate_id=task_id,
+        aggregate_revision=9, audiences=["authenticated"], command_id=command_id,
+        task_id=task_id, source_id=3, operation_id=operation_id,
+        changed_fields=["task_state"], event_id=event_id, encrypted_payload=envelope,
+        backfill_run_id=run_id,
+    )
+    row = (*cur.params[:14], "pending", 0, None, None, None, "", "", None, None)
+
+    assert json.loads(cur.params[12]) == {**envelope, "backfill_run_id": run_id}
+    assert decode_event_row(row)["encrypted_payload"]["backfill_run_id"] == run_id
 
 
 def test_retry_backoff_is_bounded_without_jitter():
