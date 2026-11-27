@@ -40,6 +40,7 @@ SAFE_CHANGED_FIELDS = {
 TABLE_PARSERS = {table: parser for parser, table in PARSER_TABLES.items()}
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 PRODUCTION_TASK_CONSUMER_GROUP = "binhu-production-task-read-model-v4"
+TASK_BACKFILL_NAMESPACE = uuid.UUID("f1bc9131-5a69-4fb6-9bc4-822a37ad793f")
 
 
 def _source_id(parser_type: str, row_key: str) -> int:
@@ -110,7 +111,7 @@ def event_to_task_event(
             or type(schema_version) is not int or schema_version not in {3, 4, 6}):
         return None
     try:
-        uuid.UUID(event_id)
+        event_uuid = uuid.UUID(event_id)
     except (ValueError, AttributeError):
         return None
     if event.get("domain") != "online" or event.get("aggregate_type") != "online_task":
@@ -145,6 +146,18 @@ def event_to_task_event(
             "timestamp": _timestamp(event.get("occurred_at")),
             "environment": environment, "run_id": run_id}
     encrypted_payload = event.get("encrypted_payload")
+    has_backfill_origin = isinstance(encrypted_payload, dict) and "backfill_run_id" in encrypted_payload
+    # Only the backfill uses UUIDv5 for primary task events from the Backend.
+    # Untagged historical backfills must not be routed into a new generation.
+    if has_backfill_origin or event_uuid.version == 5:
+        if (not has_backfill_origin or event_type != "online.task.created"
+                or encrypted_payload["backfill_run_id"] != run_id):
+            return None
+        identity = f"event:{environment}:{run_id}:{TABLE_PARSERS[table]}:{source_id}:{revision}"
+        if event_uuid != uuid.uuid5(TASK_BACKFILL_NAMESPACE, identity):
+            return None
+        encrypted_payload = {key: value for key, value in encrypted_payload.items()
+                             if key != "backfill_run_id"}
     if event_type == "online.task.deleted":
         if encrypted_payload is not None:
             return None

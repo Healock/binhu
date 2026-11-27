@@ -179,7 +179,7 @@ def _safe_text(value: Any, limit: int) -> str:
 def _validate_task_envelope(
     envelope: dict[str, str], *, command_id: str, event_id: str,
     task_id: str, revision: int,
-) -> None:
+) -> str:
     try:
         encoded_ciphertext = str(envelope["ciphertext"])
         ciphertext = base64.urlsafe_b64decode(
@@ -216,6 +216,7 @@ def _validate_task_envelope(
         ))
     ):
         raise ValueError("encrypted task payload identity mismatch")
+    return aad["environment"]
 
 
 async def enqueue_event(
@@ -235,6 +236,7 @@ async def enqueue_event(
     encrypted_payload: dict[str, str] | None = None,
     event_id: str | None = None,
     occurred_at: datetime | None = None,
+    backfill_run_id: str | None = None,
 ) -> str:
     """Insert an outbox event in the caller's active transaction."""
     event_id = event_id or str(uuid.uuid4())
@@ -273,6 +275,7 @@ async def enqueue_event(
         raise ValueError("unsupported task event changed field")
     if has_task_identity and not safe_changed_fields:
         raise ValueError("task event changed fields are required")
+    payload_environment = None
     if encrypted_payload is not None:
         if not has_task_identity or encrypted_payload.get("algorithm") != "AES-256-GCM":
             raise ValueError("invalid encrypted task payload")
@@ -282,12 +285,22 @@ async def enqueue_event(
                 or not encrypted_payload.get("aad")
                 or not encrypted_payload.get("ciphertext_sha256")):
             raise ValueError("invalid encrypted task payload")
-        _validate_task_envelope(
+        payload_environment = _validate_task_envelope(
             encrypted_payload, command_id=str(command_id), event_id=event_id,
             task_id=str(task_id), revision=int(aggregate_revision),
         )
     audiences_json = json.dumps(_safe_audiences(audiences), ensure_ascii=False, separators=(",", ":"))
     changed_fields_json = json.dumps(safe_changed_fields, separators=(",", ":"))
+    if backfill_run_id is not None:
+        from services.task_read_model import task_read_model_keys
+
+        if (event_type != "online.task.created" or not has_task_identity or encrypted_payload is None
+                or uuid.UUID(event_id).version != 5):
+            raise ValueError("task backfill event identity invalid")
+        task_read_model_keys(payload_environment, backfill_run_id, task_id)
+        # Keep routing metadata through Outbox and Redis Stream transport.
+        # The bridge consumes this field before validating the Kafka envelope.
+        encrypted_payload = {**encrypted_payload, "backfill_run_id": backfill_run_id}
     payload_json = json.dumps(encrypted_payload, separators=(",", ":")) if encrypted_payload else None
     await cur.execute(
         f"""

@@ -85,6 +85,7 @@ async def test_backfill_emits_all_pages_despite_interleaved_cursor_writes(monkey
         return {"encrypted": True}
 
     async def enqueue(cur, **kwargs):
+        assert kwargs["backfill_run_id"] == "dev-synthetic"
         await cur.execute("INSERT outbox")
         events.append(kwargs["source_id"])
 

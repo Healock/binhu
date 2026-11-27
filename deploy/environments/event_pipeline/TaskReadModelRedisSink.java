@@ -97,7 +97,14 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
         local revision = tonumber(ARGV[1])
         if redis.call('HGET',KEYS[1],'event_id') == ARGV[2] then return 'duplicate' end
         if revision < old then return 'stale' end
-        if revision == old and old >= 0 then return 'revision_conflict' end
+        if revision == old and old >= 0 then
+          local stored = redis.call('HMGET',KEYS[1],'source_id','tombstone','row_group_token','snapshot_fingerprint')
+          if ARGV[4] == '0' and stored[1] == ARGV[14] and stored[2] == ARGV[4]
+              and stored[3] == ARGV[17] and ARGV[19] ~= '' and stored[4] == ARGV[19] then
+            return 'duplicate'
+          end
+          return 'revision_conflict'
+        end
         local prefix = ARGV[16]
         local old_group = redis.call('HGET',KEYS[1],'row_group_token') or ''
         local old_source_id = redis.call('HGET',KEYS[1],'source_id') or ''
@@ -192,7 +199,8 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
           'revision',ARGV[1],'event_id',ARGV[2],'command_id',ARGV[3],
           'source_id',ARGV[14],'tombstone',ARGV[4],
           'ciphertext',ARGV[7],'aad',ARGV[8],'nonce',ARGV[9],
-          'ciphertext_sha256',ARGV[10],'key_version',ARGV[11],'updated_at',ARGV[6])
+          'ciphertext_sha256',ARGV[10],'key_version',ARGV[11],'updated_at',ARGV[6],
+          'snapshot_fingerprint',ARGV[19])
         if ARGV[4] == '1' then
           redis.call('HSET',KEYS[1],'tombstone','1','ciphertext','','aad','','nonce','',
             'ciphertext_sha256','','key_version','','row_group_token','','community_token','')
@@ -212,7 +220,7 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
           redis.call('ZADD',members_key,0,source_member)
           redis.call('ZADD',prefix .. ':gidx:all',1,new_group)
           add_group_community(new_group,new_community,ARGV[5])
-          for i=19,#ARGV do
+          for i=20,#ARGV do
             local separator=string.find(ARGV[i],'|',1,true)
             local key=string.sub(ARGV[i],1,separator-1)
             redis.call('ZADD',key,revision,ARGV[5])
@@ -336,6 +344,7 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
         boolean deleted = "task.deleted".equals(eventType) || "task.archived".equals(eventType);
         String rowGroupToken = "";
         String communityToken = "";
+        String snapshotFingerprint = "";
         String ciphertext = "", aad = "", nonce = "", digest = "", keyVersion = "";
         Set<String> indexKeys = new HashSet<>();
         if (!deleted) {
@@ -379,7 +388,12 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(encryptionKey, "AES"),
                 new GCMParameterSpec(128, Base64.getUrlDecoder().decode(pad(nonce))));
             cipher.updateAAD(aadBytes);
-            JsonNode snapshot = mapper.readTree(cipher.doFinal(sealed));
+            byte[] plaintext = cipher.doFinal(sealed);
+            JsonNode snapshot = mapper.readTree(plaintext);
+            // The writer encrypts canonical JSON; nonce and event AAD vary across equivalent writes.
+            snapshotFingerprint = hex(hmac(indexKey, join(
+                ("task-snapshot-replay\0" + runId + "\0" + taskId + "\0").getBytes(StandardCharsets.UTF_8),
+                plaintext)));
             if (schemaVersion == 4) {
                 rowGroupToken = legacyRowGroupToken(taskIdentity[0], snapshot);
             }
@@ -409,6 +423,7 @@ public final class TaskReadModelRedisSink extends RichSinkFunction<Row> implemen
         args.add(prefix);
         args.add(rowGroupToken);
         args.add(deleted ? "" : communityToken);
+        args.add(snapshotFingerprint);
         indexKeys.stream().sorted().forEach(key -> args.add(key + "|"));
         Object result = redis.eval(APPLY, List.of(taskKey, indexesKey, watermarkKey), args);
         if ("revision_conflict".equals(result)) {

@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import unittest
+import uuid
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,7 +44,7 @@ from deploy.environments.event_pipeline.dual_track_monitor import (
     runtime_failure_detail,
     write_cycle,
 )
-from deploy.environments.event_pipeline.business_bridge import event_to_task_event
+from deploy.environments.event_pipeline.business_bridge import TASK_BACKFILL_NAMESPACE, event_to_task_event
 from deploy.environments.event_pipeline.verify import fixture, acceptance_event_ids
 from deploy.environments.event_pipeline.services.backend_outbox_relay import BackendOutboxRelay
 import hashlib
@@ -632,6 +633,40 @@ class BusinessBridgeTests(unittest.TestCase):
         self.assertEqual(converted["row_group_token"], token)
         self.assertEqual(converted["schema_version"], 6)
         self.assertEqual(validate_event(converted), converted)
+
+    def test_business_bridge_routes_backfill_only_to_its_original_run(self):
+        original_run = "STG-20261126-04"
+        next_run = "STG-20261127-03"
+        environment = "staging"
+        task = "t_fullchain:1"
+        command_id = str(uuid.uuid4())
+        event_id = str(uuid.uuid5(TASK_BACKFILL_NAMESPACE, f"event:{environment}:{original_run}:全链条:9:7"))
+        token = "a" * 64
+        aad = json.dumps({"command_id": command_id, "contract": "binhu.task-snapshot.v3",
+                          "environment": environment, "event_id": event_id,
+                          "revision": 7, "row_group_token": token, "task_id": task},
+                         sort_keys=True, separators=(",", ":")).encode()
+        ciphertext = b"opaque-ciphertext"
+        envelope = {"algorithm": "AES-256-GCM", "key_version": "task-event-v3",
+                    "nonce": "MDEyMzQ1Njc4OWFi", "ciphertext": "b3BhcXVlLWNpcGhlcnRleHQ",
+                    "aad": base64.urlsafe_b64encode(aad).decode().rstrip("="),
+                    "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest()}
+        original = {"schema_version": 6, "command_id": command_id, "event_id": event_id,
+                    "event_type": "online.task.created", "domain": "online",
+                    "aggregate_type": "online_task", "aggregate_id": task,
+                    "task_id": task, "source_id": 9, "operation_id": str(uuid.uuid4()),
+                    "changed_fields": ["task_state"], "aggregate_revision": 7,
+                    "encrypted_payload": {**envelope, "backfill_run_id": original_run}}
+
+        converted = event_to_task_event(original, original_run, environment)
+        self.assertEqual(converted["run_id"], original_run)
+        self.assertEqual(converted["encrypted_payload"], envelope)
+        self.assertIsNone(event_to_task_event(original, next_run, environment))
+        self.assertIsNone(event_to_task_event(
+            {**original, "encrypted_payload": envelope}, next_run, environment))
+        self.assertIsNone(event_to_task_event(
+            {**original, "encrypted_payload": {**envelope, "backfill_run_id": next_run}},
+            next_run, environment))
 
     def test_business_bridge_rejects_unknown_events(self):
         source = {"event_id": "11111111-1111-4111-8111-111111111111",
