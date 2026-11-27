@@ -71,7 +71,7 @@ class FlinkStateContractTests(unittest.TestCase):
         client = SimpleNamespace()
         with patch.object(control.flink_submission, "FlinkRest", return_value=client), \
              patch.object(control.flink_submission, "wait_for_rest", return_value=[]):
-            resolved_client, job_id = control._active_flink_job("dev-20261114-taskreadmodel10")
+            resolved_client, job_id = control._active_flink_job("dev-20261114-taskreadmodel10", {})
 
         self.assertIs(resolved_client, client)
         self.assertIsNone(job_id)
@@ -82,7 +82,29 @@ class FlinkStateContractTests(unittest.TestCase):
         with patch.object(control.flink_submission, "FlinkRest", return_value=client), \
              patch.object(control.flink_submission, "wait_for_rest", return_value=jobs):
             with self.assertRaisesRegex(ValueError, "Dev pause found conflicting Flink jobs"):
-                control._active_flink_job("dev-20261114-taskreadmodel10")
+                control._active_flink_job("dev-20261114-taskreadmodel10", {})
+
+    def test_dev_pause_checks_additional_sinks_declared_by_the_running_candidate(self):
+        run_id = "dev-20261114-taskreadmodel10"
+        job = {"name": run_id, "state": "RUNNING", "jid": "current"}
+        details = {**job, "vertices": [
+            {"name": "Source: dev_events -> Sink: dev_revisions"},
+            {"name": "Source: dev_task_events_redis -> Sink: task-read-model-redis"},
+            {"name": "Sink: dev_task_metadata"},
+            {"name": "Sink: dev_online_source_projection"},
+        ]}
+        client = SimpleNamespace(details=Mock(return_value=details))
+        manifest = {"run_id": run_id}
+        sinks = ["dev_revisions", "dev_task_metadata", "task-read-model-redis",
+                 "dev_online_source_projection"]
+        with patch.object(control.flink_submission, "FlinkRest", return_value=client), \
+             patch.object(control.flink_submission, "wait_for_rest", return_value=[job]), \
+             patch.object(control, "_validate_flink_sql", return_value={"sinks": sinks}) as validate_sql:
+            self.assertEqual(control._active_flink_job(run_id, manifest), (client, "current"))
+            validate_sql.assert_called_once_with(manifest)
+            details["vertices"].pop()
+            with self.assertRaisesRegex(ValueError, "Dev pause runtime state mismatch"):
+                control._active_flink_job(run_id, manifest)
 
     def test_dev_pause_evidence_accepts_kafka_offset_recovery(self):
         run_id = "dev-20261114-taskreadmodel10"
@@ -143,21 +165,30 @@ class FlinkStateContractTests(unittest.TestCase):
                 "recovery_mode": "kafka_offsets", "savepoint": None,
                 "job_id": None,
             }
+            jar = Path(tmp) / "pipeline-job.jar"
+            identity = {"sinks": ["dev_revisions", "dev_task_metadata", "task-read-model-redis",
+                                  "dev_online_source_projection"],
+                        "consumer_groups": [run_id + "-flink", run_id + "-flink-redis"]}
             with patch.object(control, "PAUSE_EVIDENCE_ROOT", root), \
                  patch.object(control, "measure", return_value={"run_id": run_id}), \
                  patch.object(control, "_manifest", return_value={"run_id": run_id}), \
                  patch.object(control, "_load_pause_evidence", return_value=(evidence / "pause.json", pause_record)), \
                  patch.object(control, "_validate_flink_compose"), \
-                 patch.object(control, "_validate_flink_sql"), \
+                 patch.object(control, "_validate_flink_sql", return_value=identity), \
                  patch.object(control.kafka_compose, "measure"), \
                  patch.object(control, "_verify_checkpoint_volume_exists"), \
                  patch.object(control, "_compose_action"), \
+                 patch.object(control, "_copy_flink_jar") as copy_jar, \
                  patch.object(control, "_wait_dev_kafka_ready"), \
                  patch.object(control.checkpoint, "measure", return_value={"ownership_verified": True}), \
                  patch.object(control.flink_submission, "FlinkRest", return_value=client), \
                  patch.object(control.flink_submission, "wait_for_rest"), \
-                 patch.object(control.flink_submission, "wait_for_runtime", return_value={"run_id": run_id}):
-                result = control.resume(run_id, pause_id)
+                 patch.object(control.flink_submission, "wait_for_runtime",
+                              return_value={"run_id": run_id}) as wait_for_runtime:
+                result = control.resume(run_id, pause_id, jar)
+                copy_jar.assert_called_once_with(jar)
+                client.upload_jar.assert_called_once_with(control.FLINK_CANDIDATE_JAR)
+                self.assertEqual(wait_for_runtime.call_args.kwargs["expected_sinks"], identity["sinks"])
 
         client.run_jar.assert_called_once_with("jar-id", run_id)
         self.assertEqual(result["recovery_mode"], "kafka_offsets")

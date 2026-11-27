@@ -408,6 +408,8 @@ savepoint 恢复；`recovery_mode=kafka_offsets` 时不传 savepoint，沿用同
 失败阶段，不能自动创建新运行、改用空状态或清理任何卷。暂停和恢复只改变资源运行状态，不把
 事件管道验收状态改成通过；恢复后仍须遵守原有验收流程。
 
+暂停和恢复按当前候选的 `pipeline.sql` 校验完整 JobGraph。需要重新提交时，现有入口从该运行的候选包提取 JAR，核对摘要后用于恢复。
+
 ### Workflow environment contract
 All install, prepare, deploy, and acceptance workflows must run in the GitHub development Environment.
 

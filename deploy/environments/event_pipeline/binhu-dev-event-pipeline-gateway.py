@@ -191,9 +191,7 @@ def prepare(run_id: str, commit: str, size: str, digest: str) -> None:
         raise
 
 
-def run_module(run_id: str, module: str, scale: int | None = None) -> None:
-    candidate = STATE / "candidates" / run_id
-    manifest = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
+def _candidate_payload(candidate: Path) -> tuple[bytes, bytes]:
     with tarfile.open(candidate / "candidate.tar.gz", "r:gz") as outer:
         names = {m.name for m in outer.getmembers()}
         inner_name = "binhu-dev-event-pipeline.tar.gz" if "binhu-dev-event-pipeline.tar.gz" in names else None
@@ -222,6 +220,13 @@ def run_module(run_id: str, module: str, scale: int | None = None) -> None:
             if jar_stream is None:
                 fail("candidate Flink artifact missing")
             pipeline_jar_bytes = jar_stream.read()
+    return source_bytes, pipeline_jar_bytes
+
+
+def run_module(run_id: str, module: str, scale: int | None = None) -> None:
+    candidate = STATE / "candidates" / run_id
+    manifest = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
+    source_bytes, pipeline_jar_bytes = _candidate_payload(candidate)
     SOURCE.mkdir(mode=0o700, parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=STATE, delete=False) as tmp:
         tmp.write(source_bytes)
@@ -359,10 +364,20 @@ def _run_fixed_control(action: str, run_id: str, pause_id: str) -> dict:
         "DEV_RUN_ID": run_id,
         "APP_ENVIRONMENT": "development",
     })
-    result = subprocess.run(
-        [sys.executable, "-m", "event_pipeline.control", action, run_id, pause_id],
-        env=environment, capture_output=True, text=True, timeout=900,
-    )
+    command = [sys.executable, "-m", "event_pipeline.control", action, run_id, pause_id]
+    if action == "resume":
+        _, current = _current_run(run_id, paused=True)
+        _, jar_bytes = _candidate_payload(STATE / "candidates" / run_id)
+        digest = current.get("pipeline_job", {}).get("jar_sha256")
+        if hashlib.sha256(jar_bytes).hexdigest() != digest:
+            fail("Dev resume candidate Flink artifact hash mismatch")
+        with tempfile.TemporaryDirectory(prefix="resume-jar-", dir=STATE) as tmp:
+            jar = Path(tmp) / "pipeline-job.jar"
+            jar.write_bytes(jar_bytes)
+            result = subprocess.run([*command, "--candidate-jar", str(jar)],
+                                    env=environment, capture_output=True, text=True, timeout=900)
+    else:
+        result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=900)
     if result.returncode:
         fail(f"Dev pipeline {action} failed; inspect fixed private evidence")
     try:
