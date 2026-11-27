@@ -2336,6 +2336,26 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             "SET time_zone='+00:00'",
         )
 
+    async def test_backend_outbox_worker_recovers_from_rolled_back_lock_contention(self):
+        from aiomysql import OperationalError
+
+        worker = AsyncMock()
+        worker.run_once.side_effect = [OperationalError(1205, "private SQL values"), "published",
+                                       OperationalError(1054, "schema mismatch")]
+        with (
+            patch.object(event_runtime.asyncio, "sleep", new_callable=AsyncMock) as delay,
+            patch("builtins.print") as output,
+        ):
+            self.assertEqual(await event_runtime.backend_outbox_step(worker, "staging"), "idle")
+            self.assertEqual(await event_runtime.backend_outbox_step(worker, "staging"), "published")
+            with self.assertRaises(OperationalError):
+                await event_runtime.backend_outbox_step(worker, "staging")
+        delay.assert_awaited_once_with(1)
+        self.assertEqual(json.loads(output.call_args.args[0]), {
+            "component": "staging-backend-outbox-relay", "state": "retry",
+            "reason_code": "mysql_lock_contention", "mysql_error_code": 1205,
+        })
+
     async def test_backend_outbox_relay_publishes_bounded_metadata(self):
         class Cursor:
             async def execute(self, *args): self.args = args

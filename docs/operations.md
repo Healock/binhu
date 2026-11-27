@@ -12,7 +12,7 @@ Staging 固定迁移入口必须绑定已完成 Staging `measure` 且仍与 Dev 
 
 Staging 的读路径使用现有 `Promote immutable Staging application` 工作流的 `task-read-model` 操作。先验收同一提交的应用制品和事件管道，再依次执行 `backfill`（备份当前 Staging 数据库、设置管道运行号、发出存量快照）、`measure`（只读对账）和 `activate`（对账和 checkpoint 均通过后开启 Redis 读取）。使用同一应用、制品和管道运行编号。切换异常恢复之前的应用配置，`deactivate` 可显式关闭读路径。Staging 的应用健康验收与指令核查读写、503 和恢复验收分别记录。 首次回填支持从原有 96 MiB 或 512 MiB 配置升级。主机有至少 8 GiB 可用内存时，将 Staging 应用 Redis 上限调整为 3 GiB，容器上限为 6 GiB，以容纳回填事件和两代任务索引。仅重建 Staging Redis 容器并继续使用原有 AOF 卷，核对 Redis 实际容量及应用健康，重接已有管道访问网络。配置副本和回滚结果保存在私有回填证据；恢复失败须先处理 Staging Redis，再重试回填。
 
-Dev 和 Staging 的 Backend Outbox 投递器在 Redis 逐条确认后按领取批次提交成功状态，失败项各自记录重试时间。领取按既有队列索引顺序分页，分别处理租约过期、已到重试时间和待投递事件，避免存量回填时对整个待投递集合排序。若状态事务提交失败，租约过期后可按原事件 ID 重投。回填结束后分别核对 MySQL 待投递量、Redis Stream 消费位置、Kafka lag 和投影对账结果。Kafka lag 为零表示消费组已读完当前投递到 Kafka 的事件。
+Dev 和 Staging 的 Backend Outbox 投递器在 Redis 逐条确认后按领取批次提交成功状态，失败项各自记录重试时间。领取按既有队列索引顺序分页，分别处理租约过期、已到重试时间和待投递事件，避免存量回填时对整个待投递集合排序。任务投递器的 MySQL 连接使用 READ COMMITTED，单次行锁等待上限为 5 秒。遇到锁等待超时或死锁时回滚本次事务，记录固定原因码并继续轮询。若状态事务提交失败，租约过期后可按原事件 ID 重投。回填结束后分别核对 MySQL 待投递量、Redis Stream 消费位置、Kafka lag 和投影对账结果。Kafka lag 为零表示消费组已读完当前投递到 Kafka 的事件。
 
 指令核查删除与归档在同一权威事务内写主任务与各附属状态的删除事件。事件使用命令已经加锁校验的来源身份及完成删除后的任务版本，因此物理移除当前来源后仍可清理 Redis 详情与附属状态索引。
 

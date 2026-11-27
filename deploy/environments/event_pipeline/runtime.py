@@ -362,6 +362,26 @@ def backend_relay_configuration(environ=None):
     }
 
 
+async def backend_outbox_step(worker, environment):
+    from aiomysql import OperationalError
+
+    try:
+        return await worker.run_once()
+    except OperationalError as error:
+        code = error.args[0] if error.args else None
+        if code not in (1205, 1213):
+            raise
+        # The batch transaction has already rolled back. If Redis acknowledged
+        # an event before a failed commit, its lease can recover the same ID.
+        print(json.dumps({
+            "component": environment + "-backend-outbox-relay",
+            "state": "retry", "reason_code": "mysql_lock_contention",
+            "mysql_error_code": code,
+        }), flush=True)
+        await asyncio.sleep(1)
+        return "idle"
+
+
 async def backend_outbox_relay(config):
     from .services.backend_outbox_relay import BackendOutboxRelay
     import aiomysql
@@ -372,7 +392,7 @@ async def backend_outbox_relay(config):
         user=config["BACKEND_MYSQL_USER"], password=config["BACKEND_MYSQL_PASSWORD"],
         db=config["BACKEND_MYSQL_DATABASE"], minsize=1, maxsize=2,
         connect_timeout=5, autocommit=True, charset="utf8mb4",
-        init_command="SET time_zone='+00:00'",
+        init_command=database_init_command("relay") + ", SESSION innodb_lock_wait_timeout=5",
     )
     summary_pool = None
     summary_worker = None
@@ -404,7 +424,7 @@ async def backend_outbox_relay(config):
             summary_worker.redis = client
         summary_retry_after = 0.0
         while True:
-            state = await worker.run_once()
+            state = await backend_outbox_step(worker, config["APP_ENVIRONMENT"])
             if summary_worker is not None and asyncio.get_running_loop().time() >= summary_retry_after:
                 try:
                     summary_state = await summary_worker.run_once()
